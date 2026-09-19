@@ -16,6 +16,23 @@ npm run dev
 npm run build
 ```
 
+## Application authentication
+
+The personnel app has its own email/password authentication. On an empty
+database, `/login` offers a one-time first-administrator setup. After that,
+office users create accounts from **Общие настройки → Пользователи системы и
+права**; each account receives a single-use invitation link valid for 72 hours.
+
+For real email delivery, configure these Cloudflare Worker secrets/variables:
+
+- `RESEND_API_KEY`: a Resend API key allowed to send transactional email.
+- `MAIL_FROM`: a verified sender, for example `Учёт персонала <access@example.ru>`.
+
+Without these values, local development still creates the invitation and shows
+its URL to the administrator instead of transmitting email. Passwords are
+stored as PBKDF2-HMAC-SHA256 hashes with a unique salt; session and invitation
+tokens are stored only as SHA-256 hashes.
+
 This starter does not use `wrangler.jsonc`.
 
 ## Included Shape

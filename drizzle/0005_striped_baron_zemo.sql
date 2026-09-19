@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `idx_personnel_options_kind_name` ON `personnel_options` (`kind`,`name`) WHERE "personnel_options"."active" = 1;
