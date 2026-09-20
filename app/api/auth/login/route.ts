@@ -1,5 +1,7 @@
-import { env } from "cloudflare:workers";
+import { getDatabase } from "../../../../db/client";
 import { assertSameOrigin, createSession, ensureAuthSchema, loginAttemptKey, verifyPassword } from "../../../auth";
+
+const env = { get DB() { return getDatabase(); } };
 
 export async function POST(request: Request) {
   try {
@@ -22,7 +24,8 @@ export async function POST(request: Request) {
     }
     await env.DB.prepare("DELETE FROM login_attempts WHERE attempt_key = ?").bind(attemptKey).run();
     return Response.json({ ok: true }, { headers: { "Set-Cookie": await createSession(user.id, request) } });
-  } catch {
+  } catch (error) {
+    console.error("Login request failed:", error instanceof Error ? error.message : error);
     return Response.json({ error: "Не удалось выполнить вход." }, { status: 400 });
   }
 }

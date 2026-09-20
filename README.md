@@ -1,117 +1,84 @@
-# vinext-starter
+# Учёт персонала
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+Веб-приложение для ведения ежедневной расстановки сотрудников по проектам,
+управления справочниками и разграничения доступа между офисом и прорабами.
 
-## Prerequisites
+## Стек
 
-- Node.js `>=22.13.0`
+- React 19 и vinext
+- AG Grid
+- Node.js 22
+- PostgreSQL 17
+- Drizzle Kit для миграций
+- Docker
 
-## Quick Start
+## Локальный запуск с PostgreSQL
+
+1. Скопируйте пример окружения:
+
+   ```bash
+   cp .env.example .env.local
+   ```
+
+2. Запустите PostgreSQL:
+
+   ```bash
+   docker compose up -d postgres
+   ```
+
+3. Установите зависимости и примените миграции:
+
+   ```bash
+   npm install
+   npm run db:migrate
+   ```
+
+4. Запустите приложение:
+
+   ```bash
+   npm run dev
+   ```
+
+Приложение будет доступно на `http://localhost:3000`.
+
+Для проверки production-контейнера выполните:
 
 ```bash
-npm install
-npm run dev
-npm run build
+docker compose up --build
 ```
 
-## Application authentication
+## Переменные окружения
 
-The personnel app has its own email/password authentication. On an empty
-database, `/login` offers a one-time first-administrator setup. After that,
-office users create accounts from **Общие настройки → Пользователи системы и
-права**; each account receives a single-use invitation link valid for 72 hours.
+- `DATABASE_URL` — строка подключения PostgreSQL. Вместо неё можно задать
+  стандартные `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`.
+- `APP_ORIGIN` — публичный адрес приложения для проверки браузерных POST-запросов.
+- `DATABASE_SSL` — `disable`, `require` или `verify-full`.
+- `DATABASE_CA_CERT` — CA-сертификат с `\n` вместо переносов строк; обязателен для `verify-full`.
+- `DATABASE_POOL_SIZE` — размер пула, для Serverless Containers рекомендуется `5`.
+- `RESEND_API_KEY` — необязательный ключ Resend для писем-приглашений.
+- `MAIL_FROM` — подтверждённый адрес отправителя.
 
-For real email delivery, configure these Cloudflare Worker secrets/variables:
+Секреты нельзя добавлять в Git. Для production храните их в Yandex Lockbox.
 
-- `RESEND_API_KEY`: a Resend API key allowed to send transactional email.
-- `MAIL_FROM`: a verified sender, for example `Учёт персонала <access@example.ru>`.
+## Авторизация
 
-Without these values, local development still creates the invitation and shows
-its URL to the administrator instead of transmitting email. Passwords are
-stored as PBKDF2-HMAC-SHA256 hashes with a unique salt; session and invitation
-tokens are stored only as SHA-256 hashes.
+На пустой базе страница `/login` предложит создать первого администратора.
+После этого офисный пользователь приглашает остальных через раздел
+**Общие настройки → Пользователи системы и права**. Приглашение действует 72
+часа. Если почтовый сервис не настроен, ссылка приглашения показывается
+администратору в интерфейсе.
 
-This starter does not use `wrangler.jsonc`.
+## Команды
 
-## Included Shape
+- `npm run dev` — локальная разработка.
+- `npm run build` — production-сборка.
+- `npm start` — запуск standalone-сборки.
+- `npm run lint` — проверка кода.
+- `npm test` — сборка и тесты.
+- `npm run db:generate` — создать миграцию после изменения схемы.
+- `npm run db:migrate` — применить миграции к `DATABASE_URL`.
+- `npm run db:import-sqlite` — один раз перенести текущие локальные данные D1/SQLite в пустой PostgreSQL.
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
+## Развёртывание
 
-## Workspace Auth Headers
-
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
-
-The user ID is stable for the same user on the same Site and different across Sites. Email and name are intended for display or contact purposes.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+Пошаговая инструкция находится в [DEPLOY_YANDEX_CLOUD.md](./DEPLOY_YANDEX_CLOUD.md).

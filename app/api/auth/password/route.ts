@@ -1,5 +1,7 @@
-import { env } from "cloudflare:workers";
+import { getDatabase } from "../../../../db/client";
 import { assertSameOrigin, createSession, ensureAuthSchema, getAuthUser, hashPassword, loginAttemptKey, verifyPassword } from "../../../auth";
+
+const env = { get DB() { return getDatabase(); } };
 
 export async function POST(request: Request) {
   try {

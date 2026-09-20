@@ -30,6 +30,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -38,3 +39,9 @@ yarn-error.log*
 /.wrangler/
 /outputs/
 /work/
+
+# local PostgreSQL data
+/postgres-data/
+
+# local database exports with personnel data
+*.local.sql

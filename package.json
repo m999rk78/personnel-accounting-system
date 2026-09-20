@@ -1,30 +1,35 @@
 {
-  "name": "site-creator-vinext-starter",
+  "name": "personnel-accounting-system",
   "version": "0.1.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
-    "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
-    "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
+    "dev": "vinext dev",
+    "build": "vinext build",
+    "start": "node dist/standalone/server.js",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:migrate-postgres": "node scripts/apply-postgres-migrations.mjs",
+    "db:import-sqlite": "node --no-warnings=ExperimentalWarning scripts/import-sqlite-to-postgres.mjs",
+    "db:migrate-yandex": "node scripts/migrate-yandex.mjs"
   },
   "dependencies": {
     "ag-grid-react": "^36.2.0",
     "drizzle-orm": "0.45.2",
+    "pg": "^8.23.0",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
     "@eslint/js": "9.39.4",
     "@next/eslint-plugin-next": "16.2.6",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
+    "@types/pg": "^8.23.1",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
@@ -40,8 +45,7 @@
     "typescript": "5.9.3",
     "typescript-eslint": "8.59.3",
     "vinext": "1.0.0-beta.2",
-    "vite": "8.0.13",
-    "wrangler": "4.92.0"
+    "vite": "8.0.13"
   },
   "type": "module"
 }

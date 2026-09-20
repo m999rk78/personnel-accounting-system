@@ -1,0 +1,1 @@
+ALTER TABLE "placement_entries" ADD CONSTRAINT "placement_hours_range" CHECK ("placement_entries"."hours" BETWEEN 1 AND 10);

@@ -1,5 +1,7 @@
-import { env } from "cloudflare:workers";
+import { getDatabase } from "../../../../db/client";
 import { ensureAuthSchema, getAuthUser } from "../../../auth";
+
+const env = { get DB() { return getDatabase(); } };
 
 export async function GET(request: Request) {
   await ensureAuthSchema();

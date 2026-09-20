@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { getDatabase } from "../db/client";
 
 export type AuthUser = {
   id: number;
@@ -15,7 +15,7 @@ const INVITATION_HOURS = 72;
 const encoder = new TextEncoder();
 
 function database() {
-  return env.DB;
+  return getDatabase();
 }
 
 function bytesToBase64(bytes: Uint8Array) {
@@ -193,9 +193,8 @@ export async function acceptInvitation(token: string, password: string, request:
 }
 
 export async function sendInvitationEmail(input: { to: string; fullName: string; invitationUrl: string; userId: number }) {
-  const runtime = env as unknown as Record<string, unknown>;
-  const apiKey = typeof runtime.RESEND_API_KEY === "string" ? runtime.RESEND_API_KEY : "";
-  const from = typeof runtime.MAIL_FROM === "string" ? runtime.MAIL_FROM : "";
+  const apiKey = process.env.RESEND_API_KEY ?? "";
+  const from = process.env.MAIL_FROM ?? "";
   if (!apiKey || !from) return { sent: false, reason: "email-not-configured" as const };
   const escape = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
   try {
@@ -217,5 +216,14 @@ export async function sendInvitationEmail(input: { to: string; fullName: string;
 
 export function assertSameOrigin(request: Request) {
   const origin = request.headers.get("origin");
-  if (origin && origin !== new URL(request.url).origin) throw new Error("Запрос с другого сайта отклонён.");
+  if (!origin) return;
+  const allowedOrigins = new Set([new URL(request.url).origin]);
+  if (process.env.APP_ORIGIN) allowedOrigins.add(new URL(process.env.APP_ORIGIN).origin);
+  let requestOrigin: string;
+  try {
+    requestOrigin = new URL(origin).origin;
+  } catch {
+    throw new Error("Запрос с другого сайта отклонён.");
+  }
+  if (!allowedOrigins.has(requestOrigin)) throw new Error("Запрос с другого сайта отклонён.");
 }

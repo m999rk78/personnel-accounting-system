@@ -1,5 +1,7 @@
-import { env } from "cloudflare:workers";
+import { getDatabase } from "../../../db/client";
 import { assertSameOrigin, createInvitation, ensureAuthSchema, getAuthUser, sendInvitationEmail, type AuthUser } from "../../auth";
+
+const env = { get DB() { return getDatabase(); } };
 
 type EntryPayload = {
   id?: number;
@@ -266,6 +268,11 @@ async function initializeDatabase() {
     ]);
     for (let offset = 0; offset < statements.length; offset += 100) await db.batch(statements.slice(offset, offset + 100));
   };
+  const syncIdentitySequences = () => db.batch([
+    "sites", "app_users", "user_invitations", "user_sessions", "login_attempts", "employees",
+    "employee_project_assignments", "position_catalog", "personnel_options", "shifts", "zones",
+    "main_work_types", "subwork_types", "masters", "placement_entries",
+  ].map((table) => db.prepare(`SELECT setval(pg_get_serial_sequence('${table}', 'id'), COALESCE((SELECT MAX(id) FROM ${table}), 1), EXISTS (SELECT 1 FROM ${table}))`)));
 
   const siteCount = await db.prepare("SELECT COUNT(*) AS count FROM sites").first<{ count: number }>();
   if ((siteCount?.count ?? 0) > 0) {
@@ -279,6 +286,7 @@ async function initializeDatabase() {
     await ensureStandardShifts();
     await db.prepare("INSERT INTO app_users (id, full_name, email, role, assigned_site_id) SELECT 1, ?, 'mark@yums.ru', 'foreman', 1 WHERE NOT EXISTS (SELECT 1 FROM app_users WHERE id = 1)").bind("Марк Аванесов").run();
     await db.prepare("UPDATE app_users SET email = 'mark@yums.ru' WHERE id = 1 AND email = ''").run();
+    await syncIdentitySequences();
     return;
   }
 
@@ -317,6 +325,7 @@ async function initializeDatabase() {
   await syncPositionCatalog();
   await syncEmployeeAssignments();
   await ensureStandardShifts();
+  await syncIdentitySequences();
   await db.prepare("PRAGMA optimize").run();
 }
 
