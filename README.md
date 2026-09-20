@@ -51,12 +51,15 @@ docker compose up --build
 
 - `DATABASE_URL` — строка подключения PostgreSQL. Вместо неё можно задать
   стандартные `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`.
-- `APP_ORIGIN` — публичный адрес приложения для проверки браузерных POST-запросов.
+- `APP_ORIGIN` — публичный адрес приложения для проверки браузерных POST-запросов;
+  несколько адресов можно перечислить через запятую или точку с запятой.
 - `DATABASE_SSL` — `disable`, `require` или `verify-full`.
 - `DATABASE_CA_CERT` — CA-сертификат с `\n` вместо переносов строк; обязателен для `verify-full`.
 - `DATABASE_POOL_SIZE` — размер пула, для Serverless Containers рекомендуется `5`.
-- `RESEND_API_KEY` — необязательный ключ Resend для писем-приглашений.
-- `MAIL_FROM` — подтверждённый адрес отправителя.
+- `MAIL_PROVIDER` — почтовый адаптер: `yandex-postbox` (рекомендуется в Yandex Cloud) или `resend`.
+- `MAIL_FROM` — подтверждённый адрес отправителя, например `no-reply@uchet-personala.ru`.
+- `PUBLIC_APP_ORIGIN` — публичный адрес приложения без завершающего `/`; используется в ссылках-приглашениях.
+- `RESEND_API_KEY` — нужен только при `MAIL_PROVIDER=resend`.
 
 Секреты нельзя добавлять в Git. Для production храните их в Yandex Lockbox.
 

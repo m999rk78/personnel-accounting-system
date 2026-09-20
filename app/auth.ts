@@ -166,7 +166,9 @@ export async function createInvitation(userId: number, request: Request) {
     database().prepare("INSERT INTO user_invitations (user_id, token_hash, expires_at) VALUES (?, ?, DATETIME('now', ?))").bind(userId, tokenHash, `+${INVITATION_HOURS} hours`),
     database().prepare("UPDATE app_users SET invited_at = CURRENT_TIMESTAMP WHERE id = ?").bind(userId),
   ]);
-  return `${new URL(request.url).origin}/invite?token=${encodeURIComponent(token)}`;
+  const configuredOrigin = process.env.PUBLIC_APP_ORIGIN?.trim();
+  const applicationOrigin = configuredOrigin ? new URL(configuredOrigin).origin : new URL(request.url).origin;
+  return `${applicationOrigin}/invite?token=${encodeURIComponent(token)}`;
 }
 
 export async function invitationUser(token: string) {
@@ -193,23 +195,55 @@ export async function acceptInvitation(token: string, password: string, request:
 }
 
 export async function sendInvitationEmail(input: { to: string; fullName: string; invitationUrl: string; userId: number }) {
-  const apiKey = process.env.RESEND_API_KEY ?? "";
+  const provider = process.env.MAIL_PROVIDER?.trim().toLocaleLowerCase() ?? "";
   const from = process.env.MAIL_FROM ?? "";
-  if (!apiKey || !from) return { sent: false, reason: "email-not-configured" as const };
+  if (!provider || !from) return { sent: false, reason: "email-not-configured" as const };
   const escape = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+  const subject = "Приглашение в систему учёта персонала";
+  const text = `Здравствуйте, ${input.fullName}!\n\nВас пригласили в систему учёта персонала.\nСоздайте пароль и войдите: ${input.invitationUrl}\n\nСсылка действует ${INVITATION_HOURS} часа.`;
+  const html = `<p>Здравствуйте, ${escape(input.fullName)}!</p><p>Вас пригласили в систему учёта персонала.</p><p><a href="${escape(input.invitationUrl)}">Создать пароль и войти</a></p><p>Ссылка действует ${INVITATION_HOURS} часа.</p>`;
   try {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "Idempotency-Key": `personnel-invite-${input.userId}` },
-      body: JSON.stringify({
-        from,
-        to: [input.to],
-        subject: "Приглашение в систему учёта персонала",
-        html: `<p>Здравствуйте, ${escape(input.fullName)}!</p><p>Вас пригласили в систему учёта персонала.</p><p><a href="${escape(input.invitationUrl)}">Создать пароль и войти</a></p><p>Ссылка действует ${INVITATION_HOURS} часа.</p>`,
-      }),
-    });
+    let response: Response;
+    if (provider === "yandex-postbox") {
+      const tokenResponse = await fetch("http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token", {
+        headers: { "Metadata-Flavor": "Google" },
+        signal: AbortSignal.timeout(3_000),
+      });
+      if (!tokenResponse.ok) throw new Error(`Cloud metadata returned ${tokenResponse.status}`);
+      const tokenPayload = await tokenResponse.json() as { access_token?: string };
+      if (!tokenPayload.access_token) throw new Error("Cloud metadata did not return an IAM token");
+      response = await fetch("https://postbox.cloud.yandex.net/v2/email/outbound-emails", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-YaCloud-SubjectToken": tokenPayload.access_token },
+        body: JSON.stringify({
+          FromEmailAddress: from,
+          Destination: { ToAddresses: [input.to] },
+          Content: {
+            Simple: {
+              Subject: { Data: subject, Charset: "UTF-8" },
+              Body: {
+                Text: { Data: text, Charset: "UTF-8" },
+                Html: { Data: html, Charset: "UTF-8" },
+              },
+            },
+          },
+        }),
+      });
+    } else if (provider === "resend") {
+      const apiKey = process.env.RESEND_API_KEY ?? "";
+      if (!apiKey) return { sent: false, reason: "email-not-configured" as const };
+      response = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "Idempotency-Key": `personnel-invite-${input.userId}` },
+        body: JSON.stringify({ from, to: [input.to], subject, html, text }),
+      });
+    } else {
+      return { sent: false, reason: "email-not-configured" as const };
+    }
+    if (!response.ok) console.error("Invitation email provider error", { provider, status: response.status });
     return response.ok ? { sent: true as const } : { sent: false as const, reason: "email-provider-error" as const };
-  } catch {
+  } catch (error) {
+    console.error("Invitation email delivery failed", { provider, error: error instanceof Error ? error.message : "Unknown error" });
     return { sent: false as const, reason: "email-provider-error" as const };
   }
 }
@@ -218,7 +252,10 @@ export function assertSameOrigin(request: Request) {
   const origin = request.headers.get("origin");
   if (!origin) return;
   const allowedOrigins = new Set([new URL(request.url).origin]);
-  if (process.env.APP_ORIGIN) allowedOrigins.add(new URL(process.env.APP_ORIGIN).origin);
+  for (const configuredOrigin of (process.env.APP_ORIGIN ?? "").split(/[,;\s]+/)) {
+    const value = configuredOrigin.trim();
+    if (value) allowedOrigins.add(new URL(value).origin);
+  }
   let requestOrigin: string;
   try {
     requestOrigin = new URL(origin).origin;

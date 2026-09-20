@@ -1,0 +1,20 @@
+openapi: 3.0.0
+info:
+  title: Personnel Accounting Gateway
+  version: 1.0.0
+paths:
+  /{proxy+}:
+    x-yc-apigateway-any-method:
+      x-yc-apigateway-integration:
+        type: serverless_containers
+        container_id: bbam7hgvknme98u03f3p
+        service_account_id: ajepd03985ohdkf99a0u
+      parameters:
+        - explode: false
+          in: path
+          name: proxy
+          required: false
+          schema:
+            default: "-"
+            type: string
+          style: simple

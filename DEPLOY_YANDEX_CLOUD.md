@@ -119,7 +119,8 @@ yc serverless container create --name personnel-accounting
 - облачная сеть Managed PostgreSQL;
 - переменные `NODE_ENV=production`, `DATABASE_POOL_SIZE=5`, `PGHOST`,
   `PGPORT=6432`, `PGUSER`, `PGDATABASE=personnel`, `DATABASE_SSL=disable`,
-  `APP_ORIGIN=https://<CONTAINER_ID>.containers.yandexcloud.net`;
+  `APP_ORIGIN=https://<CONTAINER_ID>.containers.yandexcloud.net` (после подключения
+  домена перечислите технический и пользовательский адреса через запятую);
 - `PGPASSWORD` из Lockbox (ключ `postgresql_password`).
 
 Приложение автоматически слушает порт, переданный платформой в переменной
@@ -136,12 +137,19 @@ yc serverless container allow-unauthenticated-invoke personnel-accounting
 
 ## 5. Почта
 
-Текущая версия умеет отправлять приглашения через Resend. Добавьте
-`RESEND_API_KEY` и `MAIL_FROM` в Lockbox и передайте их контейнеру.
+Для отправки приглашений через Yandex Cloud Postbox:
 
-Без этих переменных пользователи всё равно создаются, но ссылка приглашения
-показывается администратору и отправляется вручную. Переход на Yandex Cloud
-Postbox можно выполнить отдельным почтовым адаптером без изменения авторизации.
+1. Создайте в Cloud Postbox адрес для домена и подтвердите DKIM-записи в Cloud DNS.
+2. Выдайте сервисному аккаунту контейнера роль `postbox.sender` в том же каталоге.
+3. Передайте контейнеру переменные `MAIL_PROVIDER=yandex-postbox`,
+   `MAIL_FROM=no-reply@uchet-personala.ru` и
+   `PUBLIC_APP_ORIGIN=https://uchet-personala.ru`.
+
+Приложение получает короткоживущий IAM-токен из metadata service Serverless
+Containers, поэтому постоянный почтовый ключ в Lockbox не требуется. Без
+почтовой конфигурации ссылка приглашения по-прежнему показывается
+администратору. Для Resend используйте `MAIL_PROVIDER=resend`, `MAIL_FROM` и
+`RESEND_API_KEY`.
 
 ## 6. Собственный домен
 
