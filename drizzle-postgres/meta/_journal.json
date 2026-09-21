@@ -15,6 +15,13 @@
       "when": 1789851237061,
       "tag": "0001_eminent_korg",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789999803911,
+      "tag": "0002_organic_gamora",
+      "breakpoints": true
     }
   ]
 }

@@ -44,6 +44,8 @@ test("server-renders the protected personnel accounting workspace", async () => 
   assert.match(grid, /headerName: "Вид подработ"/);
   assert.match(grid, /headerName: "Должность"/);
   assert.match(grid, /pinned: "right"/);
+  assert.doesNotMatch(grid, /AllCommunityModule/);
+  assert.match(grid, /ClientSideRowModelModule/);
   assert.match(grid, /export function DirectoryAgGrid/);
   assert.match(grid, /selectEmployee/);
   assert.match(grid, /headerName: "ФИО"/);
@@ -133,6 +135,34 @@ test("keeps business validation in the data API", async () => {
   assert.match(app, /importProjectEmployees/);
   assert.match(app, /importProjectDirectory/);
   assert.doesNotMatch(app, /project-settings-summary/);
+});
+
+test("loads daily reports without reloading all reference data", async () => {
+  const api = await readFile(
+    new URL("../app/api/data/route.ts", import.meta.url),
+    "utf8",
+  );
+  const app = await readFile(
+    new URL("../app/PersonnelApp.tsx", import.meta.url),
+    "utf8",
+  );
+  const auth = await readFile(new URL("../app/auth.ts", import.meta.url), "utf8");
+  const database = await readFile(new URL("../db/client.ts", import.meta.url), "utf8");
+
+  assert.match(api, /scope === "entries"/);
+  assert.match(api, /scope === "workspace"/);
+  assert.match(api, /personnelDatabaseInitializationPromise/);
+  assert.match(api, /DATABASE_RUNTIME_BOOTSTRAP/);
+  assert.match(app, /scope=entries/);
+  assert.match(app, /scope=workspace/);
+  assert.match(app, /const loadEntries = useCallback/);
+  assert.match(auth, /personnelAuthSchemaPromise/);
+  assert.match(auth, /DATABASE_RUNTIME_BOOTSTRAP/);
+  assert.doesNotMatch(database, /client\.query\("SELECT 1"\)/);
+  assert.match(database, /async readBatch/);
+  assert.match(api, /env\.DB\.readBatch/);
+  assert.match(api, /id = ANY\(\?\)/);
+  assert.match(app, /JSON\.stringify\(\{ ids: pendingDeletes \}\)/);
 });
 
 test("writes worksheet elements in Excel-compatible order", async () => {

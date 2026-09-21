@@ -137,7 +137,6 @@ export class PostgresDatabase {
       let client: PoolClient | undefined;
       try {
         client = await this.pool.connect();
-        await client.query("SELECT 1");
         return client;
       } catch (error) {
         lastError = error;
@@ -187,6 +186,10 @@ export class PostgresDatabase {
     } finally {
       client.release();
     }
+  }
+
+  async readBatch(statements: PostgresStatement[]) {
+    return Promise.all(statements.map((statement) => statement.all()));
   }
 }
 

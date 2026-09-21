@@ -46,7 +46,7 @@ function safeEqual(left: string, right: string) {
   return difference === 0;
 }
 
-export async function ensureAuthSchema() {
+async function initializeAuthSchema() {
   const db = database();
   await db.prepare(`CREATE TABLE IF NOT EXISTS app_users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,6 +89,24 @@ export async function ensureAuthSchema() {
     )`),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_login_attempts_key_time ON login_attempts(attempt_key, created_at)"),
   ]);
+}
+
+type AuthGlobals = typeof globalThis & {
+  personnelAuthSchemaPromise?: Promise<void>;
+};
+
+export function ensureAuthSchema() {
+  const globals = globalThis as AuthGlobals;
+  if (!globals.personnelAuthSchemaPromise) {
+    const schemaTask = process.env.NODE_ENV === "production" && process.env.DATABASE_RUNTIME_BOOTSTRAP !== "true"
+      ? Promise.resolve()
+      : initializeAuthSchema();
+    globals.personnelAuthSchemaPromise = schemaTask.catch((error) => {
+      delete globals.personnelAuthSchemaPromise;
+      throw error;
+    });
+  }
+  return globals.personnelAuthSchemaPromise;
 }
 
 export async function loginAttemptKey(request: Request, email: string) {

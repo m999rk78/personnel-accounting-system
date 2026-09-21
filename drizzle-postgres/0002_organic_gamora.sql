@@ -1,0 +1,1 @@
+CREATE INDEX "idx_entries_active_site_date" ON "placement_entries" USING btree ("site_id","work_date") WHERE "placement_entries"."deleted_at" IS NULL;

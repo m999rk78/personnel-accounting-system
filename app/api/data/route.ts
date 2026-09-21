@@ -156,6 +156,7 @@ const TABLE_STATEMENTS = [
     deleted_at TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_entries_site_date ON placement_entries(site_id, work_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_entries_active_site_date ON placement_entries(site_id, work_date) WHERE deleted_at IS NULL`,
   `CREATE INDEX IF NOT EXISTS idx_entries_employee_date ON placement_entries(employee_id, work_date)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_project_assignment_active ON employee_project_assignments(employee_id, site_id) WHERE active = 1`,
   `CREATE INDEX IF NOT EXISTS idx_employee_project_assignment_site ON employee_project_assignments(site_id, active)`,
@@ -329,6 +330,24 @@ async function initializeDatabase() {
   await db.prepare("PRAGMA optimize").run();
 }
 
+type DataGlobals = typeof globalThis & {
+  personnelDatabaseInitializationPromise?: Promise<void>;
+};
+
+function ensureDatabaseInitialized() {
+  const globals = globalThis as DataGlobals;
+  if (!globals.personnelDatabaseInitializationPromise) {
+    const initializationTask = process.env.NODE_ENV === "production" && process.env.DATABASE_RUNTIME_BOOTSTRAP !== "true"
+      ? env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_entries_active_site_date ON placement_entries(site_id, work_date) WHERE deleted_at IS NULL").run().then(() => undefined)
+      : initializeDatabase();
+    globals.personnelDatabaseInitializationPromise = initializationTask.catch((error) => {
+      delete globals.personnelDatabaseInitializationPromise;
+      throw error;
+    });
+  }
+  return globals.personnelDatabaseInitializationPromise;
+}
+
 function unauthorized() {
   return Response.json({ error: "Требуется вход в систему." }, { status: 401 });
 }
@@ -354,6 +373,24 @@ function asPositiveInteger(value: unknown) {
 
 function validDate(value: unknown): value is string {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function placementEntriesStatement(siteId: number, workDate: string) {
+  return env.DB.prepare(`SELECT pe.id, pe.site_id AS siteId, pe.work_date AS workDate, pe.employee_id AS employeeId,
+    pe.shift_id AS shiftId, pe.zone_id AS zoneId, pe.main_work_type_id AS mainWorkTypeId,
+    pe.subwork_type_id AS subworkTypeId, pe.note, pe.master_id AS masterId, pe.hours,
+    pe.position_snapshot AS positionSnapshot, e.full_name AS employeeName,
+    e.employment_type AS employmentType, e.department, s.name AS shiftName,
+    z.name AS zoneName, mw.name AS mainWorkTypeName, sw.name AS subworkTypeName, m.name AS masterName
+    FROM placement_entries pe
+    JOIN employees e ON e.id = pe.employee_id
+    JOIN shifts s ON s.id = pe.shift_id
+    JOIN zones z ON z.id = pe.zone_id
+    JOIN main_work_types mw ON mw.id = pe.main_work_type_id
+    JOIN subwork_types sw ON sw.id = pe.subwork_type_id
+    JOIN masters m ON m.id = pe.master_id
+    WHERE pe.site_id = ? AND pe.work_date = ? AND pe.deleted_at IS NULL
+    ORDER BY e.full_name, pe.created_at, pe.id`).bind(siteId, workDate);
 }
 
 async function validatePayload(payload: EntryPayload, excludedId?: number) {
@@ -456,17 +493,57 @@ export async function GET(request: Request) {
   try {
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
-    await initializeDatabase();
+    await ensureDatabaseInitialized();
     const url = new URL(request.url);
     const requestedSiteId = asPositiveInteger(url.searchParams.get("siteId")) ?? 1;
     const siteId = authUser.role === "foreman" ? authUser.assignedSiteId ?? requestedSiteId : requestedSiteId;
     const workDate = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10);
-    const [sites, employees, placementEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, users] = await env.DB.batch([
+    if (!validDate(workDate)) throw new Error("Некорректная дата отчёта.");
+    const scope = url.searchParams.get("scope");
+    if (scope === "entries") {
+      const entries = await placementEntriesStatement(siteId, workDate).all();
+      return Response.json({ entries: entries.results });
+    }
+    if (scope === "workspace") {
+      const [sites, placementEmployees, shifts, zones, mainWorkTypes, subworkTypes, masters, entries] = await env.DB.readBatch([
+        env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
+        env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, epa.site_id AS siteId, s.name AS siteName
+          FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
+          WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.full_name`).bind(siteId),
+        env.DB.prepare("SELECT id, name FROM shifts WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+        env.DB.prepare("SELECT id, name FROM zones WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+        env.DB.prepare("SELECT id, name FROM main_work_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+        env.DB.prepare("SELECT id, name FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+        env.DB.prepare("SELECT id, name FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+        placementEntriesStatement(siteId, workDate),
+      ]);
+      return Response.json({
+        sites: authUser.role === "office" ? sites.results : sites.results.filter((site) => (site as { id: number }).id === siteId),
+        employees: placementEmployees.results,
+        placementEmployees: placementEmployees.results,
+        positionCatalog: [],
+        employmentTypes: [],
+        departments: [],
+        positions: [],
+        shifts: shifts.results,
+        zones: zones.results,
+        mainWorkTypes: mainWorkTypes.results,
+        subworkTypes: subworkTypes.results,
+        masters: masters.results,
+        entries: entries.results,
+        users: [],
+      });
+    }
+    const [sites, employees, placementEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, users] = await env.DB.readBatch([
       env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
       env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
-        (SELECT MIN(epa.site_id) FROM employee_project_assignments epa JOIN sites assigned_site ON assigned_site.id = epa.site_id WHERE epa.employee_id = e.id AND epa.active = 1 AND assigned_site.active = 1) AS siteId,
-        (SELECT GROUP_CONCAT(assigned_site.name, ', ') FROM employee_project_assignments epa JOIN sites assigned_site ON assigned_site.id = epa.site_id WHERE epa.employee_id = e.id AND epa.active = 1 AND assigned_site.active = 1) AS siteName
-        FROM employees e WHERE e.active = 1 ORDER BY e.full_name`),
+        MIN(epa.site_id) AS siteId, STRING_AGG(assigned_site.name, ', ' ORDER BY assigned_site.name) AS siteName
+        FROM employees e
+        LEFT JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1
+        LEFT JOIN sites assigned_site ON assigned_site.id = epa.site_id AND assigned_site.active = 1
+        WHERE e.active = 1
+        GROUP BY e.id, e.full_name, e.employment_type, e.department, e.position, e.source
+        ORDER BY e.full_name`),
       env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, epa.site_id AS siteId, s.name AS siteName
         FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
         WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.full_name`).bind(siteId),
@@ -479,21 +556,7 @@ export async function GET(request: Request) {
       env.DB.prepare("SELECT id, name FROM main_work_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
       env.DB.prepare("SELECT id, name FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
       env.DB.prepare("SELECT id, name FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
-      env.DB.prepare(`SELECT pe.id, pe.site_id AS siteId, pe.work_date AS workDate, pe.employee_id AS employeeId,
-        pe.shift_id AS shiftId, pe.zone_id AS zoneId, pe.main_work_type_id AS mainWorkTypeId,
-        pe.subwork_type_id AS subworkTypeId, pe.note, pe.master_id AS masterId, pe.hours,
-        pe.position_snapshot AS positionSnapshot, e.full_name AS employeeName,
-        e.employment_type AS employmentType, e.department, s.name AS shiftName,
-        z.name AS zoneName, mw.name AS mainWorkTypeName, sw.name AS subworkTypeName, m.name AS masterName
-        FROM placement_entries pe
-        JOIN employees e ON e.id = pe.employee_id
-        JOIN shifts s ON s.id = pe.shift_id
-        JOIN zones z ON z.id = pe.zone_id
-        JOIN main_work_types mw ON mw.id = pe.main_work_type_id
-        JOIN subwork_types sw ON sw.id = pe.subwork_type_id
-        JOIN masters m ON m.id = pe.master_id
-        WHERE pe.site_id = ? AND pe.work_date = ? AND pe.deleted_at IS NULL
-        ORDER BY e.full_name, pe.created_at, pe.id`).bind(siteId, workDate),
+      placementEntriesStatement(siteId, workDate),
       env.DB.prepare("SELECT id, full_name AS fullName, email, role, assigned_site_id AS assignedSiteId, CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END AS status FROM app_users WHERE active = 1 ORDER BY full_name"),
     ]);
     return Response.json({
@@ -522,7 +585,7 @@ export async function POST(request: Request) {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
-    await initializeDatabase();
+    await ensureDatabaseInitialized();
     const payload = (await request.json()) as EntryPayload & UserPayload & { entries?: EntryPayload[] };
     if (payload.action && authUser.role !== "office") return forbidden();
     if (!payload.action) {
@@ -685,7 +748,7 @@ export async function PATCH(request: Request) {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
-    await initializeDatabase();
+    await ensureDatabaseInitialized();
     const payload = (await request.json()) as EntryPayload & UserPayload;
     if (payload.action && authUser.role !== "office") return forbidden();
     if (!payload.action && !canManagePlacement(authUser, asPositiveInteger(payload.siteId), payload.workDate)) return forbidden();
@@ -821,16 +884,26 @@ export async function DELETE(request: Request) {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
-    await initializeDatabase();
+    await ensureDatabaseInitialized();
     const url = new URL(request.url);
-    const id = asPositiveInteger(url.searchParams.get("id"));
-    if (!id) throw new Error("Не указана строка для удаления.");
     const entity = url.searchParams.get("entity");
     if (entity && authUser.role !== "office") return forbidden();
-    if (!entity && authUser.role === "foreman") {
-      const entry = await env.DB.prepare("SELECT site_id AS siteId, work_date AS workDate FROM placement_entries WHERE id = ? AND deleted_at IS NULL").bind(id).first<{ siteId: number; workDate: string }>();
-      if (!entry || !canManagePlacement(authUser, entry.siteId, entry.workDate)) return forbidden();
+    if (!entity) {
+      const body = request.headers.get("content-type")?.includes("application/json")
+        ? await request.json() as { ids?: unknown[] }
+        : null;
+      const ids = [...new Set((body?.ids ?? [url.searchParams.get("id")]).map(asPositiveInteger).filter((id): id is number => id !== null))];
+      if (!ids.length) throw new Error("Не указаны строки для удаления.");
+      if (ids.length > 5_000) throw new Error("За один раз можно удалить не более 5000 строк.");
+      if (authUser.role === "foreman") {
+        const entries = await env.DB.prepare("SELECT site_id AS siteId, work_date AS workDate FROM placement_entries WHERE id = ANY(?) AND deleted_at IS NULL").bind(ids).all<{ siteId: number; workDate: string }>();
+        if (entries.results.length !== ids.length || entries.results.some((entry) => !canManagePlacement(authUser, entry.siteId, entry.workDate))) return forbidden();
+      }
+      const result = await env.DB.prepare("UPDATE placement_entries SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ANY(?) AND deleted_at IS NULL").bind(ids).run();
+      return Response.json({ ok: true, count: result.meta.changes });
     }
+    const id = asPositiveInteger(url.searchParams.get("id"));
+    if (!id) throw new Error("Не указана строка для удаления.");
     if (url.searchParams.get("entity") === "user") {
       if (id === authUser.id) throw new Error("Нельзя удалить собственную учётную запись.");
       const deletingUser = await env.DB.prepare("SELECT role FROM app_users WHERE id = ? AND active = 1").bind(id).first<{ role: string }>();
@@ -912,8 +985,7 @@ export async function DELETE(request: Request) {
       if (!result.meta.changes) throw new Error("Значение справочника не найдено.");
       return Response.json({ ok: true });
     }
-    await env.DB.prepare("UPDATE placement_entries SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(id).run();
-    return Response.json({ ok: true });
+    throw new Error("Неизвестный тип данных для удаления.");
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Не удалось удалить строку." }, { status: 400 });
   }

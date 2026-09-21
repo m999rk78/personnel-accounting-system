@@ -147,6 +147,7 @@ export const placementEntries = pgTable("placement_entries", {
   deletedAt: auditTimestamp("deleted_at"),
 }, (table) => [
   index("idx_entries_site_date").on(table.siteId, table.workDate),
+  index("idx_entries_active_site_date").on(table.siteId, table.workDate).where(sql`${table.deletedAt} IS NULL`),
   index("idx_entries_employee_date").on(table.employeeId, table.workDate),
   check("placement_hours_range", sql`${table.hours} BETWEEN 1 AND 10`),
 ]);

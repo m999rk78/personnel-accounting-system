@@ -3,7 +3,6 @@
 
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DirectoryAgGrid, EmployeeAgGrid, PlacementAgGrid, PositionAgGrid, ProjectAgGrid, ProjectEmployeeAgGrid, UserAgGrid } from "./AgDataGrids";
-import { createPlacementTemplateXlsx, createPlacementXlsx, createTableXlsx, parsePlacementXlsx, parseTableXlsx } from "./placementXlsx";
 
 type Option = { id: number; name: string };
 type Site = Option & { code: string; timezone: string };
@@ -62,6 +61,7 @@ function directoryExcelHeader(entity: DirectoryEntity) {
   return "Название";
 }
 const blankTemplateRows = Array.from({ length: 25 }, () => [""]);
+const loadPlacementXlsx = () => import("./placementXlsx");
 
 function AppIcon({ name }: { name: "panel" | "calendar" | "pencil" | "trash" | "redo" | "check" | "pin" | "filter" | "user" }) {
   return <svg className="app-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -215,6 +215,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const positionFileInput = useRef<HTMLInputElement>(null);
   const projectEmployeeFileInput = useRef<HTMLInputElement>(null);
   const projectDirectoryFileInput = useRef<HTMLInputElement>(null);
+  const loadedSiteId = useRef<number | null>(null);
+  const loadedWorkDate = useRef<string | null>(null);
+  const adminDataLoaded = useRef(false);
   const activeSite = data?.sites.find((site) => site.id === siteId);
   const visibleEmployees = (data?.employees ?? []).filter((employee) => normalize(`${employee.fullName} ${employee.employmentType} ${employee.department} ${employee.position} ${employee.siteName ?? ""}`).includes(normalize(employeeSearch)));
   const visibleProjectEmployees = (data?.placementEmployees ?? []).filter((employee) => normalize(`${employee.fullName} ${employee.employmentType} ${employee.department} ${employee.position}`).includes(normalize(projectEmployeeSearch)));
@@ -230,15 +233,58 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       const payload = await response.json() as DataSet & { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить данные.");
       setData(payload);
+      loadedSiteId.current = siteId;
+      loadedWorkDate.current = workDate;
+      adminDataLoaded.current = true;
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить данные.");
     } finally { setLoading(false); }
   }, [siteId, workDate]);
 
+  const loadWorkspace = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=workspace`, { cache: "no-store" });
+      if (response.status === 401) { window.location.replace("/login"); return; }
+      const payload = await response.json() as DataSet & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить рабочее пространство.");
+      setData(payload);
+      loadedSiteId.current = siteId;
+      loadedWorkDate.current = workDate;
+      adminDataLoaded.current = false;
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить рабочее пространство.");
+    } finally { setLoading(false); }
+  }, [siteId, workDate]);
+
+  const loadEntries = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=entries`, { cache: "no-store" });
+      if (response.status === 401) { window.location.replace("/login"); return; }
+      const payload = await response.json() as Pick<DataSet, "entries"> & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить отчёт.");
+      setData((current) => current ? { ...current, entries: payload.entries } : current);
+      loadedWorkDate.current = workDate;
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить отчёт.");
+    } finally { setLoading(false); }
+  }, [siteId, workDate]);
+
   useEffect(() => {
-    const task = window.setTimeout(() => void loadData(), 0);
+    const loader = loadedSiteId.current !== siteId
+      ? view === "placement" ? loadWorkspace : loadData
+      : view !== "placement" && !adminDataLoaded.current
+        ? loadData
+        : view === "placement" && loadedWorkDate.current !== workDate
+          ? loadEntries
+          : null;
+    if (!loader) return;
+    const task = window.setTimeout(() => void loader(), 0);
     return () => window.clearTimeout(task);
-  }, [loadData]);
+  }, [siteId, workDate, view, loadData, loadEntries, loadWorkspace]);
 
   const filteredEntries = data?.entries ?? [];
   const exportEntries = visibleEntryIds === null
@@ -316,7 +362,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       }
       const count = pendingCount;
       setDraftRows([]); setNotice(`Добавлено записей: ${count}`);
-      await loadData();
+      await loadEntries();
     } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "Не удалось сохранить данные."); }
     finally { setSaving(false); }
   }
@@ -328,7 +374,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       const response = await fetch("/api/data", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: editing.id, ...payload(editing.row) }) });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error ?? "Не удалось сохранить изменения.");
-      setEditing(null); setNotice("Изменения сохранены"); await loadData();
+      setEditing(null); setNotice("Изменения сохранены"); await loadEntries();
     } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "Не удалось сохранить изменения."); }
     finally { setSaving(false); }
   }
@@ -337,12 +383,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     const count = pendingDeletes.length;
     setSaving(true); setError(""); setNotice("");
     try {
-      for (const id of pendingDeletes) {
-        const response = await fetch(`/api/data?id=${id}`, { method: "DELETE" });
-        const result = await response.json() as { error?: string };
-        if (!response.ok) throw new Error(result.error ?? "Не удалось удалить выбранные строки.");
-      }
-      setPendingDeletes([]); setDeleteConfirmationOpen(false); setNotice(`Удалено строк: ${count}`); await loadData();
+      const response = await fetch("/api/data", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids: pendingDeletes }) });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Не удалось удалить выбранные строки.");
+      setPendingDeletes([]); setDeleteConfirmationOpen(false); setNotice(`Удалено строк: ${count}`); await loadEntries();
     } catch (deleteError) { setError(deleteError instanceof Error ? deleteError.message : "Не удалось удалить выбранные строки."); }
     finally { setSaving(false); }
   }
@@ -440,19 +484,22 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     } catch (deleteError) { setError(deleteError instanceof Error ? deleteError.message : "Не удалось удалить должности."); }
     finally { setSaving(false); }
   }
-  function exportEmployees() {
+  async function exportEmployees() {
     if (!data) return;
+    const { createTableXlsx } = await loadPlacementXlsx();
     const employees = employeeVisibleIds === null ? visibleEmployees : visibleEmployees.filter((employee) => employeeVisibleIds.includes(employee.id));
     download(createTableXlsx("Сотрудники", "Список сотрудников", ["ФИО", "Тип", "Отдел", "Должность", "Проект"], employees.map((employee) => [employee.fullName, employee.employmentType, employee.department, employee.position, employee.siteName ?? ""])), "Сотрудники.xlsx");
   }
-  function exportPositions() {
+  async function exportPositions() {
     if (!data) return;
+    const { createTableXlsx } = await loadPlacementXlsx();
     const positions = positionVisibleIds === null ? visiblePositions : visiblePositions.filter((position) => positionVisibleIds.includes(position.id));
     download(createTableXlsx("Должности", "Список должностей", ["Тип", "Отдел", "Должность"], positions.map((position) => [position.employmentType, position.department, position.position])), "Список_должностей.xlsx");
   }
   async function importEmployees(file: File) {
     setImporting(true); setError(""); setNotice("");
     try {
+      const { parseTableXlsx } = await loadPlacementXlsx();
       const rows = await parseTableXlsx(file, ["ФИО", "Тип", "Отдел", "Должность", "Проект"]);
       const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "import-employees", employees: rows.map((row) => ({ fullName: row["ФИО"], employmentType: row["Тип"], department: row["Отдел"], position: row["Должность"], projectCode: row["Проект"] })) }) });
       const result = await response.json() as { error?: string; count?: number };
@@ -464,6 +511,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   async function importPositions(file: File) {
     setImporting(true); setError(""); setNotice("");
     try {
+      const { parseTableXlsx } = await loadPlacementXlsx();
       const rows = await parseTableXlsx(file, ["Тип", "Отдел", "Должность"]);
       const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "import-positions", positions: rows.map((row) => ({ employmentType: row["Тип"], department: row["Отдел"], position: row["Должность"] })) }) });
       const result = await response.json() as { error?: string; count?: number };
@@ -472,16 +520,19 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     } catch (importError) { setError(importError instanceof Error ? importError.message : "Не удалось импортировать должности."); }
     finally { setImporting(false); if (positionFileInput.current) positionFileInput.current.value = ""; }
   }
-  function exportProjectEmployees() {
+  async function exportProjectEmployees() {
     if (!data) return;
+    const { createTableXlsx } = await loadPlacementXlsx();
     download(createTableXlsx("Сотрудники проекта", `Сотрудники проекта — ${activeSite?.name ?? "Проект"}`, ["ФИО", "Тип", "Отдел", "Должность"], visibleProjectEmployees.map((employee) => [employee.fullName, employee.employmentType, employee.department, employee.position])), `Сотрудники_${safeFilePart(activeSite?.name ?? "проект")}.xlsx`);
   }
-  function downloadProjectEmployeeTemplate() {
+  async function downloadProjectEmployeeTemplate() {
+    const { createTableXlsx } = await loadPlacementXlsx();
     download(createTableXlsx("Шаблон", `Шаблон сотрудников проекта — ${activeSite?.name ?? "Проект"}`, ["ФИО"], blankTemplateRows), `Шаблон_сотрудников_${safeFilePart(activeSite?.name ?? "проект")}.xlsx`);
   }
   async function importProjectEmployees(file: File) {
     setImporting(true); setError(""); setNotice("");
     try {
+      const { parseTableXlsx } = await loadPlacementXlsx();
       const rows = await parseTableXlsx(file, ["ФИО"]);
       const uniqueNames = [...new Map(rows.map((row) => [normalize(row["ФИО"]), row["ФИО"].trim()])).values()].filter(Boolean);
       if (!uniqueNames.length) throw new Error("В файле нет заполненных сотрудников.");
@@ -500,8 +551,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     } catch (importError) { setError(importError instanceof Error ? importError.message : "Не удалось импортировать сотрудников проекта."); }
     finally { setImporting(false); if (projectEmployeeFileInput.current) projectEmployeeFileInput.current.value = ""; }
   }
-  function exportProjectDirectory() {
+  async function exportProjectDirectory() {
     if (!activeDirectoryGroup) return;
+    const { createTableXlsx } = await loadPlacementXlsx();
     if (activeDirectoryGroup.entity === "master") {
       const employeesByName = new Map((data?.placementEmployees ?? []).map((employee) => [normalize(employee.fullName), employee]));
       download(createTableXlsx("Мастера", `Мастера — ${activeSite?.name ?? "Проект"}`, ["ФИО", "Тип", "Отдел", "Должность"], visibleDirectoryItems.map((item) => { const employee = employeesByName.get(normalize(item.name)); return [item.name, employee?.employmentType ?? "", employee?.department ?? "", employee?.position ?? ""]; })), `Мастера_${safeFilePart(activeSite?.name ?? "проект")}.xlsx`);
@@ -510,8 +562,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     const header = directoryExcelHeader(activeDirectoryGroup.entity);
     download(createTableXlsx(focusedDirectoryTitle, `${focusedDirectoryTitle} — ${activeSite?.name ?? "Проект"}`, [header], visibleDirectoryItems.map((item) => [item.name])), `${safeFilePart(focusedDirectoryTitle)}_${safeFilePart(activeSite?.name ?? "проект")}.xlsx`);
   }
-  function downloadProjectDirectoryTemplate() {
+  async function downloadProjectDirectoryTemplate() {
     if (!activeDirectoryGroup) return;
+    const { createTableXlsx } = await loadPlacementXlsx();
     const header = directoryExcelHeader(activeDirectoryGroup.entity);
     download(createTableXlsx("Шаблон", `Шаблон: ${focusedDirectoryTitle} — ${activeSite?.name ?? "Проект"}`, [header], blankTemplateRows), `Шаблон_${safeFilePart(focusedDirectoryTitle)}_${safeFilePart(activeSite?.name ?? "проект")}.xlsx`);
   }
@@ -520,6 +573,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setImporting(true); setError(""); setNotice("");
     try {
       const header = directoryExcelHeader(activeDirectoryGroup.entity);
+      const { parseTableXlsx } = await loadPlacementXlsx();
       const rows = await parseTableXlsx(file, [header]);
       const names = [...new Map(rows.map((row) => [normalize(row[header]), row[header].trim()])).values()].filter(Boolean);
       if (!names.length) throw new Error("В файле нет заполненных значений.");
@@ -649,20 +703,23 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setError("");
     setNotice("");
   }
-  function exportExcel() {
+  async function exportExcel() {
     if (!data || !exportEntries.length) return;
+    const { createPlacementXlsx } = await loadPlacementXlsx();
     download(createPlacementXlsx(activeSite?.name ?? "Объект", workDate, exportEntries), `Отчёт_персонала_${activeSite?.code ?? siteId}_${workDate}.xlsx`);
   }
-  function downloadTemplate() {
+  async function downloadTemplate() {
     if (!data) return;
-    download(createPlacementTemplateXlsx(activeSite?.name ?? "Объект", workDate, { employees: data.employees, shifts: data.shifts.map((item) => item.name), zones: data.zones.map((item) => item.name), mainWorkTypes: data.mainWorkTypes.map((item) => item.name), subworkTypes: data.subworkTypes.map((item) => item.name), masters: data.masters.map((item) => item.name) }), `Шаблон_отчёта_${activeSite?.code ?? siteId}_${workDate}.xlsx`);
+    const { createPlacementTemplateXlsx } = await loadPlacementXlsx();
+    download(createPlacementTemplateXlsx(activeSite?.name ?? "Объект", workDate, { employees: data.placementEmployees, shifts: data.shifts.map((item) => item.name), zones: data.zones.map((item) => item.name), mainWorkTypes: data.mainWorkTypes.map((item) => item.name), subworkTypes: data.subworkTypes.map((item) => item.name), masters: data.masters.map((item) => item.name) }), `Шаблон_отчёта_${activeSite?.code ?? siteId}_${workDate}.xlsx`);
   }
   async function importExcel(file: File) {
     if (!data) return;
     setImporting(true); setError(""); setNotice("");
     try {
+      const { parsePlacementXlsx } = await loadPlacementXlsx();
       const rows = await parsePlacementXlsx(file);
-      const findEmployee = (name: string) => data.employees.find((item) => normalize(item.fullName) === normalize(name));
+      const findEmployee = (name: string) => data.placementEmployees.find((item) => normalize(item.fullName) === normalize(name));
       const findOption = (options: Option[], name: string) => options.find((item) => normalize(item.name) === normalize(name));
       const issues: string[] = [];
       const imported = rows.flatMap((row, index) => {

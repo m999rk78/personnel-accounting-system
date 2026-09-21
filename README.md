@@ -56,6 +56,10 @@ docker compose up --build
 - `DATABASE_SSL` — `disable`, `require` или `verify-full`.
 - `DATABASE_CA_CERT` — CA-сертификат с `\n` вместо переносов строк; обязателен для `verify-full`.
 - `DATABASE_POOL_SIZE` — размер пула, для Serverless Containers рекомендуется `5`.
+- `DATABASE_RUNTIME_BOOTSTRAP` — включите `true` только для локального запуска без
+  заранее применённых миграций. В production схема изменяется командой миграции,
+  поэтому тяжёлая проверка и восстановление таблиц не выполняются при каждом
+  холодном старте контейнера.
 - `MAIL_PROVIDER` — почтовый адаптер: `yandex-postbox` (рекомендуется в Yandex Cloud) или `resend`.
 - `MAIL_FROM` — подтверждённый адрес отправителя, например `no-reply@uchet-personala.ru`.
 - `PUBLIC_APP_ORIGIN` — публичный адрес приложения без завершающего `/`; используется в ссылках-приглашениях.
@@ -80,6 +84,8 @@ docker compose up --build
 - `npm test` — сборка и тесты.
 - `npm run db:generate` — создать миграцию после изменения схемы.
 - `npm run db:migrate` — применить миграции к `DATABASE_URL`.
+- `npm run db:migrate-postgres` — безопасно применить миграции к production PostgreSQL
+  после проверки имени базы и пользователя.
 - `npm run db:import-sqlite` — один раз перенести текущие локальные данные D1/SQLite в пустой PostgreSQL.
 
 ## Развёртывание

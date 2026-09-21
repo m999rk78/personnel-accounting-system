@@ -3,7 +3,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  AllCommunityModule,
+  CellStyleModule,
+  ClientSideRowModelApiModule,
+  ClientSideRowModelModule,
+  ColumnApiModule,
+  ColumnAutoSizeModule,
+  EventApiModule,
+  NumberFilterModule,
+  RenderApiModule,
+  RowApiModule,
+  RowStyleModule,
+  ScrollApiModule,
+  TextFilterModule,
   themeQuartz,
   type ColDef,
   type ColumnResizedEvent,
@@ -97,7 +108,20 @@ const gridTheme = themeQuartz.withParams({
   spacing: 6,
 });
 
-const modules = [AllCommunityModule];
+const modules = [
+  ClientSideRowModelModule,
+  ClientSideRowModelApiModule,
+  ColumnApiModule,
+  ColumnAutoSizeModule,
+  EventApiModule,
+  NumberFilterModule,
+  RenderApiModule,
+  RowApiModule,
+  RowStyleModule,
+  CellStyleModule,
+  ScrollApiModule,
+  TextFilterModule,
+];
 
 function useLatestRef<T>(value: T) {
   const ref = useRef(value);
