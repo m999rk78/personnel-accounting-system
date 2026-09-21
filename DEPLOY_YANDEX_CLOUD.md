@@ -159,6 +159,29 @@ API Gateway, направьте все маршруты в Serverless Container,
 
 ## 7. Обновления
 
+Автоматический production-деплой описан в
+`.github/workflows/deploy-yandex.yml`. При каждом push в ветку `main` GitHub
+Actions:
+
+1. запускает lint, сборку и тесты;
+2. получает краткоживущий IAM-токен Yandex Cloud через OIDC (постоянный ключ в
+   GitHub не хранится);
+3. собирает образ с тегом полного Git commit SHA и отправляет его в Container
+   Registry;
+4. создаёт новую ревизию Serverless Container с теми же параметрами сети,
+   базы, Lockbox и Postbox;
+5. проверяет страницу входа на `https://uchet-personala.ru/login`.
+
+OIDC-доступ ограничен репозиторием
+`m999rk78/personnel-accounting-system` и веткой `main`. Workflow также можно
+запустить вручную на странице GitHub Actions, выбрав ветку `main`.
+
+При изменении схемы базы миграцию по-прежнему нужно сначала безопасно применить
+к production PostgreSQL. Автоматически запускать миграции из каждого деплоя не
+следует, пока для них не реализована отдельная проверяемая стадия.
+
+### Ручной резервный способ
+
 Для каждой версии:
 
 1. Запустите `npm test`.
