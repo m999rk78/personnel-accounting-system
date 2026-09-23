@@ -18,7 +18,7 @@ type Entry = {
 };
 type DataSet = {
   sites: Site[]; employees: Employee[]; placementEmployees: Employee[]; positionCatalog: PositionRecord[]; employmentTypes: Option[]; departments: Option[]; positions: Option[]; shifts: Option[]; zones: Option[]; mainWorkTypes: Option[];
-  subworkTypes: Option[]; masters: Option[]; entries: Entry[]; users: AppUser[];
+  subworkTypes: Option[]; masters: Option[]; entries: Entry[]; filledDates: string[]; users: AppUser[];
 };
 type DraftRow = {
   key: string; employeeId: string; employeeQuery: string; shiftId: string; zoneId: string;
@@ -38,9 +38,6 @@ const normalize = (value: string) => value.trim().toLocaleLowerCase("ru-RU").rep
 const newKey = () => typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 function makeDraft(seed: Partial<DraftRow> = {}): DraftRow {
   return { key: newKey(), employeeId: "", employeeQuery: "", shiftId: "", zoneId: "", mainWorkTypeId: "", subworkTypeId: "", note: "", masterId: "", hours: "10", ...seed };
-}
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "long", year: "numeric" }).format(new Date(`${value}T12:00:00`));
 }
 function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);
@@ -121,38 +118,34 @@ function toDateKey(value: Date) {
   return `${year}-${month}-${day}`;
 }
 
-function DatePicker({ value, max, onChange }: { value: string; max: string; onChange: (value: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const [visibleMonth, setVisibleMonth] = useState(() => { const selected = parseDateKey(value); return new Date(selected.getFullYear(), selected.getMonth(), 1, 12); });
-  const root = useRef<HTMLDivElement>(null);
-  const selected = parseDateKey(value);
-  const maximum = parseDateKey(max);
-  const firstWeekday = (visibleMonth.getDay() + 6) % 7;
-  const daysInMonth = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 0).getDate();
-  const cells = Array.from({ length: firstWeekday + daysInMonth }, (_, index) => index < firstWeekday ? null : index - firstWeekday + 1);
-  const nextMonth = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 1, 12);
-  const nextDisabled = nextMonth > new Date(maximum.getFullYear(), maximum.getMonth(), 1, 12);
-  const monthTitle = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(visibleMonth);
+function recentDateKeys(endDate: string, count = 10) {
+  const end = parseDateKey(endDate);
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date(end);
+    date.setDate(end.getDate() - (count - index - 1));
+    return toDateKey(date);
+  });
+}
 
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: PointerEvent) => { if (root.current && !root.current.contains(event.target as Node)) setOpen(false); };
-    document.addEventListener("pointerdown", close);
-    return () => document.removeEventListener("pointerdown", close);
-  }, [open]);
+function shortDate(value: string) {
+  const date = parseDateKey(value);
+  return `${String(date.getDate()).padStart(2, "0")}.${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
 
-  function toggle() {
-    if (!open) setVisibleMonth(new Date(selected.getFullYear(), selected.getMonth(), 1, 12));
-    setOpen((current) => !current);
-  }
+function fullDate(value: string) {
+  return new Intl.DateTimeFormat("ru-RU", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).format(parseDateKey(value));
+}
 
-  return <div className="date-control" ref={root}>
-    <button type="button" className="date-picker" onClick={toggle} aria-label="Дата отчёта" aria-expanded={open}><AppIcon name="calendar" /><strong>{formatDate(value)}</strong></button>
-    {open && <div className="calendar-popover" role="dialog" aria-label="Выбор даты">
-      <div className="calendar-heading"><button type="button" onClick={() => setVisibleMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() - 1, 1, 12))} aria-label="Предыдущий месяц">‹</button><strong>{monthTitle}</strong><button type="button" disabled={nextDisabled} onClick={() => setVisibleMonth(nextMonth)} aria-label="Следующий месяц">›</button></div>
-      <div className="calendar-weekdays">{["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((day) => <span key={day}>{day}</span>)}</div>
-      <div className="calendar-days">{cells.map((day, index) => day ? (() => { const date = new Date(visibleMonth.getFullYear(), visibleMonth.getMonth(), day, 12); const key = toDateKey(date); const disabled = date > maximum; return <button type="button" key={key} disabled={disabled} className={key === value ? "selected" : key === toDateKey(new Date()) ? "today" : ""} onClick={() => { onChange(key); setOpen(false); }}>{day}</button>; })() : <span key={`empty-${index}`} />)}</div>
-    </div>}
+function DateStrip({ dates, value, today, filledDates, onChange }: { dates: string[]; value: string; today: string; filledDates: Set<string>; onChange: (value: string) => void }) {
+  return <div className="date-strip" role="group" aria-label="Дата отчёта">
+    {dates.map((date) => {
+      const selected = date === value;
+      const filled = filledDates.has(date);
+      const isToday = date === today;
+      const className = ["date-chip", selected ? "selected" : "", filled ? "filled" : "", isToday ? "today" : ""].filter(Boolean).join(" ");
+      const label = `${fullDate(date)}${isToday ? ", сегодня" : ""}${filled ? ", отчёт заполнен" : ", отчёт не заполнен"}`;
+      return <button type="button" className={className} key={date} aria-label={label} aria-pressed={selected} title={label} onClick={() => onChange(date)}><span>{shortDate(date)}</span></button>;
+    })}
   </div>;
 }
 
@@ -218,6 +211,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const loadedSiteId = useRef<number | null>(null);
   const loadedWorkDate = useRef<string | null>(null);
   const adminDataLoaded = useRef(false);
+  const recentDates = useMemo(() => recentDateKeys(initialToday), [initialToday]);
+  const reportRangeQuery = `rangeStart=${recentDates[0]}&rangeEnd=${initialToday}`;
+  const filledDates = useMemo(() => new Set(data?.filledDates ?? []), [data?.filledDates]);
   const activeSite = data?.sites.find((site) => site.id === siteId);
   const visibleEmployees = (data?.employees ?? []).filter((employee) => normalize(`${employee.fullName} ${employee.employmentType} ${employee.department} ${employee.position} ${employee.siteName ?? ""}`).includes(normalize(employeeSearch)));
   const visibleProjectEmployees = (data?.placementEmployees ?? []).filter((employee) => normalize(`${employee.fullName} ${employee.employmentType} ${employee.department} ${employee.position}`).includes(normalize(projectEmployeeSearch)));
@@ -228,7 +224,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}`, { cache: "no-store" });
+      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&${reportRangeQuery}`, { cache: "no-store" });
       if (response.status === 401) { window.location.replace("/login"); return; }
       const payload = await response.json() as DataSet & { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить данные.");
@@ -239,13 +235,13 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить данные.");
     } finally { setLoading(false); }
-  }, [siteId, workDate]);
+  }, [siteId, workDate, reportRangeQuery]);
 
   const loadWorkspace = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=workspace`, { cache: "no-store" });
+      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=workspace&${reportRangeQuery}`, { cache: "no-store" });
       if (response.status === 401) { window.location.replace("/login"); return; }
       const payload = await response.json() as DataSet & { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить рабочее пространство.");
@@ -256,22 +252,22 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить рабочее пространство.");
     } finally { setLoading(false); }
-  }, [siteId, workDate]);
+  }, [siteId, workDate, reportRangeQuery]);
 
   const loadEntries = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=entries`, { cache: "no-store" });
+      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=entries&${reportRangeQuery}`, { cache: "no-store" });
       if (response.status === 401) { window.location.replace("/login"); return; }
-      const payload = await response.json() as Pick<DataSet, "entries"> & { error?: string };
+      const payload = await response.json() as Pick<DataSet, "entries" | "filledDates"> & { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить отчёт.");
-      setData((current) => current ? { ...current, entries: payload.entries } : current);
+      setData((current) => current ? { ...current, entries: payload.entries, filledDates: payload.filledDates } : current);
       loadedWorkDate.current = workDate;
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить отчёт.");
     } finally { setLoading(false); }
-  }, [siteId, workDate]);
+  }, [siteId, workDate, reportRangeQuery]);
 
   useEffect(() => {
     const loader = loadedSiteId.current !== siteId
@@ -785,7 +781,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       <div className="page-content"><div className="page-heading"><div><h1>{view === "placement" ? "Отчет персонала" : view === "employees" ? "Сотрудники" : view === "settings" ? "Общие настройки" : view === "projectSettings" ? "Настройки проекта" : view === "projectEmployees" ? "Сотрудники проекта" : view === "users" ? "Пользователи системы и права" : view === "positions" ? "Список должностей" : view === "projects" ? "Проекты" : focusedDirectoryTitle}</h1></div></div>
 
       {view === "placement" && <>
-        <section className="control-strip"><DatePicker value={workDate} max={initialToday} onChange={changeWorkDate} /></section>
+        <section className="control-strip"><DateStrip dates={recentDates} value={workDate} today={initialToday} filledDates={filledDates} onChange={changeWorkDate} /></section>
         {error && <div className="message error"><strong>Нужно проверить данные</strong><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
         {notice && <div className="message success"><strong>Готово</strong><span>{notice}</span><button onClick={() => setNotice("")}>×</button></div>}
         <section className="table-card personnel-table-card">

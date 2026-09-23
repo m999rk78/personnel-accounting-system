@@ -393,6 +393,13 @@ function placementEntriesStatement(siteId: number, workDate: string) {
     ORDER BY e.full_name, pe.created_at, pe.id`).bind(siteId, workDate);
 }
 
+function filledDatesStatement(siteId: number, rangeStart: string, rangeEnd: string) {
+  return env.DB.prepare(`SELECT DISTINCT work_date AS "workDate"
+    FROM placement_entries
+    WHERE site_id = ? AND work_date >= ? AND work_date <= ? AND deleted_at IS NULL
+    ORDER BY work_date`).bind(siteId, rangeStart, rangeEnd);
+}
+
 async function validatePayload(payload: EntryPayload, excludedId?: number) {
   const siteId = asPositiveInteger(payload.siteId);
   const employeeId = asPositiveInteger(payload.employeeId);
@@ -499,13 +506,19 @@ export async function GET(request: Request) {
     const siteId = authUser.role === "foreman" ? authUser.assignedSiteId ?? requestedSiteId : requestedSiteId;
     const workDate = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10);
     if (!validDate(workDate)) throw new Error("Некорректная дата отчёта.");
+    const rangeStart = url.searchParams.get("rangeStart") ?? workDate;
+    const rangeEnd = url.searchParams.get("rangeEnd") ?? workDate;
+    if (!validDate(rangeStart) || !validDate(rangeEnd) || rangeStart > rangeEnd) throw new Error("Некорректный диапазон дат отчёта.");
     const scope = url.searchParams.get("scope");
     if (scope === "entries") {
-      const entries = await placementEntriesStatement(siteId, workDate).all();
-      return Response.json({ entries: entries.results });
+      const [entries, filledDates] = await env.DB.readBatch([
+        placementEntriesStatement(siteId, workDate),
+        filledDatesStatement(siteId, rangeStart, rangeEnd),
+      ]);
+      return Response.json({ entries: entries.results, filledDates: filledDates.results.map((row) => (row as { workDate: string }).workDate) });
     }
     if (scope === "workspace") {
-      const [sites, placementEmployees, shifts, zones, mainWorkTypes, subworkTypes, masters, entries] = await env.DB.readBatch([
+      const [sites, placementEmployees, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates] = await env.DB.readBatch([
         env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
         env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, epa.site_id AS siteId, s.name AS siteName
           FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
@@ -516,6 +529,7 @@ export async function GET(request: Request) {
         env.DB.prepare("SELECT id, name FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
         env.DB.prepare("SELECT id, name FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
         placementEntriesStatement(siteId, workDate),
+        filledDatesStatement(siteId, rangeStart, rangeEnd),
       ]);
       return Response.json({
         sites: authUser.role === "office" ? sites.results : sites.results.filter((site) => (site as { id: number }).id === siteId),
@@ -531,10 +545,11 @@ export async function GET(request: Request) {
         subworkTypes: subworkTypes.results,
         masters: masters.results,
         entries: entries.results,
+        filledDates: filledDates.results.map((row) => (row as { workDate: string }).workDate),
         users: [],
       });
     }
-    const [sites, employees, placementEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, users] = await env.DB.readBatch([
+    const [sites, employees, placementEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, users] = await env.DB.readBatch([
       env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
       env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
         MIN(epa.site_id) AS siteId, STRING_AGG(assigned_site.name, ', ' ORDER BY assigned_site.name) AS siteName
@@ -557,6 +572,7 @@ export async function GET(request: Request) {
       env.DB.prepare("SELECT id, name FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
       env.DB.prepare("SELECT id, name FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
       placementEntriesStatement(siteId, workDate),
+      filledDatesStatement(siteId, rangeStart, rangeEnd),
       env.DB.prepare("SELECT id, full_name AS fullName, email, role, assigned_site_id AS assignedSiteId, CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END AS status FROM app_users WHERE active = 1 ORDER BY full_name"),
     ]);
     return Response.json({
@@ -573,6 +589,7 @@ export async function GET(request: Request) {
       subworkTypes: subworkTypes.results,
       masters: masters.results,
       entries: entries.results,
+      filledDates: filledDates.results.map((row) => (row as { workDate: string }).workDate),
       users: authUser.role === "office" ? users.results : [],
     });
   } catch (error) {

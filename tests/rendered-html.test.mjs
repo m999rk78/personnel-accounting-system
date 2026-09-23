@@ -165,6 +165,31 @@ test("loads daily reports without reloading all reference data", async () => {
   assert.match(app, /JSON\.stringify\(\{ ids: pendingDeletes \}\)/);
 });
 
+test("shows the latest ten report dates and marks completed days", async () => {
+  const api = await readFile(
+    new URL("../app/api/data/route.ts", import.meta.url),
+    "utf8",
+  );
+  const app = await readFile(
+    new URL("../app/PersonnelApp.tsx", import.meta.url),
+    "utf8",
+  );
+  const styles = await readFile(
+    new URL("../app/globals.css", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(app, /function recentDateKeys\(endDate: string, count = 10\)/);
+  assert.match(app, /<DateStrip dates=\{recentDates\}/);
+  assert.match(app, /filledDates\.has\(date\)/);
+  assert.match(app, /rangeStart=\$\{recentDates\[0\]\}&rangeEnd=\$\{initialToday\}/);
+  assert.match(api, /function filledDatesStatement/);
+  assert.match(api, /SELECT DISTINCT work_date AS "workDate"/);
+  assert.match(api, /deleted_at IS NULL/);
+  assert.match(styles, /\.date-chip\.filled/);
+  assert.match(styles, /border-radius:50%/);
+});
+
 test("writes worksheet elements in Excel-compatible order", async () => {
   const xlsx = await readFile(
     new URL("../app/placementXlsx.ts", import.meta.url),
