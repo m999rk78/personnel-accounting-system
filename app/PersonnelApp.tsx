@@ -6,6 +6,7 @@ import { DirectoryAgGrid, EmployeeAgGrid, PlacementAgGrid, PositionAgGrid, Proje
 import { formatBitrix24Cooldown, remainingBitrix24Cooldown, type Bitrix24Cooldowns } from "./bitrix24Cooldown";
 import { CustomSelect } from "./CustomSelect";
 import { ProjectCards } from "./ProjectCards";
+import { TimesheetView } from "./TimesheetView";
 import { UserAccessCards } from "./UserAccessCards";
 import { ROLE_LABELS, canAccessGeneralSettings, canEditGlobalEmployees, canEditGlobalReferences, canEditProjectSettings, canManageBitrix24, canViewAllProjects, type UserRole } from "./roles";
 
@@ -32,7 +33,7 @@ type DraftRow = {
   key: string; roster?: boolean; lockedEmployee?: boolean; carriedFromPreviousDay?: boolean; employeeId: string; employeeQuery: string; shiftId: string; zoneId: string;
   mainWorkTypeId: string; subworkTypeId: string; note: string; masterId: string; hours: string;
 };
-type View = "placement" | "employees" | "positions" | "projects" | "directories" | "settings" | "projectSettings" | "projectEmployees" | "users";
+type View = "placement" | "timesheet" | "employees" | "positions" | "projects" | "directories" | "settings" | "projectSettings" | "projectEmployees" | "users";
 type UserDraft = { key: string; id?: number; fullName: string; email: string; role: UserRole; assignedSiteId: string };
 type EmployeeDraft = { key: string; id?: number; fullName: string; employmentType: string; department: string; position: string; projectSiteId: string };
 type EmployeeBulkChanges = { employmentType: string; department: string; position: string; projectSiteId: string };
@@ -362,6 +363,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const mayViewAllProjects = canViewAllProjects(role);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [reportsOpen, setReportsOpen] = useState(true);
+  const [timesheetOpen, setTimesheetOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [view, setView] = useState<View>("placement");
   const [siteId, setSiteId] = useState(currentUser.assignedSiteId ?? 1);
@@ -510,9 +512,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }, [siteId, workDate, reportRangeQuery]);
 
   useEffect(() => {
+    const reportView = view === "placement" || view === "timesheet";
     const loader = loadedSiteId.current !== siteId
-      ? view === "placement" ? loadWorkspace : loadData
-      : view !== "placement" && !adminDataLoaded.current
+      ? reportView ? loadWorkspace : loadData
+      : !reportView && !adminDataLoaded.current
         ? loadData
         : view === "placement" && (loadedWorkDate.current !== workDate || loadedReportRange.current !== reportRangeQuery)
           ? loadEntries
@@ -1473,6 +1476,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
           <button type="button" className="nav-heading" onClick={() => setReportsOpen((open) => !open)} aria-expanded={reportsOpen} aria-controls="reports-navigation" aria-label={reportsOpen ? "Свернуть раздел «Отчеты»" : "Развернуть раздел «Отчеты»"}><span>Отчеты</span><SidebarChevron open={reportsOpen} /></button>
           {(reportsOpen || !sidebarOpen) && <div className="nav-sub" id="reports-navigation"><button className={view === "placement" ? "nav-item active" : "nav-item"} onClick={() => setView("placement")} aria-label="Рабочие" title="Рабочие"><span>♙</span>Рабочие</button></div>}
         </div>
+        <div className="nav-group">
+          <button type="button" className="nav-heading" onClick={() => setTimesheetOpen((open) => !open)} aria-expanded={timesheetOpen} aria-controls="timesheet-navigation" aria-label={timesheetOpen ? "Свернуть раздел «Табель»" : "Развернуть раздел «Табель»"}><span>Табель</span><SidebarChevron open={timesheetOpen} /></button>
+          {(timesheetOpen || !sidebarOpen) && <div className="nav-sub" id="timesheet-navigation"><button className={view === "timesheet" ? "nav-item active" : "nav-item"} onClick={() => setView("timesheet")} aria-label="Месячный табель" title="Месячный табель"><span>▦</span>Месячный табель</button></div>}
+        </div>
       </nav>
       <div className="sidebar-bottom"><div className="nav-group settings-group">
         <button type="button" className="nav-heading" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen} aria-controls="settings-navigation" aria-label={settingsOpen ? "Свернуть раздел «Настройки»" : "Развернуть раздел «Настройки»"}><span className="nav-heading-icon">⚙</span><span>Настройки</span><SidebarChevron open={settingsOpen} /></button>
@@ -1486,7 +1493,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     </aside>
     <section className="workspace">
       <header className="topbar"><button className="sidebar-trigger" onClick={() => setSidebarOpen((open) => !open)} aria-label={sidebarOpen ? "Свернуть меню" : "Развернуть меню"}><AppIcon name="panel" /></button></header>
-      <div className="page-content"><div className="page-heading"><div><h1>{view === "placement" ? "Отчет персонала" : view === "employees" ? "Сотрудники" : view === "settings" ? "Общие настройки" : view === "projectSettings" ? "Настройки проекта" : view === "projectEmployees" ? "Сотрудники проекта" : view === "users" ? "Пользователи системы и права" : view === "positions" ? "Список должностей" : view === "projects" ? "Проекты" : focusedDirectoryTitle}</h1></div>{view === "placement" && <section className="excel-actions" aria-label="Действия с Excel"><button onClick={exportExcel} disabled={!exportEntries.length}>Экспорт в Excel</button><button onClick={downloadTemplate}>Скачать Шаблон</button><button onClick={() => fileInput.current?.click()} disabled={importing}>{importing ? "Загружаем…" : "Загрузить данные из Excel"}</button><input ref={fileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importExcel(file); }} /></section>}</div>
+      <div className="page-content"><div className="page-heading"><div><h1>{view === "placement" ? "Отчет персонала" : view === "timesheet" ? "Табель" : view === "employees" ? "Сотрудники" : view === "settings" ? "Общие настройки" : view === "projectSettings" ? "Настройки проекта" : view === "projectEmployees" ? "Сотрудники проекта" : view === "users" ? "Пользователи системы и права" : view === "positions" ? "Список должностей" : view === "projects" ? "Проекты" : focusedDirectoryTitle}</h1></div>{view === "placement" && <section className="excel-actions" aria-label="Действия с Excel"><button onClick={exportExcel} disabled={!exportEntries.length}>Экспорт в Excel</button><button onClick={downloadTemplate}>Скачать Шаблон</button><button onClick={() => fileInput.current?.click()} disabled={importing}>{importing ? "Загружаем…" : "Загрузить данные из Excel"}</button><input ref={fileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importExcel(file); }} /></section>}</div>
 
       {view === "placement" && <>
         <section className="control-strip"><ReportDateNavigation dates={recentDates} value={workDate} today={initialToday} filledDates={filledDates} onChange={changeWorkDate} onRangeChange={changeReportRange} /></section>
@@ -1524,6 +1531,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
             : <ReportGridFooter selectedCount={pendingDeletes.length} editingCount={editingCount} newCount={pendingCount} totalHours={totalOprHours} canEdit={canEditDate} saving={saving} onAdd={() => addRow()} onEditSelection={editSelectedReportRows} onDelete={() => setDeleteConfirmationOpen(true)} onClearSelection={() => { setPendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={cancelReportEditing} onSaveEditing={() => void saveEditing()} onSaveNew={() => void savePending()} />}
         </section>
       </>}
+
+      {view === "timesheet" && <TimesheetView siteId={siteId} initialMonth={initialToday.slice(0, 7)} today={initialToday} />}
 
       {deleteConfirmationOpen && <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setDeleteConfirmationOpen(false); }}><section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-confirmation-title"><h2 id="delete-confirmation-title">Удалить выбранные строки?</h2><p>Вы точно хотите удалить строки ({pendingDeletes.length})? Это действие нельзя отменить.</p><div><button type="button" className="secondary-button" onClick={() => setDeleteConfirmationOpen(false)} disabled={saving}>Отмена</button><button type="button" className="delete-rows-button" onClick={() => void deletePendingEntries()} disabled={saving}>{saving ? "Удаляем…" : "Удалить"}</button></div></section></div>}
 

@@ -220,3 +220,21 @@ export const placementReportDays = pgTable("placement_report_days", {
 }, (table) => [
   primaryKey({ columns: [table.siteId, table.workDate] }),
 ]);
+
+export const timesheetMarks = pgTable("timesheet_marks", {
+  id: serial("id").primaryKey(),
+  siteId: integer("site_id").notNull(),
+  employeeId: integer("employee_id").notNull(),
+  workDate: date("work_date", { mode: "string" }).notNull(),
+  hours: integer("hours"),
+  code: text("code"),
+  note: text("note").notNull().default(""),
+  createdBy: text("created_by").notNull(),
+  createdAt: auditTimestamp("created_at").notNull().defaultNow(),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("idx_timesheet_marks_unique_day").on(table.siteId, table.employeeId, table.workDate),
+  index("idx_timesheet_marks_month").on(table.siteId, table.workDate),
+  check("timesheet_hours_range", sql`${table.hours} IS NULL OR ${table.hours} BETWEEN 1 AND 10`),
+  check("timesheet_value_required", sql`(${table.hours} IS NOT NULL AND ${table.code} IS NULL) OR (${table.hours} IS NULL AND ${table.code} IS NOT NULL)`),
+]);
