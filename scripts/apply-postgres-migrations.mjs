@@ -13,7 +13,8 @@ function describeError(error) {
   }
   if (error instanceof Error) {
     const code = "code" in error && error.code ? ` [${error.code}]` : "";
-    return `${error.name}${code}: ${error.message || "неизвестная ошибка"}`;
+    const cause = error.cause ? `\nПричина: ${describeError(error.cause)}` : "";
+    return `${error.name}${code}: ${error.message || "неизвестная ошибка"}${cause}`;
   }
   return String(error);
 }

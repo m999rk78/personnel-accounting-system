@@ -34,9 +34,9 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(migration, /timesheet_value_required/);
   assert.match(migration, /idx_timesheet_marks_unique_day/);
 
-  assert.match(cleanupMigration, /FROM "employees"/);
-  assert.match(cleanupMigration, /RAISE EXCEPTION/);
-  assert.match(cleanupMigration, /DELETE FROM "position_catalog"/);
+  assert.match(cleanupMigration, /UPDATE "position_catalog"/);
+  assert.match(cleanupMigration, /SET "active" = 0/);
+  assert.doesNotMatch(cleanupMigration, /UPDATE "employees"/);
   assert.match(cleanupMigration, /'ОПР', 'УСР', 'Стропальщик'/);
 
   assert.match(dockerfile, /CMD \["node", "scripts\/start-production\.mjs"\]/);
