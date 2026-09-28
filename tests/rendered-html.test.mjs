@@ -437,7 +437,7 @@ test("keeps creation, selection, and editing as exclusive table modes", async ()
   assert.match(app, /const showAdd = !editingExisting && deletingCount === 0 && \(allowMultiple \|\| !editorOpen\)/);
   assert.match(app, /editingCount === 0 && selectedCount === 0[^\n]+Добавить запись/);
   assert.ok([...app.matchAll(/editingExisting=\{[^}]+\.some\(\(draft\) => Boolean\(draft\.id\)\)\}/g)].length >= 5);
-  assert.match(app, /function addRow[\s\S]*if \(!canEditDate \|\| editingRows\.length\) return/);
+  assert.match(app, /function addRow[\s\S]*if \(!canEditDate \|\| \(!rosterMode && editingRows\.length\)\) return/);
   assert.match(app, /function addDirectoryItem[\s\S]*directoryDrafts\.some\(\(draft\) => Boolean\(draft\.id\)\)/);
   assert.match(grid, /propsRef\.current\.draftRows\.length === 0 && propsRef\.current\.editing\.length === 0/);
   assert.ok([...grid.matchAll(/propsRef\.current\.drafts\.length === 0 && params\.data\?\.kind === "entry"/g)].length >= 5);
@@ -446,6 +446,24 @@ test("keeps creation, selection, and editing as exclusive table modes", async ()
     assert.match(source, /const editorOpen = drafts\.length > 0/);
     assert.match(source, /disabled=\{editorOpen\}/);
   }
+});
+
+test("builds today's report from the active Bitrix24 project roster", async () => {
+  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+
+  assert.match(app, /const useDailyRosterReport = true/);
+  assert.match(app, /function makeRosterDraft[\s\S]*roster: true, lockedEmployee: true/);
+  assert.match(app, /data\.placementEmployees[\s\S]*filter\(\(employee\) => !savedEmployeeIds\.has\(employee\.id\)\)/);
+  assert.match(app, /<RosterReportFooter completed=\{rosterCompleted\}/);
+  assert.match(app, /Сохранить заполненные строки/);
+  assert.match(app, /Добавить дополнительную строку/);
+  assert.match(grid, /draft\.lockedEmployee[\s\S]*ag-roster-employee/);
+  assert.match(grid, /if \(!props\.rosterMode\) return rows/);
+  assert.match(api, /const placementCreates = Array\.isArray\(payload\.newEntries\)/);
+  assert.match(api, /validateBulkPayloads\(\[\.\.\.updates, \.\.\.placementCreates\], existing\.results\)/);
+  assert.match(api, /updatedCount, createdCount: createRows\.length/);
 });
 
 test("shows users as access cards while keeping the grid fallback", async () => {

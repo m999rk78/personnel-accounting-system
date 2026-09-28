@@ -1339,11 +1339,14 @@ export async function PATCH(request: Request) {
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
     await ensureDatabaseInitialized();
-    const payload = (await request.json()) as EntryPayload & UserPayload & { entries?: EntryPayload[] };
+    const payload = (await request.json()) as EntryPayload & UserPayload & { entries?: EntryPayload[]; newEntries?: EntryPayload[] };
     const placementUpdates = Array.isArray(payload.entries) ? payload.entries : null;
+    const placementCreates = Array.isArray(payload.newEntries) ? payload.newEntries : null;
     if (payload.action && !canRunAction(authUser.role, payload)) return forbidden();
     if (!payload.action) {
-      const placementRows = placementUpdates ?? [payload];
+      const placementRows = placementUpdates || placementCreates
+        ? [...(placementUpdates ?? []), ...(placementCreates ?? [])]
+        : [payload];
       if (placementRows.some((entry) => !canManagePlacement(authUser, asPositiveInteger(entry.siteId) ?? undefined, entry.workDate))) return forbidden();
     }
     if (payload.action === "update-user") {
@@ -1459,6 +1462,45 @@ export async function PATCH(request: Request) {
       const result = await env.DB.prepare("UPDATE app_users SET assigned_site_id = ? WHERE id = ? AND role = 'foreman' AND active = 1").bind(assignedSiteId, userId).run();
       if (!result.meta.changes) throw new Error("Прораб не найден.");
       return Response.json({ ok: true });
+    }
+    if (placementCreates) {
+      const updates = placementUpdates ?? [];
+      if (!updates.length && !placementCreates.length) throw new Error("Нет строк для сохранения.");
+      if (updates.length + placementCreates.length > 1000) throw new Error("За один раз можно сохранить не более 1000 строк.");
+      const ids = updates.map((entry) => asPositiveInteger(entry.id));
+      if (ids.some((id) => !id) || new Set(ids).size !== ids.length) throw new Error("Некорректный список строк для изменения.");
+      const entryIds = ids as number[];
+      const existing = entryIds.length
+        ? await env.DB.prepare(`SELECT id, site_id AS siteId, work_date AS workDate, employee_id AS employeeId, master_id AS masterId, hours,
+          position_snapshot AS positionSnapshot, employee_name_snapshot AS employeeNameSnapshot,
+          employment_type_snapshot AS employmentTypeSnapshot, department_snapshot AS departmentSnapshot,
+          master_name_snapshot AS masterNameSnapshot
+          FROM placement_entries WHERE id = ANY(?) AND deleted_at IS NULL`).bind(entryIds).all<ExistingPlacementEntry>()
+        : { results: [] as ExistingPlacementEntry[] };
+      if (existing.results.length !== entryIds.length) throw new Error("Одна или несколько строк не найдены.");
+      if (existing.results.some((entry) => !canManagePlacement(authUser, entry.siteId, entry.workDate))) return forbidden();
+      const rows = await validateBulkPayloads([...updates, ...placementCreates], existing.results);
+      const updateRows = rows.slice(0, updates.length);
+      const createRows = rows.slice(updates.length);
+      let updatedCount = 0;
+      for (let offset = 0; offset < updateRows.length; offset += 100) {
+        const results = await env.DB.batch(updateRows.slice(offset, offset + 100).map((data, index) => env.DB.prepare(`UPDATE placement_entries SET site_id = ?, work_date = ?, employee_id = ?, shift_id = ?, zone_id = ?,
+          main_work_type_id = ?, subwork_type_id = ?, note = ?, master_id = ?, hours = ?, position_snapshot = ?,
+          employee_name_snapshot = ?, employment_type_snapshot = ?, department_snapshot = ?, master_name_snapshot = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND deleted_at IS NULL`)
+          .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
+            data.employeeName, data.employmentType, data.department, data.masterName, entryIds[offset + index])));
+        updatedCount += results.reduce((sum, result) => sum + Number(result.meta.changes ?? 0), 0);
+      }
+      for (let offset = 0; offset < createRows.length; offset += 100) {
+        await env.DB.batch(createRows.slice(offset, offset + 100).map((data) => env.DB.prepare(`INSERT INTO placement_entries
+          (site_id, work_date, employee_id, shift_id, zone_id, main_work_type_id, subwork_type_id, note, master_id, hours, position_snapshot,
+           employee_name_snapshot, employment_type_snapshot, department_snapshot, master_name_snapshot)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
+            data.employeeName, data.employmentType, data.department, data.masterName)));
+      }
+      return Response.json({ ok: true, updatedCount, createdCount: createRows.length });
     }
     if (placementUpdates) {
       if (!placementUpdates.length) throw new Error("Нет строк для изменения.");

@@ -80,6 +80,8 @@ export type GridEntry = {
 };
 export type GridDraftRow = {
   key: string;
+  roster?: boolean;
+  lockedEmployee?: boolean;
   employeeId: string;
   employeeQuery: string;
   shiftId: string;
@@ -259,6 +261,7 @@ type PlacementGridProps = {
   masters: GridOption[];
   loading: boolean;
   canEdit: boolean;
+  rosterMode?: boolean;
   pendingDeletes: number[];
   onEdit: (entry: GridEntry, changes?: Partial<GridDraftRow>) => void;
   onSelectionChange: (ids: number[]) => void;
@@ -373,25 +376,57 @@ export function PlacementAgGrid(props: PlacementGridProps) {
   const gridApi = useRef<GridApi<PlacementRow> | null>(null);
   const selectedIdsKey = props.pendingDeletes.join("|");
   const editingStructureKey = props.editing.map((item) => item.id).join("|");
+  const manualDraftCount = props.draftRows.filter((row) => !row.lockedEmployee).length;
+  const previousManualDraftCount = useRef(manualDraftCount);
   const editingById = useMemo(() => new Map(props.editing.map((item) => [item.id, item.row])), [props.editing]);
-  const rowData = useMemo<PlacementRow[]>(() => [
-    ...props.entries.map((entry, index) => {
+  const rowData = useMemo<PlacementRow[]>(() => {
+    const rows: PlacementRow[] = [
+      ...props.entries.map((entry, index) => {
       const edited = editingById.get(entry.id);
       return edited
         ? { rowKey: `entry-${entry.id}`, kind: "edit" as const, number: index + 1, entry, draft: edited }
         : { rowKey: `entry-${entry.id}`, kind: "entry" as const, number: index + 1, entry };
-    }),
-    ...props.draftRows.map((draft, index) => ({ rowKey: `draft-${draft.key}`, kind: "draft" as const, number: props.entries.length + index + 1, draft })),
-  ], [editingById, props.entries, props.draftRows]);
+      }),
+      ...props.draftRows.map((draft, index) => ({ rowKey: `draft-${draft.key}`, kind: "draft" as const, number: props.entries.length + index + 1, draft })),
+    ];
+    if (!props.rosterMode) return rows;
+    return rows
+      .sort((left, right) => {
+        const leftIsExtra = left.kind === "draft" && !left.draft?.lockedEmployee;
+        const rightIsExtra = right.kind === "draft" && !right.draft?.lockedEmployee;
+        if (leftIsExtra !== rightIsExtra) return leftIsExtra ? 1 : -1;
+        return String(placementValue(left, "employeeName", props)).localeCompare(String(placementValue(right, "employeeName", props)), "ru");
+      })
+      .map((row, index) => ({ ...row, number: index + 1 }));
+  }, [editingById, props]);
 
   useEffect(() => {
-    if (gridApi.current && props.draftRows.length) {
+    if (gridApi.current && props.draftRows.length && !props.rosterMode) {
       requestAnimationFrame(() => {
         const api = gridApi.current;
         if (api && !api.isDestroyed() && api.getDisplayedRowCount() > 0) api.ensureIndexVisible(api.getDisplayedRowCount() - 1, "bottom");
       });
     }
-  }, [props.draftRows.length, rowData]);
+  }, [props.draftRows.length, props.rosterMode, rowData]);
+
+  useEffect(() => {
+    if (!props.rosterMode) return;
+    requestAnimationFrame(() => {
+      const api = gridApi.current;
+      if (!api || api.isDestroyed()) return;
+      api.ensureColumnVisible("employeeName", "start");
+    });
+  }, [props.rosterMode]);
+
+  useEffect(() => {
+    const addedManualRow = manualDraftCount > previousManualDraftCount.current;
+    previousManualDraftCount.current = manualDraftCount;
+    if (!props.rosterMode || !addedManualRow) return;
+    requestAnimationFrame(() => {
+      const api = gridApi.current;
+      if (api && !api.isDestroyed() && api.getDisplayedRowCount() > 0) api.ensureIndexVisible(api.getDisplayedRowCount() - 1, "bottom");
+    });
+  }, [manualDraftCount, props.rosterMode, rowData]);
 
   useEffect(() => {
     requestAnimationFrame(() => {
@@ -428,7 +463,9 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     const draft = row.draft;
     if (!draft) return null;
     const field = params.colDef.field;
-    if (field === "employeeName") return <EmployeeCombobox value={draft.employeeQuery} employees={props.employees} onChange={(employeeQuery, employeeId) => patchRow(row, { employeeQuery, employeeId })} />;
+    if (field === "employeeName") return draft.lockedEmployee
+      ? <span className="ag-roster-employee" title={draft.employeeQuery}>{draft.employeeQuery}</span>
+      : <EmployeeCombobox value={draft.employeeQuery} employees={props.employees} onChange={(employeeQuery, employeeId) => patchRow(row, { employeeQuery, employeeId })} />;
     if (field === "shift") return <DraftSelect value={draft.shiftId} options={props.shifts} placeholder="Смена" onChange={(shiftId) => patchRow(row, { shiftId })} />;
     if (field === "zone") return <DraftSelect value={draft.zoneId} options={props.zones} placeholder="Зона" onChange={(zoneId) => patchRow(row, { zoneId })} />;
     if (field === "mainWork") return <DraftSelect value={draft.mainWorkTypeId} options={props.mainWorkTypes} placeholder="Работа" onChange={(mainWorkTypeId) => patchRow(row, { mainWorkTypeId })} />;
@@ -444,7 +481,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     if (row.kind !== "entry" && !row.draft) return false;
     if (row.kind === "entry" && propsRef.current.draftRows.length) return false;
     const changes: Partial<GridDraftRow> = {};
-    if (values.employeeName !== undefined) {
+    if (values.employeeName !== undefined && !row.draft?.lockedEmployee) {
       const employee = employees.find((item) => normalizeSearch(item.fullName) === normalizeSearch(values.employeeName));
       changes.employeeQuery = values.employeeName;
       changes.employeeId = employee ? String(employee.id) : "";
@@ -465,7 +502,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
   const valueGetter = useCallback((field: string) => (params: { data?: PlacementRow }) => params.data ? placementValue(params.data, field, props) : "", [props]);
   const columns = useMemo<ColDef<PlacementRow>[]>(() => [
     { colId: "number", headerName: "№", width: 66, minWidth: 54, pinned: "left", lockPinned: true, lockPosition: "left", suppressMovable: true, suppressSizeToFit: true, sortable: false, filter: false, valueGetter: valueGetter("number") },
-    { field: "employeeName", headerName: "ФИО", minWidth: 220, flex: 2.2, headerComponentParams: pinnableHeader, valueGetter: valueGetter("employeeName"), cellRenderer: editableRenderer },
+    { field: "employeeName", headerName: "ФИО", minWidth: 220, flex: 2.2, pinned: props.rosterMode ? "left" : undefined, lockPinned: props.rosterMode, lockPosition: props.rosterMode ? "left" : undefined, headerComponentParams: pinnableHeader, valueGetter: valueGetter("employeeName"), cellRenderer: editableRenderer },
     { field: "employmentType", headerName: "Тип", minWidth: 116, flex: .7, headerComponentParams: pinnableHeader, valueGetter: valueGetter("employmentType"), cellRenderer: editableRenderer },
     { field: "department", headerName: "Отдел", minWidth: 129, flex: .8, headerComponentParams: pinnableHeader, valueGetter: valueGetter("department"), cellRenderer: editableRenderer },
     { field: "position", headerName: "Должность", minWidth: 162, flex: 1.8, headerComponentParams: pinnableHeader, valueGetter: valueGetter("position"), cellRenderer: editableRenderer },
@@ -476,7 +513,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     { field: "master", headerName: "Мастер", minWidth: 137, flex: 1.5, headerComponentParams: pinnableHeader, valueGetter: valueGetter("master"), cellRenderer: editableRenderer },
     { field: "hours", headerName: "Часы", minWidth: 121, flex: .7, headerComponentParams: pinnableHeader, filter: personnelColumnFilter, filterParams: { ...personnelFilterParams, kind: "number" }, valueGetter: valueGetter("hours"), cellRenderer: editableRenderer },
     { field: "note", headerName: "Примечание", minWidth: 169, flex: 1.3, headerComponentParams: pinnableHeader, valueGetter: valueGetter("note"), cellRenderer: editableRenderer },
-  ], [editableRenderer, valueGetter]);
+  ], [editableRenderer, props.rosterMode, valueGetter]);
 
   const reportVisibleRows = useCallback((api: GridApi<PlacementRow>) => {
     const ids: number[] = [];
@@ -510,7 +547,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     rowClassRules={{
       "editable-row": (params) => params.data?.kind === "edit" || params.data?.kind === "draft",
     }}
-    rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.canEdit && propsRef.current.draftRows.length === 0 && propsRef.current.editing.length === 0 && params.data?.kind === "entry", headerCheckbox: props.draftRows.length === 0 && props.editing.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.canEdit && propsRef.current.draftRows.length === 0 && propsRef.current.editing.length === 0 && node.data?.kind === "entry" }}
+    rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.rosterMode && propsRef.current.canEdit && propsRef.current.draftRows.length === 0 && propsRef.current.editing.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.rosterMode && props.draftRows.length === 0 && props.editing.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.rosterMode && propsRef.current.canEdit && propsRef.current.draftRows.length === 0 && propsRef.current.editing.length === 0 && node.data?.kind === "entry" }}
     selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }}
     onGridReady={(event: GridReadyEvent<PlacementRow>) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }}
     onGridSizeChanged={(event) => event.api.sizeColumnsToFit()}
@@ -519,7 +556,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     onFilterChanged={(event) => reportVisibleRows(event.api)}
     onSortChanged={(event) => reportVisibleRows(event.api)}
     onSelectionChanged={(event) => propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.entry?.id ? [row.entry.id] : []))}
-    onRowDoubleClicked={(event) => { const row = event.data; if (props.canEdit && props.draftRows.length === 0 && row?.kind === "entry" && row.entry && !props.pendingDeletes.includes(row.entry.id) && canOpenRowEditor(event.event)) props.onEdit(row.entry); }}
+    onRowDoubleClicked={(event) => { const row = event.data; if (!props.rosterMode && props.canEdit && props.draftRows.length === 0 && row?.kind === "entry" && row.entry && !props.pendingDeletes.includes(row.entry.id) && canOpenRowEditor(event.event)) props.onEdit(row.entry); }}
     onSpreadsheetPaste={pasteIntoRow}
     suppressCellFocus
   /></div></AgGridProvider>;

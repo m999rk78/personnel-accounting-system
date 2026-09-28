@@ -28,7 +28,7 @@ type DataSet = {
   bitrix24Cooldowns?: Bitrix24Cooldowns;
 };
 type DraftRow = {
-  key: string; employeeId: string; employeeQuery: string; shiftId: string; zoneId: string;
+  key: string; roster?: boolean; lockedEmployee?: boolean; employeeId: string; employeeQuery: string; shiftId: string; zoneId: string;
   mainWorkTypeId: string; subworkTypeId: string; note: string; masterId: string; hours: string;
 };
 type View = "placement" | "employees" | "positions" | "projects" | "directories" | "settings" | "projectSettings" | "projectEmployees" | "users";
@@ -46,6 +46,30 @@ const normalize = (value: string) => value.trim().toLocaleLowerCase("ru-RU").rep
 const newKey = () => typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 function makeDraft(seed: Partial<DraftRow> = {}): DraftRow {
   return { key: newKey(), employeeId: "", employeeQuery: "", shiftId: "", zoneId: "", mainWorkTypeId: "", subworkTypeId: "", note: "", masterId: "", hours: "10", ...seed };
+}
+function makeEntryDraft(entry: Entry | GridEntry, lockedEmployee = false): DraftRow {
+  return makeDraft({
+    key: `entry-${entry.id}`,
+    lockedEmployee,
+    employeeId: String(entry.employeeId),
+    employeeQuery: entry.employeeName,
+    shiftId: String(entry.shiftId),
+    zoneId: String(entry.zoneId),
+    mainWorkTypeId: String(entry.mainWorkTypeId),
+    subworkTypeId: String(entry.subworkTypeId),
+    note: entry.note,
+    masterId: String(entry.masterId),
+    hours: String(entry.hours),
+  });
+}
+function makeRosterDraft(employee: Employee): DraftRow {
+  return makeDraft({ key: `roster-${employee.id}`, roster: true, lockedEmployee: true, employeeId: String(employee.id), employeeQuery: employee.fullName, hours: "" });
+}
+function draftRowComplete(row: DraftRow) {
+  return Boolean(row.employeeId && row.shiftId && row.zoneId && row.mainWorkTypeId && row.subworkTypeId && row.masterId && row.hours);
+}
+function draftRowHasWorkInput(row: DraftRow) {
+  return Boolean(row.shiftId || row.zoneId || row.mainWorkTypeId || row.subworkTypeId || row.masterId || row.hours || row.note.trim());
 }
 function download(blob: Blob, name: string) {
   const url = URL.createObjectURL(blob);
@@ -70,6 +94,8 @@ const loadPlacementXlsx = () => import("./placementXlsx");
 // Reversible presentation switch: the AG Grid implementation stays mounted in the fallback branch.
 const useUserAccessCardLayout = true;
 const useProjectCardLayout = true;
+// Keep this switch so the checkpoint layout can be restored without changing the report data model.
+const useDailyRosterReport = true;
 
 function AppIcon({ name }: { name: "panel" | "calendar" | "pencil" | "trash" | "redo" | "check" | "pin" | "filter" | "user" }) {
   return <svg className="app-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -157,6 +183,29 @@ function ReportGridFooter({ selectedCount, editingCount, newCount, totalHours, c
     </div>}
     <div className="employee-footer-base">
       {editingCount === 0 && selectedCount === 0 && <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={onAdd} disabled={!canEdit}>Добавить запись</button>}
+      <span className="employee-total-count">Общее количество часов ОПР: <strong>{totalHours}</strong></span>
+    </div>
+  </div>;
+}
+
+function RosterReportFooter({ completed, total, readyNew, incompleteTouched, totalHours, saving, onAdd, onReset, onSave }: { completed: number; total: number; readyNew: number; incompleteTouched: number; totalHours: number; saving: boolean; onAdd: () => void; onReset: () => void; onSave: () => void }) {
+  const percent = total ? Math.round((completed / total) * 100) : 0;
+  const remaining = Math.max(0, total - completed);
+  return <div className="table-edit-footer employee-table-footer uniform-footer-actions report-table-footer roster-report-footer">
+    <div className="roster-report-progress">
+      <div className="roster-progress-copy"><strong>Заполнено сотрудников: {completed} из {total}</strong><span>{remaining ? `Осталось заполнить: ${remaining}` : "Основной состав заполнен"}{readyNew ? ` · готово новых строк: ${readyNew}` : ""}{incompleteTouched ? ` · незавершённых строк: ${incompleteTouched}` : ""}</span></div>
+      <div className="roster-progress-track" role="progressbar" aria-label="Заполнение отчёта" aria-valuemin={0} aria-valuemax={total} aria-valuenow={completed}><span style={{ width: `${percent}%` }} /></div>
+      <span className="roster-progress-percent">{percent}%</span>
+    </div>
+    <div className="employee-editing-bar roster-save-bar">
+      <div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>Рабочие поля доступны для заполнения прямо в таблице</span></div>
+      <div className="employee-selection-actions">
+        <button type="button" className="employee-action-button cancel-editing-button" onClick={onReset} disabled={saving}>Сбросить несохранённое</button>
+        <button type="button" className="employee-action-button employee-save-button" onClick={onSave} disabled={saving}>{saving ? "Сохраняем…" : "Сохранить заполненные строки"}</button>
+      </div>
+    </div>
+    <div className="employee-footer-base">
+      <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={onAdd} disabled={saving}>Добавить дополнительную строку</button>
       <span className="employee-total-count">Общее количество часов ОПР: <strong>{totalHours}</strong></span>
     </div>
   </div>;
@@ -338,6 +387,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const loadedSiteId = useRef<number | null>(null);
   const loadedWorkDate = useRef<string | null>(null);
   const loadedReportRange = useRef<string | null>(null);
+  const initializedRosterSession = useRef<string | null>(null);
   const adminDataLoaded = useRef(false);
   const recentDates = useMemo(() => recentDateKeys(reportRangeEnd), [reportRangeEnd]);
   const reportRangeQuery = `rangeStart=${recentDates[0]}&rangeEnd=${reportRangeEnd}`;
@@ -437,12 +487,49 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const exportEntries = visibleEntryIds === null
     ? filteredEntries
     : filteredEntries.filter((entry) => visibleEntryIds.includes(entry.id));
-  const totalOprHours = exportEntries
+  const savedOprHours = exportEntries
     .filter((entry) => normalize(entry.employmentType) === "опр")
     .reduce((sum, entry) => sum + entry.hours, 0);
   const pendingCount = draftRows.length;
   const editingCount = editingRows.length;
   const canEditDate = role !== "foreman" || workDate === initialToday;
+  const rosterMode = useDailyRosterReport && workDate === initialToday && canEditDate;
+  const entryTypeById = new Map(filteredEntries.map((entry) => [entry.id, entry.employmentType]));
+  const employeeTypeById = new Map((data?.placementEmployees ?? []).map((employee) => [employee.id, employee.employmentType]));
+  const rosterOprHours = [
+    ...editingRows.map((item) => ({ row: item.row, employmentType: entryTypeById.get(item.id) ?? "" })),
+    ...draftRows.map((row) => ({ row, employmentType: employeeTypeById.get(Number(row.employeeId)) ?? "" })),
+  ].filter((item) => draftRowComplete(item.row) && normalize(item.employmentType) === "опр")
+    .reduce((sum, item) => sum + Number(item.row.hours), 0);
+  const totalOprHours = rosterMode ? rosterOprHours : savedOprHours;
+  const completedRosterEmployeeIds = new Set([
+    ...filteredEntries.map((entry) => entry.employeeId),
+    ...editingRows.filter((item) => draftRowComplete(item.row)).map((item) => Number(item.row.employeeId)),
+    ...draftRows.filter(draftRowComplete).map((row) => Number(row.employeeId)),
+  ]);
+  const rosterTotal = data?.placementEmployees.length ?? 0;
+  const rosterCompleted = (data?.placementEmployees ?? []).filter((employee) => completedRosterEmployeeIds.has(employee.id)).length;
+  const rosterIncompleteTouched = draftRows.filter((row) => !draftRowComplete(row) && draftRowHasWorkInput(row)).length;
+  const rosterReadyNew = draftRows.filter(draftRowComplete).length;
+
+  useEffect(() => {
+    if (!rosterMode || view !== "placement" || loading || !data || loadedWorkDate.current !== workDate) return;
+    const rosterSession = `${siteId}:${workDate}`;
+    const preserveManualRows = initializedRosterSession.current === rosterSession;
+    initializedRosterSession.current = rosterSession;
+    const savedEmployeeIds = new Set(data.entries.map((entry) => entry.employeeId));
+    setEditingRows(data.entries.map((entry) => ({ id: entry.id, row: makeEntryDraft(entry, true) })));
+    setDraftRows((current) => {
+      const currentRoster = new Map(current.filter((row) => row.roster).map((row) => [Number(row.employeeId), row]));
+      const manualRows = preserveManualRows ? current.filter((row) => !row.roster) : [];
+      const rosterRows = data.placementEmployees
+        .filter((employee) => !savedEmployeeIds.has(employee.id))
+        .map((employee) => currentRoster.get(employee.id) ?? makeRosterDraft(employee));
+      return [...rosterRows, ...manualRows];
+    });
+    setPendingDeletes([]);
+    setDeleteConfirmationOpen(false);
+  }, [data, loading, rosterMode, siteId, view, workDate]);
 
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -492,7 +579,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setEditingRows((current) => {
       const existing = current.find((item) => item.id === entry.id);
       if (existing) return current.map((item) => item.id === entry.id ? { ...item, row: { ...item.row, ...changes } } : item);
-      return [...current, { id: entry.id, row: makeDraft({ employeeId: String(entry.employeeId), employeeQuery: entry.employeeName, shiftId: String(entry.shiftId), zoneId: String(entry.zoneId), mainWorkTypeId: String(entry.mainWorkTypeId), subworkTypeId: String(entry.subworkTypeId), note: entry.note, masterId: String(entry.masterId), hours: String(entry.hours), ...changes }) }];
+      return [...current, { id: entry.id, row: { ...makeEntryDraft(entry), ...changes } }];
     });
     setNotice("");
   }
@@ -509,7 +596,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     if (!selected.length) return;
     const edits = selected.map((entry) => ({
       id: entry.id,
-      row: makeDraft({ employeeId: String(entry.employeeId), employeeQuery: entry.employeeName, shiftId: String(entry.shiftId), zoneId: String(entry.zoneId), mainWorkTypeId: String(entry.mainWorkTypeId), subworkTypeId: String(entry.subworkTypeId), note: entry.note, masterId: String(entry.masterId), hours: String(entry.hours) }),
+      row: makeEntryDraft(entry),
     }));
     setEditingRows((current) => {
       const selectedIds = new Set(edits.map((item) => item.id));
@@ -520,13 +607,19 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setNotice(`Открыто редактирование строк: ${selected.length}.`);
   }
   function cancelReportEditing() {
-    setEditingRows([]);
-    setDraftRows([]);
+    if (rosterMode && data) {
+      const savedEmployeeIds = new Set(data.entries.map((entry) => entry.employeeId));
+      setEditingRows(data.entries.map((entry) => ({ id: entry.id, row: makeEntryDraft(entry, true) })));
+      setDraftRows(data.placementEmployees.filter((employee) => !savedEmployeeIds.has(employee.id)).map(makeRosterDraft));
+    } else {
+      setEditingRows([]);
+      setDraftRows([]);
+    }
     setError("");
     setNotice("");
   }
   function addRow(seed: Partial<DraftRow> = {}) {
-    if (!canEditDate || editingRows.length) return;
+    if (!canEditDate || (!rosterMode && editingRows.length)) return;
     setDraftRows((rows) => [...rows, makeDraft(seed)]);
     setNotice("");
   }
@@ -551,6 +644,40 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       setDraftRows([]); setNotice(`Добавлено записей: ${count}`);
       await loadEntries();
     } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "Не удалось сохранить данные."); }
+    finally { setSaving(false); }
+  }
+  async function saveRosterReport() {
+    const incompleteTouched = draftRows.filter((row) => !draftRowComplete(row) && draftRowHasWorkInput(row));
+    if (incompleteTouched.length) {
+      const first = draftRows.indexOf(incompleteTouched[0]) + filteredEntries.length + 1;
+      setError(`Строка ${first}: заполните смену, зону, работу, вид подработ, мастера и часы либо очистите строку.`);
+      return;
+    }
+    const newRows = draftRows.filter(draftRowComplete);
+    if (!editingRows.length && !newRows.length) {
+      setError("Заполните рабочие данные хотя бы одного сотрудника.");
+      return;
+    }
+    setSaving(true); setError(""); setNotice("");
+    try {
+      validateRows(editingRows.map((item) => item.row));
+      validateRows(newRows);
+      const response = await fetch("/api/data", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entries: editingRows.map((item) => ({ id: item.id, ...payload(item.row) })),
+          newEntries: newRows.map(payload),
+        }),
+      });
+      const result = await response.json() as { error?: string; updatedCount?: number; createdCount?: number };
+      if (!response.ok) throw new Error(result.error ?? "Не удалось сохранить отчёт.");
+      const updated = result.updatedCount ?? editingRows.length;
+      const created = result.createdCount ?? newRows.length;
+      setDraftRows((current) => current.filter((row) => row.roster && !newRows.some((saved) => saved.key === row.key)));
+      setNotice([created ? `добавлено строк: ${created}` : "", updated ? `обновлено строк: ${updated}` : ""].filter(Boolean).join(", ").replace(/^./, (letter) => letter.toLocaleUpperCase("ru-RU")));
+      await loadEntries();
+    } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "Не удалось сохранить отчёт."); }
     finally { setSaving(false); }
   }
   async function saveEditing() {
@@ -1306,6 +1433,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
             masters={data?.masters ?? []}
             loading={loading}
             canEdit={canEditDate}
+            rosterMode={rosterMode}
             pendingDeletes={pendingDeletes}
             onEdit={startEdit}
             onSelectionChange={changeReportSelection}
@@ -1313,7 +1441,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
             onPatchEditing={patchEditing}
             onVisibleEntryIdsChange={(ids) => setVisibleEntryIds((current) => current?.length === ids.length && current.every((id, index) => id === ids[index]) ? current : ids)}
           />
-          <ReportGridFooter selectedCount={pendingDeletes.length} editingCount={editingCount} newCount={pendingCount} totalHours={totalOprHours} canEdit={canEditDate} saving={saving} onAdd={() => addRow()} onEditSelection={editSelectedReportRows} onDelete={() => setDeleteConfirmationOpen(true)} onClearSelection={() => { setPendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={cancelReportEditing} onSaveEditing={() => void saveEditing()} onSaveNew={() => void savePending()} />
+          {rosterMode
+            ? <RosterReportFooter completed={rosterCompleted} total={rosterTotal} readyNew={rosterReadyNew} incompleteTouched={rosterIncompleteTouched} totalHours={totalOprHours} saving={saving} onAdd={() => addRow({ hours: "" })} onReset={cancelReportEditing} onSave={() => void saveRosterReport()} />
+            : <ReportGridFooter selectedCount={pendingDeletes.length} editingCount={editingCount} newCount={pendingCount} totalHours={totalOprHours} canEdit={canEditDate} saving={saving} onAdd={() => addRow()} onEditSelection={editSelectedReportRows} onDelete={() => setDeleteConfirmationOpen(true)} onClearSelection={() => { setPendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={cancelReportEditing} onSaveEditing={() => void saveEditing()} onSaveNew={() => void savePending()} />}
         </section>
       </>}
 
