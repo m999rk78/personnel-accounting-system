@@ -52,6 +52,12 @@ export const loginAttempts = pgTable("login_attempts", {
 export const employees = pgTable("employees", {
   id: serial("id").primaryKey(),
   bitrix24Id: text("bitrix24_id").unique(),
+  bitrix24Stage: text("bitrix24_stage").notNull().default(""),
+  availabilityStatus: text("availability_status").notNull().default("on_site"),
+  bitrix24UpdatedAt: auditTimestamp("bitrix24_updated_at"),
+  lastSyncedAt: auditTimestamp("last_synced_at"),
+  syncError: text("sync_error"),
+  syncMissCount: integer("sync_miss_count").notNull().default(0),
   fullName: text("full_name").notNull(),
   employmentType: text("employment_type").notNull().default("ОПР"),
   department: text("department").notNull().default("УСР"),
@@ -59,6 +65,56 @@ export const employees = pgTable("employees", {
   source: text("source").notNull().default("excel"),
   siteId: integer("site_id").references(() => sites.id),
   active: integer("active").notNull().default(1),
+});
+
+export const employeeProfileVersions = pgTable("employee_profile_versions", {
+  id: serial("id").primaryKey(),
+  employeeId: integer("employee_id").notNull().references(() => employees.id),
+  fullName: text("full_name").notNull(),
+  employmentType: text("employment_type").notNull(),
+  department: text("department").notNull(),
+  position: text("position").notNull(),
+  bitrix24Stage: text("bitrix24_stage").notNull().default(""),
+  validFrom: auditTimestamp("valid_from").notNull(),
+  validTo: auditTimestamp("valid_to"),
+  source: text("source").notNull().default("bitrix24"),
+}, (table) => [
+  index("idx_employee_profile_versions_period").on(table.employeeId, table.validFrom, table.validTo),
+]);
+
+export const employeeAvailabilityPeriods = pgTable("employee_availability_periods", {
+  id: serial("id").primaryKey(),
+  employeeId: integer("employee_id").notNull().references(() => employees.id),
+  status: text("status").notNull(),
+  validFrom: auditTimestamp("valid_from").notNull(),
+  validTo: auditTimestamp("valid_to"),
+  source: text("source").notNull().default("bitrix24"),
+}, (table) => [
+  index("idx_employee_availability_periods_period").on(table.employeeId, table.validFrom, table.validTo),
+]);
+
+export const employeeSyncRuns = pgTable("employee_sync_runs", {
+  id: serial("id").primaryKey(),
+  source: text("source").notNull().default("bitrix24"),
+  status: text("status").notNull().default("running"),
+  startedAt: auditTimestamp("started_at").notNull().defaultNow(),
+  completedAt: auditTimestamp("completed_at"),
+  summary: text("summary"),
+  errorText: text("error_text"),
+});
+
+export const employeeSyncIssues = pgTable("employee_sync_issues", {
+  id: serial("id").primaryKey(),
+  runId: integer("run_id").notNull().references(() => employeeSyncRuns.id),
+  bitrix24Id: text("bitrix24_id"),
+  code: text("code").notNull(),
+  message: text("message").notNull(),
+  createdAt: auditTimestamp("created_at").notNull().defaultNow(),
+}, (table) => [index("idx_employee_sync_issues_run").on(table.runId)]);
+
+export const bitrix24ActionLimits = pgTable("bitrix24_action_limits", {
+  actionKey: text("action_key").primaryKey(),
+  lastStartedAt: auditTimestamp("last_started_at").notNull(),
 });
 
 export const employeeProjectAssignments = pgTable("employee_project_assignments", {
@@ -141,6 +197,10 @@ export const placementEntries = pgTable("placement_entries", {
   masterId: integer("master_id").notNull().references(() => masters.id),
   hours: integer("hours").notNull(),
   positionSnapshot: text("position_snapshot").notNull(),
+  employeeNameSnapshot: text("employee_name_snapshot").notNull().default(""),
+  employmentTypeSnapshot: text("employment_type_snapshot").notNull().default(""),
+  departmentSnapshot: text("department_snapshot").notNull().default(""),
+  masterNameSnapshot: text("master_name_snapshot").notNull().default(""),
   createdBy: text("created_by").notNull().default("demo-user"),
   createdAt: auditTimestamp("created_at").notNull().defaultNow(),
   updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),

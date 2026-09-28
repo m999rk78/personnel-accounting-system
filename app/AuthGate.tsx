@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from "react";
 import PersonnelApp from "./PersonnelApp";
+import type { UserRole } from "./roles";
 
 export type CurrentUser = {
   id: number;
   fullName: string;
   email: string;
-  role: "foreman" | "office";
+  role: UserRole;
   assignedSiteId: number | null;
 };
 

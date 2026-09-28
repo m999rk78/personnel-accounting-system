@@ -188,28 +188,43 @@ function normalizeHeader(value: string) {
   return value.trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/g, " ");
 }
 
+function elementsByLocalName(container: Document | Element, name: string) {
+  return Array.from(container.getElementsByTagNameNS("*", name));
+}
+
+function readWorksheetRows(document: Document, shared: string[]) {
+  return elementsByLocalName(document, "row").map((row) => {
+    const values = new Map<number, string>();
+    for (const cellNode of elementsByLocalName(row, "c")) {
+      const ref = cellNode.getAttribute("r") ?? "A1";
+      const lettersOnly = ref.match(/[A-Z]+/)?.[0] ?? "A";
+      let column = 0;
+      for (const character of lettersOnly) column = column * 26 + character.charCodeAt(0) - 64;
+      const type = cellNode.getAttribute("t");
+      const raw = type === "inlineStr"
+        ? elementsByLocalName(cellNode, "is")[0]?.textContent ?? ""
+        : elementsByLocalName(cellNode, "v")[0]?.textContent ?? "";
+      values.set(column - 1, type === "s" ? shared[Number(raw)] ?? "" : raw);
+    }
+    return values;
+  });
+}
+
+function readSharedStrings(parser: DOMParser, sharedXml: string | null) {
+  if (!sharedXml) return [];
+  return elementsByLocalName(parser.parseFromString(sharedXml, "application/xml"), "si").map((node) => node.textContent ?? "");
+}
+
 export async function parseTableXlsx(file: File, requiredHeaders: string[]) {
   const buffer = await file.arrayBuffer();
   const worksheetXml = await unzipEntry(buffer, "xl/worksheets/sheet1.xml");
   if (!worksheetXml) throw new Error("В файле нет первого листа.");
   const sharedXml = await unzipEntry(buffer, "xl/sharedStrings.xml");
   const parser = new DOMParser();
-  const shared = sharedXml ? Array.from(parser.parseFromString(sharedXml, "application/xml").getElementsByTagName("si")).map((node) => node.textContent ?? "") : [];
+  const shared = readSharedStrings(parser, sharedXml);
   const document = parser.parseFromString(worksheetXml, "application/xml");
-  if (document.getElementsByTagName("parsererror").length) throw new Error("Не удалось прочитать структуру XLSX.");
-  const parsedRows = Array.from(document.getElementsByTagName("row")).map((row) => {
-    const values = new Map<number, string>();
-    for (const cellNode of Array.from(row.getElementsByTagName("c"))) {
-      const ref = cellNode.getAttribute("r") ?? "A1";
-      const lettersOnly = ref.match(/[A-Z]+/)?.[0] ?? "A";
-      let column = 0;
-      for (const character of lettersOnly) column = column * 26 + character.charCodeAt(0) - 64;
-      const type = cellNode.getAttribute("t");
-      const raw = type === "inlineStr" ? cellNode.getElementsByTagName("is")[0]?.textContent ?? "" : cellNode.getElementsByTagName("v")[0]?.textContent ?? "";
-      values.set(column - 1, type === "s" ? shared[Number(raw)] ?? "" : raw);
-    }
-    return values;
-  });
+  if (elementsByLocalName(document, "parsererror").length) throw new Error("Не удалось прочитать структуру XLSX.");
+  const parsedRows = readWorksheetRows(document, shared);
   const normalizedRequired = requiredHeaders.map(normalizeHeader);
   const headerIndex = parsedRows.findIndex((row) => normalizedRequired.every((header) => Array.from(row.values()).some((value) => normalizeHeader(value) === header)));
   if (headerIndex < 0) throw new Error(`Не найдены обязательные столбцы: ${requiredHeaders.join(", ")}.`);
@@ -224,22 +239,10 @@ export async function parsePlacementXlsx(file: File): Promise<PlacementImportRow
   if (!worksheetXml) throw new Error("В файле нет листа с расстановкой.");
   const sharedXml = await unzipEntry(buffer, "xl/sharedStrings.xml");
   const parser = new DOMParser();
-  const shared = sharedXml ? Array.from(parser.parseFromString(sharedXml, "application/xml").getElementsByTagName("si")).map((node) => node.textContent ?? "") : [];
+  const shared = readSharedStrings(parser, sharedXml);
   const document = parser.parseFromString(worksheetXml, "application/xml");
-  if (document.getElementsByTagName("parsererror").length) throw new Error("Не удалось прочитать структуру XLSX.");
-  const parsedRows = Array.from(document.getElementsByTagName("row")).map((row) => {
-    const values = new Map<number, string>();
-    for (const cellNode of Array.from(row.getElementsByTagName("c"))) {
-      const ref = cellNode.getAttribute("r") ?? "A1";
-      const lettersOnly = ref.match(/[A-Z]+/)?.[0] ?? "A";
-      let column = 0;
-      for (const character of lettersOnly) column = column * 26 + character.charCodeAt(0) - 64;
-      const type = cellNode.getAttribute("t");
-      const raw = type === "inlineStr" ? cellNode.getElementsByTagName("is")[0]?.textContent ?? "" : cellNode.getElementsByTagName("v")[0]?.textContent ?? "";
-      values.set(column - 1, type === "s" ? shared[Number(raw)] ?? "" : raw);
-    }
-    return values;
-  });
+  if (elementsByLocalName(document, "parsererror").length) throw new Error("Не удалось прочитать структуру XLSX.");
+  const parsedRows = readWorksheetRows(document, shared);
   const headerIndex = parsedRows.findIndex((row) => Array.from(row.values()).some((value) => normalizeHeader(value) === "фио"));
   if (headerIndex < 0) throw new Error("Не найдена строка заголовков. Используйте скачанный шаблон.");
   const headerMap = new Map<string, number>();

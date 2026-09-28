@@ -22,6 +22,27 @@
       "when": 1789999803911,
       "tag": "0002_organic_gamora",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790255234000,
+      "tag": "0003_role_access_levels",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1790256000000,
+      "tag": "0004_bitrix24_employee_sync",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790514000000,
+      "tag": "0005_bitrix24_action_cooldown",
+      "breakpoints": true
     }
   ]
 }

@@ -18,10 +18,10 @@ export async function POST(request: Request) {
     let userId: number;
     if (existing) {
       userId = existing.id;
-      await env.DB.prepare("UPDATE app_users SET full_name = ?, role = 'office', assigned_site_id = NULL, active = 1, password_hash = ?, password_salt = ?, password_iterations = ?, activated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      await env.DB.prepare("UPDATE app_users SET full_name = ?, role = 'superadmin', assigned_site_id = NULL, active = 1, password_hash = ?, password_salt = ?, password_iterations = ?, activated_at = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(fullName, password.hash, password.salt, password.iterations, userId).run();
     } else {
-      const result = await env.DB.prepare("INSERT INTO app_users (full_name, email, role, password_hash, password_salt, password_iterations, activated_at) VALUES (?, ?, 'office', ?, ?, ?, CURRENT_TIMESTAMP)")
+      const result = await env.DB.prepare("INSERT INTO app_users (full_name, email, role, password_hash, password_salt, password_iterations, activated_at) VALUES (?, ?, 'superadmin', ?, ?, ?, CURRENT_TIMESTAMP)")
         .bind(fullName, email, password.hash, password.salt, password.iterations).run();
       userId = Number(result.meta.last_row_id);
     }

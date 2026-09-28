@@ -1,0 +1,45 @@
+.localized-grid { display:flex; flex-direction:column; height:100%; min-height:0; }
+.localized-grid-body { position:relative; flex:1; min-height:0; outline:none; }
+.localized-grid-body .ag-cell.ag-excel-selected { background:#dbeafe!important; }
+.localized-grid-body .ag-cell.ag-excel-top { border-top:2px solid #3b82f6!important; }
+.localized-grid-body .ag-cell.ag-excel-right { border-right:2px solid #3b82f6!important; }
+.localized-grid-body .ag-cell.ag-excel-bottom { border-bottom:2px solid #3b82f6!important; }
+.localized-grid-body .ag-cell.ag-excel-left { border-left:2px solid #3b82f6!important; }
+.grid-filter-summary { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:9px 12px; border-bottom:1px solid #e4e4e7; background:#fffcf3; font-size:12px; color:#52525b; }
+.grid-filter-chips { display:flex; flex:1; flex-wrap:wrap; gap:6px; }
+.grid-filter-chips button { display:flex; align-items:center; gap:8px; max-width:300px; padding:5px 8px; border:1px solid #ecd39c; border-radius:6px; background:#fff4d8; color:#714600; text-align:left; font-size:11px; }
+.grid-filter-chips button > span:first-child { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.grid-filter-clear { padding:5px 0; border:0; background:transparent; color:#714600; font-size:12px; text-decoration:underline; text-underline-offset:3px; }
+/* Keep AG Grid's action panel outside the scrolling filter contents. The popup
+   is also constrained by the grid, which can be shorter than the viewport. */
+.ag-filter-menu:has(.personnel-filter) { display:flex; flex-direction:column; max-height:min(680px,calc(100dvh - 24px),100%); overflow:hidden; }
+.ag-filter-menu:has(.personnel-filter) > .ag-filter,
+.ag-filter-wrapper:has(.personnel-filter) { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow:hidden; }
+.ag-filter-wrapper:has(.personnel-filter) > .ag-react-container { flex:1 1 auto; min-height:0; overflow:auto; overscroll-behavior:contain; }
+.ag-filter-wrapper:has(.personnel-filter) > .ag-filter-apply-panel { flex:0 0 auto; flex-wrap:wrap; border-top:1px solid #e4e4e7; background:var(--ag-background-color,#fff); }
+.personnel-filter { width:min(348px,calc(100vw - 32px)); padding:14px; color:#27272a; font-size:12px; }
+.grid-filter-heading { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin-bottom:12px; }
+.grid-filter-heading strong { font-size:14px; }.grid-filter-heading > span { color:#71717a; font-size:10px; }
+.grid-filter-sort { display:flex; gap:6px; margin-bottom:12px; }
+.grid-filter-sort button { flex:1; padding:7px; border:1px solid #e4e4e7; border-radius:5px; background:#fafafa; font-size:12px; }
+.personnel-filter input:not([type=checkbox]),.personnel-filter select { width:100%; min-width:0; height:34px; padding:0 9px; border:1px solid #d4d4d8; border-radius:5px; background:white; color:#27272a; font-size:12px; }
+.personnel-filter input:focus-visible,.personnel-filter select:focus-visible,.personnel-filter button:focus-visible,.grid-filter-summary button:focus-visible { outline:2px solid #e7ac3b; outline-offset:2px; }
+.grid-filter-search { display:block; margin-bottom:7px; }
+.grid-filter-selection { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.grid-filter-selection > button { border:0; background:none; color:#8a5700; font-size:11px; white-space:nowrap; }
+.grid-value-option { height:34px; display:flex; align-items:center; gap:8px; padding:0 6px; cursor:pointer; }
+.grid-value-option:hover { background:#fff7e5; border-radius:4px; }
+.grid-value-option input { flex:0 0 auto; width:15px; height:15px; margin:0; accent-color:#bd800e; }
+.grid-value-option > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.grid-value-option small { margin-left:auto; color:#71717a; font-variant-numeric:tabular-nums; }
+.grid-filter-values { max-height:204px; overflow:auto; border:1px solid #e4e4e7; border-radius:5px; margin-top:4px; }
+.grid-filter-values > p { margin:0; padding:18px 8px; text-align:center; color:#71717a; }
+.grid-filter-only { width:100%; padding:7px; border:1px solid #ecd39c; border-radius:5px; background:#fff7e5; color:#714600; font-size:12px; margin:4px 0; }
+.grid-filter-conditions { border-top:1px solid #e4e4e7; margin-top:12px; padding-top:10px; }
+.grid-filter-condition-heading { display:flex; gap:8px; align-items:baseline; justify-content:space-between; margin-bottom:8px; }.grid-filter-condition-heading span { color:#71717a; font-size:10px; }
+.grid-filter-join { display:flex; align-items:center; gap:10px; margin-bottom:8px; }.grid-filter-join > .custom-select { flex:1; }
+.grid-filter-condition { display:grid; gap:6px; padding:8px; border:1px solid #e4e4e7; border-radius:6px; background:#fafafa; margin:6px 0; }
+.grid-filter-condition > div { display:flex; gap:6px; }.grid-filter-condition button { flex:0 0 28px; border:0; border-radius:4px; background:transparent; color:#71717a; font-size:19px; }
+.grid-filter-add { padding:6px 0; border:0; background:transparent; color:#8a5700; font-size:12px; }
+.personnel-filter .custom-select-toggle { height:34px; padding:0 30px 0 9px; border-radius:5px; font-size:12px; }.personnel-filter .custom-select-chevron { right:8px; width:14px; height:14px; }
+.grid-filter-preview,.grid-filter-validation { margin:9px 0 0; font-size:11px; color:#71717a; }.grid-filter-validation { color:#b45309; }

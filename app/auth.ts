@@ -1,10 +1,11 @@
 import { getDatabase } from "../db/client";
+import type { UserRole } from "./roles";
 
 export type AuthUser = {
   id: number;
   fullName: string;
   email: string;
-  role: "foreman" | "office";
+  role: UserRole;
   assignedSiteId: number | null;
 };
 
@@ -89,6 +90,11 @@ async function initializeAuthSchema() {
     )`),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_login_attempts_key_time ON login_attempts(attempt_key, created_at)"),
   ]);
+  await db.prepare("UPDATE app_users SET role = 'superadmin', assigned_site_id = NULL WHERE role = 'office'").run();
+}
+
+async function migrateLegacyRoles() {
+  await database().prepare("UPDATE app_users SET role = 'superadmin', assigned_site_id = NULL WHERE role = 'office'").run();
 }
 
 type AuthGlobals = typeof globalThis & {
@@ -99,7 +105,7 @@ export function ensureAuthSchema() {
   const globals = globalThis as AuthGlobals;
   if (!globals.personnelAuthSchemaPromise) {
     const schemaTask = process.env.NODE_ENV === "production" && process.env.DATABASE_RUNTIME_BOOTSTRAP !== "true"
-      ? Promise.resolve()
+      ? migrateLegacyRoles()
       : initializeAuthSchema();
     globals.personnelAuthSchemaPromise = schemaTask.catch((error) => {
       delete globals.personnelAuthSchemaPromise;
@@ -149,7 +155,7 @@ export async function getAuthUser(request: Request): Promise<AuthUser | null> {
   const token = cookieValue(request, SESSION_COOKIE);
   if (!token) return null;
   const tokenHash = await sha256(token);
-  const user = await database().prepare(`SELECT u.id, u.full_name AS fullName, u.email, u.role, u.assigned_site_id AS assignedSiteId
+  const user = await database().prepare(`SELECT u.id, u.full_name AS fullName, u.email, CASE WHEN u.role = 'office' THEN 'superadmin' ELSE u.role END AS role, u.assigned_site_id AS assignedSiteId
     FROM user_sessions s JOIN app_users u ON u.id = s.user_id
     WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > CURRENT_TIMESTAMP AND u.active = 1`)
     .bind(tokenHash).first<AuthUser>();
