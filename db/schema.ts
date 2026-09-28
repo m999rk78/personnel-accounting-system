@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, date, index, integer, pgTable, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { check, date, index, integer, pgTable, primaryKey, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 const auditTimestamp = (name: string) => timestamp(name, { withTimezone: true, mode: "string" });
 
@@ -210,4 +210,13 @@ export const placementEntries = pgTable("placement_entries", {
   index("idx_entries_active_site_date").on(table.siteId, table.workDate).where(sql`${table.deletedAt} IS NULL`),
   index("idx_entries_employee_date").on(table.employeeId, table.workDate),
   check("placement_hours_range", sql`${table.hours} BETWEEN 1 AND 10`),
+]);
+
+export const placementReportDays = pgTable("placement_report_days", {
+  siteId: integer("site_id").notNull().references(() => sites.id),
+  workDate: date("work_date", { mode: "string" }).notNull(),
+  submittedBy: integer("submitted_by").references(() => appUsers.id),
+  submittedAt: auditTimestamp("submitted_at").notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.siteId, table.workDate] }),
 ]);

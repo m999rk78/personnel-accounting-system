@@ -264,8 +264,10 @@ type PlacementGridProps = {
   canEdit: boolean;
   rosterMode?: boolean;
   pendingDeletes: number[];
+  selectedDraftKeys: string[];
   onEdit: (entry: GridEntry, changes?: Partial<GridDraftRow>) => void;
   onSelectionChange: (ids: number[]) => void;
+  onDraftSelectionChange: (keys: string[]) => void;
   onPatchDraft: (key: string, changes: Partial<GridDraftRow>) => void;
   onPatchEditing: (id: number, changes: Partial<GridDraftRow>) => void;
   onVisibleEntryIdsChange: (ids: number[]) => void;
@@ -365,7 +367,7 @@ function EmployeeCombobox({ value, employees, onChange }: { value: string; emplo
     {open && typeof document !== "undefined" && createPortal(<div id="employee-search-options" ref={menu} className="ag-employee-menu" role="listbox" style={position}>
       <div className="ag-employee-menu-caption">{query ? `Найдено: ${filtered.length}` : "Начните вводить имя или выберите сотрудника"}</div>
       <div className="ag-employee-options">
-        {filtered.map((employee, index) => <button key={employee.id} type="button" role="option" aria-selected={index === activeIndex} className={index === activeIndex ? "active" : ""} onMouseEnter={() => setActiveIndex(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => select(employee)}><strong>{employee.fullName}</strong><span>{employee.employmentType} · {employee.department} · {employee.position}</span></button>)}
+        {filtered.map((employee, index) => <button key={employee.id} type="button" role="option" aria-selected={index === activeIndex} className={index === activeIndex ? "active" : ""} onMouseEnter={() => setActiveIndex(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => select(employee)}><strong>{employee.fullName}</strong><span>{employee.employmentType} · {employee.department} · {employee.position}{employee.bitrix24Stage ? ` · ${employee.bitrix24Stage}` : ""}</span></button>)}
         {!filtered.length && <p>Сотрудники не найдены</p>}
       </div>
     </div>, document.body)}
@@ -376,6 +378,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
   const propsRef = useLatestRef(props);
   const gridApi = useRef<GridApi<PlacementRow> | null>(null);
   const selectedIdsKey = props.pendingDeletes.join("|");
+  const selectedDraftKeysKey = props.selectedDraftKeys.join("|");
   const editingStructureKey = props.editing.map((item) => item.id).join("|");
   const manualDraftCount = props.draftRows.filter((row) => !row.lockedEmployee).length;
   const previousManualDraftCount = useRef(manualDraftCount);
@@ -441,14 +444,18 @@ export function PlacementAgGrid(props: PlacementGridProps) {
 
   useEffect(() => {
     const selected = new Set(props.pendingDeletes);
+    const selectedDrafts = new Set(props.selectedDraftKeys);
     requestAnimationFrame(() => {
       const api = gridApi.current;
       if (!api || api.isDestroyed()) return;
-      api.forEachNode((node) => node.setSelected(Boolean(node.data?.entry && node.data.kind === "entry" && selected.has(node.data.entry.id))));
+      api.forEachNode((node) => node.setSelected(Boolean(
+        (node.data?.entry && selected.has(node.data.entry.id))
+        || (node.data?.draft && node.data.kind === "draft" && selectedDrafts.has(node.data.draft.key)),
+      )));
     });
-    // selectedIdsKey intentionally tracks changes without depending on a newly created array.
+    // String keys intentionally track changes without depending on newly created arrays.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedIdsKey]);
+  }, [selectedDraftKeysKey, selectedIdsKey]);
 
   const patchRow = useCallback((row: PlacementRow, changes: Partial<GridDraftRow>) => {
     if (row.kind === "edit" && row.entry) props.onPatchEditing(row.entry.id, changes);
@@ -549,7 +556,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
       "editable-row": (params) => params.data?.kind === "edit" || params.data?.kind === "draft",
       "carried-row": (params) => Boolean(params.data?.draft?.carriedFromPreviousDay),
     }}
-    rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.rosterMode && propsRef.current.canEdit && propsRef.current.draftRows.length === 0 && propsRef.current.editing.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.rosterMode && props.draftRows.length === 0 && props.editing.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.rosterMode && propsRef.current.canEdit && propsRef.current.draftRows.length === 0 && propsRef.current.editing.length === 0 && node.data?.kind === "entry" }}
+    rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.canEdit && (propsRef.current.rosterMode ? params.data?.kind === "draft" || Boolean(params.data?.entry) : propsRef.current.draftRows.length === 0 && propsRef.current.editing.length === 0 && params.data?.kind === "entry"), headerCheckbox: props.rosterMode ? props.canEdit : props.draftRows.length === 0 && props.editing.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.canEdit && (propsRef.current.rosterMode ? node.data?.kind === "draft" || Boolean(node.data?.entry) : propsRef.current.draftRows.length === 0 && propsRef.current.editing.length === 0 && node.data?.kind === "entry") }}
     selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }}
     onGridReady={(event: GridReadyEvent<PlacementRow>) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }}
     onGridSizeChanged={(event) => event.api.sizeColumnsToFit()}
@@ -557,7 +564,11 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     onModelUpdated={(event) => reportVisibleRows(event.api)}
     onFilterChanged={(event) => reportVisibleRows(event.api)}
     onSortChanged={(event) => reportVisibleRows(event.api)}
-    onSelectionChanged={(event) => propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.entry?.id ? [row.entry.id] : []))}
+    onSelectionChanged={(event) => {
+      const selected = event.api.getSelectedRows();
+      propsRef.current.onSelectionChange(selected.flatMap((row) => row.entry?.id ? [row.entry.id] : []));
+      propsRef.current.onDraftSelectionChange(selected.flatMap((row) => row.kind === "draft" && row.draft ? [row.draft.key] : []));
+    }}
     onRowDoubleClicked={(event) => { const row = event.data; if (!props.rosterMode && props.canEdit && props.draftRows.length === 0 && row?.kind === "entry" && row.entry && !props.pendingDeletes.includes(row.entry.id) && canOpenRowEditor(event.event)) props.onEdit(row.entry); }}
     onSpreadsheetPaste={pasteIntoRow}
     suppressCellFocus

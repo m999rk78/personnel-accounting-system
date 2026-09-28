@@ -43,6 +43,13 @@
       "when": 1790514000000,
       "tag": "0005_bitrix24_action_cooldown",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790593200000,
+      "tag": "0006_daily_report_submission",
+      "breakpoints": true
     }
   ]
 }

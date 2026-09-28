@@ -197,7 +197,7 @@ test("fills the quick date bar and shifts it five days at a time", async () => {
   assert.doesNotMatch(app, /className="archive-date"/);
   assert.match(app, /rangeStart=\$\{recentDates\[0\]\}&rangeEnd=\$\{reportRangeEnd\}/);
   assert.match(api, /function filledDatesStatement/);
-  assert.match(api, /SELECT DISTINCT work_date AS "workDate"/);
+  assert.match(api, /SELECT work_date AS "workDate" FROM placement_report_days[\s\S]*UNION[\s\S]*FROM placement_entries/);
   assert.match(api, /deleted_at IS NULL/);
   assert.match(styles, /\.quick-date\.filled/);
   assert.match(styles, /background:#ddefe2/);
@@ -448,26 +448,34 @@ test("keeps creation, selection, and editing as exclusive table modes", async ()
   }
 });
 
-test("builds today's report from the active Bitrix24 project roster", async () => {
+test("builds today's report from yesterday and allows any active directory employee", async () => {
   const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
   const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
 
   assert.match(app, /const useDailyRosterReport = true/);
-  assert.match(app, /function makeRosterDraft[\s\S]*roster: true, lockedEmployee: true/);
-  assert.match(app, /data\.placementEmployees[\s\S]*filter\(\(employee\) => !savedEmployeeIds\.has\(employee\.id\)\)/);
+  assert.match(app, /function buildRosterDraftRows[\s\S]*data\.reportEmployees/);
+  assert.doesNotMatch(app, /function buildRosterDraftRows[\s\S]*for \(const employee of data\.placementEmployees\)/);
   assert.match(app, /<RosterReportFooter completed=\{rosterCompleted\}/);
   assert.match(app, /Сохранить проверенный отчёт/);
-  assert.match(app, /Добавить дополнительную строку/);
+  assert.match(app, /Добавить сотрудника/);
+  assert.match(app, /Убрать из отчёта/);
   assert.match(app, /function makeCarriedDraft[\s\S]*carriedFromPreviousDay: true/);
-  assert.match(app, /function buildRosterDraftRows[\s\S]*previousByEmployee/);
+  assert.match(app, /function buildRosterDraftRows[\s\S]*firstRowByEmployee/);
   assert.match(app, /date=\$\{previousDate\}&scope=entries/);
   assert.match(app, /Данные перенесены с/);
+  assert.match(app, /finalizeReport: \{ siteId, workDate \}/);
   assert.match(grid, /draft\.lockedEmployee[\s\S]*ag-roster-employee/);
   assert.match(grid, /"carried-row"[\s\S]*carriedFromPreviousDay/);
+  assert.match(grid, /onDraftSelectionChange/);
   assert.match(grid, /if \(!props\.rosterMode\) return rows/);
+  assert.match(api, /function reportEmployeesStatement[\s\S]*WHERE active = 1/);
+  assert.match(api, /FROM employees WHERE id = \? AND active = 1/);
+  assert.doesNotMatch(api, /FROM employees e JOIN employee_project_assignments[^`]+availability_status = 'on_site'[^`]+async function validateBulkPayloads/);
+  assert.match(api, /CREATE TABLE IF NOT EXISTS placement_report_days/);
+  assert.match(api, /ON CONFLICT \(site_id, work_date\) DO UPDATE/);
   assert.match(api, /const placementCreates = Array\.isArray\(payload\.newEntries\)/);
-  assert.match(api, /validateBulkPayloads\(\[\.\.\.updates, \.\.\.placementCreates\], existing\.results\)/);
+  assert.match(api, /payloadRows\.length \? await validateBulkPayloads\(payloadRows, existing\.results\) : \[\]/);
   assert.match(api, /updatedCount, createdCount: createRows\.length/);
 });
 
