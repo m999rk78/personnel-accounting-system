@@ -28,7 +28,7 @@ type DataSet = {
   bitrix24Cooldowns?: Bitrix24Cooldowns;
 };
 type DraftRow = {
-  key: string; roster?: boolean; lockedEmployee?: boolean; employeeId: string; employeeQuery: string; shiftId: string; zoneId: string;
+  key: string; roster?: boolean; lockedEmployee?: boolean; carriedFromPreviousDay?: boolean; employeeId: string; employeeQuery: string; shiftId: string; zoneId: string;
   mainWorkTypeId: string; subworkTypeId: string; note: string; masterId: string; hours: string;
 };
 type View = "placement" | "employees" | "positions" | "projects" | "directories" | "settings" | "projectSettings" | "projectEmployees" | "users";
@@ -64,6 +64,42 @@ function makeEntryDraft(entry: Entry | GridEntry, lockedEmployee = false): Draft
 }
 function makeRosterDraft(employee: Employee): DraftRow {
   return makeDraft({ key: `roster-${employee.id}`, roster: true, lockedEmployee: true, employeeId: String(employee.id), employeeQuery: employee.fullName, hours: "" });
+}
+function makeCarriedDraft(employee: Employee, entry: Entry, data: DataSet, roster: boolean): DraftRow {
+  const available = (options: Option[], id: number) => options.some((option) => option.id === id) ? String(id) : "";
+  return makeDraft({
+    key: `previous-${employee.id}-${entry.id}`,
+    roster,
+    lockedEmployee: true,
+    carriedFromPreviousDay: true,
+    employeeId: String(employee.id),
+    employeeQuery: employee.fullName,
+    shiftId: available(data.shifts, entry.shiftId),
+    zoneId: available(data.zones, entry.zoneId),
+    mainWorkTypeId: available(data.mainWorkTypes, entry.mainWorkTypeId),
+    subworkTypeId: available(data.subworkTypes, entry.subworkTypeId),
+    masterId: available(data.masters, entry.masterId),
+    hours: String(entry.hours),
+    note: entry.note,
+  });
+}
+function buildRosterDraftRows(data: DataSet, previousEntries: Entry[]) {
+  const savedEmployeeIds = new Set(data.entries.map((entry) => entry.employeeId));
+  const previousByEmployee = new Map<number, Entry[]>();
+  for (const entry of previousEntries) previousByEmployee.set(entry.employeeId, [...(previousByEmployee.get(entry.employeeId) ?? []), entry]);
+  const rosterRows: DraftRow[] = [];
+  const additionalRows: DraftRow[] = [];
+  for (const employee of data.placementEmployees) {
+    if (savedEmployeeIds.has(employee.id)) continue;
+    const previous = previousByEmployee.get(employee.id) ?? [];
+    if (!previous.length) {
+      rosterRows.push(makeRosterDraft(employee));
+      continue;
+    }
+    rosterRows.push(makeCarriedDraft(employee, previous[0], data, true));
+    additionalRows.push(...previous.slice(1).map((entry) => makeCarriedDraft(employee, entry, data, false)));
+  }
+  return [...rosterRows, ...additionalRows];
 }
 function draftRowComplete(row: DraftRow) {
   return Boolean(row.employeeId && row.shiftId && row.zoneId && row.mainWorkTypeId && row.subworkTypeId && row.masterId && row.hours);
@@ -198,10 +234,10 @@ function RosterReportFooter({ completed, total, readyNew, incompleteTouched, tot
       <span className="roster-progress-percent">{percent}%</span>
     </div>
     <div className="employee-editing-bar roster-save-bar">
-      <div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>Рабочие поля доступны для заполнения прямо в таблице</span></div>
+      <div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>Проверьте перенесённые данные и исправьте только изменения за сегодня</span></div>
       <div className="employee-selection-actions">
-        <button type="button" className="employee-action-button cancel-editing-button" onClick={onReset} disabled={saving}>Сбросить несохранённое</button>
-        <button type="button" className="employee-action-button employee-save-button" onClick={onSave} disabled={saving}>{saving ? "Сохраняем…" : "Сохранить заполненные строки"}</button>
+        <button type="button" className="employee-action-button cancel-editing-button" onClick={onReset} disabled={saving}>Вернуть исходные данные</button>
+        <button type="button" className="employee-action-button employee-save-button" onClick={onSave} disabled={saving}>{saving ? "Сохраняем…" : "Сохранить проверенный отчёт"}</button>
       </div>
     </div>
     <div className="employee-footer-base">
@@ -333,6 +369,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const [data, setData] = useState<DataSet | null>(null);
   const [draftRows, setDraftRows] = useState<DraftRow[]>([]);
   const [editingRows, setEditingRows] = useState<{ id: number; row: DraftRow }[]>([]);
+  const [previousDayReport, setPreviousDayReport] = useState<{ key: string; date: string; entries: Entry[] } | null>(null);
   const [visibleEntryIds, setVisibleEntryIds] = useState<number[] | null>(null);
   const [pendingDeletes, setPendingDeletes] = useState<number[]>([]);
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
@@ -511,25 +548,53 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const rosterCompleted = (data?.placementEmployees ?? []).filter((employee) => completedRosterEmployeeIds.has(employee.id)).length;
   const rosterIncompleteTouched = draftRows.filter((row) => !draftRowComplete(row) && draftRowHasWorkInput(row)).length;
   const rosterReadyNew = draftRows.filter(draftRowComplete).length;
+  const rosterCopiedRows = draftRows.filter((row) => row.carriedFromPreviousDay).length;
+  const previousDayDate = moveDate(workDate, -1);
+  const rosterSessionKey = `${siteId}:${workDate}`;
+  const previousDayLoading = rosterMode && previousDayReport?.key !== rosterSessionKey;
 
   useEffect(() => {
-    if (!rosterMode || view !== "placement" || loading || !data || loadedWorkDate.current !== workDate) return;
-    const rosterSession = `${siteId}:${workDate}`;
+    if (!rosterMode || view !== "placement") return;
+    const controller = new AbortController();
+    const previousDate = moveDate(workDate, -1);
+    const key = `${siteId}:${workDate}`;
+    void fetch(`/api/data?siteId=${siteId}&date=${previousDate}&scope=entries&rangeStart=${previousDate}&rangeEnd=${previousDate}`, { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        if (response.status === 401) { window.location.replace("/login"); return null; }
+        const payload = await response.json() as Pick<DataSet, "entries"> & { error?: string };
+        if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить вчерашний отчёт.");
+        return payload.entries;
+      })
+      .then((entries) => { if (entries) setPreviousDayReport({ key, date: previousDate, entries }); })
+      .catch((carryError) => {
+        if (carryError instanceof DOMException && carryError.name === "AbortError") return;
+        setPreviousDayReport({ key, date: previousDate, entries: [] });
+        setError(carryError instanceof Error ? carryError.message : "Не удалось загрузить вчерашний отчёт.");
+      });
+    return () => controller.abort();
+  }, [rosterMode, siteId, view, workDate]);
+
+  useEffect(() => {
+    if (!rosterMode || view !== "placement" || loading || previousDayLoading || !data || loadedWorkDate.current !== workDate || previousDayReport?.key !== rosterSessionKey) return;
+    const rosterSession = rosterSessionKey;
     const preserveManualRows = initializedRosterSession.current === rosterSession;
     initializedRosterSession.current = rosterSession;
     const savedEmployeeIds = new Set(data.entries.map((entry) => entry.employeeId));
     setEditingRows(data.entries.map((entry) => ({ id: entry.id, row: makeEntryDraft(entry, true) })));
     setDraftRows((current) => {
+      const initialRows = buildRosterDraftRows(data, previousDayReport.entries);
+      if (!preserveManualRows) return initialRows;
+      const initialRoster = new Map(initialRows.filter((row) => row.roster).map((row) => [Number(row.employeeId), row]));
       const currentRoster = new Map(current.filter((row) => row.roster).map((row) => [Number(row.employeeId), row]));
       const manualRows = preserveManualRows ? current.filter((row) => !row.roster) : [];
       const rosterRows = data.placementEmployees
         .filter((employee) => !savedEmployeeIds.has(employee.id))
-        .map((employee) => currentRoster.get(employee.id) ?? makeRosterDraft(employee));
+        .map((employee) => currentRoster.get(employee.id) ?? initialRoster.get(employee.id) ?? makeRosterDraft(employee));
       return [...rosterRows, ...manualRows];
     });
     setPendingDeletes([]);
     setDeleteConfirmationOpen(false);
-  }, [data, loading, rosterMode, siteId, view, workDate]);
+  }, [data, loading, previousDayLoading, previousDayReport, rosterMode, rosterSessionKey, view, workDate]);
 
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -554,12 +619,12 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     } finally { setProfileSaving(false); }
   }
   function changeSite(nextSiteId: number) {
-    setSiteId(nextSiteId); setDraftRows([]); setEditingRows([]); setPendingDeletes([]); setDeleteConfirmationOpen(false);
+    setSiteId(nextSiteId); setDraftRows([]); setEditingRows([]); setPreviousDayReport(null); setPendingDeletes([]); setDeleteConfirmationOpen(false);
     setProjectEmployeeDrafts([]); setProjectEmployeePendingDeletes([]); setProjectEmployeeDeleteConfirmationOpen(false);
     setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false);
   }
   function changeWorkDate(nextDate: string) {
-    setWorkDate(nextDate); setDraftRows([]); setEditingRows([]); setPendingDeletes([]); setDeleteConfirmationOpen(false); setVisibleEntryIds(null);
+    setWorkDate(nextDate); setDraftRows([]); setEditingRows([]); setPreviousDayReport(null); setPendingDeletes([]); setDeleteConfirmationOpen(false); setVisibleEntryIds(null);
   }
   function changeReportRange(nextEnd: string) {
     setReportRangeEnd(nextEnd > initialToday ? initialToday : nextEnd);
@@ -608,9 +673,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }
   function cancelReportEditing() {
     if (rosterMode && data) {
-      const savedEmployeeIds = new Set(data.entries.map((entry) => entry.employeeId));
       setEditingRows(data.entries.map((entry) => ({ id: entry.id, row: makeEntryDraft(entry, true) })));
-      setDraftRows(data.placementEmployees.filter((employee) => !savedEmployeeIds.has(employee.id)).map(makeRosterDraft));
+      setDraftRows(buildRosterDraftRows(data, previousDayReport?.key === rosterSessionKey ? previousDayReport.entries : []));
     } else {
       setEditingRows([]);
       setDraftRows([]);
@@ -1421,6 +1485,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         {error && <div className="message error"><strong>Нужно проверить данные</strong><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
         {notice && <div className="message success"><strong>Готово</strong><span>{notice}</span><button onClick={() => setNotice("")}>×</button></div>}
         <section className="table-card personnel-table-card">
+          {rosterMode && <div className={previousDayLoading ? "roster-carryover-banner loading" : "roster-carryover-banner"}>
+            <span className="roster-carryover-icon" aria-hidden="true">↶</span>
+            <div><strong>{previousDayLoading ? "Подготавливаем сегодняшний отчёт" : filteredEntries.length ? `Сегодня уже сохранено строк: ${filteredEntries.length}` : previousDayReport?.entries.length ? `Данные перенесены с ${shortDate(previousDayReport.date)}` : `За ${shortDate(previousDayDate)} сохранённого отчёта нет`}</strong><span>{previousDayLoading ? "Загружаем данные предыдущего дня…" : filteredEntries.length ? rosterCopiedRows ? `Сохранённые строки загружены, ещё перенесено со вчера: ${rosterCopiedRows}.` : "Сохранённые строки можно проверить и изменить прямо в таблице." : previousDayReport?.entries.length ? `Перенесено строк: ${rosterCopiedRows}. Проверьте отличия сегодняшнего дня.` : "Сотрудники добавлены в список, рабочие поля нужно заполнить вручную."}</span></div>
+          </div>}
           <PlacementAgGrid
             entries={filteredEntries}
             draftRows={draftRows}
@@ -1431,7 +1499,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
             mainWorkTypes={data?.mainWorkTypes ?? []}
             subworkTypes={data?.subworkTypes ?? []}
             masters={data?.masters ?? []}
-            loading={loading}
+            loading={loading || (rosterMode && previousDayLoading)}
             canEdit={canEditDate}
             rosterMode={rosterMode}
             pendingDeletes={pendingDeletes}

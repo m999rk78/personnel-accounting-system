@@ -82,6 +82,7 @@ export type GridDraftRow = {
   key: string;
   roster?: boolean;
   lockedEmployee?: boolean;
+  carriedFromPreviousDay?: boolean;
   employeeId: string;
   employeeQuery: string;
   shiftId: string;
@@ -546,6 +547,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     noRowsOverlayComponent={() => <span className="ag-overlay-message">Записей пока нет</span>}
     rowClassRules={{
       "editable-row": (params) => params.data?.kind === "edit" || params.data?.kind === "draft",
+      "carried-row": (params) => Boolean(params.data?.draft?.carriedFromPreviousDay),
     }}
     rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.rosterMode && propsRef.current.canEdit && propsRef.current.draftRows.length === 0 && propsRef.current.editing.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.rosterMode && props.draftRows.length === 0 && props.editing.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.rosterMode && propsRef.current.canEdit && propsRef.current.draftRows.length === 0 && propsRef.current.editing.length === 0 && node.data?.kind === "entry" }}
     selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }}

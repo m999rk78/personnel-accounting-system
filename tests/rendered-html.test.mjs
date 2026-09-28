@@ -457,9 +457,14 @@ test("builds today's report from the active Bitrix24 project roster", async () =
   assert.match(app, /function makeRosterDraft[\s\S]*roster: true, lockedEmployee: true/);
   assert.match(app, /data\.placementEmployees[\s\S]*filter\(\(employee\) => !savedEmployeeIds\.has\(employee\.id\)\)/);
   assert.match(app, /<RosterReportFooter completed=\{rosterCompleted\}/);
-  assert.match(app, /Сохранить заполненные строки/);
+  assert.match(app, /Сохранить проверенный отчёт/);
   assert.match(app, /Добавить дополнительную строку/);
+  assert.match(app, /function makeCarriedDraft[\s\S]*carriedFromPreviousDay: true/);
+  assert.match(app, /function buildRosterDraftRows[\s\S]*previousByEmployee/);
+  assert.match(app, /date=\$\{previousDate\}&scope=entries/);
+  assert.match(app, /Данные перенесены с/);
   assert.match(grid, /draft\.lockedEmployee[\s\S]*ag-roster-employee/);
+  assert.match(grid, /"carried-row"[\s\S]*carriedFromPreviousDay/);
   assert.match(grid, /if \(!props\.rosterMode\) return rows/);
   assert.match(api, /const placementCreates = Array\.isArray\(payload\.newEntries\)/);
   assert.match(api, /validateBulkPayloads\(\[\.\.\.updates, \.\.\.placementCreates\], existing\.results\)/);
