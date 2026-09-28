@@ -176,9 +176,30 @@ OIDC-доступ ограничен репозиторием
 `m999rk78/personnel-accounting-system` и веткой `main`. Workflow также можно
 запустить вручную на странице GitHub Actions, выбрав ветку `main`.
 
-При изменении схемы базы миграцию по-прежнему нужно сначала безопасно применить
-к production PostgreSQL. Автоматически запускать миграции из каждого деплоя не
-следует, пока для них не реализована отдельная проверяемая стадия.
+Перед запуском сервера новая ревизия автоматически применяет только
+закоммиченные миграции из `drizzle-postgres`. Запуски сериализованы advisory
+lock в PostgreSQL, поэтому параллельные холодные старты не применяют одну
+миграцию одновременно. Если миграция завершается ошибкой, сервер новой ревизии
+не запускается.
+
+Для ручного запуска из среды с сетевым доступом к кластеру используйте команду,
+которая не импортирует локальные данные:
+
+```bash
+YC_POSTGRES_PASSWORD_SECRET_ID=<LOCKBOX_SECRET_ID> \
+  npm run db:yandex -- <MASTER_FQDN> migrate
+```
+
+Перед изменением справочников проверьте доступную резервную копию Managed
+PostgreSQL. Из среды с доступом к приватной сети также можно сохранить JSON-копию
+и сначала запустить сверку без `--apply`:
+
+```bash
+YC_POSTGRES_PASSWORD_SECRET_ID=<LOCKBOX_SECRET_ID> \
+  npm run db:yandex -- <MASTER_FQDN> backup backups/production-before-update.json
+YC_POSTGRES_PASSWORD_SECRET_ID=<LOCKBOX_SECRET_ID> \
+  npm run db:yandex -- <MASTER_FQDN> sync-positions position-catalog.json
+```
 
 ### Ручной резервный способ
 

@@ -15,7 +15,9 @@
     "db:migrate": "drizzle-kit migrate",
     "db:migrate-postgres": "node scripts/apply-postgres-migrations.mjs",
     "db:import-sqlite": "node --no-warnings=ExperimentalWarning scripts/import-sqlite-to-postgres.mjs",
-    "db:migrate-yandex": "node scripts/migrate-yandex.mjs"
+    "db:migrate-yandex": "node scripts/migrate-yandex.mjs",
+    "db:yandex": "node scripts/yandex-postgres.mjs",
+    "db:sync-positions": "node scripts/sync-position-catalog.mjs"
   },
   "dependencies": {
     "ag-grid-react": "^36.2.0",

@@ -34,14 +34,18 @@ async function main() {
     throw new Error("Не задана переменная DATABASE_URL или PGHOST.");
   }
 
-  const pool = new Pool({
+  const poolConfig = {
     ...(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : {}),
     ssl: sslConfiguration(),
     max: 1,
     connectionTimeoutMillis: 15_000,
-  });
+  };
+  const lockPool = new Pool(poolConfig);
+  const pool = new Pool(poolConfig);
+  const lockClient = await lockPool.connect();
 
   try {
+    await lockClient.query("SELECT pg_advisory_lock(hashtext('personnel-schema-migrations'))");
     const connection = await pool.query(
       "SELECT current_database() AS database, current_user AS username, inet_server_addr()::text AS server_address",
     );
@@ -57,7 +61,10 @@ async function main() {
     await migrate(drizzle(pool), { migrationsFolder: resolve("drizzle-postgres") });
     console.log("Миграции PostgreSQL успешно применены.");
   } finally {
+    await lockClient.query("SELECT pg_advisory_unlock(hashtext('personnel-schema-migrations'))").catch(() => undefined);
+    lockClient.release();
     await pool.end();
+    await lockPool.end();
   }
 }
 

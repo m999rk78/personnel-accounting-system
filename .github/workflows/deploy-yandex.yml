@@ -14,6 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  YC_CLOUD_ID: b1gdtjg8ebqlmjlq3jmq
   YC_FOLDER_ID: b1guq1t9j5u8drusn9k7
   YC_DEPLOY_SERVICE_ACCOUNT_ID: aje9fkqal3lq87v7simk
   YC_RUNTIME_SERVICE_ACCOUNT_ID: ajepd03985ohdkf99a0u

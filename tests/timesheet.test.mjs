@@ -6,6 +6,12 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   const api = await readFile(new URL("../app/api/timesheet/route.ts", import.meta.url), "utf8");
   const view = await readFile(new URL("../app/TimesheetView.tsx", import.meta.url), "utf8");
   const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const migration = await readFile(new URL("../drizzle-postgres/0007_timesheet_marks.sql", import.meta.url), "utf8");
+  const cleanupMigration = await readFile(new URL("../drizzle-postgres/0008_position_catalog_cleanup.sql", import.meta.url), "utf8");
+  const dockerfile = await readFile(new URL("../Dockerfile", import.meta.url), "utf8");
+  const startup = await readFile(new URL("../scripts/start-production.mjs", import.meta.url), "utf8");
+  const migrationRunner = await readFile(new URL("../scripts/apply-postgres-migrations.mjs", import.meta.url), "utf8");
+  const yandexPostgres = await readFile(new URL("../scripts/yandex-postgres.mjs", import.meta.url), "utf8");
 
   assert.match(api, /getAuthUser\(request\)/);
   assert.match(api, /authUser\.role === "foreman"/);
@@ -21,6 +27,26 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(api, /hours BETWEEN 1 AND 10/);
   assert.match(api, /marks: marksResult\.results/);
   assert.doesNotMatch(api, /availability_status = 'on_site'/);
+
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS "timesheet_marks"/);
+  assert.match(migration, /ALTER COLUMN "work_date" TYPE date/);
+  assert.match(migration, /timesheet_hours_range/);
+  assert.match(migration, /timesheet_value_required/);
+  assert.match(migration, /idx_timesheet_marks_unique_day/);
+
+  assert.match(cleanupMigration, /FROM "employees"/);
+  assert.match(cleanupMigration, /RAISE EXCEPTION/);
+  assert.match(cleanupMigration, /DELETE FROM "position_catalog"/);
+  assert.match(cleanupMigration, /'ОПР', 'УСР', 'Стропальщик'/);
+
+  assert.match(dockerfile, /CMD \["node", "scripts\/start-production\.mjs"\]/);
+  assert.match(dockerfile, /node_modules\/drizzle-orm/);
+  assert.match(startup, /apply-postgres-migrations\.mjs/);
+  assert.match(startup, /server\.js/);
+  assert.match(migrationRunner, /pg_advisory_lock/);
+  assert.match(migrationRunner, /pg_advisory_unlock/);
+  assert.match(yandexPostgres, /rc1b-p176vla5mhlldu1a\.mdb\.yandexcloud\.net/);
+  assert.match(yandexPostgres, /cloud-system-yums-personnel/);
 
   assert.match(view, /Табель учёта рабочего времени/);
   assert.match(view, /Расчётный месяц/);

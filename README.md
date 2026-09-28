@@ -140,8 +140,17 @@ BITRIX24_PROJECT_MAP={"123":"GPZ-U2","Объект 1":"GPZ-U2"}
 - `npm test` — сборка и тесты.
 - `npm run db:generate` — создать миграцию после изменения схемы.
 - `npm run db:migrate` — применить миграции к `DATABASE_URL`.
-- `npm run db:migrate-postgres` — безопасно применить миграции к production PostgreSQL
-  после проверки имени базы и пользователя.
+- `npm run db:migrate-postgres` — применить миграции PostgreSQL после проверки
+  имени базы и пользователя. Production-контейнер выполняет эту команду
+  автоматически перед запуском сервера.
+- `npm run db:yandex -- <FQDN> migrate` — вручную применить только миграции к
+  Yandex Managed PostgreSQL из среды с сетевым доступом к приватному кластеру.
+  Пароль можно получить из Lockbox через `YC_POSTGRES_PASSWORD_SECRET_ID`;
+  локальные данные эта команда не импортирует.
+- `npm run db:yandex -- <FQDN> backup <путь>` — сохранить проверяемую JSON-копию
+  production-базы перед изменением данных.
+- `npm run db:yandex -- <FQDN> sync-positions <catalog.json>` — предварительно
+  сравнить справочник должностей; добавьте `--apply` только после проверки отчёта.
 - `npm run db:import-sqlite` — один раз перенести текущие локальные данные D1/SQLite в пустой PostgreSQL.
 
 ## Развёртывание
