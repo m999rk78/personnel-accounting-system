@@ -21,6 +21,7 @@ env:
   YC_REGISTRY_ID: crpp7m2vo4ir2fb1a2q4
   YC_CONTAINER_NAME: personnel-accounting
   YC_NETWORK_ID: enpfooe5uic0dtedbpeb
+  YC_BITRIX24_SECRET_ID: e6qoh09odejpsccb1cl6
   IMAGE_REPOSITORY: personnel-accounting
 
 jobs:
@@ -117,6 +118,18 @@ jobs:
             PUBLIC_APP_ORIGIN=https://uchet-personala.ru
           revision-secrets: |
             PGPASSWORD=e6qh37vdil0md2uc0dhk/latest/postgresql_password
+            BITRIX24_WEBHOOK_URL=${{ env.YC_BITRIX24_SECRET_ID }}/latest/BITRIX24_WEBHOOK_URL
+            BITRIX24_EMPLOYEE_ENTITY_TYPE_ID=${{ env.YC_BITRIX24_SECRET_ID }}/latest/BITRIX24_EMPLOYEE_ENTITY_TYPE_ID
+            BITRIX24_EMPLOYEE_NAME_FIELD=${{ env.YC_BITRIX24_SECRET_ID }}/latest/BITRIX24_EMPLOYEE_NAME_FIELD
+            BITRIX24_EMPLOYEE_TYPE_FIELD=${{ env.YC_BITRIX24_SECRET_ID }}/latest/BITRIX24_EMPLOYEE_TYPE_FIELD
+            BITRIX24_EMPLOYEE_DEPARTMENT_FIELD=${{ env.YC_BITRIX24_SECRET_ID }}/latest/BITRIX24_EMPLOYEE_DEPARTMENT_FIELD
+            BITRIX24_EMPLOYEE_POSITION_FIELD=${{ env.YC_BITRIX24_SECRET_ID }}/latest/BITRIX24_EMPLOYEE_POSITION_FIELD
+            BITRIX24_EMPLOYEE_PROJECT_FIELD=${{ env.YC_BITRIX24_SECRET_ID }}/latest/BITRIX24_EMPLOYEE_PROJECT_FIELD
+            BITRIX24_INCLUDED_PROJECTS=${{ env.YC_BITRIX24_SECRET_ID }}/latest/BITRIX24_INCLUDED_PROJECTS
+            BITRIX24_INCLUDED_STAGES=${{ env.YC_BITRIX24_SECRET_ID }}/latest/BITRIX24_INCLUDED_STAGES
+            BITRIX24_PROJECT_MAP=${{ env.YC_BITRIX24_SECRET_ID }}/latest/BITRIX24_PROJECT_MAP
+            BITRIX24_STAGE_STATUS_MAP=${{ env.YC_BITRIX24_SECRET_ID }}/latest/BITRIX24_STAGE_STATUS_MAP
+            BITRIX24_SYNC_ENABLED=${{ env.YC_BITRIX24_SECRET_ID }}/latest/BITRIX24_SYNC_ENABLED
 
       - name: Check production site
         run: curl --fail --show-error --silent --retry 5 --retry-delay 5 --retry-all-errors https://uchet-personala.ru/login > /dev/null

@@ -10,7 +10,7 @@ import { ProjectCards } from "./ProjectCards";
 import { TimesheetView } from "./TimesheetView";
 import { UserAccessCards } from "./UserAccessCards";
 import { isGeneralSettingsView, isTimesheetView, parseWorkspaceLocation, workspaceUrl, type WorkspaceDirectoryFocus, type WorkspaceView } from "./appRoutes";
-import { ROLE_LABELS, canAccessGeneralSettings, canAccessTimesheets, canEditGlobalEmployees, canEditGlobalReferences, canEditProjectSettings, canManageBitrix24, canViewAllProjects, type UserRole } from "./roles";
+import { ROLE_LABELS, canAccessGeneralSettings, canAccessTimesheets, canEditGlobalEmployees, canEditGlobalReferences, canEditProjectSettings, canInspectBitrix24, canViewAllProjects, type UserRole } from "./roles";
 
 type Option = { id: number; name: string };
 type Site = Option & { code: string; timezone: string };
@@ -393,7 +393,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const mayAccessGeneralSettings = canAccessGeneralSettings(role);
   const mayEditGlobalReferences = canEditGlobalReferences(role);
   const mayEditProjectSettings = canEditProjectSettings(role);
-  const mayManageBitrix24 = canManageBitrix24(role);
+  const mayInspectBitrix24 = canInspectBitrix24(role);
   const mayViewAllProjects = canViewAllProjects(role);
   const mayAccessTimesheets = canAccessTimesheets(role);
   const [initialLocation] = useState(() => parseWorkspaceLocation(
@@ -493,7 +493,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     : "Сравнивает связанные карточки с Битрикс24 без изменения справочника.";
 
   useEffect(() => {
-    if (!mayManageBitrix24 || view !== "employees") return;
+    if (!mayInspectBitrix24 || view !== "employees") return;
     const refreshTimeout = window.setTimeout(() => setBitrix24Clock(Date.now()), 0);
     const interval = window.setInterval(() => setBitrix24Clock(Date.now()), 60_000);
     const deadlines = [data?.bitrix24Cooldowns?.inspect.nextAllowedAt]
@@ -502,7 +502,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       ? window.setTimeout(() => setBitrix24Clock(Date.now()), Math.min(...deadlines.map((deadline) => deadline - Date.now())) + 50)
       : undefined;
     return () => { window.clearTimeout(refreshTimeout); window.clearInterval(interval); if (timeout !== undefined) window.clearTimeout(timeout); };
-  }, [data?.bitrix24Cooldowns?.inspect.nextAllowedAt, mayManageBitrix24, view]);
+  }, [data?.bitrix24Cooldowns?.inspect.nextAllowedAt, mayInspectBitrix24, view]);
 
   useEffect(() => {
     const initialFocus = initialView === "directories" ? initialLocation.directoryFocus : "all";
@@ -1731,7 +1731,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       {view === "employees" && <section className="users-settings admin-section employee-section">
         <div className="settings-toolbar">
           <button type="button" className="back-button" onClick={() => { navigateTo("settings"); setBitrixCheckResult(null); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setEmployeePendingDeletes([]); setEmployeeDeleteConfirmationOpen(false); setEmployeeBulkEditOpen(false); }}>← К настройкам</button>
-          <div className="toolbar-actions">{mayManageBitrix24 && <span className="cooldown-button-wrapper" title={inspectBitrix24Title}><button type="button" className="bitrix-check-button" onClick={() => void inspectBitrix24Connection()} disabled={syncingBitrix24 || importing || inspectBitrix24Remaining > 0}>{syncingBitrix24 ? "Проверяем…" : "Проверить с Битрикс24"}</button></span>}<button type="button" onClick={exportEmployees}>Экспорт в Excel</button>{mayEditGlobalEmployees && <><button type="button" onClick={() => employeeFileInput.current?.click()} disabled={importing || syncingBitrix24}>Импорт из Excel</button><input ref={employeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importEmployees(file); }} /></>}</div>
+          <div className="toolbar-actions">{mayInspectBitrix24 && <span className="cooldown-button-wrapper" title={inspectBitrix24Title}><button type="button" className="bitrix-check-button" onClick={() => void inspectBitrix24Connection()} disabled={syncingBitrix24 || importing || inspectBitrix24Remaining > 0}>{syncingBitrix24 ? "Проверяем…" : "Проверить с Битрикс24"}</button></span>}<button type="button" onClick={exportEmployees}>Экспорт в Excel</button>{mayEditGlobalEmployees && <><button type="button" onClick={() => employeeFileInput.current?.click()} disabled={importing || syncingBitrix24}>Импорт из Excel</button><input ref={employeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importEmployees(file); }} /></>}</div>
         </div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}
         {notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}

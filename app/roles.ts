@@ -26,6 +26,10 @@ export function canManageBitrix24(role: UserRole) {
   return role === "superadmin";
 }
 
+export function canInspectBitrix24(role: UserRole) {
+  return role === "engineer" || role === "superadmin";
+}
+
 export function canEditProjectSettings(role: UserRole) {
   return role === "engineer" || role === "superadmin";
 }

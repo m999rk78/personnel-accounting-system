@@ -2,7 +2,7 @@ import { getDatabase } from "../../../db/client";
 import { assertSameOrigin, createInvitation, ensureAuthSchema, getAuthUser, sendInvitationEmail, type AuthUser } from "../../auth";
 import { bitrix24Cooldown, type Bitrix24Action, type Bitrix24Cooldowns } from "../../bitrix24Cooldown";
 import { compareBitrixEmployees, fetchBitrixEmployeeSnapshot, normalizeBitrixText, selectBitrixEmployeesForImport, type BitrixEmployeeSnapshot, type EmployeeAvailabilityStatus } from "../../bitrix24Sync";
-import { canEditGlobalEmployees, canEditGlobalReferences, canEditProjectSettings, canManageBitrix24, canViewAllProjects, isUserRole, type UserRole } from "../../roles";
+import { canEditGlobalEmployees, canEditGlobalReferences, canEditProjectSettings, canInspectBitrix24, canManageBitrix24, canViewAllProjects, isUserRole, type UserRole } from "../../roles";
 
 const env = { get DB() { return getDatabase(); } };
 type DatabaseExecutor = Pick<ReturnType<typeof getDatabase>, "prepare" | "batch" | "readBatch">;
@@ -599,7 +599,8 @@ function canManagePlacement(user: AuthUser, siteId: number | undefined, workDate
 function canRunAction(role: UserRole, payload: UserPayload) {
   const action = payload.action;
   if (!action) return true;
-  if (action === "inspect-bitrix24" || action === "sync-bitrix24") return canManageBitrix24(role);
+  if (action === "inspect-bitrix24") return canInspectBitrix24(role);
+  if (action === "sync-bitrix24") return canManageBitrix24(role);
   if (action === "create-employee" || action === "update-employee" || action === "import-employees") return canEditGlobalEmployees(role);
   if (action === "assign-employee-project" || action === "save-directory-items") return canEditProjectSettings(role);
   if (action === "create-directory" || action === "update-directory") {
@@ -1403,7 +1404,7 @@ export async function GET(request: Request) {
       timesheetMarks: timesheetMarks.results,
       users: canViewAllProjects(authUser.role) ? users.results : [],
       syncStatus: syncStatus.results[0] ?? null,
-      bitrix24Cooldowns: canManageBitrix24(authUser.role) ? mapBitrix24Cooldowns(bitrix24ActionLimits.results as Bitrix24ActionLimitRow[]) : undefined,
+      bitrix24Cooldowns: canInspectBitrix24(authUser.role) ? mapBitrix24Cooldowns(bitrix24ActionLimits.results as Bitrix24ActionLimitRow[]) : undefined,
     });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Не удалось загрузить данные." }, { status: 500 });
