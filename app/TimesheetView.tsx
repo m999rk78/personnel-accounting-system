@@ -294,7 +294,7 @@ function cellDetails(employee: TimesheetEmployee, entry: TimesheetEntry | undefi
   return details.join("\n");
 }
 
-export function TimesheetView({ siteId, initialMonth, today }: { siteId: number; initialMonth: string; today: string }) {
+export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { siteId: number; initialMonth: string; today: string; onMonthChange?: (month: string) => void }) {
   const [month, setMonth] = useState(initialMonth);
   const [payload, setPayload] = useState<TimesheetPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -320,6 +320,11 @@ export function TimesheetView({ siteId, initialMonth, today }: { siteId: number;
   const inlineEditorWorkDate = inlineEditor?.workDate;
   const inlineEditorSelectAll = inlineEditor?.selectAll ?? false;
   const currentMonth = today.slice(0, 7);
+
+  function changeMonth(nextMonth: string) {
+    setMonth(nextMonth);
+    onMonthChange?.(nextMonth);
+  }
 
   useEffect(() => {
     const task = window.setTimeout(() => setHeaderActionsTarget(document.getElementById("personnel-timesheet-actions")), 0);
@@ -729,9 +734,9 @@ export function TimesheetView({ siteId, initialMonth, today }: { siteId: number;
     </div>, headerActionsTarget)}
 
     <div className="equipment-timesheet-month-row personnel-timesheet-month-row"><div className="timesheet-month-control equipment-timesheet-month-control personnel-timesheet-month-control" aria-label="Выбор месяца">
-      <button type="button" onClick={() => setMonth((value) => shiftMonth(value, -1))} aria-label="Предыдущий месяц">‹</button>
-      <TimesheetMonthPicker value={month} current={currentMonth} onChange={setMonth} />
-      <button type="button" onClick={() => setMonth((value) => shiftMonth(value, 1))} aria-label="Следующий месяц">›</button>
+      <button type="button" onClick={() => changeMonth(shiftMonth(month, -1))} aria-label="Предыдущий месяц">‹</button>
+      <TimesheetMonthPicker value={month} current={currentMonth} onChange={changeMonth} />
+      <button type="button" onClick={() => changeMonth(shiftMonth(month, 1))} aria-label="Следующий месяц">›</button>
     </div></div>
 
     {error && <div className="timesheet-state timesheet-state-error"><strong>Не удалось открыть табель</strong><span>{error}</span><button type="button" onClick={() => setReloadKey((value) => value + 1)}>Повторить</button></div>}

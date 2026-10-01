@@ -9,6 +9,7 @@ import { EquipmentAccountingView } from "./EquipmentAccountingView";
 import { ProjectCards } from "./ProjectCards";
 import { TimesheetView } from "./TimesheetView";
 import { UserAccessCards } from "./UserAccessCards";
+import { isGeneralSettingsView, isTimesheetView, parseWorkspaceLocation, workspaceUrl, type WorkspaceDirectoryFocus, type WorkspaceView } from "./appRoutes";
 import { ROLE_LABELS, canAccessGeneralSettings, canAccessTimesheets, canEditGlobalEmployees, canEditGlobalReferences, canEditProjectSettings, canManageBitrix24, canViewAllProjects, type UserRole } from "./roles";
 
 type Option = { id: number; name: string };
@@ -55,14 +56,14 @@ type ReportDraftSession = {
   selectedRosterDraftKeys: string[];
   pendingDeletes: number[];
 };
-type View = "placement" | "equipment" | "timesheet" | "equipmentTimesheet" | "equipmentRegistry" | "projectEquipment" | "employees" | "positions" | "projects" | "directories" | "settings" | "projectSettings" | "projectEmployees" | "users";
+type View = WorkspaceView;
 type UserDraft = { key: string; id?: number; fullName: string; email: string; role: UserRole; assignedSiteId: string };
 type EmployeeDraft = { key: string; id?: number; fullName: string; employmentType: string; department: string; position: string; projectSiteId: string };
 type EmployeeBulkChanges = { employmentType: string; department: string; position: string; projectSiteId: string };
 type ProjectEmployeeDraft = { key: string; employeeId: string; employeeQuery: string };
 type PositionDraft = { key: string; id?: number; employmentType: string; department: string; position: string };
 type DirectoryEntity = "employmentType" | "department" | "position" | "shift" | "zone" | "mainWorkType" | "subworkType" | "master";
-type DirectoryFocus = "all" | "sites" | DirectoryEntity;
+type DirectoryFocus = WorkspaceDirectoryFocus;
 type DirectoryDraft = { key: string; id?: number; entity: DirectoryEntity; name: string; employeeId?: string };
 type SiteDraft = { key: string; id?: number; name: string; code: string; timezone: string };
 
@@ -395,14 +396,25 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const mayManageBitrix24 = canManageBitrix24(role);
   const mayViewAllProjects = canViewAllProjects(role);
   const mayAccessTimesheets = canAccessTimesheets(role);
+  const [initialLocation] = useState(() => parseWorkspaceLocation(
+    typeof window === "undefined" ? "/reports/workers" : window.location.pathname,
+    typeof window === "undefined" ? "" : window.location.search,
+    initialToday,
+  ));
+  const initialView = isGeneralSettingsView(initialLocation.view) && !mayAccessGeneralSettings
+    ? "projectSettings"
+    : isTimesheetView(initialLocation.view) && !mayAccessTimesheets
+      ? "placement"
+      : initialLocation.view;
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [reportsOpen, setReportsOpen] = useState(true);
   const [timesheetOpen, setTimesheetOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(true);
-  const [view, setView] = useState<View>("placement");
+  const [view, setView] = useState<View>(initialView);
   const [siteId, setSiteId] = useState(currentUser.assignedSiteId ?? 1);
-  const [workDate, setWorkDate] = useState(initialToday);
-  const [reportRangeEnd, setReportRangeEnd] = useState(initialToday);
+  const [workDate, setWorkDate] = useState(initialLocation.date);
+  const [reportRangeEnd, setReportRangeEnd] = useState(initialLocation.date);
+  const [selectedMonth, setSelectedMonth] = useState(initialLocation.month);
   const [data, setData] = useState<DataSet | null>(null);
   const [draftRows, setDraftRows] = useState<DraftRow[]>([]);
   const [editingRows, setEditingRows] = useState<{ id: number; row: DraftRow }[]>([]);
@@ -454,7 +466,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const [sitePendingDeletes, setSitePendingDeletes] = useState<number[]>([]);
   const [siteFullRowEditIds, setSiteFullRowEditIds] = useState<number[]>([]);
   const [siteDeleteConfirmationOpen, setSiteDeleteConfirmationOpen] = useState(false);
-  const [directoryFocus, setDirectoryFocus] = useState<DirectoryFocus>("all");
+  const [directoryFocus, setDirectoryFocus] = useState<DirectoryFocus>(initialView === "directories" ? initialLocation.directoryFocus : "all");
   const fileInput = useRef<HTMLInputElement>(null);
   const employeeFileInput = useRef<HTMLInputElement>(null);
   const positionFileInput = useRef<HTMLInputElement>(null);
@@ -491,6 +503,55 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       : undefined;
     return () => { window.clearTimeout(refreshTimeout); window.clearInterval(interval); if (timeout !== undefined) window.clearTimeout(timeout); };
   }, [data?.bitrix24Cooldowns?.inspect.nextAllowedAt, mayManageBitrix24, view]);
+
+  useEffect(() => {
+    const initialFocus = initialView === "directories" ? initialLocation.directoryFocus : "all";
+    const canonicalUrl = workspaceUrl(initialView, initialFocus, initialLocation.date, initialLocation.month);
+    if (!initialLocation.recognized || initialView !== initialLocation.view || `${window.location.pathname}${window.location.search}` !== canonicalUrl) {
+      window.history.replaceState({}, "", canonicalUrl);
+    }
+
+    const restoreLocation = () => {
+      const location = parseWorkspaceLocation(window.location.pathname, window.location.search, initialToday);
+      const nextView = isGeneralSettingsView(location.view) && !mayAccessGeneralSettings
+        ? "projectSettings"
+        : isTimesheetView(location.view) && !mayAccessTimesheets
+          ? "placement"
+          : location.view;
+      const nextFocus = nextView === "directories" ? location.directoryFocus : "all";
+      setSelectedMonth(location.month);
+      setDirectoryFocus(nextFocus);
+      setView(nextView);
+      setWorkDate(location.date);
+      setReportRangeEnd(location.date);
+      setError("");
+      setNotice("");
+    };
+
+    window.addEventListener("popstate", restoreLocation);
+    return () => window.removeEventListener("popstate", restoreLocation);
+  }, [initialLocation, initialToday, initialView, mayAccessGeneralSettings, mayAccessTimesheets]);
+
+  useEffect(() => {
+    const title = view === "placement" ? "Отчёт персонала"
+      : view === "equipment" ? "Отчёт техники"
+        : view === "timesheet" ? "Табель рабочих"
+          : view === "equipmentTimesheet" ? "Табель техники"
+            : view === "settings" ? "Общие настройки"
+              : view === "projectSettings" ? "Настройки проекта"
+                : view === "employees" ? "Сотрудники"
+                  : view === "equipmentRegistry" ? "Реестр техники"
+                    : view === "positions" ? "Список должностей"
+                      : view === "users" ? "Пользователи системы и права"
+                        : view === "projects" ? "Проекты"
+                          : view === "projectEmployees" ? "Сотрудники проекта"
+                            : view === "projectEquipment" ? "Техника проекта"
+                              : directoryFocus === "zone" ? "Зоны"
+                                : directoryFocus === "mainWorkType" ? "Виды работ"
+                                  : directoryFocus === "subworkType" ? "Виды подработ"
+                                    : "Мастера";
+    document.title = `${title} | Учёт персонала`;
+  }, [directoryFocus, view]);
   const loadData = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -697,10 +758,31 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     if (nextDate === workDate) return;
     rememberCurrentReportDraftSession();
     const session = takeReportDraftSession(siteId, nextDate);
+    setSelectedMonth(nextDate.slice(0, 7));
     setWorkDate(nextDate); setDraftRows(session?.draftRows ?? []); setEditingRows(session?.editingRows ?? []); setPreviousDayReport(null); setSelectedRosterDraftKeys(session?.selectedRosterDraftKeys ?? []); setPendingDeletes(session?.pendingDeletes ?? []); setDeleteConfirmationOpen(false); setVisibleEntryIds(null);
+    if (view === "placement" || view === "equipment") window.history.replaceState({}, "", workspaceUrl(view, directoryFocus, nextDate, nextDate.slice(0, 7)));
   }
   function changeReportRange(nextEnd: string) {
     setReportRangeEnd(nextEnd > initialToday ? initialToday : nextEnd);
+  }
+
+  function changeTimesheetMonth(nextMonth: string) {
+    setSelectedMonth(nextMonth);
+    if (view === "timesheet" || view === "equipmentTimesheet") window.history.replaceState({}, "", workspaceUrl(view, directoryFocus, workDate, nextMonth));
+  }
+
+  function navigateTo(nextView: View, nextDirectoryFocus: DirectoryFocus = "all") {
+    const allowedView = isGeneralSettingsView(nextView) && !mayAccessGeneralSettings
+      ? "projectSettings"
+      : isTimesheetView(nextView) && !mayAccessTimesheets
+        ? "placement"
+        : nextView;
+    const allowedFocus = allowedView === "directories" ? nextDirectoryFocus : "all";
+    const url = workspaceUrl(allowedView, allowedFocus, workDate, selectedMonth);
+    setDirectoryFocus(allowedFocus);
+    setView(allowedView);
+    if (`${window.location.pathname}${window.location.search}` !== url) window.history.pushState({}, "", url);
+    window.scrollTo({ top: 0, behavior: "auto" });
   }
 
   function patchDraft(key: string, changes: Partial<DraftRow>) {
@@ -1563,23 +1645,23 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={sidebarOpen ? "m14 7-5 5 5 5" : "m10 7 5 5-5 5"}/></svg>
     </button>
     <aside className="sidebar" id="primary-sidebar">
-      <div className="brand-project-row"><button type="button" className="brand" onClick={() => { setReportsOpen(true); setView("placement"); }} aria-label="Открыть отчёты" title="Открыть отчёты"><img src="/tps-logo.svg" alt="" /></button>{mayViewAllProjects ? <ProjectSwitcher sites={data?.sites ?? []} value={siteId} onChange={changeSite} /> : <div className="project-fixed-card top-project-select" title={activeSite?.name ?? "Объект"}>{activeSite?.name ?? "Объект"}</div>}</div>
+      <div className="brand-project-row"><button type="button" className="brand" onClick={() => { setReportsOpen(true); navigateTo("placement"); }} aria-label="Открыть отчёты" title="Открыть отчёты"><img src="/tps-logo.svg" alt="" /></button>{mayViewAllProjects ? <ProjectSwitcher sites={data?.sites ?? []} value={siteId} onChange={changeSite} /> : <div className="project-fixed-card top-project-select" title={activeSite?.name ?? "Объект"}>{activeSite?.name ?? "Объект"}</div>}</div>
       <div className="sidebar-product-title">Ресурсный отчёт</div>
       <nav aria-label="Основная навигация">
         <div className="nav-group">
           <button type="button" className="nav-heading" onClick={() => setReportsOpen((open) => !open)} aria-expanded={reportsOpen} aria-controls="reports-navigation" aria-label={reportsOpen ? "Свернуть раздел «Отчеты»" : "Развернуть раздел «Отчеты»"}><span className="nav-heading-icon"><AppIcon name="report" /></span><span>Отчеты</span><SidebarChevron open={reportsOpen} /></button>
-          {(reportsOpen || !sidebarOpen) && <div className="nav-sub" id="reports-navigation"><button className={view === "placement" ? "nav-item active" : "nav-item"} onClick={() => setView("placement")} aria-label="Рабочие" title="Рабочие"><span className="nav-item-icon"><AppIcon name="workersReport" /></span>Рабочие</button><button className={view === "equipment" ? "nav-item active" : "nav-item"} onClick={() => setView("equipment")} aria-label="Техника" title="Техника"><span className="nav-item-icon"><AppIcon name="equipmentReport" /></span>Техника</button></div>}
+          {(reportsOpen || !sidebarOpen) && <div className="nav-sub" id="reports-navigation"><button className={view === "placement" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("placement")} aria-label="Рабочие" title="Рабочие"><span className="nav-item-icon"><AppIcon name="workersReport" /></span>Рабочие</button><button className={view === "equipment" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("equipment")} aria-label="Техника" title="Техника"><span className="nav-item-icon"><AppIcon name="equipmentReport" /></span>Техника</button></div>}
         </div>
         {mayAccessTimesheets && <div className="nav-group">
           <button type="button" className="nav-heading" onClick={() => setTimesheetOpen((open) => !open)} aria-expanded={timesheetOpen} aria-controls="timesheet-navigation" aria-label={timesheetOpen ? "Свернуть раздел «Табели»" : "Развернуть раздел «Табели»"}><span className="nav-heading-icon"><AppIcon name="calendar" /></span><span>Табели</span><SidebarChevron open={timesheetOpen} /></button>
-          {(timesheetOpen || !sidebarOpen) && <div className="nav-sub" id="timesheet-navigation"><button className={view === "timesheet" ? "nav-item active" : "nav-item"} onClick={() => setView("timesheet")} aria-label="Табель рабочих" title="Табель рабочих"><span className="nav-item-icon"><AppIcon name="workersTimesheet" /></span>Рабочие</button><button className={view === "equipmentTimesheet" ? "nav-item active" : "nav-item"} onClick={() => setView("equipmentTimesheet")} aria-label="Табель техники" title="Табель техники"><span className="nav-item-icon"><AppIcon name="equipmentTimesheet" /></span>Техника</button></div>}
+          {(timesheetOpen || !sidebarOpen) && <div className="nav-sub" id="timesheet-navigation"><button className={view === "timesheet" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("timesheet")} aria-label="Табель рабочих" title="Табель рабочих"><span className="nav-item-icon"><AppIcon name="workersTimesheet" /></span>Рабочие</button><button className={view === "equipmentTimesheet" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("equipmentTimesheet")} aria-label="Табель техники" title="Табель техники"><span className="nav-item-icon"><AppIcon name="equipmentTimesheet" /></span>Техника</button></div>}
         </div>}
       </nav>
       <div className="sidebar-bottom"><div className="nav-group settings-group">
         <button type="button" className="nav-heading" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen} aria-controls="settings-navigation" aria-label={settingsOpen ? "Свернуть раздел «Настройки»" : "Развернуть раздел «Настройки»"}><span className="nav-heading-icon"><AppIcon name="settings" /></span><span>Настройки</span><SidebarChevron open={settingsOpen} /></button>
         {(settingsOpen || !sidebarOpen) && <div className="nav-sub" id="settings-navigation">
-          {mayAccessGeneralSettings && <button className={view === "settings" || view === "users" || view === "employees" || view === "positions" || view === "projects" || view === "equipmentRegistry" ? "nav-item active" : "nav-item"} onClick={() => { setView("settings"); setDirectoryFocus("all"); setUserDrafts([]); setUserFullRowEditIds([]); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setPositionDrafts([]); setPositionFullRowEditIds([]); setSiteDrafts([]); setSiteFullRowEditIds([]); }} aria-label="Общие настройки" title="Общие настройки"><span className="nav-item-icon"><AppIcon name="generalSettings" /></span>Общие</button>}
-          <button className={view === "projectSettings" || view === "projectEmployees" || view === "projectEquipment" || view === "directories" ? "nav-item active" : "nav-item"} onClick={() => { setView("projectSettings"); setDirectoryFocus("all"); setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false); setProjectEmployeeDrafts([]); }} aria-label="Настройки проекта" title="Настройки проекта"><span className="nav-item-icon"><AppIcon name="projectSettings" /></span>Настройки проекта</button>
+          {mayAccessGeneralSettings && <button className={view === "settings" || view === "users" || view === "employees" || view === "positions" || view === "projects" || view === "equipmentRegistry" ? "nav-item active" : "nav-item"} onClick={() => { navigateTo("settings"); setUserDrafts([]); setUserFullRowEditIds([]); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setPositionDrafts([]); setPositionFullRowEditIds([]); setSiteDrafts([]); setSiteFullRowEditIds([]); }} aria-label="Общие настройки" title="Общие настройки"><span className="nav-item-icon"><AppIcon name="generalSettings" /></span>Общие</button>}
+          <button className={view === "projectSettings" || view === "projectEmployees" || view === "projectEquipment" || view === "directories" ? "nav-item active" : "nav-item"} onClick={() => { navigateTo("projectSettings"); setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false); setProjectEmployeeDrafts([]); }} aria-label="Настройки проекта" title="Настройки проекта"><span className="nav-item-icon"><AppIcon name="projectSettings" /></span>Настройки проекта</button>
         </div>}
       </div>
         <div className="sidebar-user"><div><strong>{currentUser.fullName}</strong><small>{ROLE_LABELS[role]}</small></div><button className="profile-button" onClick={openProfile} title="Профиль" aria-label="Открыть профиль пользователя"><AppIcon name="user" /></button></div>
@@ -1626,21 +1708,21 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         </section>
       </>}
 
-      {mayAccessTimesheets && view === "timesheet" && <TimesheetView siteId={siteId} initialMonth={initialToday.slice(0, 7)} today={initialToday} />}
-      {view === "equipment" && <EquipmentAccountingView key={`equipment-report-${siteId}`} siteId={siteId} initialDate={initialToday} today={initialToday} mode="daily" />}
-      {mayAccessTimesheets && view === "equipmentTimesheet" && <EquipmentAccountingView key={`equipment-timesheet-${siteId}`} siteId={siteId} initialDate={initialToday} today={initialToday} mode="month" />}
+      {mayAccessTimesheets && view === "timesheet" && <TimesheetView siteId={siteId} initialMonth={selectedMonth} today={initialToday} onMonthChange={changeTimesheetMonth} />}
+      {view === "equipment" && <EquipmentAccountingView key={`equipment-report-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} mode="daily" onDateChange={changeWorkDate} />}
+      {mayAccessTimesheets && view === "equipmentTimesheet" && <EquipmentAccountingView key={`equipment-timesheet-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} mode="month" onMonthChange={changeTimesheetMonth} />}
 
       {deleteConfirmationOpen && <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setDeleteConfirmationOpen(false); }}><section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-confirmation-title"><h2 id="delete-confirmation-title">Удалить выбранные строки?</h2><p>Вы точно хотите удалить строки ({pendingDeletes.length})? Это действие нельзя отменить.</p><div><button type="button" className="secondary-button" onClick={() => setDeleteConfirmationOpen(false)} disabled={saving}>Отмена</button><button type="button" className="delete-rows-button" onClick={() => void deletePendingEntries()} disabled={saving}>{saving ? "Удаляем…" : "Удалить"}</button></div></section></div>}
 
-      {view === "equipmentRegistry" && mayAccessGeneralSettings && <section className="users-settings admin-section equipment-settings-section"><div className="settings-toolbar"><button type="button" className="back-button" onClick={() => setView("settings")}>← К общим настройкам</button><div className="toolbar-actions" id="equipment-registry-actions" /></div><EquipmentAccountingView key={`equipment-registry-${siteId}`} siteId={siteId} initialDate={initialToday} today={initialToday} mode="registry" /></section>}
-      {view === "projectEquipment" && <section className="users-settings admin-section equipment-settings-section"><div className="settings-toolbar"><button type="button" className="back-button" onClick={() => setView("projectSettings")}>← К настройкам проекта</button></div><EquipmentAccountingView key={`project-equipment-${siteId}`} siteId={siteId} initialDate={initialToday} today={initialToday} mode="project" /></section>}
+      {view === "equipmentRegistry" && mayAccessGeneralSettings && <section className="users-settings admin-section equipment-settings-section"><div className="settings-toolbar"><button type="button" className="back-button" onClick={() => navigateTo("settings")}>← К общим настройкам</button><div className="toolbar-actions" id="equipment-registry-actions" /></div><EquipmentAccountingView key={`equipment-registry-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} mode="registry" /></section>}
+      {view === "projectEquipment" && <section className="users-settings admin-section equipment-settings-section"><div className="settings-toolbar"><button type="button" className="back-button" onClick={() => navigateTo("projectSettings")}>← К настройкам проекта</button></div><EquipmentAccountingView key={`project-equipment-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} mode="project" /></section>}
 
-      {view === "settings" && <section className="settings-home general-settings-home"><p className="settings-scope-description">Общие данные используются во всей системе и не зависят от выбранного проекта.</p><div className="settings-list">{generalSettingsCards.map((card) => <button type="button" className="settings-list-item" key={card.title} onClick={() => { setError(""); setNotice(""); setUserDrafts([]); setUserFullRowEditIds([]); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setPositionDrafts([]); setPositionFullRowEditIds([]); setDirectoryDrafts([]); setSiteDrafts([]); setSiteFullRowEditIds([]); setInvitationResults([]); setEmployeePendingDeletes([]); setPositionPendingDeletes([]); setUserPendingDeletes([]); setSitePendingDeletes([]); setEmployeeDeleteConfirmationOpen(false); setEmployeeBulkEditOpen(false); setPositionDeleteConfirmationOpen(false); setUserDeleteConfirmationOpen(false); setSiteDeleteConfirmationOpen(false); if (card.focus) { setDirectoryFocus(card.focus); setView("directories"); } else if (card.view) setView(card.view); }}><span className="settings-card-icon">{card.icon}</span><span className="settings-row-copy"><strong>{card.title}</strong><span>{card.description}</span></span><span className="settings-list-arrow" aria-hidden="true">›</span></button>)}</div></section>}
+      {view === "settings" && <section className="settings-home general-settings-home"><p className="settings-scope-description">Общие данные используются во всей системе и не зависят от выбранного проекта.</p><div className="settings-list">{generalSettingsCards.map((card) => <button type="button" className="settings-list-item" key={card.title} onClick={() => { setError(""); setNotice(""); setUserDrafts([]); setUserFullRowEditIds([]); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setPositionDrafts([]); setPositionFullRowEditIds([]); setDirectoryDrafts([]); setSiteDrafts([]); setSiteFullRowEditIds([]); setInvitationResults([]); setEmployeePendingDeletes([]); setPositionPendingDeletes([]); setUserPendingDeletes([]); setSitePendingDeletes([]); setEmployeeDeleteConfirmationOpen(false); setEmployeeBulkEditOpen(false); setPositionDeleteConfirmationOpen(false); setUserDeleteConfirmationOpen(false); setSiteDeleteConfirmationOpen(false); if (card.focus) navigateTo("directories", card.focus); else if (card.view) navigateTo(card.view); }}><span className="settings-card-icon">{card.icon}</span><span className="settings-row-copy"><strong>{card.title}</strong><span>{card.description}</span></span><span className="settings-list-arrow" aria-hidden="true">›</span></button>)}</div></section>}
       {view === "projectSettings" && <section className="settings-home">
-        <div className="settings-grid">{projectSettingsCards.map((card) => <button type="button" key={card.title} onClick={() => { setError(""); setNotice(""); setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false); setProjectEmployeeDrafts([]); if (card.focus) { setDirectoryFocus(card.focus); setView("directories"); } else if (card.view) setView(card.view); }}><span className="settings-card-icon">{card.icon}</span><strong>{card.title}</strong><p>{card.description}</p></button>)}</div>
+        <div className="settings-grid">{projectSettingsCards.map((card) => <button type="button" key={card.title} onClick={() => { setError(""); setNotice(""); setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false); setProjectEmployeeDrafts([]); if (card.focus) navigateTo("directories", card.focus); else if (card.view) navigateTo(card.view); }}><span className="settings-card-icon">{card.icon}</span><strong>{card.title}</strong><p>{card.description}</p></button>)}</div>
       </section>}
       {view === "projectEmployees" && <section className="users-settings admin-section reference-section">
-        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { setView("projectSettings"); setProjectEmployeeDrafts([]); setProjectEmployeePendingDeletes([]); setProjectEmployeeDeleteConfirmationOpen(false); }}>← К настройкам проекта</button><div className="toolbar-actions"><button type="button" onClick={exportProjectEmployees}>Экспорт в Excel</button>{mayEditProjectSettings && <><button type="button" onClick={downloadProjectEmployeeTemplate}>Скачать шаблон</button><button type="button" onClick={() => projectEmployeeFileInput.current?.click()} disabled={importing}>Импорт из Excel</button><input ref={projectEmployeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProjectEmployees(file); }} /></>}</div></div>
+        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("projectSettings"); setProjectEmployeeDrafts([]); setProjectEmployeePendingDeletes([]); setProjectEmployeeDeleteConfirmationOpen(false); }}>← К настройкам проекта</button><div className="toolbar-actions"><button type="button" onClick={exportProjectEmployees}>Экспорт в Excel</button>{mayEditProjectSettings && <><button type="button" onClick={downloadProjectEmployeeTemplate}>Скачать шаблон</button><button type="button" onClick={() => projectEmployeeFileInput.current?.click()} disabled={importing}>Импорт из Excel</button><input ref={projectEmployeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProjectEmployees(file); }} /></>}</div></div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
         <ProjectEmployeeAgGrid rows={visibleProjectEmployees} allEmployees={data?.employees ?? []} drafts={projectEmployeeDrafts} pendingDeletes={projectEmployeePendingDeletes} readOnly={!mayEditProjectSettings} onPatchDraft={patchProjectEmployeeDraft} onSelectionChange={(ids) => { setProjectEmployeePendingDeletes(ids); setError(""); setNotice(""); }} />
         {mayEditProjectSettings && <AdminGridFooter addLabel="Добавить сотрудника в проект" countLabel="Всего в проекте" count={visibleProjectEmployees.length} deletingCount={projectEmployeePendingDeletes.length} deletingLabel="Убрать из проекта" uniformActions editorOpen={Boolean(projectEmployeeDrafts.length)} pendingCount={projectEmployeeDrafts.length} saving={saving} allowMultiple onAdd={() => { setProjectEmployeeDrafts((current) => [...current, { key: newKey(), employeeId: "", employeeQuery: "" }]); setNotice(""); }} onDelete={() => setProjectEmployeeDeleteConfirmationOpen(true)} onClearSelection={() => { setProjectEmployeePendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={() => { setProjectEmployeeDrafts([]); setError(""); setNotice(""); }} onSave={() => void assignProjectEmployees()} />}
@@ -1648,7 +1730,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       {mayEditProjectSettings && projectEmployeeDeleteConfirmationOpen && <AdminDeleteConfirmation title="Убрать выбранных сотрудников из проекта?" text={`Сотрудники (${projectEmployeePendingDeletes.length}) исчезнут только из проекта «${activeSite?.name ?? ""}». Их общие карточки и история отчётов сохранятся.`} saving={saving} onCancel={() => setProjectEmployeeDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingProjectEmployees()} />}
       {view === "employees" && <section className="users-settings admin-section employee-section">
         <div className="settings-toolbar">
-          <button type="button" className="back-button" onClick={() => { setView("settings"); setBitrixCheckResult(null); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setEmployeePendingDeletes([]); setEmployeeDeleteConfirmationOpen(false); setEmployeeBulkEditOpen(false); }}>← К настройкам</button>
+          <button type="button" className="back-button" onClick={() => { navigateTo("settings"); setBitrixCheckResult(null); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setEmployeePendingDeletes([]); setEmployeeDeleteConfirmationOpen(false); setEmployeeBulkEditOpen(false); }}>← К настройкам</button>
           <div className="toolbar-actions">{mayManageBitrix24 && <span className="cooldown-button-wrapper" title={inspectBitrix24Title}><button type="button" className="bitrix-check-button" onClick={() => void inspectBitrix24Connection()} disabled={syncingBitrix24 || importing || inspectBitrix24Remaining > 0}>{syncingBitrix24 ? "Проверяем…" : "Проверить с Битрикс24"}</button></span>}<button type="button" onClick={exportEmployees}>Экспорт в Excel</button>{mayEditGlobalEmployees && <><button type="button" onClick={() => employeeFileInput.current?.click()} disabled={importing || syncingBitrix24}>Импорт из Excel</button><input ref={employeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importEmployees(file); }} /></>}</div>
         </div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}
@@ -1699,7 +1781,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
 
       {employeeDeleteConfirmationOpen && <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setEmployeeDeleteConfirmationOpen(false); }}><section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="employee-delete-confirmation-title"><h2 id="employee-delete-confirmation-title">Удалить выбранных сотрудников?</h2><p>Вы точно хотите удалить сотрудников ({employeePendingDeletes.length})? Они исчезнут из активного справочника и проектов, но история ранее созданных отчётов сохранится.</p><div><button type="button" className="secondary-button" onClick={() => setEmployeeDeleteConfirmationOpen(false)} disabled={saving}>Отмена</button><button type="button" className="delete-rows-button" onClick={() => void deletePendingEmployees()} disabled={saving}>{saving ? "Удаляем…" : "Удалить"}</button></div></section></div>}
       {view === "positions" && <section className="users-settings admin-section reference-section">
-        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { setView("settings"); setPositionDrafts([]); setPositionFullRowEditIds([]); setPositionPendingDeletes([]); setPositionDeleteConfirmationOpen(false); }}>← К настройкам</button><div className="toolbar-actions"><button type="button" onClick={exportPositions}>Экспорт в Excel</button>{mayEditGlobalReferences && <><button type="button" onClick={() => positionFileInput.current?.click()} disabled={importing}>Импорт из Excel</button><input ref={positionFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importPositions(file); }} /></>}</div></div>
+        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("settings"); setPositionDrafts([]); setPositionFullRowEditIds([]); setPositionPendingDeletes([]); setPositionDeleteConfirmationOpen(false); }}>← К настройкам</button><div className="toolbar-actions"><button type="button" onClick={exportPositions}>Экспорт в Excel</button>{mayEditGlobalReferences && <><button type="button" onClick={() => positionFileInput.current?.click()} disabled={importing}>Импорт из Excel</button><input ref={positionFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importPositions(file); }} /></>}</div></div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
         <PositionAgGrid rows={visiblePositions} drafts={positionDrafts} employmentTypes={data?.employmentTypes ?? []} departments={data?.departments ?? []} pendingDeletes={positionPendingDeletes} fullRowEditIds={positionFullRowEditIds} readOnly={!mayEditGlobalReferences} onEdit={editPositionRow} onSelectionChange={(ids) => { setPositionPendingDeletes(ids); setPositionDrafts((current) => current.filter((draft) => !draft.id || !ids.includes(draft.id))); setPositionFullRowEditIds((current) => current.filter((id) => !ids.includes(id))); setNotice(""); }} onPatchDraft={patchPositionDraft} onVisibleIdsChange={(ids) => setPositionVisibleIds((current) => current?.length === ids.length && current.every((id, index) => id === ids[index]) ? current : ids)} />
         {mayEditGlobalReferences && <AdminGridFooter addLabel="Добавить должность" countLabel="Всего должностей" count={visiblePositions.length} deletingCount={positionPendingDeletes.length} deletingLabel="Удалить должности" editSelectionLabel="Редактировать" uniformActions editorOpen={Boolean(positionDrafts.length)} editingExisting={positionDrafts.some((draft) => Boolean(draft.id))} pendingCount={positionDrafts.length} saving={saving} allowMultiple onAdd={() => { setPositionDrafts((current) => current.some((draft) => draft.id) ? current : [...current, { key: newKey(), employmentType: "", department: "", position: "" }]); setNotice(""); }} onDelete={() => setPositionDeleteConfirmationOpen(true)} onEditSelection={editSelectedPositionRows} onClearSelection={() => { setPositionPendingDeletes([]); setNotice(""); }} onCancelEditing={cancelPositionEditing} onSave={() => void savePositions()} />}
@@ -1707,7 +1789,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       {mayEditGlobalReferences && positionDeleteConfirmationOpen && <AdminDeleteConfirmation title="Удалить выбранные должности?" text={`Вы точно хотите удалить должности (${positionPendingDeletes.length})? Используемые сотрудниками должности удалить нельзя.`} saving={saving} onCancel={() => setPositionDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingPositions()} />}
 
       {view === "projects" && <section className="users-settings admin-section reference-section project-cards-section">
-        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { setView("settings"); setSiteDrafts([]); setSiteFullRowEditIds([]); setSitePendingDeletes([]); setSiteDeleteConfirmationOpen(false); }}>← К настройкам</button></div>
+        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("settings"); setSiteDrafts([]); setSiteFullRowEditIds([]); setSitePendingDeletes([]); setSiteDeleteConfirmationOpen(false); }}>← К настройкам</button></div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
         {useProjectCardLayout
           ? <ProjectCards rows={visibleSites} drafts={siteDrafts} employees={data?.employees ?? []} users={data?.users ?? []} currentSiteId={siteId} selectedIds={sitePendingDeletes} readOnly={!mayEditGlobalReferences} onEdit={editSiteRow} onSelectionChange={changeSiteSelection} onPatchDraft={patchSiteDraft} onCancelEditing={cancelSiteEditing} onSave={() => void saveSites()} saving={saving} />
@@ -1717,7 +1799,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       {mayEditGlobalReferences && siteDeleteConfirmationOpen && <AdminDeleteConfirmation title="Удалить выбранные проекты?" text={`Вы точно хотите удалить проекты (${sitePendingDeletes.length})? Проекты со связанными сотрудниками, пользователями или отчётами удалить нельзя.`} saving={saving} onCancel={() => setSiteDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingSites()} />}
 
       {view === "users" && <section className="users-settings admin-section reference-section user-access-section">
-        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { setView("settings"); setUserDrafts([]); setUserFullRowEditIds([]); setUserPendingDeletes([]); setUserDeleteConfirmationOpen(false); setInvitationResults([]); }}>← К настройкам</button></div>
+        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("settings"); setUserDrafts([]); setUserFullRowEditIds([]); setUserPendingDeletes([]); setUserDeleteConfirmationOpen(false); setInvitationResults([]); }}>← К настройкам</button></div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
         {invitationResults.map((invitation) => <div className="invitation-result" key={invitation.email}><strong>Приглашение для {invitation.email}</strong><span>Передайте эту ссылку пользователю. После настройки почты она будет отправляться автоматически.</span><a href={invitation.url}>{invitation.url}</a></div>)}
         {useUserAccessCardLayout
@@ -1727,7 +1809,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       </section>}
       {mayEditGlobalReferences && userDeleteConfirmationOpen && <AdminDeleteConfirmation title="Удалить выбранных пользователей?" text={`Вы точно хотите удалить пользователей (${userPendingDeletes.length})? Это действие нельзя отменить.`} saving={saving} onCancel={() => setUserDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingUsers()} />}
       {view === "directories" && activeDirectoryGroup && <section className="users-settings admin-section reference-section">
-        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { setView("projectSettings"); setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false); }}>← К настройкам проекта</button><div className="toolbar-actions"><button type="button" onClick={exportProjectDirectory}>Экспорт в Excel</button>{mayEditProjectSettings && <><button type="button" onClick={downloadProjectDirectoryTemplate}>Скачать шаблон</button><button type="button" onClick={() => projectDirectoryFileInput.current?.click()} disabled={importing}>Импорт из Excel</button><input ref={projectDirectoryFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProjectDirectory(file); }} /></>}</div></div>
+        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("projectSettings"); setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false); }}>← К настройкам проекта</button><div className="toolbar-actions"><button type="button" onClick={exportProjectDirectory}>Экспорт в Excel</button>{mayEditProjectSettings && <><button type="button" onClick={downloadProjectDirectoryTemplate}>Скачать шаблон</button><button type="button" onClick={() => projectDirectoryFileInput.current?.click()} disabled={importing}>Импорт из Excel</button><input ref={projectDirectoryFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProjectDirectory(file); }} /></>}</div></div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
         <DirectoryAgGrid title={focusedDirectoryTitle} rows={visibleDirectoryItems} drafts={directoryDrafts} employees={data?.placementEmployees ?? []} selectEmployee={activeDirectoryGroup.entity === "master"} pendingDeletes={directoryPendingDeletes} readOnly={!mayEditProjectSettings} onEdit={editDirectoryItem} onSelectionChange={changeDirectorySelection} onPatchDraft={patchDirectoryDraft} />
         {mayEditProjectSettings && <AdminGridFooter addLabel={`Добавить: ${focusedDirectoryTitle.toLocaleLowerCase("ru-RU")}`} countLabel="Всего" count={visibleDirectoryItems.length} deletingCount={directoryPendingDeletes.length} deletingLabel="Удалить" editSelectionLabel="Редактировать" uniformActions editorOpen={Boolean(directoryDrafts.length)} editingExisting={directoryDrafts.some((draft) => Boolean(draft.id))} pendingCount={directoryDrafts.length} saving={saving} allowMultiple onAdd={addDirectoryItem} onDelete={() => setDirectoryDeleteConfirmationOpen(true)} onEditSelection={editSelectedDirectoryItems} onClearSelection={() => { setDirectoryPendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={cancelDirectoryEditing} onSave={() => void saveDirectoryItems()} />}

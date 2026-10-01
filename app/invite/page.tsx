@@ -2,6 +2,7 @@
 /* eslint-disable @next/next/no-img-element -- используется оригинальный SVG-логотип */
 
 import { FormEvent, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 
 type InvitedUser = { fullName: string; email: string };
 
@@ -51,6 +52,6 @@ export default function InvitationPage() {
       <label><span>Повторите пароль</span><input type="password" autoComplete="new-password" value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} minLength={10} maxLength={128} required /></label>
       {error && <div className="auth-error" role="alert">{error}</div>}
       <button className="auth-submit" type="submit" disabled={saving}>{saving ? "Создаём пароль…" : "Создать пароль и войти"}</button>
-    </form> : <><div className="auth-error" role="alert">{error}</div><a className="auth-link" href="/login">Перейти ко входу</a></>}
+    </form> : <><div className="auth-error" role="alert">{error}</div><Link className="auth-link" href="/login">Перейти ко входу</Link></>}
   </section></main>;
 }

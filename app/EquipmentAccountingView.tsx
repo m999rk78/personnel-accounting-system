@@ -388,11 +388,11 @@ function emptyEntry(payload: EquipmentPayload | null): EntryDraft {
 
 const emptyUnit = (): UnitDraft => ({ key: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `equipment-unit-${Date.now()}-${Math.random()}`, organization: "", equipmentType: "", brand: "", model: "", registrationNumber: "", note: "", projectSiteId: "" });
 
-export function EquipmentAccountingView({ siteId, initialDate, today, mode }: { siteId: number; initialDate: string; today: string; mode: EquipmentSection }) {
+export function EquipmentAccountingView({ siteId, initialDate, initialMonth, today, mode, onDateChange, onMonthChange }: { siteId: number; initialDate: string; initialMonth?: string; today: string; mode: EquipmentSection; onDateChange?: (date: string) => void; onMonthChange?: (month: string) => void }) {
   const section = mode;
   const [workDate, setWorkDate] = useState(initialDate);
   const [reportRangeEnd, setReportRangeEnd] = useState(initialDate);
-  const [month, setMonth] = useState(initialDate.slice(0, 7));
+  const [month, setMonth] = useState(initialMonth ?? initialDate.slice(0, 7));
   const [payload, setPayload] = useState<EquipmentPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -551,6 +551,7 @@ export function EquipmentAccountingView({ siteId, initialDate, today, mode }: { 
     initializedCarryoverSession.current = null;
     setWorkDate(next);
     setMonth(next.slice(0, 7));
+    onDateChange?.(next);
     setEntryDrafts([]);
     setSelectedEntryIds([]);
     setSelectedEntryDraftKeys([]);
@@ -559,6 +560,11 @@ export function EquipmentAccountingView({ siteId, initialDate, today, mode }: { 
 
   function changeReportRange(nextEnd: string) {
     setReportRangeEnd(nextEnd > today ? today : nextEnd);
+  }
+
+  function changeMonth(nextMonth: string) {
+    setMonth(nextMonth);
+    onMonthChange?.(nextMonth);
   }
 
   function openEntry(entry?: EquipmentEntry, changes: Partial<EntryDraft> = {}) {
@@ -1259,7 +1265,7 @@ export function EquipmentAccountingView({ siteId, initialDate, today, mode }: { 
     </>}
 
     {section === "month" && <>
-      <div className="equipment-timesheet-month-row"><div className="timesheet-month-control equipment-timesheet-month-control" aria-label="Выбор месяца табеля"><button type="button" onClick={() => setMonth(shiftMonth(month, -1))} aria-label="Предыдущий месяц">‹</button><EquipmentMonthPicker value={month} current={today.slice(0, 7)} onChange={setMonth} /><button type="button" onClick={() => setMonth(shiftMonth(month, 1))} aria-label="Следующий месяц">›</button></div></div>
+      <div className="equipment-timesheet-month-row"><div className="timesheet-month-control equipment-timesheet-month-control" aria-label="Выбор месяца табеля"><button type="button" onClick={() => changeMonth(shiftMonth(month, -1))} aria-label="Предыдущий месяц">‹</button><EquipmentMonthPicker value={month} current={today.slice(0, 7)} onChange={changeMonth} /><button type="button" onClick={() => changeMonth(shiftMonth(month, 1))} aria-label="Следующий месяц">›</button></div></div>
       {/* The spreadsheet shell must receive focus so native copy and paste events reach it. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
       <div ref={timesheetClipboardShellRef} className="timesheet-grid-shell equipment-timesheet-shell timesheet-clipboard-shell" role="application" tabIndex={0} aria-label="Табель техники. Стрелки перемещают выбранную ячейку, Enter или F2 открывают редактирование." {...timesheetClipboardShellHandlers}>{timesheetClipboardStatus && <div className="timesheet-clipboard-status" role="status">{timesheetClipboardStatus}</div>}<table className="timesheet-table equipment-month-table"><thead><tr><th className="timesheet-sticky equipment-number-column" rowSpan={2}>№</th><th className="timesheet-sticky equipment-machine-column" rowSpan={2}><TimesheetFilterableHeading label="Техника" value={selectedEquipmentName} options={[TIMESHEET_ALL_OPTION, ...equipmentNames.map((value) => ({ value, label: value }))]} onChange={setEquipmentNameFilter}>Техника</TimesheetFilterableHeading></th><th className="timesheet-sticky equipment-organization-column" rowSpan={2}><TimesheetFilterableHeading label="Организация" value={selectedOrganization} options={[TIMESHEET_ALL_OPTION, ...equipmentOrganizations.map((value) => ({ value, label: value }))]} onChange={setOrganizationFilter}>Организация</TimesheetFilterableHeading></th><th colSpan={monthDays.length}>Дни месяца</th><th className="timesheet-total-column equipment-work-total" rowSpan={2}><TimesheetFilterableHeading label="Работа" value={productiveTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setProductiveTotalFilter}>Работа</TimesheetFilterableHeading></th><th className="timesheet-total-column equipment-idle-total" rowSpan={2}><TimesheetFilterableHeading label="Простой" value={downtimeTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setDowntimeTotalFilter}>Простой</TimesheetFilterableHeading></th><th className="timesheet-total-column equipment-all-total" rowSpan={2}><TimesheetFilterableHeading label="Всего" value={equipmentTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setEquipmentTotalFilter}>Всего</TimesheetFilterableHeading></th></tr><tr>{monthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; const dateObject = new Date(`${date}T00:00:00Z`); const weekend = [0, 6].includes(dateObject.getUTCDay()); const weekday = WEEKDAY_FORMATTER.format(dateObject).replace(".", ""); return <th key={day} className={`${weekend ? "weekend" : ""} ${date === today ? "today" : ""}`}><TimesheetFilterableHeading compact label={`${day} ${weekday}`} value={monthDayFilters[date] ?? []} options={EQUIPMENT_DAY_FILTERS} onChange={(value) => setMonthDayFilters((current) => ({ ...current, [date]: value }))}><span>{day}</span><small>{weekday}</small></TimesheetFilterableHeading></th>; })}</tr></thead>
