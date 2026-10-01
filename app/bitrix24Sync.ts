@@ -78,6 +78,81 @@ export function selectBitrixEmployeesForImport(employees: BitrixEmployeeSnapshot
   return employees.filter((employee) => isBitrixEmployeeInImportScope(employee, scope));
 }
 
+export type LocalBitrixEmployeeSnapshot = {
+  bitrix24Id: string;
+  fullName: string;
+  employmentType: string;
+  department: string;
+  position: string;
+  bitrix24Stage: string;
+};
+
+export type BitrixEmployeeDifference = {
+  kind: "missing_locally" | "changed" | "outside_scope" | "missing_in_bitrix" | "incomplete" | "unknown_stage";
+  employeeName: string;
+  details: string;
+};
+
+const comparableFields = [
+  ["fullName", "ФИО"],
+  ["employmentType", "тип"],
+  ["department", "отдел"],
+  ["position", "должность"],
+  ["bitrix24Stage", "стадия"],
+] as const;
+
+export function compareBitrixEmployees(source: BitrixEmployeeSnapshot[], local: LocalBitrixEmployeeSnapshot[], fullSource = source) {
+  const localById = new Map(local.map((employee) => [employee.bitrix24Id, employee]));
+  const selectedIds = new Set(source.map((employee) => employee.bitrix24Id).filter(Boolean));
+  const sourceIds = new Set(fullSource.map((employee) => employee.bitrix24Id).filter(Boolean));
+  const differences: BitrixEmployeeDifference[] = [];
+  let matched = 0;
+
+  for (const employee of source) {
+    const name = employee.fullName || `ID ${employee.bitrix24Id || "не указан"}`;
+    const missingFields = [
+      [employee.fullName, "ФИО"],
+      [employee.employmentType, "тип"],
+      [employee.department, "отдел"],
+      [employee.position, "должность"],
+    ].filter(([value]) => !value).map(([, label]) => label);
+    let hasDifference = false;
+    if (missingFields.length) {
+      differences.push({ kind: "incomplete", employeeName: name, details: `В Битрикс24 не заполнены: ${missingFields.join(", ")}.` });
+      hasDifference = true;
+    }
+    if (employee.availabilityStatus === "unknown") {
+      differences.push({ kind: "unknown_stage", employeeName: name, details: `Стадия «${employee.stageName || employee.stageId || "не указана"}» не распознана.` });
+      hasDifference = true;
+    }
+    const existing = localById.get(employee.bitrix24Id);
+    if (!existing) {
+      differences.push({ kind: "missing_locally", employeeName: name, details: "Связанной карточки нет в справочнике системы." });
+      continue;
+    }
+    const sourceComparable = { ...employee, bitrix24Stage: employee.stageName };
+    const changedFields = comparableFields.flatMap(([field, label]) => {
+      const before = existing[field];
+      const after = sourceComparable[field];
+      return normalizeBitrixText(before) === normalizeBitrixText(after) ? [] : [`${label}: «${before || "—"}» → «${after || "—"}»`];
+    });
+    if (changedFields.length) {
+      differences.push({ kind: "changed", employeeName: name, details: changedFields.join("; ") });
+      hasDifference = true;
+    }
+    if (!hasDifference) matched += 1;
+  }
+
+  for (const employee of local) {
+    if (selectedIds.has(employee.bitrix24Id)) continue;
+    differences.push(sourceIds.has(employee.bitrix24Id)
+      ? { kind: "outside_scope", employeeName: employee.fullName || `ID ${employee.bitrix24Id}`, details: "Карточка есть в Битрикс24, но больше не входит в выбранные стадии или проекты." }
+      : { kind: "missing_in_bitrix", employeeName: employee.fullName || `ID ${employee.bitrix24Id}`, details: "Связанная карточка больше не найдена в Битрикс24." });
+  }
+
+  return { compared: source.length, matched, differences };
+}
+
 function configuredStageStatuses() {
   const raw = process.env.BITRIX24_STAGE_STATUS_MAP?.trim();
   if (!raw) return {};

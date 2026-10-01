@@ -1,5 +1,6 @@
 import { getDatabase } from "../../../db/client";
 import { assertSameOrigin, getAuthUser } from "../../auth";
+import { canAccessTimesheets } from "../../roles";
 
 type TimesheetEmployee = {
   id: number;
@@ -40,12 +41,6 @@ function validMonth(value: string | null): value is string {
 
 function validDate(value: unknown): value is string {
   return typeof value === "string" && /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(value) && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
-}
-
-function todayInMoscow() {
-  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Moscow", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function nextMonthStart(month: string) {
@@ -98,6 +93,7 @@ export async function GET(request: Request) {
   try {
     const authUser = await getAuthUser(request);
     if (!authUser) return errorResponse("Требуется авторизация.", 401);
+    if (!canAccessTimesheets(authUser.role)) return errorResponse("Табели доступны только инженеру и супер-администратору.", 403);
 
     const url = new URL(request.url);
     const requestedSiteId = positiveInteger(url.searchParams.get("siteId"));
@@ -115,7 +111,7 @@ export async function GET(request: Request) {
     const [employeesResult, entriesResult, marksResult] = await db.readBatch([
       db.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position
         FROM employees e
-        WHERE (e.active = 1 AND e.sync_error IS NULL AND EXISTS (
+        WHERE (e.active = 1 AND EXISTS (
           SELECT 1 FROM employee_project_assignments epa
           WHERE epa.employee_id = e.id AND epa.site_id = ? AND epa.active = 1
         )) OR EXISTS (
@@ -147,7 +143,7 @@ export async function GET(request: Request) {
       siteId,
       siteName: site.name,
       month,
-      canEdit: authUser.role !== "foreman",
+      canEdit: true,
       employees: employeesResult.results as TimesheetEmployee[],
       entries: entriesResult.results as TimesheetEntry[],
       marks: marksResult.results as TimesheetMark[],
@@ -163,14 +159,12 @@ export async function POST(request: Request) {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return errorResponse("Требуется авторизация.", 401);
-    if (authUser.role === "foreman") return errorResponse("Недостаточно прав для изменения табеля.", 403);
+    if (!canAccessTimesheets(authUser.role)) return errorResponse("Табели доступны только инженеру и супер-администратору.", 403);
 
     const payload = await request.json() as { siteId?: unknown; employeeId?: unknown; workDate?: unknown; value?: unknown; note?: unknown };
     const requestedSiteId = positiveInteger(payload.siteId);
     const employeeId = positiveInteger(payload.employeeId);
     if (!requestedSiteId || !employeeId || !validDate(payload.workDate)) return errorResponse("Некорректная строка табеля.", 400);
-    if (payload.workDate > todayInMoscow()) return errorResponse("Будущие дни пока нельзя заполнять.", 400);
-
     await ensureTimesheetSchema();
     const resolved = await resolveSite(requestedSiteId, authUser);
     if ("error" in resolved) return resolved.error;

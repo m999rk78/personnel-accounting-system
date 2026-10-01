@@ -202,6 +202,10 @@ export const placementEntries = pgTable("placement_entries", {
   departmentSnapshot: text("department_snapshot").notNull().default(""),
   masterNameSnapshot: text("master_name_snapshot").notNull().default(""),
   createdBy: text("created_by").notNull().default("demo-user"),
+  responsibleUserId: integer("responsible_user_id").references(() => appUsers.id),
+  revision: integer("revision").notNull().default(1),
+  createdByUserId: integer("created_by_user_id").references(() => appUsers.id),
+  updatedByUserId: integer("updated_by_user_id").references(() => appUsers.id),
   createdAt: auditTimestamp("created_at").notNull().defaultNow(),
   updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
   deletedAt: auditTimestamp("deleted_at"),
@@ -209,7 +213,9 @@ export const placementEntries = pgTable("placement_entries", {
   index("idx_entries_site_date").on(table.siteId, table.workDate),
   index("idx_entries_active_site_date").on(table.siteId, table.workDate).where(sql`${table.deletedAt} IS NULL`),
   index("idx_entries_employee_date").on(table.employeeId, table.workDate),
+  index("idx_entries_responsible_site_date").on(table.responsibleUserId, table.siteId, table.workDate).where(sql`${table.responsibleUserId} IS NOT NULL AND ${table.deletedAt} IS NULL`),
   check("placement_hours_range", sql`${table.hours} BETWEEN 1 AND 10`),
+  check("placement_entry_revision_positive", sql`${table.revision} > 0`),
 ]);
 
 export const placementReportDays = pgTable("placement_report_days", {
@@ -219,6 +225,22 @@ export const placementReportDays = pgTable("placement_report_days", {
   submittedAt: auditTimestamp("submitted_at").notNull().defaultNow(),
 }, (table) => [
   primaryKey({ columns: [table.siteId, table.workDate] }),
+]);
+
+export const placementReportContributions = pgTable("placement_report_contributions", {
+  siteId: integer("site_id").notNull().references(() => sites.id),
+  workDate: date("work_date", { mode: "string" }).notNull(),
+  foremanId: integer("foreman_id").notNull().references(() => appUsers.id),
+  status: text("status").notNull().default("draft"),
+  revision: integer("revision").notNull().default(1),
+  submittedAt: auditTimestamp("submitted_at"),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.siteId, table.workDate, table.foremanId] }),
+  index("idx_report_contributions_site_date_status").on(table.siteId, table.workDate, table.status),
+  index("idx_report_contributions_foreman_date").on(table.foremanId, table.workDate),
+  check("placement_report_contribution_status", sql`${table.status} IN ('draft', 'submitted')`),
+  check("placement_report_contribution_revision_positive", sql`${table.revision} > 0`),
 ]);
 
 export const timesheetMarks = pgTable("timesheet_marks", {
@@ -237,4 +259,105 @@ export const timesheetMarks = pgTable("timesheet_marks", {
   index("idx_timesheet_marks_month").on(table.siteId, table.workDate),
   check("timesheet_hours_range", sql`${table.hours} IS NULL OR ${table.hours} BETWEEN 1 AND 10`),
   check("timesheet_value_required", sql`(${table.hours} IS NOT NULL AND ${table.code} IS NULL) OR (${table.hours} IS NULL AND ${table.code} IS NOT NULL)`),
+]);
+
+export const equipmentUnits = pgTable("equipment_units", {
+  id: serial("id").primaryKey(),
+  siteId: integer("site_id").notNull().references(() => sites.id),
+  identityKey: text("identity_key").notNull(),
+  organization: text("organization").notNull(),
+  equipmentType: text("equipment_type").notNull(),
+  brand: text("brand").notNull().default(""),
+  model: text("model").notNull(),
+  registrationNumber: text("registration_number").notNull().default(""),
+  note: text("note").notNull().default(""),
+  active: integer("active").notNull().default(1),
+  createdAt: auditTimestamp("created_at").notNull().defaultNow(),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("idx_equipment_units_site_identity").on(table.siteId, table.identityKey),
+  index("idx_equipment_units_site_active").on(table.siteId, table.active),
+]);
+
+export const equipmentProjectAssignments = pgTable("equipment_project_assignments", {
+  id: serial("id").primaryKey(),
+  equipmentId: integer("equipment_id").notNull().references(() => equipmentUnits.id),
+  siteId: integer("site_id").notNull().references(() => sites.id),
+  active: integer("active").notNull().default(1),
+  assignedAt: auditTimestamp("assigned_at").notNull().defaultNow(),
+  endedAt: auditTimestamp("ended_at"),
+}, (table) => [
+  uniqueIndex("idx_equipment_project_assignment_unique").on(table.equipmentId, table.siteId),
+  index("idx_equipment_project_assignment_site").on(table.siteId, table.active),
+]);
+
+export const equipmentEntries = pgTable("equipment_entries", {
+  id: serial("id").primaryKey(),
+  siteId: integer("site_id").notNull().references(() => sites.id),
+  workDate: date("work_date", { mode: "string" }).notNull(),
+  equipmentId: integer("equipment_id").notNull().references(() => equipmentUnits.id),
+  shiftId: integer("shift_id").notNull().references(() => shifts.id),
+  zoneId: integer("zone_id").notNull().references(() => zones.id),
+  mainWorkTypeId: integer("main_work_type_id").notNull().references(() => mainWorkTypes.id),
+  subworkTypeId: integer("subwork_type_id").notNull().references(() => subworkTypes.id),
+  note: text("note").notNull().default(""),
+  hours: integer("hours").notNull(),
+  createdBy: text("created_by").notNull(),
+  responsibleUserId: integer("responsible_user_id").references(() => appUsers.id),
+  revision: integer("revision").notNull().default(1),
+  createdByUserId: integer("created_by_user_id").references(() => appUsers.id),
+  updatedByUserId: integer("updated_by_user_id").references(() => appUsers.id),
+  createdAt: auditTimestamp("created_at").notNull().defaultNow(),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+  deletedAt: auditTimestamp("deleted_at"),
+}, (table) => [
+  index("idx_equipment_entries_site_date").on(table.siteId, table.workDate),
+  index("idx_equipment_entries_unit_date").on(table.equipmentId, table.workDate),
+  index("idx_equipment_entries_responsible_site_date").on(table.responsibleUserId, table.siteId, table.workDate).where(sql`${table.responsibleUserId} IS NOT NULL AND ${table.deletedAt} IS NULL`),
+  check("equipment_entry_hours_range", sql`${table.hours} BETWEEN 1 AND 10`),
+  check("equipment_entry_revision_positive", sql`${table.revision} > 0`),
+]);
+
+export const equipmentReportDays = pgTable("equipment_report_days", {
+  siteId: integer("site_id").notNull().references(() => sites.id),
+  workDate: date("work_date", { mode: "string" }).notNull(),
+  submittedBy: integer("submitted_by").references(() => appUsers.id),
+  submittedAt: auditTimestamp("submitted_at").notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.siteId, table.workDate] }),
+]);
+
+export const equipmentReportContributions = pgTable("equipment_report_contributions", {
+  siteId: integer("site_id").notNull().references(() => sites.id),
+  workDate: date("work_date", { mode: "string" }).notNull(),
+  foremanId: integer("foreman_id").notNull().references(() => appUsers.id),
+  status: text("status").notNull().default("draft"),
+  revision: integer("revision").notNull().default(1),
+  submittedAt: auditTimestamp("submitted_at"),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.siteId, table.workDate, table.foremanId] }),
+  index("idx_equipment_report_contributions_site_date_status").on(table.siteId, table.workDate, table.status),
+  index("idx_equipment_report_contributions_foreman_date").on(table.foremanId, table.workDate),
+  check("equipment_report_contribution_status", sql`${table.status} IN ('draft', 'submitted')`),
+  check("equipment_report_contribution_revision_positive", sql`${table.revision} > 0`),
+]);
+
+export const equipmentTimesheetMarks = pgTable("equipment_timesheet_marks", {
+  id: serial("id").primaryKey(),
+  siteId: integer("site_id").notNull().references(() => sites.id),
+  equipmentId: integer("equipment_id").notNull().references(() => equipmentUnits.id),
+  workDate: date("work_date", { mode: "string" }).notNull(),
+  productiveHours: integer("productive_hours").notNull().default(0),
+  downtimeHours: integer("downtime_hours").notNull().default(0),
+  note: text("note").notNull().default(""),
+  createdBy: text("created_by").notNull(),
+  createdAt: auditTimestamp("created_at").notNull().defaultNow(),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("idx_equipment_timesheet_marks_unique_day").on(table.siteId, table.equipmentId, table.workDate),
+  index("idx_equipment_timesheet_marks_month").on(table.siteId, table.workDate),
+  check("equipment_timesheet_productive_hours_range", sql`${table.productiveHours} BETWEEN 0 AND 20`),
+  check("equipment_timesheet_downtime_hours_range", sql`${table.downtimeHours} BETWEEN 0 AND 20`),
+  check("equipment_timesheet_daily_hours_limit", sql`${table.productiveHours} + ${table.downtimeHours} <= 20`),
 ]);

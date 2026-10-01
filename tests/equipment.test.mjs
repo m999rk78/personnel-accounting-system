@@ -1,0 +1,269 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import { createEquipmentTimesheetXlsx } from "../app/placementXlsx.ts";
+import { equipmentUnavailableReason, isEquipmentUnavailable } from "../app/equipmentAvailability.ts";
+import { buildEquipmentCarryoverDrafts } from "../app/equipmentCarryover.ts";
+
+test("blocks equipment only when the timesheet contains downtime without productive work", () => {
+  assert.equal(isEquipmentUnavailable({ productiveHours: 0, downtimeHours: 8, note: "Плановое ТО" }), true);
+  assert.equal(isEquipmentUnavailable({ productiveHours: 6, downtimeHours: 2, note: "" }), false);
+  assert.equal(isEquipmentUnavailable({ productiveHours: 8, downtimeHours: 0, note: "" }), false);
+  assert.equal(equipmentUnavailableReason({ productiveHours: 0, downtimeHours: 8, note: "Плановое ТО" }), "Плановое ТО");
+  assert.equal(equipmentUnavailableReason({ productiveHours: 0, downtimeHours: 4, note: "" }), "запланирован простой 4 ч.");
+});
+
+test("carries the foreman's previous equipment rows without duplicates or stale project assignments", () => {
+  const entry = (id, equipmentId, overrides = {}) => ({
+    id,
+    workDate: "2026-09-30",
+    equipmentId,
+    shiftId: 1,
+    zoneId: 2,
+    mainWorkTypeId: 3,
+    subworkTypeId: 4,
+    hours: 8,
+    note: "проверить",
+    ...overrides,
+  });
+  const drafts = buildEquipmentCarryoverDrafts({
+    reportSubmitted: false,
+    workDate: "2026-10-01",
+    units: [{ id: 10 }, { id: 20 }],
+    entries: [entry(100, 20, { workDate: "2026-10-01" })],
+    shifts: [{ id: 1, name: "День" }],
+    zones: [{ id: 2, name: "Зона" }],
+    mainWorkTypes: [{ id: 3, name: "Работа" }],
+    subworkTypes: [],
+  }, [entry(1, 10), entry(2, 20), entry(3, 30)]);
+
+  assert.deepEqual(drafts, [{
+    key: "previous-equipment-10-1",
+    carriedFromPreviousDay: true,
+    equipmentId: "10",
+    shiftId: "1",
+    zoneId: "2",
+    mainWorkTypeId: "3",
+    subworkTypeId: "",
+    hours: "8",
+    note: "проверить",
+  }]);
+});
+
+test("exports the equipment timesheet as a formatted monthly workbook", async () => {
+  const workbook = createEquipmentTimesheetXlsx(
+    "Усть-Луга ГПЗ",
+    "Сентябрь 2026 г.",
+    ["2026-09-01", "2026-09-02"],
+    [{ equipmentName: "Экскаватор CAT 320", organization: "ООО Техника", dailyValues: [8, "П 2"], productiveHours: 8, downtimeHours: 2, totalHours: 10 }],
+    [8, 2],
+    8,
+    2,
+    10,
+  );
+  const contents = new TextDecoder().decode(await workbook.arrayBuffer());
+
+  assert.match(contents, /sheet name="Табель"/);
+  assert.match(contents, /pane xSplit="3" ySplit="2"/);
+  assert.match(contents, /orientation="landscape"/);
+  assert.match(contents, /<t xml:space="preserve">РАБОТА<\/t>/);
+  assert.match(contents, /<t xml:space="preserve">ПРОСТОЙ<\/t>/);
+  assert.match(contents, /<f>SUM\(AI3:AI3\)<\/f><v>8<\/v>/);
+  assert.match(contents, /<f>SUM\(AJ3:AJ3\)<\/f><v>2<\/v>/);
+  assert.match(contents, /<f>SUM\(AK3:AK3\)<\/f><v>10<\/v>/);
+  assert.match(contents, /autoFilter ref="A2:C4"/);
+  assert.match(contents, /Усть-Луга ГПЗ — Сентябрь 2026 г\./);
+});
+
+test("builds equipment accounting from a shared registry and daily entries", async () => {
+  const api = await readFile(new URL("../app/api/equipment/route.ts", import.meta.url), "utf8");
+  const view = await readFile(new URL("../app/EquipmentAccountingView.tsx", import.meta.url), "utf8");
+  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const parser = await readFile(new URL("../app/placementXlsx.ts", import.meta.url), "utf8");
+  const migration = await readFile(new URL("../drizzle-postgres/0009_equipment_accounting.sql", import.meta.url), "utf8");
+  const assignmentMigration = await readFile(new URL("../drizzle-postgres/0010_equipment_project_assignments.sql", import.meta.url), "utf8");
+  const timesheetMigration = await readFile(new URL("../drizzle-postgres/0011_equipment_timesheet_marks.sql", import.meta.url), "utf8");
+  const grids = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+
+  assert.match(api, /getAuthUser\(request\)/);
+  assert.match(api, /viewMode === "timesheet" && !canAccessTimesheets\(authUser\.role\)/);
+  assert.match(api, /canEditTimesheet: canAccessTimesheets\(authUser\.role\)/);
+  assert.match(api, /authUser\.role === "foreman"/);
+  assert.match(api, /workDate === todayInMoscow\(\)/);
+  assert.match(api, /validateReferenceIds/);
+  assert.match(api, /hours > 10/);
+  assert.match(api, /payload\.action === "import-units"/);
+  assert.match(api, /payload\.action === "import-entries"/);
+  assert.match(api, /Прораб может импортировать данные только в сегодняшний отчёт/);
+  assert.match(api, /SELECT DISTINCT work_date AS "workDate"/);
+  assert.match(api, /INSERT INTO equipment_entries/);
+  assert.match(api, /equipment_project_assignments/);
+  assert.match(api, /SET active = 1, assigned_at = CURRENT_TIMESTAMP, ended_at = NULL/);
+  assert.doesNotMatch(api, /assigned_at = CASE/);
+  assert.match(api, /setEquipmentProjectAssignment/);
+  assert.match(api, /projectSiteId/);
+  assert.match(api, /assignedSiteName/);
+  assert.match(api, /scope === "global"/);
+  assert.match(api, /scope === "assignments"/);
+  assert.match(api, /payload\.action === "assign-unit-project"/);
+  assert.match(api, /payload\.action === "remove-unit-project"/);
+  assert.match(api, /ee\.deleted_at IS NULL/);
+  assert.match(api, /equipment_timesheet_marks/);
+  assert.match(api, /payload\.action === "save-timesheet-mark"/);
+  assert.doesNotMatch(api, /Будущие дни пока нельзя заполнять/);
+  assert.match(api, /dailyTimesheetMarks/);
+  assert.match(api, /equipmentPlanConflictMessage/);
+  assert.match(api, /etm\.productive_hours = 0 AND etm\.downtime_hours > 0/);
+  assert.match(api, /productiveHours \+ downtimeHours > 20/);
+  assert.match(api, /Сумма работы и простоя не должна превышать 20 часов/);
+  assert.match(api, /canEditTimesheet/);
+
+  assert.match(view, /section === "month"/);
+  assert.match(view, /section === "month" \? "timesheet" : section/);
+  assert.match(view, /&view=\$\{viewMode\}/);
+  assert.match(view, /section === "registry"/);
+  assert.match(view, /mode: EquipmentSection/);
+  assert.match(view, /EquipmentDailyAgGrid/);
+  assert.match(view, /EquipmentRegistryAgGrid/);
+  assert.match(view, /ProjectEquipmentAgGrid/);
+  assert.match(view, /Добавить технику в проект/);
+  assert.match(view, /Убрать из проекта/);
+  assert.match(view, /sites={payload\?\.sites \?\? \[\]}/);
+  assert.match(view, /assignedSiteName/);
+  assert.match(view, /Редактируется:/);
+  assert.match(view, /Удалить технику/);
+  assert.match(view, /Сохранить изменения/);
+  assert.match(view, /normalize\(entry\.subworkTypeName\)\.includes\("простой"\)/);
+  assert.match(view, /Итоги за месяц/);
+  assert.match(view, /TimesheetFilterableHeading/);
+  assert.match(view, /label="Техника"/);
+  assert.match(view, /label="Организация"/);
+  assert.match(view, /monthDayFilters/);
+  assert.doesNotMatch(view, /timesheet-filter-panel/);
+  assert.doesNotMatch(view, /timesheet-search/);
+  assert.match(view, /EquipmentMonthPicker/);
+  assert.match(view, /current=\{today\.slice\(0, 7\)\}/);
+  assert.doesNotMatch(view, /disabled=\{month >= today\.slice\(0, 7\)\}/);
+  assert.match(view, /timesheet-month-popover/);
+  assert.match(view, /Выбор месяца табеля/);
+  assert.doesNotMatch(view, /type="month"/);
+  assert.doesNotMatch(view, /Данные формируются из ежедневных отчётов техники/);
+  assert.match(view, /parseEquipmentRegistryXlsx/);
+  assert.match(view, /parseEquipmentEntriesXlsx/);
+  assert.match(view, /EquipmentReportDateNavigation/);
+  assert.match(view, /Сбросить фильтры/);
+  assert.match(view, /Есть простой/);
+  assert.match(view, /timesheet-header-filter-reset/);
+  assert.match(view, /openTimesheetEditor/);
+  assert.match(view, /saveTimesheetMark/);
+  assert.match(view, /EquipmentTimesheetMarkList/);
+  assert.match(view, /EQUIPMENT_MARK_OPTIONS/);
+  assert.match(view, /timesheet-cell-inline-editor/);
+  assert.match(view, /void saveTimesheetInlineValue\(\)/);
+  assert.match(view, /openTimesheetInlineEditor/);
+  assert.match(view, /onType: \(rowIndex, columnIndex, _anchor, value\)/);
+  assert.match(view, /isActiveCell && <button/);
+  assert.match(view, /timesheet-cell-dropdown/);
+  assert.match(view, /custom-select-options timesheet-mark-options equipment-mark-options/);
+  assert.doesNotMatch(view, /Работа, простой и комментарий…/);
+  assert.match(view, /!value\?\.downtime && value\?\.mark \? "0" : null/);
+  assert.match(view, /equipment-timesheet-cell-dropdown/);
+  assert.match(view, /timesheetEditor\?\.equipmentId === equipmentId && timesheetEditor\.workDate === editorWorkDate/);
+  assert.match(view, /aria-expanded=\{timesheetEditor\?\.equipmentId === row\.unit\.id && timesheetEditor\.workDate === date\}/);
+  assert.match(view, /\^П\\s\*\(\\d\{1,2\}\)\$/);
+  assert.match(view, /«П 2» для простоя/);
+  assert.match(view, /formatEquipmentHours/);
+  assert.match(view, /Стрелки перемещают выбранную ячейку/);
+  assert.match(view, /Ручная правка/);
+  assert.match(view, /canDelete:/);
+  assert.match(view, /timesheetMarksByCell\.has/);
+  assert.match(view, /onDelete: pasteEquipmentTimesheetCells/);
+  assert.match(view, /rememberEquipmentTimesheetUndo/);
+  assert.match(view, /getUndoNote/);
+  assert.match(view, /Из отчёта/);
+  assert.match(view, /Всего за сутки/);
+  assert.match(view, /productiveHours \+ downtimeHours <= 20/);
+  assert.match(view, /Экспорт в Excel/);
+  assert.match(view, /Импорт из Excel/);
+  assert.match(view, /createTableXlsx/);
+  assert.match(view, /createEquipmentTimesheetXlsx/);
+  assert.match(view, /Табель_техники_/);
+  assert.match(view, /equipment-timesheet-page-actions/);
+  assert.match(parser, /function columnLetter/);
+  assert.doesNotMatch(view, /<div className="equipment-overview">/);
+  assert.doesNotMatch(view, /Назначить на проект/);
+  assert.doesNotMatch(view, /equipment-assignment-grid/);
+  assert.match(grids, /export function EquipmentDailyAgGrid/);
+  assert.match(grids, /export function EquipmentRegistryAgGrid/);
+  assert.match(grids, /export function ProjectEquipmentAgGrid/);
+  assert.match(grids, /В проекте пока нет техники/);
+  assert.match(grids, /headerName: "Проект"/);
+  assert.match(grids, /projectSiteId/);
+  assert.match(grids, /selectAll: "filtered"/);
+  assert.match(grids, /onFilterChanged/);
+  assert.match(grids, /function EquipmentCombobox/);
+  assert.match(grids, /Недоступна по табелю/);
+  assert.match(grids, /equipment-plan-blocked/);
+  assert.match(grids, /Начните вводить название техники/);
+  assert.match(grids, /onSpreadsheetPaste={pasteIntoRow}/);
+
+  assert.match(parser, /export async function parseEquipmentRegistryXlsx/);
+  assert.match(parser, /export function createEquipmentTimesheetXlsx/);
+  assert.match(parser, /orientation="landscape"/);
+  assert.match(parser, /pane xSplit="3" ySplit="2"/);
+  assert.match(parser, /sumDataColumn\(columnLetter\(productiveColumn\)\)/);
+  assert.match(parser, /sumDataColumn\(columnLetter\(downtimeColumn\)\)/);
+  assert.match(parser, /workbookFiles\(worksheet, undefined, "Табель"\)/);
+  assert.match(parser, /export async function parseEquipmentEntriesXlsx/);
+  assert.match(parser, /ГРЗ \/ Инв\. №/);
+  assert.match(parser, /projectName/);
+  assert.match(parser, /xl\/worksheets\/sheet\$\{sheetNumber\}\.xml/);
+
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS "equipment_units"/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS "equipment_entries"/);
+  assert.match(migration, /equipment_entry_hours_range/);
+  assert.match(migration, /idx_equipment_units_site_identity/);
+  assert.match(assignmentMigration, /CREATE TABLE IF NOT EXISTS "equipment_project_assignments"/);
+  assert.match(assignmentMigration, /SELECT "id", "site_id", 1/);
+  assert.match(timesheetMigration, /CREATE TABLE IF NOT EXISTS "equipment_timesheet_marks"/);
+  assert.match(timesheetMigration, /equipment_timesheet_daily_hours_limit/);
+  assert.match(timesheetMigration, /<= 20/);
+
+  assert.match(app, /view === "equipment"/);
+  assert.match(app, /view === "equipmentTimesheet"/);
+  assert.match(app, /view === "equipmentRegistry"/);
+  assert.match(app, /view === "projectEquipment"/);
+  assert.match(app, /Техника проекта/);
+  assert.match(app, /<EquipmentAccountingView/);
+  assert.match(app, /aria-label="Техника"/);
+  assert.match(app, />Табели</);
+});
+
+test("separates the daily equipment report into foreman contributions", async () => {
+  const api = await readFile(new URL("../app/api/equipment/route.ts", import.meta.url), "utf8");
+  const view = await readFile(new URL("../app/EquipmentAccountingView.tsx", import.meta.url), "utf8");
+  const grids = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const schema = await readFile(new URL("../db/schema.ts", import.meta.url), "utf8");
+  const migration = await readFile(new URL("../drizzle-postgres/0013_equipment_foreman_report_contributions.sql", import.meta.url), "utf8");
+
+  assert.match(schema, /export const equipmentReportContributions = pgTable\("equipment_report_contributions"/);
+  assert.match(schema, /equipmentEntries[\s\S]*responsibleUserId: integer\("responsible_user_id"\)/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS "equipment_report_contributions"/);
+  assert.match(api, /responsibleUserId = authUser\.role === "foreman" && section === "daily" \? authUser\.id : null/);
+  assert.match(api, /ee\.responsible_user_id = \?/);
+  assert.match(api, /Прораб может изменять только собственные строки сегодняшнего отчёта/);
+  assert.match(api, /payload\.action === "submit-daily-report"/);
+  assert.match(api, /INSERT INTO equipment_report_contributions[\s\S]*RETURNING revision/);
+  assert.match(api, /INSERT INTO equipment_report_days[\s\S]*RETURNING site_id/);
+  assert.match(api, /equipmentForemanProgressStatement/);
+  assert.match(api, /equipment-hours:\$\{key\}/);
+  assert.match(api, /За сутки можно указать не более 20 ч/);
+  assert.match(view, /Сдали прорабы:/);
+  assert.match(view, /Сохранить мою часть/);
+  assert.match(view, /Принять отчёт за день/);
+  assert.match(view, /entryDrafts\.length === 0 && selectedEntryIds\.length === 0 && <div className="employee-footer-base">/);
+  assert.match(view, /payload\?\.canEditDaily && <button[^>]+onClick=\{\(\) => openEntry\(\)\}/);
+  assert.match(view, /unitDrafts\.length === 0 && selectedUnitIds\.length === 0 && <div className="employee-footer-base">/);
+  assert.match(view, /projectUnitDrafts\.length === 0 && selectedProjectUnitIds\.length === 0 && <div className="employee-footer-base">/);
+  assert.match(grids, /headerName: "Ответственный прораб"/);
+});

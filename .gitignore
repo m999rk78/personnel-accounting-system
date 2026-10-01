@@ -39,7 +39,9 @@ backups/
 /dist/
 /.wrangler/
 /outputs/
+/output/
 /work/
+*.tsbuildinfo
 
 # local PostgreSQL data
 /postgres-data/

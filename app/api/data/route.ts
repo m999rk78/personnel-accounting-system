@@ -1,10 +1,11 @@
 import { getDatabase } from "../../../db/client";
 import { assertSameOrigin, createInvitation, ensureAuthSchema, getAuthUser, sendInvitationEmail, type AuthUser } from "../../auth";
 import { bitrix24Cooldown, type Bitrix24Action, type Bitrix24Cooldowns } from "../../bitrix24Cooldown";
-import { fetchBitrixEmployeeSnapshot, normalizeBitrixText, selectBitrixEmployeesForImport, type BitrixEmployeeSnapshot, type EmployeeAvailabilityStatus } from "../../bitrix24Sync";
+import { compareBitrixEmployees, fetchBitrixEmployeeSnapshot, normalizeBitrixText, selectBitrixEmployeesForImport, type BitrixEmployeeSnapshot, type EmployeeAvailabilityStatus } from "../../bitrix24Sync";
 import { canEditGlobalEmployees, canEditGlobalReferences, canEditProjectSettings, canManageBitrix24, canViewAllProjects, isUserRole, type UserRole } from "../../roles";
 
 const env = { get DB() { return getDatabase(); } };
+type DatabaseExecutor = Pick<ReturnType<typeof getDatabase>, "prepare" | "batch" | "readBatch">;
 
 async function reconcilePositionCatalogOptions() {
   const db = env.DB;
@@ -20,6 +21,8 @@ async function reconcilePositionCatalogOptions() {
 
 type EntryPayload = {
   id?: number;
+  revision?: number;
+  responsibleUserId?: number | null;
   siteId?: number;
   workDate?: string;
   employeeId?: number;
@@ -35,6 +38,7 @@ type EntryPayload = {
 type ReportFinalizationPayload = {
   siteId?: number;
   workDate?: string;
+  revision?: number;
 };
 
 type ExistingPlacementEntry = {
@@ -42,6 +46,8 @@ type ExistingPlacementEntry = {
   siteId: number;
   workDate: string;
   employeeId: number;
+  responsibleUserId: number | null;
+  revision: number;
   masterId: number;
   hours: number;
   positionSnapshot: string;
@@ -237,6 +243,10 @@ const TABLE_STATEMENTS = [
     department_snapshot TEXT NOT NULL DEFAULT '',
     master_name_snapshot TEXT NOT NULL DEFAULT '',
     created_by TEXT NOT NULL DEFAULT 'demo-user',
+    responsible_user_id INTEGER,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+    created_by_user_id INTEGER,
+    updated_by_user_id INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted_at TEXT
@@ -248,9 +258,36 @@ const TABLE_STATEMENTS = [
     submitted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (site_id, work_date)
   )`,
+  `CREATE TABLE IF NOT EXISTS placement_report_contributions (
+    site_id INTEGER NOT NULL,
+    work_date DATE NOT NULL,
+    foreman_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'submitted')),
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),
+    submitted_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (site_id, work_date, foreman_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS timesheet_marks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id INTEGER NOT NULL,
+    employee_id INTEGER NOT NULL,
+    work_date TEXT NOT NULL,
+    hours INTEGER CHECK (hours BETWEEN 1 AND 10),
+    code TEXT,
+    note TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK ((hours IS NOT NULL AND code IS NULL) OR (hours IS NULL AND code IS NOT NULL))
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_entries_site_date ON placement_entries(site_id, work_date)`,
   `CREATE INDEX IF NOT EXISTS idx_entries_active_site_date ON placement_entries(site_id, work_date) WHERE deleted_at IS NULL`,
   `CREATE INDEX IF NOT EXISTS idx_entries_employee_date ON placement_entries(employee_id, work_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_report_contributions_site_date_status ON placement_report_contributions(site_id, work_date, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_report_contributions_foreman_date ON placement_report_contributions(foreman_id, work_date)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_timesheet_marks_unique_day ON timesheet_marks(site_id, employee_id, work_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_timesheet_marks_month ON timesheet_marks(site_id, work_date)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_project_assignment_active ON employee_project_assignments(employee_id, site_id) WHERE active = 1`,
   `CREATE INDEX IF NOT EXISTS idx_employee_project_assignment_site ON employee_project_assignments(site_id, active)`,
   `CREATE INDEX IF NOT EXISTS idx_employee_profile_versions_period ON employee_profile_versions(employee_id, valid_from, valid_to)`,
@@ -266,7 +303,7 @@ async function initializeDatabase() {
   await db.batch(TABLE_STATEMENTS.map((statement) => db.prepare(statement)));
   await db.prepare(`INSERT INTO placement_report_days (site_id, work_date, submitted_at)
     SELECT site_id, work_date, MIN(created_at) FROM placement_entries WHERE deleted_at IS NULL GROUP BY site_id, work_date
-    ON CONFLICT (site_id, work_date) DO NOTHING`).run();
+    ON CONFLICT (site_id, work_date) DO NOTHING`).all();
   await db.prepare(`INSERT INTO bitrix24_action_limits (action_key, last_started_at)
     SELECT 'sync-bitrix24', MAX(started_at) FROM employee_sync_runs WHERE source = 'bitrix24' HAVING COUNT(*) > 0
     ON CONFLICT (action_key) DO NOTHING`).all();
@@ -305,6 +342,24 @@ async function initializeDatabase() {
   for (const column of ["employee_name_snapshot", "employment_type_snapshot", "department_snapshot", "master_name_snapshot"]) {
     if (!placementColumnNames.has(column)) await db.prepare(`ALTER TABLE placement_entries ADD COLUMN ${column} TEXT NOT NULL DEFAULT ''`).run();
   }
+  if (!placementColumnNames.has("responsible_user_id")) await db.prepare("ALTER TABLE placement_entries ADD COLUMN responsible_user_id INTEGER").run();
+  if (!placementColumnNames.has("revision")) await db.prepare("ALTER TABLE placement_entries ADD COLUMN revision INTEGER NOT NULL DEFAULT 1").run();
+  if (!placementColumnNames.has("created_by_user_id")) await db.prepare("ALTER TABLE placement_entries ADD COLUMN created_by_user_id INTEGER").run();
+  if (!placementColumnNames.has("updated_by_user_id")) await db.prepare("ALTER TABLE placement_entries ADD COLUMN updated_by_user_id INTEGER").run();
+  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_entries_responsible_site_date
+    ON placement_entries(responsible_user_id, site_id, work_date)
+    WHERE responsible_user_id IS NOT NULL AND deleted_at IS NULL`).run();
+  await db.prepare(`UPDATE placement_entries AS entry
+    SET responsible_user_id = report.submitted_by
+    FROM placement_report_days AS report
+    JOIN app_users AS submitter ON submitter.id = report.submitted_by AND submitter.role = 'foreman'
+    WHERE entry.site_id = report.site_id AND entry.work_date = report.work_date AND entry.responsible_user_id IS NULL`).run();
+  await db.prepare(`INSERT INTO placement_report_contributions
+      (site_id, work_date, foreman_id, status, revision, submitted_at, updated_at)
+    SELECT report.site_id, report.work_date, report.submitted_by, 'submitted', 1, report.submitted_at, report.submitted_at
+    FROM placement_report_days AS report
+    JOIN app_users AS submitter ON submitter.id = report.submitted_by AND submitter.role = 'foreman'
+    ON CONFLICT (site_id, work_date, foreman_id) DO NOTHING`).all();
   await db.batch([
     db.prepare(`UPDATE placement_entries pe SET employee_name_snapshot = e.full_name, employment_type_snapshot = e.employment_type, department_snapshot = e.department
       FROM employees e WHERE pe.employee_id = e.id AND (pe.employee_name_snapshot = '' OR pe.employment_type_snapshot = '' OR pe.department_snapshot = '')`),
@@ -318,7 +373,7 @@ async function initializeDatabase() {
     const [optionsResult, positionsResult, employeesResult] = await db.batch([
       db.prepare("SELECT id, kind, name FROM personnel_options WHERE active = 1"),
       db.prepare("SELECT id, employment_type AS employmentType, department, position FROM position_catalog WHERE active = 1"),
-      db.prepare("SELECT id, employment_type AS employmentType, department, position FROM employees WHERE active = 1 AND source <> 'bitrix24'"),
+      db.prepare("SELECT id, employment_type AS employmentType, department, position FROM employees WHERE active = 1"),
     ]);
     const optionNames = new Map((optionsResult.results as Array<{ id: number; kind: string; name: string }>).map((option) => [`${option.kind}:${option.id}`, option.name]));
     const resolveValue = (kind: string, value: string) => /^\d+$/.test(value) ? optionNames.get(`${kind}:${value}`) ?? value : value;
@@ -358,12 +413,12 @@ async function initializeDatabase() {
       db.prepare("DELETE FROM position_catalog WHERE active = 0"),
       db.prepare(`DELETE FROM employees
         WHERE active = 0
-          AND source <> 'bitrix24'
+          AND bitrix24_id IS NULL
           AND NOT EXISTS (SELECT 1 FROM placement_entries WHERE employee_id = employees.id)
           AND NOT EXISTS (SELECT 1 FROM employee_project_assignments WHERE employee_id = employees.id)`),
     ]);
   }
-  const syncPositionCatalog = () => db.prepare("INSERT OR IGNORE INTO position_catalog (employment_type, department, position) SELECT DISTINCT employment_type, department, position FROM employees WHERE employment_type <> '' AND department <> '' AND position <> '' AND source <> 'bitrix24'").run();
+  const syncPositionCatalog = () => db.prepare("INSERT OR IGNORE INTO position_catalog (employment_type, department, position) SELECT DISTINCT employment_type, department, position FROM employees WHERE active = 1 AND employment_type <> '' AND department <> '' AND position <> ''").run();
   const syncEmployeeAssignments = () => db.prepare("INSERT OR IGNORE INTO employee_project_assignments (employee_id, site_id, source) SELECT id, site_id, source FROM employees WHERE active = 1 AND site_id IS NOT NULL").run();
   const syncMasterEmployees = async () => {
     await db.prepare(`INSERT INTO employees (full_name, employment_type, department, position, source, site_id)
@@ -483,6 +538,24 @@ function forbidden() {
   return Response.json({ error: "У вас нет прав для этого действия." }, { status: 403 });
 }
 
+class PlacementRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string,
+    readonly details?: Record<string, unknown>,
+  ) {
+    super(message);
+  }
+}
+
+function placementErrorResponse(error: unknown, fallback: string) {
+  if (error instanceof PlacementRequestError) {
+    return Response.json({ error: error.message, code: error.code, ...error.details }, { status: error.status });
+  }
+  return Response.json({ error: error instanceof Error ? error.message : fallback }, { status: 400 });
+}
+
 type Bitrix24ActionLimitRow = { actionKey: Bitrix24Action; lastStartedAt: string | Date };
 
 class Bitrix24CooldownError extends Error {
@@ -556,10 +629,12 @@ function validDate(value: unknown): value is string {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
-function placementEntriesStatement(siteId: number, workDate: string) {
+function placementEntriesStatement(siteId: number, workDate: string, responsibleUserId?: number) {
+  const ownershipFilter = responsibleUserId ? "AND pe.responsible_user_id = ?" : "";
   return env.DB.prepare(`SELECT pe.id, pe.site_id AS siteId, pe.work_date AS workDate, pe.employee_id AS employeeId,
     pe.shift_id AS shiftId, pe.zone_id AS zoneId, pe.main_work_type_id AS mainWorkTypeId,
     pe.subwork_type_id AS subworkTypeId, pe.note, pe.master_id AS masterId, pe.hours,
+    pe.responsible_user_id AS responsibleUserId, responsible.full_name AS responsibleUserName, pe.revision,
     pe.position_snapshot AS positionSnapshot,
     COALESCE(NULLIF(pe.employee_name_snapshot, ''), e.full_name) AS employeeName,
     COALESCE(NULLIF(pe.employment_type_snapshot, ''), e.employment_type) AS employmentType,
@@ -573,11 +648,20 @@ function placementEntriesStatement(siteId: number, workDate: string) {
     JOIN main_work_types mw ON mw.id = pe.main_work_type_id
     JOIN subwork_types sw ON sw.id = pe.subwork_type_id
     JOIN masters m ON m.id = pe.master_id
-    WHERE pe.site_id = ? AND pe.work_date = ? AND pe.deleted_at IS NULL
-    ORDER BY e.full_name, pe.created_at, pe.id`).bind(siteId, workDate);
+    LEFT JOIN app_users responsible ON responsible.id = pe.responsible_user_id
+    WHERE pe.site_id = ? AND pe.work_date = ? AND pe.deleted_at IS NULL ${ownershipFilter}
+    ORDER BY e.full_name, pe.created_at, pe.id`).bind(...(responsibleUserId ? [siteId, workDate, responsibleUserId] : [siteId, workDate]));
 }
 
-function filledDatesStatement(siteId: number, rangeStart: string, rangeEnd: string) {
+function filledDatesStatement(siteId: number, rangeStart: string, rangeEnd: string, responsibleUserId?: number) {
+  if (responsibleUserId) {
+    return env.DB.prepare(`SELECT work_date AS "workDate" FROM placement_report_contributions
+      WHERE site_id = ? AND foreman_id = ? AND work_date >= ? AND work_date <= ?
+      UNION
+      SELECT work_date AS "workDate" FROM placement_entries
+      WHERE site_id = ? AND responsible_user_id = ? AND work_date >= ? AND work_date <= ? AND deleted_at IS NULL
+      ORDER BY "workDate"`).bind(siteId, responsibleUserId, rangeStart, rangeEnd, siteId, responsibleUserId, rangeStart, rangeEnd);
+  }
   return env.DB.prepare(`SELECT work_date AS "workDate" FROM placement_report_days
     WHERE site_id = ? AND work_date >= ? AND work_date <= ?
     UNION
@@ -586,10 +670,51 @@ function filledDatesStatement(siteId: number, rangeStart: string, rangeEnd: stri
     ORDER BY "workDate"`).bind(siteId, rangeStart, rangeEnd, siteId, rangeStart, rangeEnd);
 }
 
-function reportSubmissionStatement(siteId: number, workDate: string) {
+function reportSubmissionStatement(siteId: number, workDate: string, responsibleUserId?: number) {
+  if (responsibleUserId) {
+    return env.DB.prepare(`SELECT EXISTS (
+      SELECT 1 FROM placement_report_contributions
+      WHERE site_id = ? AND work_date = ? AND foreman_id = ? AND status = 'submitted'
+    ) AS submitted`).bind(siteId, workDate, responsibleUserId);
+  }
   return env.DB.prepare(`SELECT EXISTS (
     SELECT 1 FROM placement_report_days WHERE site_id = ? AND work_date = ?
   ) AS submitted`).bind(siteId, workDate);
+}
+
+function employeeUsageStatement(workDate: string) {
+  return env.DB.prepare(`SELECT pe.employee_id AS employeeId, pe.responsible_user_id AS responsibleUserId,
+    COALESCE(responsible.full_name, 'Без ответственного') AS responsibleUserName, SUM(pe.hours) AS hours
+    FROM placement_entries pe
+    LEFT JOIN app_users responsible ON responsible.id = pe.responsible_user_id
+    WHERE pe.work_date = ? AND pe.deleted_at IS NULL
+    GROUP BY pe.employee_id, pe.responsible_user_id, responsible.full_name
+    ORDER BY pe.employee_id, responsible.full_name`).bind(workDate);
+}
+
+function reportTimesheetMarksStatement(siteId: number, workDate: string) {
+  return env.DB.prepare(`SELECT employee_id AS employeeId, hours, code, note
+    FROM timesheet_marks
+    WHERE site_id = ? AND work_date = ?
+    ORDER BY employee_id`).bind(siteId, workDate);
+}
+
+function foremanProgressStatement(siteId: number, workDate: string) {
+  return env.DB.prepare(`SELECT foreman.id AS foremanId, foreman.full_name AS foremanName,
+    CASE WHEN contribution.status = 'submitted' THEN 'submitted'
+      WHEN COUNT(entry.id) > 0 OR contribution.status = 'draft' THEN 'draft' ELSE 'not_started' END AS status,
+    contribution.submitted_at AS submittedAt,
+    COUNT(DISTINCT entry.employee_id) AS employeeCount, COUNT(entry.id) AS rowCount,
+    COALESCE(SUM(entry.hours), 0) AS hours
+    FROM app_users foreman
+    LEFT JOIN placement_report_contributions contribution
+      ON contribution.foreman_id = foreman.id AND contribution.site_id = ? AND contribution.work_date = ?
+    LEFT JOIN placement_entries entry
+      ON entry.responsible_user_id = foreman.id AND entry.site_id = ? AND entry.work_date = ? AND entry.deleted_at IS NULL
+    WHERE (foreman.active = 1 AND foreman.role = 'foreman' AND foreman.assigned_site_id = ?)
+      OR contribution.foreman_id IS NOT NULL
+    GROUP BY foreman.id, foreman.full_name, contribution.status, contribution.submitted_at
+    ORDER BY foreman.full_name`).bind(siteId, workDate, siteId, workDate, siteId);
 }
 
 function reportEmployeesStatement() {
@@ -601,7 +726,7 @@ function reportEmployeesStatement() {
     ORDER BY full_name`);
 }
 
-async function validatePayload(payload: EntryPayload, excludedId?: number) {
+async function validatePayload(db: DatabaseExecutor, payload: EntryPayload, excludedId?: number) {
   const siteId = asPositiveInteger(payload.siteId);
   const employeeId = asPositiveInteger(payload.employeeId);
   const shiftId = asPositiveInteger(payload.shiftId);
@@ -616,7 +741,7 @@ async function validatePayload(payload: EntryPayload, excludedId?: number) {
   }
   if (hours < 1 || hours > 10) throw new Error("Количество часов должно быть от 1 до 10.");
 
-  const existing = excludedId ? await env.DB.prepare(`SELECT employee_id AS employeeId, site_id AS siteId, master_id AS masterId,
+  const existing = excludedId ? await db.prepare(`SELECT employee_id AS employeeId, site_id AS siteId, master_id AS masterId,
     position_snapshot AS positionSnapshot, employee_name_snapshot AS employeeNameSnapshot,
     employment_type_snapshot AS employmentTypeSnapshot, department_snapshot AS departmentSnapshot,
     master_name_snapshot AS masterNameSnapshot FROM placement_entries WHERE id = ? AND deleted_at IS NULL`)
@@ -624,33 +749,41 @@ async function validatePayload(payload: EntryPayload, excludedId?: number) {
   const keepHistoricalEmployee = existing?.employeeId === employeeId && existing.siteId === siteId;
   const employee = keepHistoricalEmployee
     ? { position: existing.positionSnapshot, fullName: existing.employeeNameSnapshot, employmentType: existing.employmentTypeSnapshot, department: existing.departmentSnapshot }
-    : await env.DB.prepare(`SELECT position, full_name AS fullName, employment_type AS employmentType, department
-      FROM employees WHERE id = ? AND active = 1`)
-      .bind(employeeId).first<{ position: string; fullName: string; employmentType: string; department: string }>();
+    : await db.prepare(`SELECT e.position, e.full_name AS fullName, e.employment_type AS employmentType, e.department
+      FROM employees e
+      JOIN employee_project_assignments assignment
+        ON assignment.employee_id = e.id AND assignment.site_id = ? AND assignment.active = 1
+      WHERE e.id = ? AND e.active = 1`)
+      .bind(siteId, employeeId).first<{ position: string; fullName: string; employmentType: string; department: string }>();
   if (!employee?.position) throw new Error("Сотрудник отсутствует в справочнике или у него не заполнена должность.");
 
-  const refs = await env.DB.batch([
-    env.DB.prepare("SELECT id FROM shifts WHERE id = ? AND site_id = ? AND active = 1").bind(shiftId, siteId),
-    env.DB.prepare("SELECT id FROM zones WHERE id = ? AND site_id = ? AND active = 1").bind(zoneId, siteId),
-    env.DB.prepare("SELECT id FROM main_work_types WHERE id = ? AND site_id = ? AND active = 1").bind(mainWorkTypeId, siteId),
-    env.DB.prepare("SELECT id FROM subwork_types WHERE id = ? AND site_id = ? AND active = 1").bind(subworkTypeId, siteId),
+  const refs = await db.batch([
+    db.prepare("SELECT id FROM shifts WHERE id = ? AND site_id = ? AND active = 1").bind(shiftId, siteId),
+    db.prepare("SELECT id FROM zones WHERE id = ? AND site_id = ? AND active = 1").bind(zoneId, siteId),
+    db.prepare("SELECT id FROM main_work_types WHERE id = ? AND site_id = ? AND active = 1").bind(mainWorkTypeId, siteId),
+    db.prepare("SELECT id FROM subwork_types WHERE id = ? AND site_id = ? AND active = 1").bind(subworkTypeId, siteId),
     keepHistoricalEmployee && existing?.masterId === masterId
-      ? env.DB.prepare("SELECT id FROM masters WHERE id = ? AND site_id = ?").bind(masterId, siteId)
-      : env.DB.prepare("SELECT id FROM masters WHERE id = ? AND site_id = ? AND active = 1").bind(masterId, siteId),
+      ? db.prepare("SELECT id FROM masters WHERE id = ? AND site_id = ?").bind(masterId, siteId)
+      : db.prepare("SELECT id FROM masters WHERE id = ? AND site_id = ? AND active = 1").bind(masterId, siteId),
   ]);
   if (refs.some((result) => result.results.length === 0)) throw new Error("Одно из значений не относится к выбранному объекту.");
 
   const excluded = excludedId ? "AND id <> ?" : "";
-  const statement = env.DB.prepare(`SELECT COALESCE(SUM(hours), 0) AS used FROM placement_entries WHERE employee_id = ? AND work_date = ? AND deleted_at IS NULL ${excluded}`);
+  const statement = db.prepare(`SELECT COALESCE(SUM(hours), 0) AS used FROM placement_entries WHERE employee_id = ? AND work_date = ? AND deleted_at IS NULL ${excluded}`);
   const total = excludedId
     ? await statement.bind(employeeId, payload.workDate, excludedId).first<{ used: number }>()
     : await statement.bind(employeeId, payload.workDate).first<{ used: number }>();
   const used = Number(total?.used ?? 0);
-  if (used + hours > 10) throw new Error(`У сотрудника уже учтено ${used} ч. После сохранения получится ${used + hours} ч., максимум — 10.`);
+  if (used + hours > 10) throw new PlacementRequestError(
+    `У сотрудника «${employee.fullName}» уже учтено ${used} ч. Можно добавить не более ${Math.max(0, 10 - used)} ч. Запрошено: ${hours} ч.`,
+    409,
+    "HOURS_CONFLICT",
+    { employeeId, employeeName: employee.fullName, usedHours: used, requestedHours: hours, availableHours: Math.max(0, 10 - used) },
+  );
 
   const master = keepHistoricalEmployee && existing?.masterId === masterId
     ? { name: existing.masterNameSnapshot }
-    : await env.DB.prepare("SELECT name FROM masters WHERE id = ?").bind(masterId).first<{ name: string }>();
+    : await db.prepare("SELECT name FROM masters WHERE id = ?").bind(masterId).first<{ name: string }>();
   return {
     siteId, employeeId, shiftId, zoneId, mainWorkTypeId, subworkTypeId, masterId, hours, workDate: payload.workDate,
     note: payload.note?.trim() ?? "", position: employee.position, employeeName: employee.fullName,
@@ -658,7 +791,7 @@ async function validatePayload(payload: EntryPayload, excludedId?: number) {
   };
 }
 
-async function validateBulkPayloads(payloads: EntryPayload[], existingRows: ExistingPlacementEntry[] = []) {
+async function validateBulkPayloads(db: DatabaseExecutor, payloads: EntryPayload[], existingRows: ExistingPlacementEntry[] = []) {
   if (payloads.length === 0) throw new Error("Добавьте хотя бы одного сотрудника.");
   if (payloads.length > 1000) throw new Error("За один раз можно сохранить не более 1000 строк.");
 
@@ -669,15 +802,18 @@ async function validateBulkPayloads(payloads: EntryPayload[], existingRows: Exis
     throw new Error("Все строки группы должны относиться к одному объекту и дню.");
   }
 
-  const [employeesResult, shiftsResult, zonesResult, mainWorksResult, subworksResult, mastersResult, totalsResult] = await env.DB.batch([
-    env.DB.prepare(`SELECT id, position, full_name AS fullName, employment_type AS employmentType, department
-      FROM employees WHERE active = 1`),
-    env.DB.prepare("SELECT id FROM shifts WHERE site_id = ? AND active = 1").bind(siteId),
-    env.DB.prepare("SELECT id FROM zones WHERE site_id = ? AND active = 1").bind(siteId),
-    env.DB.prepare("SELECT id FROM main_work_types WHERE site_id = ? AND active = 1").bind(siteId),
-    env.DB.prepare("SELECT id FROM subwork_types WHERE site_id = ? AND active = 1").bind(siteId),
-    env.DB.prepare("SELECT id, name, active FROM masters WHERE site_id = ?").bind(siteId),
-    env.DB.prepare("SELECT employee_id AS employeeId, SUM(hours) AS used FROM placement_entries WHERE work_date = ? AND deleted_at IS NULL GROUP BY employee_id").bind(workDate),
+  const [employeesResult, shiftsResult, zonesResult, mainWorksResult, subworksResult, mastersResult, totalsResult] = await db.batch([
+    db.prepare(`SELECT e.id, e.position, e.full_name AS fullName, e.employment_type AS employmentType, e.department
+      FROM employees e
+      JOIN employee_project_assignments assignment
+        ON assignment.employee_id = e.id AND assignment.site_id = ? AND assignment.active = 1
+      WHERE e.active = 1`).bind(siteId),
+    db.prepare("SELECT id FROM shifts WHERE site_id = ? AND active = 1").bind(siteId),
+    db.prepare("SELECT id FROM zones WHERE site_id = ? AND active = 1").bind(siteId),
+    db.prepare("SELECT id FROM main_work_types WHERE site_id = ? AND active = 1").bind(siteId),
+    db.prepare("SELECT id FROM subwork_types WHERE site_id = ? AND active = 1").bind(siteId),
+    db.prepare("SELECT id, name, active FROM masters WHERE site_id = ?").bind(siteId),
+    db.prepare("SELECT employee_id AS employeeId, SUM(hours) AS used FROM placement_entries WHERE work_date = ? AND deleted_at IS NULL GROUP BY employee_id").bind(workDate),
   ]);
 
   const employees = new Map((employeesResult.results as Array<{ id: number; position: string; fullName: string; employmentType: string; department: string }>).map((employee) => [employee.id, employee]));
@@ -721,7 +857,15 @@ async function validateBulkPayloads(payloads: EntryPayload[], existingRows: Exis
     }
 
     const employeeTotal = (totals.get(employeeId) ?? 0) + (added.get(employeeId) ?? 0) + hours;
-    if (employeeTotal > 10) throw new Error(`Строка ${index + 1}: у сотрудника получится ${employeeTotal} ч., максимум — 10.`);
+    if (employeeTotal > 10) {
+      const usedHours = (totals.get(employeeId) ?? 0) + (added.get(employeeId) ?? 0);
+      throw new PlacementRequestError(
+        `У сотрудника «${employee.fullName}» уже учтено ${usedHours} ч. Можно добавить не более ${Math.max(0, 10 - usedHours)} ч. Запрошено: ${hours} ч.`,
+        409,
+        "HOURS_CONFLICT",
+        { employeeId, employeeName: employee.fullName, usedHours, requestedHours: hours, availableHours: Math.max(0, 10 - usedHours), row: index + 1 },
+      );
+    }
     added.set(employeeId, (added.get(employeeId) ?? 0) + hours);
 
     return {
@@ -731,6 +875,133 @@ async function validateBulkPayloads(payloads: EntryPayload[], existingRows: Exis
       masterName: keepHistoricalMaster && existing ? existing.masterNameSnapshot : master.name,
     };
   });
+}
+
+function existingPlacementEntriesStatement(db: DatabaseExecutor, ids: number[], lock = false) {
+  return db.prepare(`SELECT id, site_id AS siteId, work_date AS workDate, employee_id AS employeeId,
+    responsible_user_id AS responsibleUserId, revision, master_id AS masterId, hours,
+    position_snapshot AS positionSnapshot, employee_name_snapshot AS employeeNameSnapshot,
+    employment_type_snapshot AS employmentTypeSnapshot, department_snapshot AS departmentSnapshot,
+    master_name_snapshot AS masterNameSnapshot
+    FROM placement_entries WHERE id = ANY(?) AND deleted_at IS NULL
+    ORDER BY id ${lock ? "FOR UPDATE" : ""}`).bind(ids);
+}
+
+function assertPlacementOwnership(user: AuthUser, entries: ExistingPlacementEntry[]) {
+  if (user.role !== "foreman") return;
+  if (entries.some((entry) => !canManagePlacement(user, entry.siteId, entry.workDate) || entry.responsibleUserId !== user.id)) {
+    throw new PlacementRequestError("Прораб может изменять только собственные строки сегодняшнего отчёта.", 403, "ENTRY_OWNERSHIP_FORBIDDEN");
+  }
+}
+
+function assertEntryRevisions(payloads: EntryPayload[], existingRows: ExistingPlacementEntry[]) {
+  const existingById = new Map(existingRows.map((entry) => [entry.id, entry]));
+  for (const payload of payloads) {
+    const id = asPositiveInteger(payload.id);
+    const expectedRevision = asPositiveInteger(payload.revision);
+    if (!id || !expectedRevision) continue;
+    const existing = existingById.get(id);
+    if (existing && existing.revision !== expectedRevision) {
+      throw new PlacementRequestError(
+        "Строка уже была изменена в другой вкладке. Обновите отчёт и повторите действие.",
+        409,
+        "STALE_ENTRY",
+        { entryId: id, expectedRevision, actualRevision: existing.revision },
+      );
+    }
+  }
+}
+
+async function lockPlacementHours(db: DatabaseExecutor, payloads: EntryPayload[], existingRows: ExistingPlacementEntry[] = []) {
+  const keys = new Set<string>();
+  for (const entry of existingRows) keys.add(`${entry.workDate}:${entry.employeeId}`);
+  for (const payload of payloads) {
+    const employeeId = asPositiveInteger(payload.employeeId);
+    if (employeeId && validDate(payload.workDate)) keys.add(`${payload.workDate}:${employeeId}`);
+  }
+  for (const key of [...keys].sort()) {
+    await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(`placement-hours:${key}`).first();
+  }
+}
+
+async function resolveResponsibleUsers(
+  db: DatabaseExecutor,
+  user: AuthUser,
+  payloads: EntryPayload[],
+  existingRows: ExistingPlacementEntry[] = [],
+) {
+  if (user.role === "foreman") return payloads.map(() => user.id as number | null);
+  const existingById = new Map(existingRows.map((entry) => [entry.id, entry]));
+  const requestedIds = [...new Set(payloads
+    .filter((payload) => payload.responsibleUserId !== undefined && payload.responsibleUserId !== null)
+    .map((payload) => asPositiveInteger(payload.responsibleUserId))
+    .filter((id): id is number => id !== null))];
+  const responsibleUsers = requestedIds.length
+    ? await db.prepare("SELECT id, assigned_site_id AS assignedSiteId FROM app_users WHERE id = ANY(?) AND role = 'foreman' AND active = 1")
+      .bind(requestedIds).all<{ id: number; assignedSiteId: number | null }>()
+    : { results: [] as Array<{ id: number; assignedSiteId: number | null }> };
+  const usersById = new Map(responsibleUsers.results.map((item) => [item.id, item]));
+  return payloads.map((payload, index) => {
+    const existing = payload.id ? existingById.get(payload.id) : undefined;
+    if (payload.responsibleUserId === undefined) return existing?.responsibleUserId ?? null;
+    if (payload.responsibleUserId === null) return null;
+    const requestedId = asPositiveInteger(payload.responsibleUserId);
+    const targetSiteId = asPositiveInteger(payload.siteId);
+    const responsible = requestedId ? usersById.get(requestedId) : undefined;
+    if (!responsible || !targetSiteId || responsible.assignedSiteId !== targetSiteId) {
+      throw new Error(`Строка ${index + 1}: ответственный прораб не назначен на выбранный объект.`);
+    }
+    return responsible.id;
+  });
+}
+
+async function touchForemanContribution(
+  db: DatabaseExecutor,
+  user: AuthUser,
+  siteId: number,
+  workDate: string,
+  submitted: boolean,
+  expectedRevision?: number,
+  resetToDraft = false,
+) {
+  if (user.role !== "foreman") return null;
+  await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))")
+    .bind(`placement-contribution:${siteId}:${workDate}:${user.id}`).first();
+  const current = await db.prepare(`SELECT revision, status, submitted_at AS submittedAt FROM placement_report_contributions
+    WHERE site_id = ? AND work_date = ? AND foreman_id = ? FOR UPDATE`)
+    .bind(siteId, workDate, user.id).first<{ revision: number; status: "draft" | "submitted"; submittedAt: string | null }>();
+  if (expectedRevision && current?.revision !== expectedRevision) {
+    throw new PlacementRequestError(
+      "Эта часть отчёта уже была изменена в другой вкладке. Обновите страницу и повторите действие.",
+      409,
+      "STALE_CONTRIBUTION",
+      { expectedRevision, actualRevision: current?.revision ?? null },
+    );
+  }
+  const status = submitted ? "submitted" : resetToDraft ? "draft" : current?.status ?? "draft";
+  const submittedAt = submitted ? new Date().toISOString() : resetToDraft ? null : current?.submittedAt ?? null;
+  const result = await db.prepare(`INSERT INTO placement_report_contributions
+      (site_id, work_date, foreman_id, status, revision, submitted_at, updated_at)
+    VALUES (?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT (site_id, work_date, foreman_id) DO UPDATE SET
+      status = EXCLUDED.status,
+      submitted_at = EXCLUDED.submitted_at,
+      revision = placement_report_contributions.revision + 1,
+      updated_at = CURRENT_TIMESTAMP
+    RETURNING revision, status, submitted_at AS submittedAt`)
+    .bind(siteId, workDate, user.id, status, submittedAt)
+    .first<{ revision: number; status: "draft" | "submitted"; submittedAt: string | null }>();
+  return result;
+}
+
+async function finalizeGlobalReport(db: DatabaseExecutor, user: AuthUser, siteId: number, workDate: string) {
+  if (user.role === "foreman") {
+    throw new PlacementRequestError("Прораб сдаёт только свою часть отчёта.", 403, "GLOBAL_FINALIZE_FORBIDDEN");
+  }
+  await db.prepare(`INSERT INTO placement_report_days (site_id, work_date, submitted_by, submitted_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT (site_id, work_date) DO UPDATE SET submitted_by = EXCLUDED.submitted_by, submitted_at = CURRENT_TIMESTAMP
+    RETURNING site_id`).bind(siteId, workDate, user.id).all();
 }
 
 async function validateEmployeeDirectoryValues(employmentType: string, department: string, position: string, projectSiteId: number) {
@@ -984,41 +1255,65 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const requestedSiteId = asPositiveInteger(url.searchParams.get("siteId")) ?? 1;
     const siteId = authUser.role === "foreman" ? authUser.assignedSiteId ?? requestedSiteId : requestedSiteId;
-    const workDate = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10);
+    const responsibleUserId = authUser.role === "foreman" ? authUser.id : undefined;
+    const workDate = url.searchParams.get("date") ?? todayInMoscow();
     if (!validDate(workDate)) throw new Error("Некорректная дата отчёта.");
     const rangeStart = url.searchParams.get("rangeStart") ?? workDate;
     const rangeEnd = url.searchParams.get("rangeEnd") ?? workDate;
     if (!validDate(rangeStart) || !validDate(rangeEnd) || rangeStart > rangeEnd) throw new Error("Некорректный диапазон дат отчёта.");
     const scope = url.searchParams.get("scope");
+    if (scope === "carryover") {
+      const previous = authUser.role === "foreman"
+        ? await env.DB.prepare(`SELECT work_date AS workDate
+          FROM placement_report_contributions
+          WHERE site_id = ? AND foreman_id = ? AND status = 'submitted' AND work_date < ?
+          ORDER BY work_date DESC LIMIT 1`).bind(siteId, authUser.id, workDate).first<{ workDate: string }>()
+        : await env.DB.prepare(`SELECT work_date AS workDate
+          FROM placement_report_days
+          WHERE site_id = ? AND work_date < ?
+          ORDER BY work_date DESC LIMIT 1`).bind(siteId, workDate).first<{ workDate: string }>();
+      if (!previous) return Response.json({ sourceDate: null, entries: [] });
+      const entries = await placementEntriesStatement(siteId, previous.workDate, responsibleUserId).all();
+      return Response.json({ sourceDate: previous.workDate, entries: entries.results });
+    }
     if (scope === "entries") {
-      const [entries, filledDates, reportSubmission] = await env.DB.readBatch([
-        placementEntriesStatement(siteId, workDate),
-        filledDatesStatement(siteId, rangeStart, rangeEnd),
-        reportSubmissionStatement(siteId, workDate),
+      const [entries, filledDates, reportSubmission, employeeUsage, foremanProgress, timesheetMarks] = await env.DB.readBatch([
+        placementEntriesStatement(siteId, workDate, responsibleUserId),
+        filledDatesStatement(siteId, rangeStart, rangeEnd, responsibleUserId),
+        reportSubmissionStatement(siteId, workDate, responsibleUserId),
+        employeeUsageStatement(workDate),
+        foremanProgressStatement(siteId, workDate),
+        reportTimesheetMarksStatement(siteId, workDate),
       ]);
       return Response.json({
         entries: entries.results,
         filledDates: filledDates.results.map((row) => (row as { workDate: string }).workDate),
         reportSubmitted: Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
+        employeeUsage: employeeUsage.results,
+        foremanProgress: foremanProgress.results,
+        timesheetMarks: timesheetMarks.results,
       });
     }
     if (scope === "workspace") {
-      const [sites, reportEmployees, placementEmployees, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, reportSubmission] = await env.DB.readBatch([
+      const [sites, reportEmployees, placementEmployees, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, reportSubmission, employeeUsage, foremanProgress, timesheetMarks] = await env.DB.readBatch([
         env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
         reportEmployeesStatement(),
         env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
           e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
           epa.site_id AS siteId, s.name AS siteName
           FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
-          WHERE e.active = 1 AND e.availability_status = 'on_site' AND e.sync_error IS NULL AND epa.site_id = ? ORDER BY e.full_name`).bind(siteId),
+          WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.full_name`).bind(siteId),
         env.DB.prepare("SELECT id, name FROM shifts WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
         env.DB.prepare("SELECT id, name FROM zones WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
         env.DB.prepare("SELECT id, name FROM main_work_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
         env.DB.prepare("SELECT id, name FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
         env.DB.prepare("SELECT id, name FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
-        placementEntriesStatement(siteId, workDate),
-        filledDatesStatement(siteId, rangeStart, rangeEnd),
-        reportSubmissionStatement(siteId, workDate),
+        placementEntriesStatement(siteId, workDate, responsibleUserId),
+        filledDatesStatement(siteId, rangeStart, rangeEnd, responsibleUserId),
+        reportSubmissionStatement(siteId, workDate, responsibleUserId),
+        employeeUsageStatement(workDate),
+        foremanProgressStatement(siteId, workDate),
+        reportTimesheetMarksStatement(siteId, workDate),
       ]);
       return Response.json({
         sites: canViewAllProjects(authUser.role) ? sites.results : sites.results.filter((site) => (site as { id: number }).id === siteId),
@@ -1038,10 +1333,13 @@ export async function GET(request: Request) {
         entries: entries.results,
         filledDates: filledDates.results.map((row) => (row as { workDate: string }).workDate),
         reportSubmitted: Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
+        employeeUsage: employeeUsage.results,
+        foremanProgress: foremanProgress.results,
+        timesheetMarks: timesheetMarks.results,
         users: [],
       });
     }
-    const [sites, employees, reportEmployees, placementEmployees, projectEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, reportSubmission, users, syncStatus, bitrix24ActionLimits] = await env.DB.readBatch([
+    const [sites, employees, reportEmployees, placementEmployees, projectEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, reportSubmission, users, syncStatus, bitrix24ActionLimits, employeeUsage, foremanProgress, timesheetMarks] = await env.DB.readBatch([
       env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
       env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
         e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError, e.last_synced_at AS lastSyncedAt,
@@ -1049,7 +1347,7 @@ export async function GET(request: Request) {
         FROM employees e
         LEFT JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1
         LEFT JOIN sites assigned_site ON assigned_site.id = epa.site_id AND assigned_site.active = 1
-        WHERE e.active = 1 OR e.source = 'bitrix24'
+        WHERE e.active = 1
         GROUP BY e.id, e.full_name, e.employment_type, e.department, e.position, e.source, e.bitrix24_stage, e.availability_status, e.sync_error, e.last_synced_at
         ORDER BY e.full_name`),
       reportEmployeesStatement(),
@@ -1057,7 +1355,7 @@ export async function GET(request: Request) {
         e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
         epa.site_id AS siteId, s.name AS siteName
         FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
-        WHERE e.active = 1 AND e.availability_status = 'on_site' AND e.sync_error IS NULL AND epa.site_id = ? ORDER BY e.full_name`).bind(siteId),
+        WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.full_name`).bind(siteId),
       env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
         e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
         epa.site_id AS siteId, s.name AS siteName
@@ -1072,12 +1370,15 @@ export async function GET(request: Request) {
       env.DB.prepare("SELECT id, name FROM main_work_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
       env.DB.prepare("SELECT id, name FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
       env.DB.prepare("SELECT id, name FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
-      placementEntriesStatement(siteId, workDate),
-      filledDatesStatement(siteId, rangeStart, rangeEnd),
-      reportSubmissionStatement(siteId, workDate),
+      placementEntriesStatement(siteId, workDate, responsibleUserId),
+      filledDatesStatement(siteId, rangeStart, rangeEnd, responsibleUserId),
+      reportSubmissionStatement(siteId, workDate, responsibleUserId),
       env.DB.prepare("SELECT id, full_name AS fullName, email, CASE WHEN role = 'office' THEN 'superadmin' ELSE role END AS role, assigned_site_id AS assignedSiteId, CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END AS status FROM app_users WHERE active = 1 ORDER BY full_name"),
       env.DB.prepare("SELECT id, status, started_at AS startedAt, completed_at AS completedAt, summary, error_text AS errorText FROM employee_sync_runs ORDER BY id DESC LIMIT 1"),
       env.DB.prepare("SELECT action_key AS actionKey, last_started_at AS lastStartedAt FROM bitrix24_action_limits WHERE action_key IN ('inspect-bitrix24', 'sync-bitrix24')"),
+      employeeUsageStatement(workDate),
+      foremanProgressStatement(siteId, workDate),
+      reportTimesheetMarksStatement(siteId, workDate),
     ]);
     return Response.json({
       sites: canViewAllProjects(authUser.role) ? sites.results : sites.results.filter((site) => (site as { id: number }).id === siteId),
@@ -1097,6 +1398,9 @@ export async function GET(request: Request) {
       entries: entries.results,
       filledDates: filledDates.results.map((row) => (row as { workDate: string }).workDate),
       reportSubmitted: Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
+      employeeUsage: employeeUsage.results,
+      foremanProgress: foremanProgress.results,
+      timesheetMarks: timesheetMarks.results,
       users: canViewAllProjects(authUser.role) ? users.results : [],
       syncStatus: syncStatus.results[0] ?? null,
       bitrix24Cooldowns: canManageBitrix24(authUser.role) ? mapBitrix24Cooldowns(bitrix24ActionLimits.results as Bitrix24ActionLimitRow[]) : undefined,
@@ -1126,6 +1430,10 @@ export async function POST(request: Request) {
       const cooldown = await reserveBitrix24Action(payload.action);
       const sourceSnapshot = await fetchBitrixEmployeeSnapshot();
       const snapshot = selectBitrixEmployeesForImport(sourceSnapshot);
+      const localSnapshot = await env.DB.prepare(`SELECT bitrix24_id AS bitrix24Id, full_name AS fullName,
+        employment_type AS employmentType, department, position, bitrix24_stage AS bitrix24Stage
+        FROM employees WHERE active = 1 AND bitrix24_id IS NOT NULL`).all<ExistingBitrixEmployee>();
+      const comparison = compareBitrixEmployees(snapshot, localSnapshot.results, sourceSnapshot);
       const selectedIds = new Set(snapshot.map((employee) => employee.bitrix24Id));
       const excluded = sourceSnapshot.filter((employee) => !selectedIds.has(employee.bitrix24Id));
       const countValues = (values: string[]) => Object.entries(values.reduce<Record<string, number>>((counts, value) => {
@@ -1134,6 +1442,12 @@ export async function POST(request: Request) {
         return counts;
       }, {})).sort(([left], [right]) => left.localeCompare(right, "ru-RU"));
       return Response.json({
+        status: comparison.differences.length ? "mismatch" : "ok",
+        checkedAt: new Date().toISOString(),
+        compared: comparison.compared,
+        matched: comparison.matched,
+        differences: comparison.differences.slice(0, 100),
+        totalDifferences: comparison.differences.length,
         sourceReceived: sourceSnapshot.length,
         received: snapshot.length,
         excluded: excluded.length,
@@ -1178,7 +1492,7 @@ export async function POST(request: Request) {
       const siteId = asPositiveInteger(payload.siteId);
       if (!employeeId || !siteId) throw new Error("Выберите сотрудника и проект.");
       const [employee, site] = await env.DB.batch([
-        env.DB.prepare("SELECT id FROM employees WHERE id = ? AND active = 1 AND source <> 'bitrix24'").bind(employeeId),
+        env.DB.prepare("SELECT id FROM employees WHERE id = ? AND active = 1").bind(employeeId),
         env.DB.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(siteId),
       ]);
       if (!employee.results.length || !site.results.length) throw new Error("Сотрудник или проект не найден.");
@@ -1219,14 +1533,14 @@ export async function POST(request: Request) {
       if (!rows.length || rows.length > 2000) throw new Error("В файле должно быть от 1 до 2000 сотрудников.");
       const [sitesResult, employeesResult] = await env.DB.batch([
         env.DB.prepare("SELECT id, code, name FROM sites WHERE active = 1"),
-        env.DB.prepare("SELECT id, full_name AS fullName, source FROM employees WHERE active = 1"),
+        env.DB.prepare("SELECT id, full_name AS fullName FROM employees WHERE active = 1"),
       ]);
       const sitesByKey = new Map<string, number>();
       for (const site of sitesResult.results as Array<{ id: number; code: string; name: string }>) {
         sitesByKey.set(site.code.trim().toLocaleLowerCase("ru-RU"), site.id);
         sitesByKey.set(site.name.trim().toLocaleLowerCase("ru-RU"), site.id);
       }
-      const employeesByName = new Map((employeesResult.results as Array<{ id: number; fullName: string; source: string }>).map((employee) => [employee.fullName.trim().toLocaleLowerCase("ru-RU"), employee]));
+      const employeesByName = new Map((employeesResult.results as Array<{ id: number; fullName: string }>).map((employee) => [employee.fullName.trim().toLocaleLowerCase("ru-RU"), employee]));
       const importedNames = new Set<string>();
       const validatedRows = rows.map((row, index) => {
         const fullName = row.fullName?.trim() ?? "";
@@ -1237,7 +1551,6 @@ export async function POST(request: Request) {
         if (!fullName || !employmentType || !department || !position || !projectNames.length) throw new Error(`Строка ${index + 1}: заполните ФИО, тип, отдел, должность и проект.`);
         const normalizedName = fullName.toLocaleLowerCase("ru-RU");
         if (importedNames.has(normalizedName)) throw new Error(`Строка ${index + 1}: сотрудник «${fullName}» повторяется в файле.`);
-        if (employeesByName.get(normalizedName)?.source === "bitrix24") throw new Error(`Строка ${index + 1}: сотрудник «${fullName}» управляется Битрикс24 и не может быть изменён импортом.`);
         importedNames.add(normalizedName);
         const unknownProjects = projectNames.filter((name) => !sitesByKey.has(name.toLocaleLowerCase("ru-RU")));
         if (unknownProjects.length) throw new Error(`Строка ${index + 1}: ${unknownProjects.length === 1 ? "проект" : "проекты"} «${unknownProjects.join("», «")}» не найдены.`);
@@ -1247,7 +1560,7 @@ export async function POST(request: Request) {
       const employeeStatements = validatedRows.map((row) => {
         const existingId = employeesByName.get(row.normalizedName)?.id;
         return existingId
-          ? env.DB.prepare("UPDATE employees SET employment_type = ?, department = ?, position = ?, site_id = ?, source = 'excel' WHERE id = ?").bind(row.employmentType, row.department, row.position, row.siteIds[0], existingId)
+          ? env.DB.prepare("UPDATE employees SET employment_type = ?, department = ?, position = ?, site_id = ? WHERE id = ?").bind(row.employmentType, row.department, row.position, row.siteIds[0], existingId)
           : env.DB.prepare("INSERT INTO employees (full_name, employment_type, department, position, source, site_id) VALUES (?, ?, ?, ?, 'excel', ?)").bind(row.fullName, row.employmentType, row.department, row.position, row.siteIds[0]);
       });
       for (let offset = 0; offset < employeeStatements.length; offset += 100) await env.DB.batch(employeeStatements.slice(offset, offset + 100));
@@ -1346,25 +1659,41 @@ export async function POST(request: Request) {
       return Response.json({ id: result.meta.last_row_id }, { status: 201 });
     }
     if (Array.isArray(payload.entries)) {
-      const rows = await validateBulkPayloads(payload.entries);
-      for (let offset = 0; offset < rows.length; offset += 100) {
-        await env.DB.batch(rows.slice(offset, offset + 100).map((data) => env.DB.prepare(`INSERT INTO placement_entries
-          (site_id, work_date, employee_id, shift_id, zone_id, main_work_type_id, subwork_type_id, note, master_id, hours, position_snapshot,
-           employee_name_snapshot, employment_type_snapshot, department_snapshot, master_name_snapshot)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
-            data.employeeName, data.employmentType, data.department, data.masterName)));
-      }
-      return Response.json({ count: rows.length }, { status: 201 });
+      const result = await env.DB.transaction(async (db) => {
+        await lockPlacementHours(db, payload.entries ?? []);
+        const rows = await validateBulkPayloads(db, payload.entries ?? []);
+        const responsibleUsers = await resolveResponsibleUsers(db, authUser, payload.entries ?? []);
+        for (let offset = 0; offset < rows.length; offset += 100) {
+          await db.batch(rows.slice(offset, offset + 100).map((data, index) => db.prepare(`INSERT INTO placement_entries
+            (site_id, work_date, employee_id, shift_id, zone_id, main_work_type_id, subwork_type_id, note, master_id, hours, position_snapshot,
+             employee_name_snapshot, employment_type_snapshot, department_snapshot, master_name_snapshot, created_by,
+             responsible_user_id, created_by_user_id, updated_by_user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
+            .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
+              data.employeeName, data.employmentType, data.department, data.masterName, authUser.fullName,
+              responsibleUsers[offset + index], authUser.id, authUser.id)));
+        }
+        const contribution = await touchForemanContribution(db, authUser, rows[0].siteId, rows[0].workDate, false);
+        return { count: rows.length, contribution };
+      });
+      return Response.json(result, { status: 201 });
     }
-    const data = await validatePayload(payload);
-    const result = await env.DB.prepare(`INSERT INTO placement_entries
-      (site_id, work_date, employee_id, shift_id, zone_id, main_work_type_id, subwork_type_id, note, master_id, hours, position_snapshot,
-       employee_name_snapshot, employment_type_snapshot, department_snapshot, master_name_snapshot)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
-        data.employeeName, data.employmentType, data.department, data.masterName).run();
-    return Response.json({ id: result.meta.last_row_id }, { status: 201 });
+    const result = await env.DB.transaction(async (db) => {
+      await lockPlacementHours(db, [payload]);
+      const data = await validatePayload(db, payload);
+      const [responsibleUserId] = await resolveResponsibleUsers(db, authUser, [payload]);
+      const insert = await db.prepare(`INSERT INTO placement_entries
+        (site_id, work_date, employee_id, shift_id, zone_id, main_work_type_id, subwork_type_id, note, master_id, hours, position_snapshot,
+         employee_name_snapshot, employment_type_snapshot, department_snapshot, master_name_snapshot, created_by,
+         responsible_user_id, created_by_user_id, updated_by_user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
+        .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
+          data.employeeName, data.employmentType, data.department, data.masterName, authUser.fullName,
+          responsibleUserId, authUser.id, authUser.id).first<{ id: number }>();
+      const contribution = await touchForemanContribution(db, authUser, data.siteId, data.workDate, false);
+      return { id: insert?.id ?? null, contribution };
+    });
+    return Response.json(result, { status: 201 });
   } catch (error) {
     if (error instanceof Bitrix24CooldownError) {
       return Response.json({ error: error.message, cooldown: error.cooldown }, {
@@ -1372,7 +1701,7 @@ export async function POST(request: Request) {
         headers: { "Retry-After": String(error.cooldown.remainingSeconds) },
       });
     }
-    return Response.json({ error: error instanceof Error ? error.message : "Не удалось сохранить строку." }, { status: 400 });
+    return placementErrorResponse(error, "Не удалось сохранить строку.");
   }
 }
 
@@ -1382,18 +1711,28 @@ export async function PATCH(request: Request) {
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
     await ensureDatabaseInitialized();
-    const payload = (await request.json()) as EntryPayload & UserPayload & { entries?: EntryPayload[]; newEntries?: EntryPayload[]; finalizeReport?: ReportFinalizationPayload };
+    const payload = (await request.json()) as EntryPayload & UserPayload & {
+      entries?: EntryPayload[];
+      newEntries?: EntryPayload[];
+      submitOwnReport?: ReportFinalizationPayload;
+      finalizeReport?: ReportFinalizationPayload;
+    };
     const placementUpdates = Array.isArray(payload.entries) ? payload.entries : null;
     const placementCreates = Array.isArray(payload.newEntries) ? payload.newEntries : null;
+    const ownSubmission = payload.submitOwnReport;
     const finalization = payload.finalizeReport;
+    const ownSubmissionSiteId = ownSubmission ? asPositiveInteger(ownSubmission.siteId) : null;
+    const ownSubmissionWorkDate = ownSubmission?.workDate;
     const finalizationSiteId = finalization ? asPositiveInteger(finalization.siteId) : null;
     const finalizationWorkDate = finalization?.workDate;
     if (payload.action && !canRunAction(authUser.role, payload)) return forbidden();
     if (!payload.action) {
       const placementRows = placementUpdates || placementCreates
         ? [...(placementUpdates ?? []), ...(placementCreates ?? [])]
-        : [payload];
+        : ownSubmission || finalization ? [] : [payload];
       if (placementRows.some((entry) => !canManagePlacement(authUser, asPositiveInteger(entry.siteId) ?? undefined, entry.workDate))) return forbidden();
+      if (ownSubmission && (authUser.role !== "foreman" || !ownSubmissionSiteId || !validDate(ownSubmissionWorkDate) || !canManagePlacement(authUser, ownSubmissionSiteId, ownSubmissionWorkDate))) return forbidden();
+      if (finalization && authUser.role === "foreman") return forbidden();
       if (finalization && (!finalizationSiteId || !validDate(finalizationWorkDate) || !canManagePlacement(authUser, finalizationSiteId, finalizationWorkDate))) return forbidden();
     }
     if (payload.action === "update-user") {
@@ -1430,8 +1769,8 @@ export async function PATCH(request: Request) {
       await validateEmployeeDirectoryValues(employmentType, department, position, projectSiteId);
       const duplicate = await env.DB.prepare("SELECT id FROM employees WHERE full_name = ? AND id <> ? AND active = 1").bind(fullName, employeeId).first();
       if (duplicate) throw new Error("Рабочий с таким ФИО уже существует.");
-      const result = await env.DB.prepare("UPDATE employees SET full_name = ?, employment_type = ?, department = ?, position = ?, site_id = ? WHERE id = ? AND active = 1 AND source <> 'bitrix24'").bind(fullName, employmentType, department, position, projectSiteId, employeeId).run();
-      if (!result.meta.changes) throw new Error("Рабочий не найден или управляется Битрикс24.");
+      const result = await env.DB.prepare("UPDATE employees SET full_name = ?, employment_type = ?, department = ?, position = ?, site_id = ? WHERE id = ? AND active = 1").bind(fullName, employmentType, department, position, projectSiteId, employeeId).run();
+      if (!result.meta.changes) throw new Error("Рабочий не найден.");
       const existingAssignment = await env.DB.prepare("SELECT id FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? ORDER BY id DESC LIMIT 1").bind(employeeId, projectSiteId).first<{ id: number }>();
       if (existingAssignment) await env.DB.prepare("UPDATE employee_project_assignments SET active = 1, end_date = NULL WHERE id = ?").bind(existingAssignment.id).run();
       else await env.DB.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source) VALUES (?, ?, 'manual')").bind(employeeId, projectSiteId).run();
@@ -1449,7 +1788,7 @@ export async function PATCH(request: Request) {
       if (duplicate) throw new Error("Такая должность уже есть в списке.");
       const results = await env.DB.batch([
         env.DB.prepare("UPDATE position_catalog SET employment_type = ?, department = ?, position = ? WHERE id = ? AND active = 1").bind(employmentType, department, position, positionId),
-          env.DB.prepare("UPDATE employees SET employment_type = ?, department = ?, position = ? WHERE employment_type = ? AND department = ? AND position = ? AND active = 1 AND source <> 'bitrix24'").bind(employmentType, department, position, current.employmentType, current.department, current.position),
+          env.DB.prepare("UPDATE employees SET employment_type = ?, department = ?, position = ? WHERE employment_type = ? AND department = ? AND position = ? AND active = 1").bind(employmentType, department, position, current.employmentType, current.department, current.position),
       ]);
       if (!results[0].meta.changes) throw new Error("Должность не найдена.");
       await reconcilePositionCatalogOptions();
@@ -1491,7 +1830,7 @@ export async function PATCH(request: Request) {
         const column = PERSONNEL_COLUMNS[directory.key as keyof typeof PERSONNEL_COLUMNS];
         const updates = await env.DB.batch([
           env.DB.prepare("UPDATE personnel_options SET name = ? WHERE id = ? AND kind = ? AND active = 1").bind(name, directoryId, directory.key),
-          env.DB.prepare(`UPDATE employees SET ${column} = ? WHERE ${column} = ? AND active = 1 AND source <> 'bitrix24'`).bind(name, current.name),
+          env.DB.prepare(`UPDATE employees SET ${column} = ? WHERE ${column} = ? AND active = 1`).bind(name, current.name),
         ]);
         result = updates[0];
       } else {
@@ -1510,54 +1849,80 @@ export async function PATCH(request: Request) {
       if (!result.meta.changes) throw new Error("Прораб не найден.");
       return Response.json({ ok: true });
     }
-    if (placementCreates) {
+    if (placementCreates || ownSubmission || finalization) {
       const updates = placementUpdates ?? [];
-      if (!updates.length && !placementCreates.length && !finalization) throw new Error("Нет строк для сохранения.");
-      if (updates.length + placementCreates.length > 1000) throw new Error("За один раз можно сохранить не более 1000 строк.");
+      const creates = placementCreates ?? [];
+      if (!updates.length && !creates.length && !ownSubmission && !finalization) throw new Error("Нет строк для сохранения.");
+      if (updates.length + creates.length > 1000) throw new Error("За один раз можно сохранить не более 1000 строк.");
       const ids = updates.map((entry) => asPositiveInteger(entry.id));
       if (ids.some((id) => !id) || new Set(ids).size !== ids.length) throw new Error("Некорректный список строк для изменения.");
       const entryIds = ids as number[];
-      const existing = entryIds.length
-        ? await env.DB.prepare(`SELECT id, site_id AS siteId, work_date AS workDate, employee_id AS employeeId, master_id AS masterId, hours,
-          position_snapshot AS positionSnapshot, employee_name_snapshot AS employeeNameSnapshot,
-          employment_type_snapshot AS employmentTypeSnapshot, department_snapshot AS departmentSnapshot,
-          master_name_snapshot AS masterNameSnapshot
-          FROM placement_entries WHERE id = ANY(?) AND deleted_at IS NULL`).bind(entryIds).all<ExistingPlacementEntry>()
-        : { results: [] as ExistingPlacementEntry[] };
-      if (existing.results.length !== entryIds.length) throw new Error("Одна или несколько строк не найдены.");
-      if (existing.results.some((entry) => !canManagePlacement(authUser, entry.siteId, entry.workDate))) return forbidden();
-      const payloadRows = [...updates, ...placementCreates];
+      const payloadRows = [...updates, ...creates];
       if (finalization && payloadRows.some((entry) => asPositiveInteger(entry.siteId) !== finalizationSiteId || entry.workDate !== finalizationWorkDate)) {
         throw new Error("Сохраняемые строки и подтверждение отчёта относятся к разным объектам или датам.");
       }
-      const rows = payloadRows.length ? await validateBulkPayloads(payloadRows, existing.results) : [];
-      const updateRows = rows.slice(0, updates.length);
-      const createRows = rows.slice(updates.length);
-      let updatedCount = 0;
-      for (let offset = 0; offset < updateRows.length; offset += 100) {
-        const results = await env.DB.batch(updateRows.slice(offset, offset + 100).map((data, index) => env.DB.prepare(`UPDATE placement_entries SET site_id = ?, work_date = ?, employee_id = ?, shift_id = ?, zone_id = ?,
-          main_work_type_id = ?, subwork_type_id = ?, note = ?, master_id = ?, hours = ?, position_snapshot = ?,
-          employee_name_snapshot = ?, employment_type_snapshot = ?, department_snapshot = ?, master_name_snapshot = ?, updated_at = CURRENT_TIMESTAMP
-          WHERE id = ? AND deleted_at IS NULL`)
-          .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
-            data.employeeName, data.employmentType, data.department, data.masterName, entryIds[offset + index])));
-        updatedCount += results.reduce((sum, result) => sum + Number(result.meta.changes ?? 0), 0);
+      if (ownSubmission && payloadRows.some((entry) => asPositiveInteger(entry.siteId) !== ownSubmissionSiteId || entry.workDate !== ownSubmissionWorkDate)) {
+        throw new Error("Сохраняемые строки и сдача части отчёта относятся к разным объектам или датам.");
       }
-      for (let offset = 0; offset < createRows.length; offset += 100) {
-        await env.DB.batch(createRows.slice(offset, offset + 100).map((data) => env.DB.prepare(`INSERT INTO placement_entries
-          (site_id, work_date, employee_id, shift_id, zone_id, main_work_type_id, subwork_type_id, note, master_id, hours, position_snapshot,
-           employee_name_snapshot, employment_type_snapshot, department_snapshot, master_name_snapshot)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
-            data.employeeName, data.employmentType, data.department, data.masterName)));
-      }
-      if (finalization && finalizationSiteId && finalizationWorkDate) {
-        await env.DB.prepare(`INSERT INTO placement_report_days (site_id, work_date, submitted_by, submitted_at)
-          VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-          ON CONFLICT (site_id, work_date) DO UPDATE SET submitted_by = EXCLUDED.submitted_by, submitted_at = CURRENT_TIMESTAMP`)
-          .bind(finalizationSiteId, finalizationWorkDate, authUser.id).run();
-      }
-      return Response.json({ ok: true, updatedCount, createdCount: createRows.length, reportSubmitted: Boolean(finalization) });
+      const result = await env.DB.transaction(async (db) => {
+        const existingResult = entryIds.length
+          ? await existingPlacementEntriesStatement(db, entryIds, true).all<ExistingPlacementEntry>()
+          : { results: [] as ExistingPlacementEntry[] };
+        if (existingResult.results.length !== entryIds.length) throw new Error("Одна или несколько строк не найдены.");
+        assertPlacementOwnership(authUser, existingResult.results);
+        assertEntryRevisions(updates, existingResult.results);
+        await lockPlacementHours(db, payloadRows, existingResult.results);
+        const rows = payloadRows.length ? await validateBulkPayloads(db, payloadRows, existingResult.results) : [];
+        const responsibleUsers = await resolveResponsibleUsers(db, authUser, payloadRows, existingResult.results);
+        const updateRows = rows.slice(0, updates.length);
+        const createRows = rows.slice(updates.length);
+        let updatedCount = 0;
+        for (let offset = 0; offset < updateRows.length; offset += 100) {
+          const results = await db.batch(updateRows.slice(offset, offset + 100).map((data, index) => db.prepare(`UPDATE placement_entries SET site_id = ?, work_date = ?, employee_id = ?, shift_id = ?, zone_id = ?,
+            main_work_type_id = ?, subwork_type_id = ?, note = ?, master_id = ?, hours = ?, position_snapshot = ?,
+            employee_name_snapshot = ?, employment_type_snapshot = ?, department_snapshot = ?, master_name_snapshot = ?,
+            responsible_user_id = ?, updated_by_user_id = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND deleted_at IS NULL RETURNING id, revision`)
+            .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
+              data.employeeName, data.employmentType, data.department, data.masterName, responsibleUsers[offset + index], authUser.id, entryIds[offset + index])));
+          updatedCount += results.reduce((sum, updateResult) => sum + Number(updateResult.meta.changes ?? 0), 0);
+        }
+        for (let offset = 0; offset < createRows.length; offset += 100) {
+          await db.batch(createRows.slice(offset, offset + 100).map((data, index) => db.prepare(`INSERT INTO placement_entries
+            (site_id, work_date, employee_id, shift_id, zone_id, main_work_type_id, subwork_type_id, note, master_id, hours, position_snapshot,
+             employee_name_snapshot, employment_type_snapshot, department_snapshot, master_name_snapshot, created_by,
+             responsible_user_id, created_by_user_id, updated_by_user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
+            .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
+              data.employeeName, data.employmentType, data.department, data.masterName, authUser.fullName,
+              responsibleUsers[updates.length + offset + index], authUser.id, authUser.id)));
+        }
+        let contribution = null;
+        if (authUser.role === "foreman") {
+          const contributionSiteId = ownSubmissionSiteId ?? rows[0]?.siteId;
+          const contributionWorkDate = ownSubmissionWorkDate ?? rows[0]?.workDate;
+          if (!contributionSiteId || !contributionWorkDate) throw new Error("Не указан объект или день части отчёта.");
+          contribution = await touchForemanContribution(
+            db,
+            authUser,
+            contributionSiteId,
+            contributionWorkDate,
+            Boolean(ownSubmission),
+            asPositiveInteger(ownSubmission?.revision) ?? undefined,
+          );
+        }
+        if (finalization && finalizationSiteId && finalizationWorkDate) {
+          await finalizeGlobalReport(db, authUser, finalizationSiteId, finalizationWorkDate);
+        }
+        return {
+          ok: true,
+          updatedCount,
+          createdCount: createRows.length,
+          reportSubmitted: authUser.role === "foreman" ? contribution?.status === "submitted" : Boolean(finalization),
+          contribution,
+        };
+      });
+      return Response.json(result);
     }
     if (placementUpdates) {
       if (!placementUpdates.length) throw new Error("Нет строк для изменения.");
@@ -1565,38 +1930,55 @@ export async function PATCH(request: Request) {
       const ids = placementUpdates.map((entry) => asPositiveInteger(entry.id));
       if (ids.some((id) => !id) || new Set(ids).size !== ids.length) throw new Error("Некорректный список строк для изменения.");
       const entryIds = ids as number[];
-      const existing = await env.DB.prepare(`SELECT id, site_id AS siteId, work_date AS workDate, employee_id AS employeeId, master_id AS masterId, hours,
-        position_snapshot AS positionSnapshot, employee_name_snapshot AS employeeNameSnapshot,
-        employment_type_snapshot AS employmentTypeSnapshot, department_snapshot AS departmentSnapshot,
-        master_name_snapshot AS masterNameSnapshot
-        FROM placement_entries WHERE id = ANY(?) AND deleted_at IS NULL`).bind(entryIds).all<ExistingPlacementEntry>();
-      if (existing.results.length !== entryIds.length) throw new Error("Одна или несколько строк не найдены.");
-      if (existing.results.some((entry) => !canManagePlacement(authUser, entry.siteId, entry.workDate))) return forbidden();
-      const rows = await validateBulkPayloads(placementUpdates, existing.results);
-      let changed = 0;
-      for (let offset = 0; offset < rows.length; offset += 100) {
-        const results = await env.DB.batch(rows.slice(offset, offset + 100).map((data, index) => env.DB.prepare(`UPDATE placement_entries SET site_id = ?, work_date = ?, employee_id = ?, shift_id = ?, zone_id = ?,
-          main_work_type_id = ?, subwork_type_id = ?, note = ?, master_id = ?, hours = ?, position_snapshot = ?,
-          employee_name_snapshot = ?, employment_type_snapshot = ?, department_snapshot = ?, master_name_snapshot = ?, updated_at = CURRENT_TIMESTAMP
-          WHERE id = ? AND deleted_at IS NULL`)
-          .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
-            data.employeeName, data.employmentType, data.department, data.masterName, entryIds[offset + index])));
-        changed += results.reduce((sum, result) => sum + Number(result.meta.changes ?? 0), 0);
-      }
-      return Response.json({ ok: true, count: changed });
+      const result = await env.DB.transaction(async (db) => {
+        const existing = await existingPlacementEntriesStatement(db, entryIds, true).all<ExistingPlacementEntry>();
+        if (existing.results.length !== entryIds.length) throw new Error("Одна или несколько строк не найдены.");
+        assertPlacementOwnership(authUser, existing.results);
+        assertEntryRevisions(placementUpdates, existing.results);
+        await lockPlacementHours(db, placementUpdates, existing.results);
+        const rows = await validateBulkPayloads(db, placementUpdates, existing.results);
+        const responsibleUsers = await resolveResponsibleUsers(db, authUser, placementUpdates, existing.results);
+        let changed = 0;
+        for (let offset = 0; offset < rows.length; offset += 100) {
+          const results = await db.batch(rows.slice(offset, offset + 100).map((data, index) => db.prepare(`UPDATE placement_entries SET site_id = ?, work_date = ?, employee_id = ?, shift_id = ?, zone_id = ?,
+            main_work_type_id = ?, subwork_type_id = ?, note = ?, master_id = ?, hours = ?, position_snapshot = ?,
+            employee_name_snapshot = ?, employment_type_snapshot = ?, department_snapshot = ?, master_name_snapshot = ?,
+            responsible_user_id = ?, updated_by_user_id = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? AND deleted_at IS NULL RETURNING id, revision`)
+            .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
+              data.employeeName, data.employmentType, data.department, data.masterName, responsibleUsers[offset + index], authUser.id, entryIds[offset + index])));
+          changed += results.reduce((sum, updateResult) => sum + Number(updateResult.meta.changes ?? 0), 0);
+        }
+        const contribution = await touchForemanContribution(db, authUser, rows[0].siteId, rows[0].workDate, false);
+        return { ok: true, count: changed, contribution };
+      });
+      return Response.json(result);
     }
     const id = asPositiveInteger(payload.id);
     if (!id) throw new Error("Не указана строка для изменения.");
-    const data = await validatePayload(payload, id);
-    await env.DB.prepare(`UPDATE placement_entries SET site_id = ?, work_date = ?, employee_id = ?, shift_id = ?, zone_id = ?,
-      main_work_type_id = ?, subwork_type_id = ?, note = ?, master_id = ?, hours = ?, position_snapshot = ?,
-      employee_name_snapshot = ?, employment_type_snapshot = ?, department_snapshot = ?, master_name_snapshot = ?, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ? AND deleted_at IS NULL`)
-      .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
-        data.employeeName, data.employmentType, data.department, data.masterName, id).run();
-    return Response.json({ ok: true });
+    const result = await env.DB.transaction(async (db) => {
+      const existingResult = await existingPlacementEntriesStatement(db, [id], true).all<ExistingPlacementEntry>();
+      const existing = existingResult.results[0];
+      if (!existing) throw new Error("Строка не найдена.");
+      assertPlacementOwnership(authUser, [existing]);
+      assertEntryRevisions([payload], [existing]);
+      await lockPlacementHours(db, [payload], [existing]);
+      const data = await validatePayload(db, payload, id);
+      const [responsibleUserId] = await resolveResponsibleUsers(db, authUser, [payload], [existing]);
+      const update = await db.prepare(`UPDATE placement_entries SET site_id = ?, work_date = ?, employee_id = ?, shift_id = ?, zone_id = ?,
+        main_work_type_id = ?, subwork_type_id = ?, note = ?, master_id = ?, hours = ?, position_snapshot = ?,
+        employee_name_snapshot = ?, employment_type_snapshot = ?, department_snapshot = ?, master_name_snapshot = ?,
+        responsible_user_id = ?, updated_by_user_id = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND deleted_at IS NULL RETURNING id, revision`)
+        .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
+          data.employeeName, data.employmentType, data.department, data.masterName, responsibleUserId, authUser.id, id)
+        .first<{ id: number; revision: number }>();
+      const contribution = await touchForemanContribution(db, authUser, data.siteId, data.workDate, false);
+      return { ok: true, revision: update?.revision, contribution };
+    });
+    return Response.json(result);
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Не удалось изменить строку." }, { status: 400 });
+    return placementErrorResponse(error, "Не удалось изменить строку.");
   }
 }
 
@@ -1616,12 +1998,23 @@ export async function DELETE(request: Request) {
       const ids = [...new Set((body?.ids ?? [url.searchParams.get("id")]).map(asPositiveInteger).filter((id): id is number => id !== null))];
       if (!ids.length) throw new Error("Не указаны строки для удаления.");
       if (ids.length > 5_000) throw new Error("За один раз можно удалить не более 5000 строк.");
-      if (authUser.role === "foreman") {
-        const entries = await env.DB.prepare("SELECT site_id AS siteId, work_date AS workDate FROM placement_entries WHERE id = ANY(?) AND deleted_at IS NULL").bind(ids).all<{ siteId: number; workDate: string }>();
-        if (entries.results.length !== ids.length || entries.results.some((entry) => !canManagePlacement(authUser, entry.siteId, entry.workDate))) return forbidden();
-      }
-      const result = await env.DB.prepare("UPDATE placement_entries SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ANY(?) AND deleted_at IS NULL").bind(ids).run();
-      return Response.json({ ok: true, count: result.meta.changes });
+      const result = await env.DB.transaction(async (db) => {
+        const entries = await existingPlacementEntriesStatement(db, ids, true).all<ExistingPlacementEntry>();
+        if (entries.results.length !== ids.length) throw new Error("Одна или несколько строк не найдены.");
+        assertPlacementOwnership(authUser, entries.results);
+        await lockPlacementHours(db, [], entries.results);
+        const deletion = await db.prepare(`UPDATE placement_entries
+          SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
+            updated_by_user_id = ?, revision = revision + 1
+          WHERE id = ANY(?) AND deleted_at IS NULL RETURNING id`)
+          .bind(authUser.id, ids).all();
+        const first = entries.results[0];
+        const contribution = first
+          ? await touchForemanContribution(db, authUser, first.siteId, first.workDate, false, undefined, true)
+          : null;
+        return { ok: true, count: deletion.meta.changes, contribution };
+      });
+      return Response.json(result);
     }
     if (entity === "employee") {
       const body = request.headers.get("content-type")?.includes("application/json")
@@ -1630,8 +2023,6 @@ export async function DELETE(request: Request) {
       const ids = [...new Set((body?.ids ?? [url.searchParams.get("id")]).map(asPositiveInteger).filter((value): value is number => value !== null))];
       if (!ids.length) throw new Error("Выберите хотя бы одного сотрудника.");
       if (ids.length > 5_000) throw new Error("За один раз можно удалить не более 5000 сотрудников.");
-      const managedByBitrix = await env.DB.prepare("SELECT COUNT(*) AS count FROM employees WHERE id = ANY(?) AND source = 'bitrix24'").bind(ids).first<{ count: number }>();
-      if (Number(managedByBitrix?.count ?? 0) > 0) throw new Error("Сотрудников Битрикс24 нельзя удалить вручную. Их статус обновляется при актуализации.");
       const employeesResult = await env.DB.prepare("SELECT id, full_name AS fullName FROM employees WHERE id = ANY(?) AND active = 1").bind(ids).all<{ id: number; fullName: string }>();
       const employees = employeesResult.results as Array<{ id: number; fullName: string }>;
       if (employees.length !== ids.length) {
@@ -1669,8 +2060,8 @@ export async function DELETE(request: Request) {
       if (!siteId) throw new Error("Не указан проект сотрудника.");
       const result = await env.DB.prepare(`UPDATE employee_project_assignments SET active = 0, end_date = DATE('now')
         WHERE employee_id = ? AND site_id = ? AND active = 1
-          AND EXISTS (SELECT 1 FROM employees WHERE id = ? AND source <> 'bitrix24')`).bind(id, siteId, id).run();
-      if (!result.meta.changes) throw new Error("Сотрудник не относится к проекту или управляется Битрикс24.");
+          AND EXISTS (SELECT 1 FROM employees WHERE id = ? AND active = 1)`).bind(id, siteId, id).run();
+      if (!result.meta.changes) throw new Error("Сотрудник не относится к проекту.");
       await env.DB.prepare(`UPDATE employees SET site_id = (
         SELECT MIN(site_id) FROM employee_project_assignments WHERE employee_id = ? AND active = 1
       ) WHERE id = ? AND site_id = ?`).bind(id, id, siteId).run();
@@ -1724,6 +2115,6 @@ export async function DELETE(request: Request) {
     }
     throw new Error("Неизвестный тип данных для удаления.");
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Не удалось удалить строку." }, { status: 400 });
+    return placementErrorResponse(error, "Не удалось удалить строку.");
   }
 }

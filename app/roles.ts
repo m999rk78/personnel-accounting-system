@@ -33,3 +33,7 @@ export function canEditProjectSettings(role: UserRole) {
 export function canViewAllProjects(role: UserRole) {
   return role !== "foreman";
 }
+
+export function canAccessTimesheets(role: UserRole) {
+  return role === "engineer" || role === "superadmin";
+}

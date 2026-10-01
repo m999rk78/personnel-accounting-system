@@ -125,6 +125,9 @@ test("keeps business validation in the data API", async () => {
   assert.match(api, /validateEmployeeDirectoryValues/);
   assert.match(api, /position_catalog WHERE employment_type = \? AND department = \? AND position = \? AND active = 1/);
   assert.match(api, /Сочетание типа, отдела и должности отсутствует в справочнике должностей/);
+  const reportDayWrites = [...api.matchAll(/INSERT INTO placement_report_days[\s\S]*?(?:\.all|\.run)\(\)/g)];
+  assert.equal(reportDayWrites.length, 2);
+  assert.ok(reportDayWrites.every(([statement]) => statement.endsWith(".all()")), "composite report-day writes must not request a nonexistent id column");
 
   const app = await readFile(
     new URL("../app/PersonnelApp.tsx", import.meta.url),
@@ -218,6 +221,9 @@ test("uses the shared accessible select instead of native dropdowns", async () =
   assert.match(select, /role="option"/);
   assert.match(select, /aria-selected=\{selected\}/);
   assert.match(select, /event\.key === "ArrowDown"/);
+  assert.match(select, /role="searchbox"/);
+  assert.match(select, /const filteredOptions = useMemo/);
+  assert.match(grids, /function DraftSelect[\s\S]*searchable options=/);
   assert.doesNotMatch(grids, /<select\b/);
   assert.doesNotMatch(filters, /<select\b/);
   assert.match(styles, /\.custom-select-menu/);
@@ -231,6 +237,10 @@ test("keeps the employee grid compact without duplicated filter controls", async
 
   assert.match(grid, /className="employee-performance-frame"/);
   assert.match(grid, /field: "fullName", headerName: "ФИО"/);
+  assert.match(grid, /const \[searchQuery, setSearchQuery\] = useState\(""\)/);
+  assert.match(grid, /onFocus=\{\(event\) => \{[\s\S]*const input = event\.currentTarget[\s\S]*requestAnimationFrame\(\(\) => input\.select\(\)\)/);
+  assert.match(grid, /event\.key === "ArrowDown"[\s\S]*event\.stopPropagation\(\)/);
+  assert.match(grid, /onClick=\{\(\) => setOpen\(true\)\}/);
   assert.match(grid, /field: "employmentType", headerName: "Тип"/);
   assert.match(grid, /field: "department", headerName: "Отдел"/);
   assert.match(grid, /field: "position", headerName: "Должность"/);
@@ -240,7 +250,7 @@ test("keeps the employee grid compact without duplicated filter controls", async
   assert.match(grid, /if \(!row \|\| row\.kind === "entry"\) return null/);
   assert.doesNotMatch(grid, /headerName: "Сотрудник"/);
   assert.doesNotMatch(grid, /headerName: "Кадровые данные"/);
-  assert.doesNotMatch(grid, /headerName: "Назначение"/);
+  assert.doesNotMatch(grid, /field: "siteName", headerName: "Назначение"/);
   assert.doesNotMatch(grid, /quickFilterText=/);
   assert.doesNotMatch(grid, /floatingFilterComponent:/);
   assert.doesNotMatch(grid, /floatingFiltersHeight=/);
@@ -299,8 +309,8 @@ test("separates full-row editing from validated bulk editing and can clear the s
   assert.match(grid, /fullRowEditIds/);
   assert.match(grid, /const showEmployeeRowCancelActions = false/);
   assert.match(grid, /showEmployeeRowCancelActions && props\.drafts\.length/);
-  assert.match(grid, /const fullRowEditor/);
-  assert.match(grid, /autoOpen=\{activeCellEditor\}/);
+  assert.match(grid, /function EditableCellDisplay/);
+  assert.match(grid, /onSpreadsheetEdit=\{\(\{ row, columnId \}\) => openCellEditor\(row, columnId\)\}/);
   assert.match(styles, /\.employee-selection-actions \.bulk-edit-selection-button/);
   assert.match(styles, /\.employee-footer-base/);
 });
@@ -311,8 +321,9 @@ test("edits rows on double click and provides spreadsheet-style copy and paste",
   const styles = await readFile(new URL("../app/gridFilters.css", import.meta.url), "utf8");
   const globalStyles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
-  assert.match(grid, /onRowDoubleClicked/);
+  assert.match(grid, /!current\.rosterMode && current\.draftRows\.length > 0/);
   assert.match(grid, /onCellDoubleClicked/);
+  assert.match(grid, /onSpreadsheetEdit/);
   assert.match(grid, /activeEditor\?\.rowKey === row\.rowKey/);
   assert.match(grid, /setActiveEditor\(\{ rowKey: row\.rowKey, field \}\)/);
   assert.match(grid, /currentProps\.onEdit\(row\.employee, changes\)/);
@@ -324,15 +335,42 @@ test("edits rows on double click and provides spreadsheet-style copy and paste",
   assert.match(filters, /SpreadsheetPastePayload/);
   assert.match(filters, /onCopy=\{copySelection\}/);
   assert.match(filters, /onPaste=\{pasteSelection\}/);
+  assert.match(filters, /undoSpreadsheetChange/);
+  assert.match(filters, /event\.ctrlKey \|\| event\.metaKey/);
+  assert.match(filters, /rememberCellUndo/);
+  assert.match(filters, /Отменено изменений/);
+  assert.match(filters, /ArrowLeft: \{ row: 0, column: -1 \}/);
+  assert.match(filters, /ArrowRight: \{ row: 0, column: 1 \}/);
+  assert.match(filters, /ArrowUp: \{ row: -1, column: 0 \}/);
+  assert.match(filters, /ArrowDown: \{ row: 1, column: 0 \}/);
+  assert.match(filters, /event\.shiftKey && selectionRef\.current/);
+  assert.match(filters, /api\.ensureIndexVisible\(rowIndex\)/);
+  assert.match(filters, /api\.ensureColumnVisible\(columns\[columnIndex\]\)/);
+  assert.match(filters, /rowId: event\.node\.id/);
+  assert.match(filters, /api\.getRowNode\(current\.rowId\)/);
   assert.match(filters, /event\.key === "Escape"/);
   assert.match(filters, /spreadsheetSelectionResetKey/);
+  assert.match(filters, /spreadsheetFocusRequestKey/);
+  assert.match(filters, /lastSelectionRef/);
+  assert.match(filters, /selectionToRestore/);
+  assert.match(filters, /body\.current\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(filters, /target\.closest\("\.custom-select-menu,\.ag-employee-menu"\)/);
   assert.match(filters, /clearSelectionOutsideGrid/);
+  assert.match(filters, /clearSelectionOnEmptySpace/);
+  assert.match(filters, /onPointerDown=\{clearSelectionOnEmptySpace\}/);
   assert.match(filters, /body\.current\?\.contains\(target\)/);
   assert.match(filters, /sourceRows === 1 \? selectedRows : sourceRows/);
   assert.doesNotMatch(filters, /className="grid-spreadsheet-status"/);
   assert.match(filters, /suppressMovableColumns/);
   assert.match(grid, /suppressMovable: true/);
   assert.match(grid, /onSpreadsheetPaste=\{pasteIntoRow\}/);
+  assert.match(grid, /spreadsheetFocusRequestKey=\{spreadsheetFocusRequestKey\}/);
+  assert.match(grid, /setSpreadsheetFocusRequestKey\(\(key\) => key \+ 1\)/);
+  assert.match(grid, /deferChangeUntilBlur/);
+  assert.match(grid, /if \(!deferChangeUntilBlur\) onChange\(event\.target\.value\)/);
+  assert.match(grid, /event\.key !== "Enter"/);
+  assert.match(grid, /spreadsheetSelectionResetKey=\{rowStructureKey\}/);
+  assert.match(grid, /rowData\.map\(\(row\) => row\.rowKey\)\.sort\(\)\.join\("\|"\)/);
   assert.match(styles, /ag-excel-selected/);
   assert.match(globalStyles, /ag-cell-editor-host/);
   assert.match(globalStyles, /\.ag-employee-grid \.editable-row \.ag-cell \{ background:#fafafa; \}/);
@@ -359,7 +397,7 @@ test("saves edited placement rows as one validated batch", async () => {
   assert.match(app, /entries: editingRows\.map/);
   assert.match(app, /onSaveEditing=\{\(\) => void saveEditing\(\)\}/);
   assert.match(api, /Array\.isArray\(payload\.entries\)/);
-  assert.match(api, /validateBulkPayloads\(placementUpdates, existing\.results\)/);
+  assert.match(api, /validateBulkPayloads\(db, placementUpdates, existing\.results\)/);
   assert.match(api, /existingRows: ExistingPlacementEntry\[\] = \[\]/);
   assert.match(styles, /\.save-edits-button/);
 });
@@ -370,6 +408,7 @@ test("supports bulk editing in every reference table and refreshes master detail
   const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
 
   assert.match(grid, /const draftEmployeeIds = props\.drafts\.map/);
+  assert.match(grid, /usage = EMPTY_EMPLOYEE_USAGE/);
   assert.match(grid, /directory-new-\$\{draft\.key\}/);
   assert.match(app, /const \[directoryDrafts, setDirectoryDrafts\]/);
   assert.match(app, /const \[employeeDrafts, setEmployeeDrafts\]/);
@@ -434,8 +473,11 @@ test("keeps creation, selection, and editing as exclusive table modes", async ()
   const projects = await readFile(new URL("../app/ProjectCards.tsx", import.meta.url), "utf8");
   const users = await readFile(new URL("../app/UserAccessCards.tsx", import.meta.url), "utf8");
 
-  assert.match(app, /const showAdd = !editingExisting && deletingCount === 0 && \(allowMultiple \|\| !editorOpen\)/);
-  assert.match(app, /editingCount === 0 && selectedCount === 0[^\n]+Добавить запись/);
+  assert.match(app, /const showAdd = !editorOpen && !editingExisting && deletingCount === 0/);
+  assert.match(app, /!editorOpen && deletingCount === 0 && <div className="employee-footer-base">/);
+  assert.match(app, /changedCount === 0 && selectedCount === 0 && <div className="employee-footer-base">/);
+  assert.match(app, /!editorOpen && selectedCount === 0 && <div className="employee-footer-base">/);
+  assert.match(app, /editingCount === 0 && newCount === 0 && selectedCount === 0[^\n]+Добавить запись/);
   assert.ok([...app.matchAll(/editingExisting=\{[^}]+\.some\(\(draft\) => Boolean\(draft\.id\)\)\}/g)].length >= 5);
   assert.match(app, /function addRow[\s\S]*if \(!canEditDate \|\| \(!rosterMode && editingRows\.length\)\) return/);
   assert.match(app, /function addDirectoryItem[\s\S]*directoryDrafts\.some\(\(draft\) => Boolean\(draft\.id\)\)/);
@@ -448,35 +490,59 @@ test("keeps creation, selection, and editing as exclusive table modes", async ()
   }
 });
 
-test("builds today's report from yesterday and allows any active directory employee", async () => {
+test("builds a foreman's report from the last personal submission and keeps project workers available", async () => {
   const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
   const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
   assert.match(app, /const useDailyRosterReport = true/);
-  assert.match(app, /function buildRosterDraftRows[\s\S]*data\.reportEmployees/);
-  assert.doesNotMatch(app, /function buildRosterDraftRows[\s\S]*for \(const employee of data\.placementEmployees\)/);
-  assert.match(app, /<RosterReportFooter completed=\{rosterCompleted\}/);
-  assert.match(app, /Сохранить проверенный отчёт/);
+  assert.match(app, /function buildRosterDraftRows[\s\S]*data\.placementEmployees/);
+  assert.match(app, /<RosterReportFooter mode=\{role === "foreman" \? "foreman" : "engineer"\}/);
+  assert.match(app, /editorOpen=\{rosterEditorOpen\}/);
+  assert.match(app, /const rosterEditorOpen = editingRows\.length > 0 \|\| draftRows\.some\(\(row\) => !row\.carriedFromPreviousDay\)/);
+  assert.match(app, /!editorOpen && <button[^>]+>Добавить сотрудника<\/button>/);
+  assert.match(app, /editingCount === 0 && newCount === 0 && selectedCount === 0/);
+  assert.match(app, /page-content personnel-report-page table-workspace-page/);
+  assert.match(styles, /\.personnel-report-page,\.table-workspace-page \{ height:100vh;[\s\S]*overflow:hidden/);
+  assert.match(styles, /\.personnel-report-page \.personnel-table-card > \.ag-placement-grid \{ height:auto; min-height:0; flex:1;/);
+  assert.match(styles, /\.table-workspace-page > \.admin-section \{ min-height:0; flex:1; display:flex; flex-direction:column;/);
+  assert.match(app, /"Сохранить мою часть" : "Принять отчёт за день"/);
   assert.match(app, /Добавить сотрудника/);
   assert.match(app, /Убрать из отчёта/);
   assert.match(app, /function makeCarriedDraft[\s\S]*carriedFromPreviousDay: true/);
   assert.match(app, /function buildRosterDraftRows[\s\S]*firstRowByEmployee/);
-  assert.match(app, /date=\$\{previousDate\}&scope=entries/);
-  assert.match(app, /Данные перенесены с/);
-  assert.match(app, /finalizeReport: \{ siteId, workDate \}/);
+  assert.match(app, /scope=carryover&beforeDate=\$\{workDate\}/);
+  assert.match(app, /const reportDraftSessions = useRef\(new Map<string, ReportDraftSession>\(\)\)/);
+  assert.match(app, /function changeWorkDate[\s\S]*rememberCurrentReportDraftSession\(\)[\s\S]*takeReportDraftSession\(siteId, nextDate\)/);
+  assert.match(app, /function takeReportDraftSession[\s\S]*initializedRosterSession\.current = key/);
+  assert.match(app, /function saveRosterReport[\s\S]*clearCurrentReportDraftSession\(\)[\s\S]*setDraftRows\(\[\]\)/);
+  assert.doesNotMatch(app, /roster-carryover-banner/);
+  assert.match(app, /role === "foreman" \? \{ submitOwnReport: \{ siteId, workDate \} \} : \{ finalizeReport: \{ siteId, workDate \} \}/);
+  assert.match(app, /setEditingRows\(\[\]\)/);
+  assert.match(app, /if \(data\.reportSubmitted\) return \[\];/);
+  assert.match(app, /setDraftRows\(\[\]\);\s*setEditingRows\(\[\]\);\s*setSelectedRosterDraftKeys\(\[\]\);/);
+  assert.match(app, /showReviewActions=\{!data\?\.reportSubmitted \|\| editingRows\.length > 0 \|\| draftRows\.length > 0\}/);
+  assert.match(app, /carriedFromPreviousDay: true,[\s\S]*reviewed: false/);
+  assert.match(app, /function confirmSelectedCarriedEmployees/);
+  assert.match(app, /showCarryoverProgress && total > 0 && <div className="roster-report-progress">/);
+  assert.match(app, /Проверено сотрудников: \{completed\} из \{total\}/);
+  assert.match(app, /const rosterTotal = carriedRowsByEmployee\.size/);
+  assert.match(app, /row\.reviewed && draftRowComplete\(row\)/);
+  assert.match(app, /Проверьте перенесённых сотрудников/);
+  assert.match(app, /showCarryoverProgress=\{showCarryoverProgress\}/);
   assert.match(grid, /draft\.lockedEmployee[\s\S]*ag-roster-employee/);
   assert.match(grid, /"carried-row"[\s\S]*carriedFromPreviousDay/);
+  assert.match(grid, /"reviewed-row"[\s\S]*draft\?\.reviewed/);
   assert.match(grid, /onDraftSelectionChange/);
   assert.match(grid, /if \(!props\.rosterMode\) return rows/);
-  assert.match(api, /function reportEmployeesStatement[\s\S]*WHERE active = 1/);
-  assert.match(api, /FROM employees WHERE id = \? AND active = 1/);
-  assert.doesNotMatch(api, /FROM employees e JOIN employee_project_assignments[^`]+availability_status = 'on_site'[^`]+async function validateBulkPayloads/);
-  assert.match(api, /CREATE TABLE IF NOT EXISTS placement_report_days/);
-  assert.match(api, /ON CONFLICT \(site_id, work_date\) DO UPDATE/);
+  assert.match(api, /scope === "carryover"/);
+  assert.match(api, /status = 'submitted' AND work_date < \?/);
+  assert.match(api, /ORDER BY work_date DESC LIMIT 1/);
   assert.match(api, /const placementCreates = Array\.isArray\(payload\.newEntries\)/);
-  assert.match(api, /payloadRows\.length \? await validateBulkPayloads\(payloadRows, existing\.results\) : \[\]/);
-  assert.match(api, /updatedCount, createdCount: createRows\.length/);
+  assert.match(api, /submitOwnReport\?: ReportFinalizationPayload/);
+  assert.match(api, /finalizeReport\?: ReportFinalizationPayload/);
+  assert.match(api, /updatedCount,\s*createdCount: createRows\.length/);
 });
 
 test("shows users as access cards while keeping the grid fallback", async () => {
@@ -528,6 +594,25 @@ test("shows projects as portfolio cards while keeping the grid fallback", async 
   assert.doesNotMatch(cards, /Основная информация/);
   assert.doesNotMatch(cards, /function ProjectEditor\(/);
   assert.match(styles, /\.project-editor-dialog/);
+});
+
+test("keeps the Bitrix24 employee check read-only in the interface", async () => {
+  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+  assert.match(app, /Проверить с Битрикс24/);
+  assert.match(app, /ПРОВЕРКА БЕЗ ИЗМЕНЕНИЯ ДАННЫХ/);
+  assert.match(app, /Сотрудники, добавленные вручную или через Excel, не изменялись/);
+  assert.doesNotMatch(app, /Актуализировать из Битрикс24/);
+  assert.doesNotMatch(app, /"Стадия в Битрикс24"/);
+  assert.doesNotMatch(grid, /headerName: "Стадия в Битрикс24"/);
+  assert.doesNotMatch(grid, /employee\.bitrix24Stage/);
+  assert.doesNotMatch(grid, /row\.employee\?\.source === "bitrix24"/);
+  assert.doesNotMatch(grid, /params\.data\.employee\?\.source !== "bitrix24"/);
+  assert.match(app, /allEmployees=\{data\?\.employees \?\? \[\]\}/);
+  assert.match(api, /FROM employees WHERE active = 1 AND bitrix24_id IS NOT NULL/);
+  assert.doesNotMatch(api, /Рабочий не найден или управляется Битрикс24/);
+  assert.doesNotMatch(api, /Карточки сотрудников, связанные с Битрикс24, доступны только для чтения/);
 });
 
 test("writes worksheet elements in Excel-compatible order", async () => {

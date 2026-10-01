@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   canAccessGeneralSettings,
+  canAccessTimesheets,
   canEditGlobalEmployees,
   canEditGlobalReferences,
   canEditProjectSettings,
@@ -17,6 +18,7 @@ test("foremen only manage today's report for their assigned project in the API a
   assert.equal(canEditGlobalEmployees("foreman"), false);
   assert.equal(canEditGlobalReferences("foreman"), false);
   assert.equal(canManageBitrix24("foreman"), false);
+  assert.equal(canAccessTimesheets("foreman"), false);
 });
 
 test("engineers manage employees and project settings but only view global references", () => {
@@ -26,6 +28,7 @@ test("engineers manage employees and project settings but only view global refer
   assert.equal(canEditGlobalEmployees("engineer"), true);
   assert.equal(canEditGlobalReferences("engineer"), false);
   assert.equal(canManageBitrix24("engineer"), false);
+  assert.equal(canAccessTimesheets("engineer"), true);
 });
 
 test("super-admins have full access", () => {
@@ -35,4 +38,5 @@ test("super-admins have full access", () => {
   assert.equal(canEditGlobalEmployees("superadmin"), true);
   assert.equal(canEditGlobalReferences("superadmin"), true);
   assert.equal(canManageBitrix24("superadmin"), true);
+  assert.equal(canAccessTimesheets("superadmin"), true);
 });

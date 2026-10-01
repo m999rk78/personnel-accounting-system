@@ -2,13 +2,14 @@
 /* eslint-disable @next/next/no-img-element -- используется оригинальный SVG-логотип из TPS */
 
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DirectoryAgGrid, EmployeeAgGrid, PlacementAgGrid, PositionAgGrid, ProjectAgGrid, ProjectEmployeeAgGrid, UserAgGrid, type GridEntry } from "./AgDataGrids";
+import { DirectoryAgGrid, EmployeeAgGrid, PlacementAgGrid, PositionAgGrid, ProjectAgGrid, ProjectEmployeeAgGrid, UserAgGrid, type GridEmployeeUsage, type GridEntry, type GridTimesheetMark } from "./AgDataGrids";
 import { formatBitrix24Cooldown, remainingBitrix24Cooldown, type Bitrix24Cooldowns } from "./bitrix24Cooldown";
 import { CustomSelect } from "./CustomSelect";
+import { EquipmentAccountingView } from "./EquipmentAccountingView";
 import { ProjectCards } from "./ProjectCards";
 import { TimesheetView } from "./TimesheetView";
 import { UserAccessCards } from "./UserAccessCards";
-import { ROLE_LABELS, canAccessGeneralSettings, canEditGlobalEmployees, canEditGlobalReferences, canEditProjectSettings, canManageBitrix24, canViewAllProjects, type UserRole } from "./roles";
+import { ROLE_LABELS, canAccessGeneralSettings, canAccessTimesheets, canEditGlobalEmployees, canEditGlobalReferences, canEditProjectSettings, canManageBitrix24, canViewAllProjects, type UserRole } from "./roles";
 
 type Option = { id: number; name: string };
 type Site = Option & { code: string; timezone: string };
@@ -21,19 +22,40 @@ type Entry = {
   mainWorkTypeId: number; subworkTypeId: number; note: string; masterId: number; hours: number;
   positionSnapshot: string; employeeName: string; employmentType: string; department: string; shiftName: string;
   zoneName: string; mainWorkTypeName: string; subworkTypeName: string; masterName: string;
+  responsibleUserId: number | null; responsibleUserName: string; revision: number;
 };
+type ForemanProgress = { foremanId: number; foremanName: string; status: "not_started" | "draft" | "submitted"; submittedAt: string | null; employeeCount: number; rowCount: number; hours: number };
 type DataSet = {
   sites: Site[]; employees: Employee[]; reportEmployees: Employee[]; placementEmployees: Employee[]; projectEmployees: Employee[]; positionCatalog: PositionRecord[]; employmentTypes: Option[]; departments: Option[]; positions: Option[]; shifts: Option[]; zones: Option[]; mainWorkTypes: Option[];
   subworkTypes: Option[]; masters: Option[]; entries: Entry[]; filledDates: string[]; users: AppUser[];
   reportSubmitted: boolean;
+  employeeUsage: GridEmployeeUsage[];
+  foremanProgress: ForemanProgress[];
+  timesheetMarks: GridTimesheetMark[];
   syncStatus?: { id: number; status: string; startedAt: string; completedAt: string | null; summary: string | null; errorText: string | null } | null;
   bitrix24Cooldowns?: Bitrix24Cooldowns;
 };
+type BitrixCheckDifference = { kind: "missing_locally" | "changed" | "outside_scope" | "missing_in_bitrix" | "incomplete" | "unknown_stage"; employeeName: string; details: string };
+type BitrixCheckResult = { status: "ok" | "mismatch"; checkedAt: string; sourceReceived: number; compared: number; matched: number; totalDifferences: number; differences: BitrixCheckDifference[] };
+const BITRIX_DIFFERENCE_LABELS: Record<BitrixCheckDifference["kind"], string> = {
+  missing_locally: "Нет в системе",
+  changed: "Данные отличаются",
+  outside_scope: "Вне выбранных стадий",
+  missing_in_bitrix: "Нет в Битрикс24",
+  incomplete: "Не заполнены поля",
+  unknown_stage: "Неизвестная стадия",
+};
 type DraftRow = {
-  key: string; roster?: boolean; lockedEmployee?: boolean; carriedFromPreviousDay?: boolean; employeeId: string; employeeQuery: string; shiftId: string; zoneId: string;
+  key: string; roster?: boolean; lockedEmployee?: boolean; carriedFromPreviousDay?: boolean; reviewed?: boolean; employeeId: string; employeeQuery: string; shiftId: string; zoneId: string;
   mainWorkTypeId: string; subworkTypeId: string; note: string; masterId: string; hours: string;
 };
-type View = "placement" | "timesheet" | "employees" | "positions" | "projects" | "directories" | "settings" | "projectSettings" | "projectEmployees" | "users";
+type ReportDraftSession = {
+  draftRows: DraftRow[];
+  editingRows: { id: number; row: DraftRow }[];
+  selectedRosterDraftKeys: string[];
+  pendingDeletes: number[];
+};
+type View = "placement" | "equipment" | "timesheet" | "equipmentTimesheet" | "equipmentRegistry" | "projectEquipment" | "employees" | "positions" | "projects" | "directories" | "settings" | "projectSettings" | "projectEmployees" | "users";
 type UserDraft = { key: string; id?: number; fullName: string; email: string; role: UserRole; assignedSiteId: string };
 type EmployeeDraft = { key: string; id?: number; fullName: string; employmentType: string; department: string; position: string; projectSiteId: string };
 type EmployeeBulkChanges = { employmentType: string; department: string; position: string; projectSiteId: string };
@@ -71,6 +93,7 @@ function makeCarriedDraft(employee: Employee, entry: Entry, data: DataSet, roste
     roster,
     lockedEmployee: true,
     carriedFromPreviousDay: true,
+    reviewed: false,
     employeeId: String(employee.id),
     employeeQuery: employee.fullName,
     shiftId: available(data.shifts, entry.shiftId),
@@ -85,7 +108,7 @@ function makeCarriedDraft(employee: Employee, entry: Entry, data: DataSet, roste
 function buildRosterDraftRows(data: DataSet, previousEntries: Entry[]) {
   if (data.reportSubmitted) return [];
   const savedEmployeeIds = new Set(data.entries.map((entry) => entry.employeeId));
-  const employees = new Map(data.reportEmployees.map((employee) => [employee.id, employee]));
+  const employees = new Map(data.placementEmployees.map((employee) => [employee.id, employee]));
   const firstRowByEmployee = new Set<number>();
   return previousEntries.flatMap((entry) => {
     const employee = employees.get(entry.employeeId);
@@ -127,9 +150,10 @@ const useProjectCardLayout = true;
 // Keep this switch so the checkpoint layout can be restored without changing the report data model.
 const useDailyRosterReport = true;
 
-function AppIcon({ name }: { name: "panel" | "calendar" | "pencil" | "trash" | "redo" | "check" | "pin" | "filter" | "user" }) {
+type AppIconName = "calendar" | "pencil" | "trash" | "redo" | "check" | "pin" | "filter" | "user" | "report" | "workersReport" | "equipmentReport" | "workersTimesheet" | "equipmentTimesheet" | "settings" | "generalSettings" | "projectSettings";
+
+function AppIcon({ name }: { name: AppIconName }) {
   return <svg className="app-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    {name === "panel" && <><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></>}
     {name === "calendar" && <><path d="M8 2v4M16 2v4M3 10h18"/><rect width="18" height="18" x="3" y="4" rx="2"/></>}
     {name === "pencil" && <><path d="M21.2 6.8 7.8 20.2a2 2 0 0 1-.8.5L2.6 22a.5.5 0 0 1-.6-.6L3.3 17a2 2 0 0 1 .5-.8L17.2 2.8a2.8 2.8 0 0 1 4 4Z"/><path d="m15 5 4 4"/></>}
     {name === "trash" && <><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></>}
@@ -138,6 +162,14 @@ function AppIcon({ name }: { name: "panel" | "calendar" | "pencil" | "trash" | "
     {name === "pin" && <><path d="M12 17v5M5 8.5l4-4V2h6v2.5l4 4V11H5Z"/><path d="M8 11v3h8v-3"/></>}
     {name === "filter" && <path d="M3 5h18l-7 8v6l-4 2v-8Z"/>}
     {name === "user" && <><circle cx="12" cy="8" r="4"/><path d="M4 22a8 8 0 0 1 16 0"/></>}
+    {name === "report" && <><path d="M6 2h9l4 4v16H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Z"/><path d="M14 2v5h5M8 17v-3M12 17v-6M16 17v-8"/></>}
+    {name === "workersReport" && <><path d="M6.5 10a5.5 5.5 0 0 1 11 0M5 10h14M9 10v1.5a3 3 0 0 0 6 0V10M12 4.5V7"/><path d="M4 21a8 8 0 0 1 16 0"/></>}
+    {name === "equipmentReport" && <><path d="M3 17h13l3-4h2M7 17v-6h6l3 6M9 11 7 6h5l5 7M7 6 4 4 2 11l3 2"/><circle cx="7" cy="19" r="2"/><circle cx="16" cy="19" r="2"/></>}
+    {name === "workersTimesheet" && <><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 9h18"/><circle cx="9" cy="13" r="2"/><path d="M6 19c.4-2 1.4-3 3-3s2.6 1 3 3M15 15l1.5 1.5L20 13"/></>}
+    {name === "equipmentTimesheet" && <><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 9h18"/><circle cx="10" cy="15" r="3"/><path d="M10 11v1M10 18v1M6 15h1M13 15h1M7.2 12.2l.7.7M12.1 17.1l.7.7M12.8 12.2l-.7.7M7.9 17.1l-.7.7M16 16l1.5 1.5L21 14"/></>}
+    {name === "settings" && <><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.55v-.1A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.1 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H2.3V9.55h.1A1.7 1.7 0 0 0 4.1 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.56 3.7l.06.06A1.7 1.7 0 0 0 8.5 4.1a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1v-.1h4.05v.1A1.7 1.7 0 0 0 15 4.1a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.4 8.5a1.7 1.7 0 0 0 .6 1 1.7 1.7 0 0 0 1.1.4h.1v4.05h-.1A1.7 1.7 0 0 0 19.4 15Z"/></>}
+    {name === "generalSettings" && <><path d="M4 7h9M17 7h3M4 17h3M11 17h9M4 12h4M12 12h8"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/><circle cx="10" cy="12" r="2"/></>}
+    {name === "projectSettings" && <><path d="M4 21h16M6 21V7l6-3 6 3v14M9 10h2M13 10h2M9 14h2M13 14h2M10 21v-3h4v3"/></>}
   </svg>;
 }
 
@@ -166,7 +198,7 @@ function ProjectSwitcher({ sites, value, onChange }: { sites: Site[]; value: num
 }
 
 function AdminGridFooter({ addLabel, countLabel, count, deletingCount, deletingLabel, editorOpen, editingExisting = false, pendingCount = 0, saving = false, allowMultiple = false, editSelectionLabel, bulkEditSelectionLabel, cancelEditingLabel = "Отменить редактирование", uniformActions = false, onAdd, onDelete, onEditSelection, onBulkEditSelection, onClearSelection, onCancelEditing, onSave }: { addLabel: string; countLabel: string; count: number; deletingCount: number; deletingLabel: string; editorOpen: boolean; editingExisting?: boolean; pendingCount?: number; saving?: boolean; allowMultiple?: boolean; editSelectionLabel?: string; bulkEditSelectionLabel?: string; cancelEditingLabel?: string; uniformActions?: boolean; onAdd: () => void; onDelete: () => void; onEditSelection?: () => void; onBulkEditSelection?: () => void; onClearSelection?: () => void; onCancelEditing?: () => void; onSave?: () => void }) {
-  const showAdd = !editingExisting && deletingCount === 0 && (allowMultiple || !editorOpen);
+  const showAdd = !editorOpen && !editingExisting && deletingCount === 0;
   if (uniformActions) return <div className="table-edit-footer employee-table-footer uniform-footer-actions">
     {deletingCount > 0 && <div className="employee-selection-bar">
       <div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{deletingCount}</strong></span></div>
@@ -184,12 +216,12 @@ function AdminGridFooter({ addLabel, countLabel, count, deletingCount, deletingL
         {onSave && <button type="button" className="employee-action-button employee-save-button" onClick={onSave} disabled={saving}>{saving ? "Сохраняем…" : "Сохранить изменения"}</button>}
       </div>
     </div>}
-    <div className="employee-footer-base">
+    {!editorOpen && deletingCount === 0 && <div className="employee-footer-base">
       {showAdd && <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={onAdd} disabled={!allowMultiple && editorOpen}>{addLabel}</button>}
       <span className="employee-total-count">{countLabel}: <strong>{count}</strong></span>
-    </div>
+    </div>}
   </div>;
-  return <div className="table-edit-footer employee-table-footer">{showAdd && <button type="button" className="secondary-button footer-action-button" onClick={onAdd} disabled={!allowMultiple && editorOpen}>{addLabel}</button>}<div>{deletingCount > 0 && <div className="selection-actions">{onEditSelection && <button type="button" className="save-edits-button" onClick={onEditSelection} disabled={saving}>{`${editSelectionLabel ?? "Редактировать"} (${deletingCount})`}</button>}{onBulkEditSelection && <button type="button" className="save-edits-button" onClick={onBulkEditSelection} disabled={saving}>{`${bulkEditSelectionLabel ?? "Массовое редактирование"} (${deletingCount})`}</button>}<button type="button" className="delete-rows-button" onClick={onDelete} disabled={saving}>{`${deletingLabel} (${deletingCount})`}</button>{onClearSelection && <button type="button" className="secondary-button footer-action-button clear-selection-button" onClick={onClearSelection} disabled={saving}>Отменить выделение</button>}</div>}<span>{countLabel}: <strong>{count}</strong></span>{pendingCount > 0 && onCancelEditing && <button type="button" className="secondary-button footer-action-button" onClick={onCancelEditing} disabled={saving}>{cancelEditingLabel}</button>}{pendingCount > 0 && onSave && <button type="button" className="save-button" onClick={onSave} disabled={saving}>{saving ? "Сохраняем…" : `Сохранить (${pendingCount})`}</button>}</div></div>;
+  return <div className="table-edit-footer employee-table-footer">{showAdd && <button type="button" className="secondary-button footer-action-button" onClick={onAdd} disabled={!allowMultiple && editorOpen}>{addLabel}</button>}<div>{deletingCount > 0 && <div className="selection-actions">{onEditSelection && <button type="button" className="save-edits-button" onClick={onEditSelection} disabled={saving}>{`${editSelectionLabel ?? "Редактировать"} (${deletingCount})`}</button>}{onBulkEditSelection && <button type="button" className="save-edits-button" onClick={onBulkEditSelection} disabled={saving}>{`${bulkEditSelectionLabel ?? "Массовое редактирование"} (${deletingCount})`}</button>}<button type="button" className="delete-rows-button" onClick={onDelete} disabled={saving}>{`${deletingLabel} (${deletingCount})`}</button>{onClearSelection && <button type="button" className="secondary-button footer-action-button clear-selection-button" onClick={onClearSelection} disabled={saving}>Отменить выделение</button>}</div>}{!editorOpen && deletingCount === 0 && <span>{countLabel}: <strong>{count}</strong></span>}{pendingCount > 0 && onCancelEditing && <button type="button" className="secondary-button footer-action-button" onClick={onCancelEditing} disabled={saving}>{cancelEditingLabel}</button>}{pendingCount > 0 && onSave && <button type="button" className="save-button" onClick={onSave} disabled={saving}>{saving ? "Сохраняем…" : `Сохранить (${pendingCount})`}</button>}</div></div>;
 }
 
 function ReportGridFooter({ selectedCount, editingCount, newCount, totalHours, canEdit, saving, onAdd, onEditSelection, onDelete, onClearSelection, onCancelEditing, onSaveEditing, onSaveNew }: { selectedCount: number; editingCount: number; newCount: number; totalHours: number; canEdit: boolean; saving: boolean; onAdd: () => void; onEditSelection: () => void; onDelete: () => void; onClearSelection: () => void; onCancelEditing: () => void; onSaveEditing: () => void; onSaveNew: () => void }) {
@@ -211,41 +243,42 @@ function ReportGridFooter({ selectedCount, editingCount, newCount, totalHours, c
         {newCount > 0 && <button type="button" className="employee-action-button employee-save-button" onClick={onSaveNew} disabled={saving}>{saving ? "Сохраняем…" : "Сохранить новые строки"}</button>}
       </div>
     </div>}
-    <div className="employee-footer-base">
-      {editingCount === 0 && selectedCount === 0 && <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={onAdd} disabled={!canEdit}>Добавить запись</button>}
+    {changedCount === 0 && selectedCount === 0 && <div className="employee-footer-base">
+      {editingCount === 0 && newCount === 0 && selectedCount === 0 && <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={onAdd} disabled={!canEdit}>Добавить запись</button>}
       <span className="employee-total-count">Общее количество часов ОПР: <strong>{totalHours}</strong></span>
-    </div>
+    </div>}
   </div>;
 }
 
-function RosterReportFooter({ completed, total, readyNew, incompleteTouched, selectedCount, totalHours, saving, onAdd, onRemoveSelection, onClearSelection, onReset, onSave }: { completed: number; total: number; readyNew: number; incompleteTouched: number; selectedCount: number; totalHours: number; saving: boolean; onAdd: () => void; onRemoveSelection: () => void; onClearSelection: () => void; onReset: () => void; onSave: () => void }) {
+function RosterReportFooter({ mode, completed, total, selectedCount, confirmableCount, totalHours, saving, editorOpen, showReviewActions, showCarryoverProgress, onAdd, onConfirmSelection, onRemoveSelection, onClearSelection, onReset, onSave }: { mode: "foreman" | "engineer"; completed: number; total: number; selectedCount: number; confirmableCount: number; totalHours: number; saving: boolean; editorOpen: boolean; showReviewActions: boolean; showCarryoverProgress: boolean; onAdd: () => void; onConfirmSelection: () => void; onRemoveSelection: () => void; onClearSelection: () => void; onReset: () => void; onSave: () => void }) {
   const percent = total ? Math.round((completed / total) * 100) : 0;
   const remaining = Math.max(0, total - completed);
-  const progressText = !total ? "Сотрудники пока не добавлены" : remaining ? `Осталось заполнить: ${remaining}` : "Все сотрудники заполнены";
+  const progressText = remaining ? `Осталось проверить сотрудников: ${remaining}` : "Все перенесённые сотрудники проверены";
   return <div className="table-edit-footer employee-table-footer uniform-footer-actions report-table-footer roster-report-footer">
     {selectedCount > 0 && <div className="employee-selection-bar">
       <div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedCount}</strong></span></div>
       <div className="employee-selection-actions">
+        {confirmableCount > 0 && <button type="button" className="employee-action-button employee-action-primary" onClick={onConfirmSelection} disabled={saving}>Отметить проверенными ({confirmableCount})</button>}
         <button type="button" className="employee-action-button employee-action-danger" onClick={onRemoveSelection} disabled={saving}>Убрать из отчёта</button>
         <button type="button" className="employee-action-button clear-selection-button" onClick={onClearSelection} disabled={saving}>Снять выделение</button>
       </div>
     </div>}
-    <div className="roster-report-progress">
-      <div className="roster-progress-copy"><strong>Заполнено сотрудников: {completed} из {total}</strong><span>{progressText}{readyNew ? ` · готово строк: ${readyNew}` : ""}{incompleteTouched ? ` · незавершённых строк: ${incompleteTouched}` : ""}</span></div>
-      <div className="roster-progress-track" role="progressbar" aria-label="Заполнение отчёта" aria-valuemin={0} aria-valuemax={total} aria-valuenow={completed}><span style={{ width: `${percent}%` }} /></div>
+    {showCarryoverProgress && total > 0 && <div className="roster-report-progress">
+      <div className="roster-progress-copy"><strong>Проверено сотрудников: {completed} из {total}</strong><span>{progressText}</span></div>
+      <div className="roster-progress-track" role="progressbar" aria-label="Проверка перенесённых сотрудников" aria-valuemin={0} aria-valuemax={total} aria-valuenow={completed}><span style={{ width: `${percent}%` }} /></div>
       <span className="roster-progress-percent">{percent}%</span>
-    </div>
-    <div className="employee-editing-bar roster-save-bar">
+    </div>}
+    {showReviewActions && <div className="employee-editing-bar roster-save-bar">
       <div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>Проверьте состав и исправьте только изменения за сегодня</span></div>
       <div className="employee-selection-actions">
         <button type="button" className="employee-action-button cancel-editing-button" onClick={onReset} disabled={saving}>Вернуть исходные данные</button>
-        <button type="button" className="employee-action-button employee-save-button" onClick={onSave} disabled={saving}>{saving ? "Сохраняем…" : "Сохранить проверенный отчёт"}</button>
+        <button type="button" className="employee-action-button employee-save-button" onClick={onSave} disabled={saving}>{saving ? "Сохраняем…" : mode === "foreman" ? "Сохранить мою часть" : "Принять отчёт за день"}</button>
       </div>
-    </div>
-    <div className="employee-footer-base">
-      <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={onAdd} disabled={saving}>Добавить сотрудника</button>
+    </div>}
+    {!editorOpen && selectedCount === 0 && <div className="employee-footer-base">
+      {!editorOpen && <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={onAdd} disabled={saving}>Добавить сотрудника</button>}
       <span className="employee-total-count">Общее количество часов ОПР: <strong>{totalHours}</strong></span>
-    </div>
+    </div>}
   </div>;
 }
 
@@ -361,6 +394,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const mayEditProjectSettings = canEditProjectSettings(role);
   const mayManageBitrix24 = canManageBitrix24(role);
   const mayViewAllProjects = canViewAllProjects(role);
+  const mayAccessTimesheets = canAccessTimesheets(role);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [reportsOpen, setReportsOpen] = useState(true);
   const [timesheetOpen, setTimesheetOpen] = useState(true);
@@ -382,6 +416,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const [importing, setImporting] = useState(false);
   const [syncingBitrix24, setSyncingBitrix24] = useState(false);
   const [bitrix24Clock, setBitrix24Clock] = useState(() => Date.now());
+  const [bitrixCheckResult, setBitrixCheckResult] = useState<BitrixCheckResult | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [profileOpen, setProfileOpen] = useState(false);
@@ -429,6 +464,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const loadedWorkDate = useRef<string | null>(null);
   const loadedReportRange = useRef<string | null>(null);
   const initializedRosterSession = useRef<string | null>(null);
+  const reportDraftSessions = useRef(new Map<string, ReportDraftSession>());
   const adminDataLoaded = useRef(false);
   const recentDates = useMemo(() => recentDateKeys(reportRangeEnd), [reportRangeEnd]);
   const reportRangeQuery = `rangeStart=${recentDates[0]}&rangeEnd=${reportRangeEnd}`;
@@ -440,25 +476,21 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const visibleUsers = data?.users ?? [];
   const visibleSites = data?.sites ?? [];
   const inspectBitrix24Remaining = remainingBitrix24Cooldown(data?.bitrix24Cooldowns?.inspect.nextAllowedAt, bitrix24Clock);
-  const syncBitrix24Remaining = remainingBitrix24Cooldown(data?.bitrix24Cooldowns?.sync.nextAllowedAt, bitrix24Clock);
   const inspectBitrix24Title = inspectBitrix24Remaining > 0
     ? `Повторная проверка будет доступна через ${formatBitrix24Cooldown(inspectBitrix24Remaining)}.`
-    : "Проверяет подключение, стадии и объекты в Битрикс24 без изменения данных.";
-  const syncBitrix24Title = syncBitrix24Remaining > 0
-    ? `Повторная актуализация будет доступна через ${formatBitrix24Cooldown(syncBitrix24Remaining)}.`
-    : "Загружает актуальные данные сотрудников из Битрикс24 в систему.";
+    : "Сравнивает связанные карточки с Битрикс24 без изменения справочника.";
 
   useEffect(() => {
     if (!mayManageBitrix24 || view !== "employees") return;
     const refreshTimeout = window.setTimeout(() => setBitrix24Clock(Date.now()), 0);
     const interval = window.setInterval(() => setBitrix24Clock(Date.now()), 60_000);
-    const deadlines = [data?.bitrix24Cooldowns?.inspect.nextAllowedAt, data?.bitrix24Cooldowns?.sync.nextAllowedAt]
+    const deadlines = [data?.bitrix24Cooldowns?.inspect.nextAllowedAt]
       .flatMap((value) => value ? [new Date(value).getTime()] : []).filter((value) => Number.isFinite(value) && value > Date.now());
     const timeout = deadlines.length
       ? window.setTimeout(() => setBitrix24Clock(Date.now()), Math.min(...deadlines.map((deadline) => deadline - Date.now())) + 50)
       : undefined;
     return () => { window.clearTimeout(refreshTimeout); window.clearInterval(interval); if (timeout !== undefined) window.clearTimeout(timeout); };
-  }, [data?.bitrix24Cooldowns?.inspect.nextAllowedAt, data?.bitrix24Cooldowns?.sync.nextAllowedAt, mayManageBitrix24, view]);
+  }, [data?.bitrix24Cooldowns?.inspect.nextAllowedAt, mayManageBitrix24, view]);
   const loadData = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -501,9 +533,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     try {
       const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=entries&${reportRangeQuery}`, { cache: "no-store" });
       if (response.status === 401) { window.location.replace("/login"); return; }
-      const payload = await response.json() as Pick<DataSet, "entries" | "filledDates" | "reportSubmitted"> & { error?: string };
+      const payload = await response.json() as Pick<DataSet, "entries" | "filledDates" | "reportSubmitted" | "employeeUsage" | "foremanProgress" | "timesheetMarks"> & { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить отчёт.");
-      setData((current) => current ? { ...current, entries: payload.entries, filledDates: payload.filledDates, reportSubmitted: payload.reportSubmitted } : current);
+      setData((current) => current ? { ...current, entries: payload.entries, filledDates: payload.filledDates, reportSubmitted: payload.reportSubmitted, employeeUsage: payload.employeeUsage ?? [], foremanProgress: payload.foremanProgress ?? [], timesheetMarks: payload.timesheetMarks ?? [] } : current);
       loadedWorkDate.current = workDate;
       loadedReportRange.current = reportRangeQuery;
     } catch (loadError) {
@@ -512,7 +544,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }, [siteId, workDate, reportRangeQuery]);
 
   useEffect(() => {
-    const reportView = view === "placement" || view === "timesheet";
+    const reportView = view === "placement" || view === "equipment" || view === "timesheet" || view === "equipmentTimesheet" || view === "equipmentRegistry" || view === "projectEquipment";
     const loader = loadedSiteId.current !== siteId
       ? reportView ? loadWorkspace : loadData
       : !reportView && !adminDataLoaded.current
@@ -537,64 +569,73 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const canEditDate = role !== "foreman" || workDate === initialToday;
   const rosterMode = useDailyRosterReport && workDate === initialToday && canEditDate;
   const entryTypeById = new Map(filteredEntries.map((entry) => [entry.id, entry.employmentType]));
-  const employeeTypeById = new Map((data?.reportEmployees ?? []).map((employee) => [employee.id, employee.employmentType]));
-  const rosterOprHours = [
+  const employeeTypeById = new Map((data?.placementEmployees ?? []).map((employee) => [employee.id, employee.employmentType]));
+  const editingEntryIds = new Set(editingRows.map((item) => item.id));
+  const unchangedRosterOprHours = filteredEntries
+    .filter((entry) => !editingEntryIds.has(entry.id) && normalize(entry.employmentType) === "опр")
+    .reduce((sum, entry) => sum + entry.hours, 0);
+  const rosterOprHours = unchangedRosterOprHours + [
     ...editingRows.map((item) => ({ row: item.row, employmentType: entryTypeById.get(item.id) ?? "" })),
     ...draftRows.map((row) => ({ row, employmentType: employeeTypeById.get(Number(row.employeeId)) ?? "" })),
   ].filter((item) => draftRowComplete(item.row) && normalize(item.employmentType) === "опр")
     .reduce((sum, item) => sum + Number(item.row.hours), 0);
   const totalOprHours = rosterMode ? rosterOprHours : savedOprHours;
-  const completedRosterEmployeeIds = new Set([
-    ...filteredEntries.map((entry) => entry.employeeId),
-    ...editingRows.filter((item) => draftRowComplete(item.row)).map((item) => Number(item.row.employeeId)),
-    ...draftRows.filter(draftRowComplete).map((row) => Number(row.employeeId)),
-  ]);
-  const rosterEmployeeIds = new Set([...editingRows.map((item) => Number(item.row.employeeId)), ...draftRows.map((row) => Number(row.employeeId))].filter(Boolean));
-  const rosterTotal = rosterEmployeeIds.size;
-  const rosterCompleted = [...rosterEmployeeIds].filter((employeeId) => completedRosterEmployeeIds.has(employeeId)).length;
-  const rosterIncompleteTouched = draftRows.filter((row) => !draftRowComplete(row) && draftRowHasWorkInput(row)).length;
-  const rosterReadyNew = draftRows.filter(draftRowComplete).length;
-  const rosterCopiedRows = draftRows.filter((row) => row.carriedFromPreviousDay).length;
-  const previousDayDate = moveDate(workDate, -1);
+  const carriedRowsByEmployee = new Map<string, DraftRow[]>();
+  for (const row of draftRows) {
+    if (!row.carriedFromPreviousDay || !row.employeeId) continue;
+    carriedRowsByEmployee.set(row.employeeId, [...(carriedRowsByEmployee.get(row.employeeId) ?? []), row]);
+  }
+  const rosterTotal = carriedRowsByEmployee.size;
+  const rosterCompleted = [...carriedRowsByEmployee.values()].filter((rows) => rows.every((row) => row.reviewed && draftRowComplete(row))).length;
+  const selectedRosterDraftKeySet = new Set(selectedRosterDraftKeys);
+  const selectedCarriedEmployeeIds = new Set(draftRows
+    .filter((row) => selectedRosterDraftKeySet.has(row.key) && row.carriedFromPreviousDay && !row.reviewed)
+    .map((row) => row.employeeId));
+  const rosterConfirmableCount = selectedCarriedEmployeeIds.size;
+  const showCarryoverProgress = Boolean(!data?.reportSubmitted && rosterTotal > 0);
+  const rosterEditorOpen = editingRows.length > 0 || draftRows.some((row) => !row.carriedFromPreviousDay);
   const rosterSessionKey = `${siteId}:${workDate}`;
-  const previousDayLoading = rosterMode && previousDayReport?.key !== rosterSessionKey;
+  const previousDayLoading = rosterMode && role === "foreman" && previousDayReport?.key !== rosterSessionKey;
 
   useEffect(() => {
     if (!rosterMode || view !== "placement") return;
-    const controller = new AbortController();
-    const previousDate = moveDate(workDate, -1);
     const key = `${siteId}:${workDate}`;
-    void fetch(`/api/data?siteId=${siteId}&date=${previousDate}&scope=entries&rangeStart=${previousDate}&rangeEnd=${previousDate}`, { cache: "no-store", signal: controller.signal })
+    if (role !== "foreman") return;
+    const controller = new AbortController();
+    void fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=carryover&beforeDate=${workDate}`, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         if (response.status === 401) { window.location.replace("/login"); return null; }
-        const payload = await response.json() as Pick<DataSet, "entries"> & { error?: string };
-        if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить вчерашний отчёт.");
-        return payload.entries;
+        const payload = await response.json() as Pick<DataSet, "entries"> & { sourceDate?: string | null; error?: string };
+        if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить последний сохранённый отчёт.");
+        return { entries: payload.entries, sourceDate: payload.sourceDate ?? "" };
       })
-      .then((entries) => { if (entries) setPreviousDayReport({ key, date: previousDate, entries }); })
+      .then((result) => { if (result) setPreviousDayReport({ key, date: result.sourceDate, entries: result.entries }); })
       .catch((carryError) => {
         if (carryError instanceof DOMException && carryError.name === "AbortError") return;
-        setPreviousDayReport({ key, date: previousDate, entries: [] });
-        setError(carryError instanceof Error ? carryError.message : "Не удалось загрузить вчерашний отчёт.");
+        setPreviousDayReport({ key, date: "", entries: [] });
+        setError(carryError instanceof Error ? carryError.message : "Не удалось загрузить последний сохранённый отчёт.");
       });
     return () => controller.abort();
-  }, [rosterMode, siteId, view, workDate]);
+  }, [role, rosterMode, siteId, view, workDate]);
 
   useEffect(() => {
-    if (!rosterMode || view !== "placement" || loading || previousDayLoading || !data || loadedWorkDate.current !== workDate || previousDayReport?.key !== rosterSessionKey) return;
+    if (!rosterMode || view !== "placement" || loading || previousDayLoading || !data || loadedWorkDate.current !== workDate || (role === "foreman" && previousDayReport?.key !== rosterSessionKey)) return;
     const rosterSession = rosterSessionKey;
     const preserveManualRows = initializedRosterSession.current === rosterSession;
     initializedRosterSession.current = rosterSession;
-    setEditingRows(data.entries.map((entry) => ({ id: entry.id, row: makeEntryDraft(entry, true) })));
+    if (!preserveManualRows || data.reportSubmitted) {
+      setEditingRows([]);
+      setSelectedRosterDraftKeys([]);
+      setPendingDeletes([]);
+    }
     setDraftRows((current) => {
-      const initialRows = buildRosterDraftRows(data, previousDayReport.entries);
+      if (data.reportSubmitted) return [];
+      const initialRows = buildRosterDraftRows(data, role === "foreman" ? previousDayReport?.entries ?? [] : []);
       if (!preserveManualRows) return initialRows;
       return current;
     });
-    setSelectedRosterDraftKeys([]);
-    setPendingDeletes([]);
     setDeleteConfirmationOpen(false);
-  }, [data, loading, previousDayLoading, previousDayReport, rosterMode, rosterSessionKey, view, workDate]);
+  }, [data, loading, previousDayLoading, previousDayReport, role, rosterMode, rosterSessionKey, view, workDate]);
 
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -602,6 +643,32 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }
   function openProfile() {
     setCurrentPassword(""); setNewPassword(""); setRepeatPassword(""); setProfileError(""); setProfileNotice(""); setProfileOpen(true);
+  }
+  function reportDraftSessionKey(nextSiteId = siteId, nextWorkDate = workDate) {
+    return `${nextSiteId}:${nextWorkDate}`;
+  }
+  function rememberCurrentReportDraftSession() {
+    const key = reportDraftSessionKey();
+    if (!draftRows.length && !editingRows.length && !pendingDeletes.length) {
+      reportDraftSessions.current.delete(key);
+      return;
+    }
+    reportDraftSessions.current.set(key, {
+      draftRows: draftRows.map((row) => ({ ...row })),
+      editingRows: editingRows.map((item) => ({ ...item, row: { ...item.row } })),
+      selectedRosterDraftKeys: [...selectedRosterDraftKeys],
+      pendingDeletes: [...pendingDeletes],
+    });
+  }
+  function takeReportDraftSession(nextSiteId: number, nextWorkDate: string) {
+    const key = reportDraftSessionKey(nextSiteId, nextWorkDate);
+    const session = reportDraftSessions.current.get(key);
+    reportDraftSessions.current.delete(key);
+    if (session) initializedRosterSession.current = key;
+    return session;
+  }
+  function clearCurrentReportDraftSession() {
+    reportDraftSessions.current.delete(reportDraftSessionKey());
   }
   async function changePassword(event: FormEvent) {
     event.preventDefault();
@@ -619,19 +686,31 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     } finally { setProfileSaving(false); }
   }
   function changeSite(nextSiteId: number) {
-    setSiteId(nextSiteId); setDraftRows([]); setEditingRows([]); setPreviousDayReport(null); setSelectedRosterDraftKeys([]); setPendingDeletes([]); setDeleteConfirmationOpen(false);
+    if (nextSiteId === siteId) return;
+    rememberCurrentReportDraftSession();
+    const session = takeReportDraftSession(nextSiteId, workDate);
+    setSiteId(nextSiteId); setDraftRows(session?.draftRows ?? []); setEditingRows(session?.editingRows ?? []); setPreviousDayReport(null); setSelectedRosterDraftKeys(session?.selectedRosterDraftKeys ?? []); setPendingDeletes(session?.pendingDeletes ?? []); setDeleteConfirmationOpen(false);
     setProjectEmployeeDrafts([]); setProjectEmployeePendingDeletes([]); setProjectEmployeeDeleteConfirmationOpen(false);
     setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false);
   }
   function changeWorkDate(nextDate: string) {
-    setWorkDate(nextDate); setDraftRows([]); setEditingRows([]); setPreviousDayReport(null); setSelectedRosterDraftKeys([]); setPendingDeletes([]); setDeleteConfirmationOpen(false); setVisibleEntryIds(null);
+    if (nextDate === workDate) return;
+    rememberCurrentReportDraftSession();
+    const session = takeReportDraftSession(siteId, nextDate);
+    setWorkDate(nextDate); setDraftRows(session?.draftRows ?? []); setEditingRows(session?.editingRows ?? []); setPreviousDayReport(null); setSelectedRosterDraftKeys(session?.selectedRosterDraftKeys ?? []); setPendingDeletes(session?.pendingDeletes ?? []); setDeleteConfirmationOpen(false); setVisibleEntryIds(null);
   }
   function changeReportRange(nextEnd: string) {
     setReportRangeEnd(nextEnd > initialToday ? initialToday : nextEnd);
   }
 
   function patchDraft(key: string, changes: Partial<DraftRow>) {
-    setDraftRows((rows) => rows.map((row) => row.key === key ? { ...row, ...changes } : row));
+    setDraftRows((rows) => {
+      const changedRow = rows.find((row) => row.key === key);
+      if (!changedRow?.carriedFromPreviousDay || !changedRow.employeeId) return rows.map((row) => row.key === key ? { ...row, ...changes } : row);
+      return rows.map((row) => row.carriedFromPreviousDay && row.employeeId === changedRow.employeeId
+        ? { ...row, ...(row.key === key ? changes : {}), reviewed: true }
+        : row);
+    });
     setError("");
   }
   function patchEditing(id: number, changes: Partial<DraftRow>) {
@@ -639,7 +718,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setError("");
   }
   function startEdit(entry: GridEntry, changes: Partial<DraftRow> = {}) {
-    if (!canEditDate || draftRows.length || pendingDeletes.includes(entry.id)) return;
+    if (!canEditDate || (role === "foreman" && entry.responsibleUserId !== currentUser.id) || (!rosterMode && draftRows.length) || pendingDeletes.includes(entry.id)) return;
     setPendingDeletes([]);
     setEditingRows((current) => {
       const existing = current.find((item) => item.id === entry.id);
@@ -672,8 +751,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setNotice(`Открыто редактирование строк: ${selected.length}.`);
   }
   function cancelReportEditing() {
-    if (rosterMode && data) {
-      setEditingRows(data.entries.map((entry) => ({ id: entry.id, row: makeEntryDraft(entry, true) })));
+    if (rosterMode && data && !data.reportSubmitted) {
+      setEditingRows([]);
       setDraftRows(buildRosterDraftRows(data, previousDayReport?.key === rosterSessionKey ? previousDayReport.entries : []));
     } else {
       setEditingRows([]);
@@ -699,6 +778,24 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setError("");
     setNotice("");
   }
+  function confirmSelectedCarriedEmployees() {
+    const selectedKeys = new Set(selectedRosterDraftKeys);
+    const selectedEmployeeIds = new Set(draftRows
+      .filter((row) => selectedKeys.has(row.key) && row.carriedFromPreviousDay)
+      .map((row) => row.employeeId));
+    const completeEmployeeIds = new Set([...selectedEmployeeIds].filter((employeeId) => {
+      const employeeRows = draftRows.filter((row) => row.carriedFromPreviousDay && row.employeeId === employeeId);
+      return employeeRows.length > 0 && employeeRows.every(draftRowComplete);
+    }));
+    if (!completeEmployeeIds.size) {
+      setError("Сначала заполните обязательные поля выбранных сотрудников.");
+      return;
+    }
+    setDraftRows((rows) => rows.map((row) => row.carriedFromPreviousDay && completeEmployeeIds.has(row.employeeId) ? { ...row, reviewed: true } : row));
+    setSelectedRosterDraftKeys([]);
+    setError(completeEmployeeIds.size < selectedEmployeeIds.size ? "Некоторые сотрудники не отмечены: заполните их обязательные поля." : "");
+    setNotice(completeEmployeeIds.size < selectedEmployeeIds.size ? `Проверено сотрудников: ${completeEmployeeIds.size}.` : "");
+  }
   function payload(row: DraftRow) {
     return { siteId, workDate, employeeId: Number(row.employeeId), shiftId: Number(row.shiftId), zoneId: Number(row.zoneId), mainWorkTypeId: Number(row.mainWorkTypeId), subworkTypeId: Number(row.subworkTypeId), masterId: Number(row.masterId), hours: Number(row.hours), note: row.note };
   }
@@ -717,12 +814,17 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         if (!response.ok) throw new Error(result.error ?? "Не удалось сохранить новые строки.");
       }
       const count = pendingCount;
-      setDraftRows([]); setNotice(`Добавлено записей: ${count}`);
+      clearCurrentReportDraftSession(); setDraftRows([]); setNotice(`Добавлено записей: ${count}`);
       await loadEntries();
     } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "Не удалось сохранить данные."); }
     finally { setSaving(false); }
   }
   async function saveRosterReport() {
+    const unreviewedCarriedEmployees = [...carriedRowsByEmployee.values()].filter((rows) => !rows.every((row) => row.reviewed && draftRowComplete(row))).length;
+    if (unreviewedCarriedEmployees) {
+      setError(`Проверьте перенесённых сотрудников: осталось ${unreviewedCarriedEmployees}. Измените данные или выделите строки и отметьте их проверенными.`);
+      return;
+    }
     const incompleteTouched = draftRows.filter((row) => !draftRowComplete(row) && draftRowHasWorkInput(row));
     if (incompleteTouched.length) {
       const first = draftRows.indexOf(incompleteTouched[0]) + filteredEntries.length + 1;
@@ -738,19 +840,23 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          entries: editingRows.map((item) => ({ id: item.id, ...payload(item.row) })),
+          entries: editingRows.map((item) => ({ id: item.id, revision: data?.entries.find((entry) => entry.id === item.id)?.revision, ...payload(item.row) })),
           newEntries: newRows.map(payload),
-          finalizeReport: { siteId, workDate },
+          ...(role === "foreman" ? { submitOwnReport: { siteId, workDate } } : { finalizeReport: { siteId, workDate } }),
         }),
       });
       const result = await response.json() as { error?: string; updatedCount?: number; createdCount?: number };
       if (!response.ok) throw new Error(result.error ?? "Не удалось сохранить отчёт.");
       const updated = result.updatedCount ?? editingRows.length;
       const created = result.createdCount ?? newRows.length;
+      clearCurrentReportDraftSession();
       setDraftRows([]);
+      setEditingRows([]);
       setSelectedRosterDraftKeys([]);
       const summary = [created ? `добавлено строк: ${created}` : "", updated ? `обновлено строк: ${updated}` : ""].filter(Boolean).join(", ");
-      setNotice(summary ? summary.replace(/^./, (letter) => letter.toLocaleUpperCase("ru-RU")) : "Отчёт сохранён без рабочих за этот день.");
+      setNotice(summary
+        ? `${role === "foreman" ? "Ваша часть отчёта сохранена" : "Отчёт за день принят"}: ${summary}.`
+        : role === "foreman" ? "Ваша часть отчёта сохранена без рабочих за этот день." : "Отчёт принят без рабочих за этот день.");
       await loadEntries();
     } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "Не удалось сохранить отчёт."); }
     finally { setSaving(false); }
@@ -760,11 +866,11 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setSaving(true); setError(""); setNotice("");
     try {
       validateRows(editingRows.map((item) => item.row));
-      const response = await fetch("/api/data", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entries: editingRows.map((item) => ({ id: item.id, ...payload(item.row) })) }) });
+      const response = await fetch("/api/data", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entries: editingRows.map((item) => ({ id: item.id, revision: data?.entries.find((entry) => entry.id === item.id)?.revision, ...payload(item.row) })) }) });
       const result = await response.json() as { error?: string; count?: number };
       if (!response.ok) throw new Error(result.error ?? "Не удалось сохранить изменения.");
       const count = result.count ?? editingRows.length;
-      setEditingRows([]); setNotice(`Изменено записей: ${count}`); await loadEntries();
+      clearCurrentReportDraftSession(); setEditingRows([]); setNotice(`Изменено записей: ${count}`); await loadEntries();
     } catch (saveError) { setError(saveError instanceof Error ? saveError.message : "Не удалось сохранить изменения."); }
     finally { setSaving(false); }
   }
@@ -1058,45 +1164,16 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     if (!data) return;
     const { createTableXlsx } = await loadPlacementXlsx();
     const employees = employeeVisibleIds === null ? visibleEmployees : visibleEmployees.filter((employee) => employeeVisibleIds.includes(employee.id));
-    download(createTableXlsx("Сотрудники", "Список сотрудников", ["ФИО", "Тип", "Отдел", "Должность", "Проект", "Стадия в Битрикс24"], employees.map((employee) => [employee.fullName, employee.employmentType, employee.department, employee.position, employee.siteName ?? "", employee.bitrix24Stage ?? ""])), "Сотрудники.xlsx");
-  }
-  async function synchronizeEmployeesWithBitrix24() {
-    setSyncingBitrix24(true); setError(""); setNotice("");
-    try {
-      const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sync-bitrix24" }) });
-      const result = await response.json() as { error?: string; sourceReceived?: number; received?: number; excluded?: number; added?: number; updated?: number; moved?: number; unavailable?: number; archived?: number; issues?: number; issueMessages?: string[] };
-      if (!response.ok) throw new Error(result.error ?? "Не удалось актуализировать сотрудников из Битрикс24.");
-      const parts = [
-        `прочитано: ${result.sourceReceived ?? 0}`,
-        `выбрано: ${result.received ?? 0}`,
-        `исключено: ${result.excluded ?? 0}`,
-        `добавлено: ${result.added ?? 0}`,
-        `обновлено: ${result.updated ?? 0}`,
-        `переведено: ${result.moved ?? 0}`,
-        `временно недоступно: ${result.unavailable ?? 0}`,
-        `архивировано: ${result.archived ?? 0}`,
-        `требует внимания: ${result.issues ?? 0}`,
-      ];
-      await loadData();
-      setNotice(`Актуализация завершена — ${parts.join(", ")}.`);
-      if (result.issueMessages?.length) setError(`Проверьте данные Битрикс24: ${result.issueMessages.join(" ")}`);
-    } catch (syncError) {
-      const message = syncError instanceof Error ? syncError.message : "Не удалось актуализировать сотрудников из Битрикс24.";
-      await loadData();
-      setError(message);
-    } finally { setSyncingBitrix24(false); }
+    download(createTableXlsx("Сотрудники", "Список сотрудников", ["ФИО", "Тип", "Отдел", "Должность", "Проект"], employees.map((employee) => [employee.fullName, employee.employmentType, employee.department, employee.position, employee.siteName ?? ""])), "Сотрудники.xlsx");
   }
   async function inspectBitrix24Connection() {
-    setSyncingBitrix24(true); setError(""); setNotice("");
+    setSyncingBitrix24(true); setBitrixCheckResult(null); setError(""); setNotice("");
     try {
       const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "inspect-bitrix24" }) });
-      const result = await response.json() as { error?: string; sourceReceived?: number; received?: number; excluded?: number; incomplete?: number; unknownStages?: number; stages?: Array<[string, number]>; projects?: Array<[string, number]>; excludedStages?: Array<[string, number]> };
+      const result = await response.json() as BitrixCheckResult & { error?: string };
       if (!response.ok) throw new Error(result.error ?? "Не удалось проверить подключение к Битрикс24.");
-      const stages = result.stages?.map(([name, count]) => `${name}: ${count}`).join(", ") || "нет данных";
-      const projects = result.projects?.map(([name, count]) => `${name}: ${count}`).join(", ") || "нет данных";
-      const excludedStages = result.excludedStages?.map(([name, count]) => `${name}: ${count}`).join(", ") || "нет данных";
       await loadData();
-      setNotice(`Проверка только для чтения завершена. Прочитано: ${result.sourceReceived ?? 0}; попадёт в справочник: ${result.received ?? 0}; исключено: ${result.excluded ?? 0}; неполных: ${result.incomplete ?? 0}; неизвестных стадий среди выбранных: ${result.unknownStages ?? 0}. Выбранные стадии: ${stages}. Объекты: ${projects}. Исключённые стадии: ${excludedStages}.`);
+      setBitrixCheckResult(result);
     } catch (inspectError) {
       const message = inspectError instanceof Error ? inspectError.message : "Не удалось проверить подключение к Битрикс24.";
       await loadData();
@@ -1418,7 +1495,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   async function downloadTemplate() {
     if (!data) return;
     const { createPlacementTemplateXlsx } = await loadPlacementXlsx();
-    download(createPlacementTemplateXlsx(activeSite?.name ?? "Объект", workDate, { employees: data.reportEmployees, shifts: data.shifts.map((item) => item.name), zones: data.zones.map((item) => item.name), mainWorkTypes: data.mainWorkTypes.map((item) => item.name), subworkTypes: data.subworkTypes.map((item) => item.name), masters: data.masters.map((item) => item.name) }), `Шаблон_отчёта_${activeSite?.code ?? siteId}_${workDate}.xlsx`);
+    download(createPlacementTemplateXlsx(activeSite?.name ?? "Объект", workDate, { employees: data.placementEmployees, shifts: data.shifts.map((item) => item.name), zones: data.zones.map((item) => item.name), mainWorkTypes: data.mainWorkTypes.map((item) => item.name), subworkTypes: data.subworkTypes.map((item) => item.name), masters: data.masters.map((item) => item.name) }), `Шаблон_отчёта_${activeSite?.code ?? siteId}_${workDate}.xlsx`);
   }
   async function importExcel(file: File) {
     if (!data) return;
@@ -1426,7 +1503,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     try {
       const { parsePlacementXlsx } = await loadPlacementXlsx();
       const rows = await parsePlacementXlsx(file);
-      const findEmployee = (name: string) => data.reportEmployees.find((item) => normalize(item.fullName) === normalize(name));
+      const findEmployee = (name: string) => data.placementEmployees.find((item) => normalize(item.fullName) === normalize(name));
       const findOption = (options: Option[], name: string) => options.find((item) => normalize(item.name) === normalize(name));
       const issues: string[] = [];
       const imported = rows.flatMap((row, index) => {
@@ -1455,60 +1532,75 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const visibleDirectoryItems = activeDirectoryGroup?.items ?? [];
   const focusedDirectoryTitle = directoryFocus === "sites" ? "Объекты" : directoryFocus === "all" ? "Все справочники" : directoryGroups.find((group) => group.entity === directoryFocus)?.title ?? "Справочник";
   const generalSettingsCards: Array<{ icon: string; title: string; description: string; view?: View; focus?: DirectoryFocus }> = [
-    { icon: "С", title: "Сотрудники", description: "Кадровые данные, проекты и стадии сотрудников с актуализацией из Битрикс24.", view: "employees" },
+    { icon: "С", title: "Сотрудники", description: "Кадровые данные и проекты сотрудников с безопасной проверкой по Битрикс24.", view: "employees" },
+    { icon: "Т", title: "Реестр техники", description: "Единый список техники с назначением на проекты.", view: "equipmentRegistry" },
     { icon: "Д", title: "Список должностей", description: "Единая таблица сочетаний «Тип / Отдел / Должность» с импортом и экспортом Excel.", view: "positions" },
     { icon: "П", title: "Пользователи системы и права", description: "Пользователи, роли, права доступа и назначенные проекты.", view: "users" },
     { icon: "П", title: "Проекты", description: "Строительные проекты и управление их названиями.", view: "projects" },
   ];
   const projectSettingsCards: Array<{ icon: string; title: string; description: string; focus?: DirectoryFocus; view?: View }> = [
     { icon: "С", title: "Сотрудники проекта", description: "Состав выбранного проекта без дублирования карточек сотрудников.", view: "projectEmployees" },
+    { icon: "Т", title: "Техника проекта", description: "Техника, назначенная выбранному проекту, без дублирования общего реестра.", view: "projectEquipment" },
     { icon: "З", title: "Зоны", description: "Зоны, доступные только в выбранном проекте.", focus: "zone" },
     { icon: "Р", title: "Виды работ", description: "Работы из одноимённой колонки отчёта выбранного проекта.", focus: "mainWorkType" },
     { icon: "П", title: "Виды подработ", description: "Виды подработ, доступные только в выбранном проекте.", focus: "subworkType" },
     { icon: "М", title: "Мастера", description: "Мастера из одноимённой колонки отчёта выбранного проекта.", focus: "master" },
   ];
+  const tableWorkspacePage = view === "placement"
+    || view === "equipment"
+    || view === "equipmentRegistry"
+    || view === "projectEquipment"
+    || view === "employees"
+    || view === "positions"
+    || view === "projectEmployees"
+    || view === "directories";
+  const pageContentClassName = view === "placement"
+    ? "page-content personnel-report-page table-workspace-page"
+    : tableWorkspacePage ? "page-content table-workspace-page" : "page-content";
 
   return <main className={sidebarOpen ? "app-shell" : "app-shell sidebar-collapsed"}>
-    <aside className="sidebar">
+    <button type="button" className="sidebar-edge-trigger" onClick={() => setSidebarOpen((open) => !open)} aria-controls="primary-sidebar" aria-expanded={sidebarOpen} aria-label={sidebarOpen ? "Свернуть меню" : "Развернуть меню"} title={sidebarOpen ? "Свернуть меню" : "Развернуть меню"}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={sidebarOpen ? "m14 7-5 5 5 5" : "m10 7 5 5-5 5"}/></svg>
+    </button>
+    <aside className="sidebar" id="primary-sidebar">
       <div className="brand-project-row"><button type="button" className="brand" onClick={() => { setReportsOpen(true); setView("placement"); }} aria-label="Открыть отчёты" title="Открыть отчёты"><img src="/tps-logo.svg" alt="" /></button>{mayViewAllProjects ? <ProjectSwitcher sites={data?.sites ?? []} value={siteId} onChange={changeSite} /> : <div className="project-fixed-card top-project-select" title={activeSite?.name ?? "Объект"}>{activeSite?.name ?? "Объект"}</div>}</div>
+      <div className="sidebar-product-title">Ресурсный отчёт</div>
       <nav aria-label="Основная навигация">
         <div className="nav-group">
-          <button type="button" className="nav-heading" onClick={() => setReportsOpen((open) => !open)} aria-expanded={reportsOpen} aria-controls="reports-navigation" aria-label={reportsOpen ? "Свернуть раздел «Отчеты»" : "Развернуть раздел «Отчеты»"}><span>Отчеты</span><SidebarChevron open={reportsOpen} /></button>
-          {(reportsOpen || !sidebarOpen) && <div className="nav-sub" id="reports-navigation"><button className={view === "placement" ? "nav-item active" : "nav-item"} onClick={() => setView("placement")} aria-label="Рабочие" title="Рабочие"><span>♙</span>Рабочие</button></div>}
+          <button type="button" className="nav-heading" onClick={() => setReportsOpen((open) => !open)} aria-expanded={reportsOpen} aria-controls="reports-navigation" aria-label={reportsOpen ? "Свернуть раздел «Отчеты»" : "Развернуть раздел «Отчеты»"}><span className="nav-heading-icon"><AppIcon name="report" /></span><span>Отчеты</span><SidebarChevron open={reportsOpen} /></button>
+          {(reportsOpen || !sidebarOpen) && <div className="nav-sub" id="reports-navigation"><button className={view === "placement" ? "nav-item active" : "nav-item"} onClick={() => setView("placement")} aria-label="Рабочие" title="Рабочие"><span className="nav-item-icon"><AppIcon name="workersReport" /></span>Рабочие</button><button className={view === "equipment" ? "nav-item active" : "nav-item"} onClick={() => setView("equipment")} aria-label="Техника" title="Техника"><span className="nav-item-icon"><AppIcon name="equipmentReport" /></span>Техника</button></div>}
         </div>
-        <div className="nav-group">
-          <button type="button" className="nav-heading" onClick={() => setTimesheetOpen((open) => !open)} aria-expanded={timesheetOpen} aria-controls="timesheet-navigation" aria-label={timesheetOpen ? "Свернуть раздел «Табель»" : "Развернуть раздел «Табель»"}><span>Табель</span><SidebarChevron open={timesheetOpen} /></button>
-          {(timesheetOpen || !sidebarOpen) && <div className="nav-sub" id="timesheet-navigation"><button className={view === "timesheet" ? "nav-item active" : "nav-item"} onClick={() => setView("timesheet")} aria-label="Месячный табель" title="Месячный табель"><span>▦</span>Месячный табель</button></div>}
-        </div>
+        {mayAccessTimesheets && <div className="nav-group">
+          <button type="button" className="nav-heading" onClick={() => setTimesheetOpen((open) => !open)} aria-expanded={timesheetOpen} aria-controls="timesheet-navigation" aria-label={timesheetOpen ? "Свернуть раздел «Табели»" : "Развернуть раздел «Табели»"}><span className="nav-heading-icon"><AppIcon name="calendar" /></span><span>Табели</span><SidebarChevron open={timesheetOpen} /></button>
+          {(timesheetOpen || !sidebarOpen) && <div className="nav-sub" id="timesheet-navigation"><button className={view === "timesheet" ? "nav-item active" : "nav-item"} onClick={() => setView("timesheet")} aria-label="Табель рабочих" title="Табель рабочих"><span className="nav-item-icon"><AppIcon name="workersTimesheet" /></span>Рабочие</button><button className={view === "equipmentTimesheet" ? "nav-item active" : "nav-item"} onClick={() => setView("equipmentTimesheet")} aria-label="Табель техники" title="Табель техники"><span className="nav-item-icon"><AppIcon name="equipmentTimesheet" /></span>Техника</button></div>}
+        </div>}
       </nav>
       <div className="sidebar-bottom"><div className="nav-group settings-group">
-        <button type="button" className="nav-heading" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen} aria-controls="settings-navigation" aria-label={settingsOpen ? "Свернуть раздел «Настройки»" : "Развернуть раздел «Настройки»"}><span className="nav-heading-icon">⚙</span><span>Настройки</span><SidebarChevron open={settingsOpen} /></button>
+        <button type="button" className="nav-heading" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen} aria-controls="settings-navigation" aria-label={settingsOpen ? "Свернуть раздел «Настройки»" : "Развернуть раздел «Настройки»"}><span className="nav-heading-icon"><AppIcon name="settings" /></span><span>Настройки</span><SidebarChevron open={settingsOpen} /></button>
         {(settingsOpen || !sidebarOpen) && <div className="nav-sub" id="settings-navigation">
-          {mayAccessGeneralSettings && <button className={view === "settings" || view === "users" || view === "employees" || view === "positions" || view === "projects" ? "nav-item active" : "nav-item"} onClick={() => { setView("settings"); setDirectoryFocus("all"); setUserDrafts([]); setUserFullRowEditIds([]); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setPositionDrafts([]); setPositionFullRowEditIds([]); setSiteDrafts([]); setSiteFullRowEditIds([]); }} aria-label="Общие настройки" title="Общие настройки"><span>▤</span>Общие</button>}
-          <button className={view === "projectSettings" || view === "projectEmployees" || view === "directories" ? "nav-item active" : "nav-item"} onClick={() => { setView("projectSettings"); setDirectoryFocus("all"); setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false); setProjectEmployeeDrafts([]); }} aria-label="Настройки проекта" title="Настройки проекта"><span>▦</span>Настройки проекта</button>
+          {mayAccessGeneralSettings && <button className={view === "settings" || view === "users" || view === "employees" || view === "positions" || view === "projects" || view === "equipmentRegistry" ? "nav-item active" : "nav-item"} onClick={() => { setView("settings"); setDirectoryFocus("all"); setUserDrafts([]); setUserFullRowEditIds([]); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setPositionDrafts([]); setPositionFullRowEditIds([]); setSiteDrafts([]); setSiteFullRowEditIds([]); }} aria-label="Общие настройки" title="Общие настройки"><span className="nav-item-icon"><AppIcon name="generalSettings" /></span>Общие</button>}
+          <button className={view === "projectSettings" || view === "projectEmployees" || view === "projectEquipment" || view === "directories" ? "nav-item active" : "nav-item"} onClick={() => { setView("projectSettings"); setDirectoryFocus("all"); setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false); setProjectEmployeeDrafts([]); }} aria-label="Настройки проекта" title="Настройки проекта"><span className="nav-item-icon"><AppIcon name="projectSettings" /></span>Настройки проекта</button>
         </div>}
       </div>
         <div className="sidebar-user"><div><strong>{currentUser.fullName}</strong><small>{ROLE_LABELS[role]}</small></div><button className="profile-button" onClick={openProfile} title="Профиль" aria-label="Открыть профиль пользователя"><AppIcon name="user" /></button></div>
       </div>
     </aside>
     <section className="workspace">
-      <header className="topbar"><button className="sidebar-trigger" onClick={() => setSidebarOpen((open) => !open)} aria-label={sidebarOpen ? "Свернуть меню" : "Развернуть меню"}><AppIcon name="panel" /></button></header>
-      <div className="page-content"><div className="page-heading"><div><h1>{view === "placement" ? "Отчет персонала" : view === "timesheet" ? "Табель" : view === "employees" ? "Сотрудники" : view === "settings" ? "Общие настройки" : view === "projectSettings" ? "Настройки проекта" : view === "projectEmployees" ? "Сотрудники проекта" : view === "users" ? "Пользователи системы и права" : view === "positions" ? "Список должностей" : view === "projects" ? "Проекты" : focusedDirectoryTitle}</h1></div>{view === "placement" && <section className="excel-actions" aria-label="Действия с Excel"><button onClick={exportExcel} disabled={!exportEntries.length}>Экспорт в Excel</button><button onClick={downloadTemplate}>Скачать Шаблон</button><button onClick={() => fileInput.current?.click()} disabled={importing}>{importing ? "Загружаем…" : "Загрузить данные из Excel"}</button><input ref={fileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importExcel(file); }} /></section>}</div>
+      <div className={pageContentClassName}><div className="page-heading"><div><h1>{view === "placement" ? "Отчет персонала" : view === "equipment" ? "Отчёт техники" : view === "timesheet" ? "Табель рабочих" : view === "equipmentTimesheet" ? "Табель техники" : view === "equipmentRegistry" ? "Реестр техники" : view === "projectEquipment" ? "Техника проекта" : view === "employees" ? "Сотрудники" : view === "settings" ? "Общие настройки" : view === "projectSettings" ? "Настройки проекта" : view === "projectEmployees" ? "Сотрудники проекта" : view === "users" ? "Пользователи системы и права" : view === "positions" ? "Список должностей" : view === "projects" ? "Проекты" : focusedDirectoryTitle}</h1></div>{view === "placement" && <section className="excel-actions" aria-label="Действия с Excel"><button onClick={exportExcel} disabled={!exportEntries.length}>Экспорт в Excel</button><button onClick={downloadTemplate}>Скачать Шаблон</button><button onClick={() => fileInput.current?.click()} disabled={importing}>{importing ? "Загружаем…" : "Загрузить данные из Excel"}</button><input ref={fileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importExcel(file); }} /></section>}{view === "equipment" && <div id="equipment-report-actions" />}{view === "timesheet" && <div id="personnel-timesheet-actions" />}{view === "equipmentTimesheet" && <div id="equipment-timesheet-actions" />}</div>
 
       {view === "placement" && <>
         <section className="control-strip"><ReportDateNavigation dates={recentDates} value={workDate} today={initialToday} filledDates={filledDates} onChange={changeWorkDate} onRangeChange={changeReportRange} /></section>
         {error && <div className="message error"><strong>Нужно проверить данные</strong><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
         {notice && <div className="message success"><strong>Готово</strong><span>{notice}</span><button onClick={() => setNotice("")}>×</button></div>}
         <section className="table-card personnel-table-card">
-          {rosterMode && <div className={previousDayLoading ? "roster-carryover-banner loading" : "roster-carryover-banner"}>
-            <span className="roster-carryover-icon" aria-hidden="true">↶</span>
-            <div><strong>{previousDayLoading ? "Подготавливаем сегодняшний отчёт" : data?.reportSubmitted ? `Отчёт за ${shortDate(workDate)} сохранён` : previousDayReport?.entries.length ? `Данные перенесены с ${shortDate(previousDayReport.date)}` : `За ${shortDate(previousDayDate)} сохранённого отчёта нет`}</strong><span>{previousDayLoading ? "Загружаем данные предыдущего дня…" : data?.reportSubmitted ? filteredEntries.length ? `Сохранено строк: ${filteredEntries.length}. Состав можно изменить прямо в таблице.` : "Сохранён пустой отчёт: за этот день рабочие не указаны." : previousDayReport?.entries.length ? `Перенесено строк: ${rosterCopiedRows}. Уберите не вышедших сотрудников и исправьте изменения.` : "Добавьте в отчёт нужных сотрудников из общего справочника."}</span></div>
-          </div>}
+          {rosterMode && role !== "foreman" && Boolean(data?.foremanProgress?.length) && <div className="foreman-report-progress" role="status"><strong>Сдали прорабы: {data!.foremanProgress.filter((item) => item.status === "submitted").length} из {data!.foremanProgress.length}</strong><span>{data!.foremanProgress.map((item) => `${item.foremanName}: ${item.status === "submitted" ? `${item.employeeCount} чел., ${item.hours} ч.` : "не сдал"}`).join(" · ")}</span></div>}
           <PlacementAgGrid
             entries={filteredEntries}
             draftRows={draftRows}
             editing={editingRows}
-            employees={data?.reportEmployees ?? []}
+            employees={data?.placementEmployees ?? []}
+            employeeUsage={data?.employeeUsage ?? []}
+            timesheetMarks={data?.timesheetMarks ?? []}
             shifts={data?.shifts ?? []}
             zones={data?.zones ?? []}
             mainWorkTypes={data?.mainWorkTypes ?? []}
@@ -1517,6 +1609,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
             loading={loading || (rosterMode && previousDayLoading)}
             canEdit={canEditDate}
             rosterMode={rosterMode}
+            showResponsibleUser={role !== "foreman"}
+            currentUserName={currentUser.fullName}
             pendingDeletes={pendingDeletes}
             selectedDraftKeys={selectedRosterDraftKeys}
             onEdit={startEdit}
@@ -1527,32 +1621,36 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
             onVisibleEntryIdsChange={(ids) => setVisibleEntryIds((current) => current?.length === ids.length && current.every((id, index) => id === ids[index]) ? current : ids)}
           />
           {rosterMode
-            ? <RosterReportFooter completed={rosterCompleted} total={rosterTotal} readyNew={rosterReadyNew} incompleteTouched={rosterIncompleteTouched} selectedCount={pendingDeletes.length + selectedRosterDraftKeys.length} totalHours={totalOprHours} saving={saving} onAdd={() => addRow({ hours: "" })} onRemoveSelection={removeSelectedRosterRows} onClearSelection={() => { setPendingDeletes([]); setSelectedRosterDraftKeys([]); }} onReset={cancelReportEditing} onSave={() => void saveRosterReport()} />
+            ? <RosterReportFooter mode={role === "foreman" ? "foreman" : "engineer"} completed={rosterCompleted} total={rosterTotal} selectedCount={pendingDeletes.length + selectedRosterDraftKeys.length} confirmableCount={rosterConfirmableCount} totalHours={totalOprHours} saving={saving} editorOpen={rosterEditorOpen} showReviewActions={!data?.reportSubmitted || editingRows.length > 0 || draftRows.length > 0} showCarryoverProgress={showCarryoverProgress} onAdd={() => addRow({ hours: "" })} onConfirmSelection={confirmSelectedCarriedEmployees} onRemoveSelection={removeSelectedRosterRows} onClearSelection={() => { setPendingDeletes([]); setSelectedRosterDraftKeys([]); }} onReset={cancelReportEditing} onSave={() => void saveRosterReport()} />
             : <ReportGridFooter selectedCount={pendingDeletes.length} editingCount={editingCount} newCount={pendingCount} totalHours={totalOprHours} canEdit={canEditDate} saving={saving} onAdd={() => addRow()} onEditSelection={editSelectedReportRows} onDelete={() => setDeleteConfirmationOpen(true)} onClearSelection={() => { setPendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={cancelReportEditing} onSaveEditing={() => void saveEditing()} onSaveNew={() => void savePending()} />}
         </section>
       </>}
 
-      {view === "timesheet" && <TimesheetView siteId={siteId} initialMonth={initialToday.slice(0, 7)} today={initialToday} />}
+      {mayAccessTimesheets && view === "timesheet" && <TimesheetView siteId={siteId} initialMonth={initialToday.slice(0, 7)} today={initialToday} />}
+      {view === "equipment" && <EquipmentAccountingView key={`equipment-report-${siteId}`} siteId={siteId} initialDate={initialToday} today={initialToday} mode="daily" />}
+      {mayAccessTimesheets && view === "equipmentTimesheet" && <EquipmentAccountingView key={`equipment-timesheet-${siteId}`} siteId={siteId} initialDate={initialToday} today={initialToday} mode="month" />}
 
       {deleteConfirmationOpen && <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setDeleteConfirmationOpen(false); }}><section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-confirmation-title"><h2 id="delete-confirmation-title">Удалить выбранные строки?</h2><p>Вы точно хотите удалить строки ({pendingDeletes.length})? Это действие нельзя отменить.</p><div><button type="button" className="secondary-button" onClick={() => setDeleteConfirmationOpen(false)} disabled={saving}>Отмена</button><button type="button" className="delete-rows-button" onClick={() => void deletePendingEntries()} disabled={saving}>{saving ? "Удаляем…" : "Удалить"}</button></div></section></div>}
 
-      {view === "settings" && <section className="settings-home"><p className="settings-scope-description">Общие данные используются во всей системе и не зависят от выбранного проекта.</p><div className="settings-grid">{generalSettingsCards.map((card) => <button type="button" key={card.title} onClick={() => { setError(""); setNotice(""); setUserDrafts([]); setUserFullRowEditIds([]); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setPositionDrafts([]); setPositionFullRowEditIds([]); setDirectoryDrafts([]); setSiteDrafts([]); setSiteFullRowEditIds([]); setInvitationResults([]); setEmployeePendingDeletes([]); setPositionPendingDeletes([]); setUserPendingDeletes([]); setSitePendingDeletes([]); setEmployeeDeleteConfirmationOpen(false); setEmployeeBulkEditOpen(false); setPositionDeleteConfirmationOpen(false); setUserDeleteConfirmationOpen(false); setSiteDeleteConfirmationOpen(false); if (card.focus) { setDirectoryFocus(card.focus); setView("directories"); } else if (card.view) setView(card.view); }}><span className="settings-card-icon">{card.icon}</span><strong>{card.title}</strong><p>{card.description}</p></button>)}</div></section>}
+      {view === "equipmentRegistry" && mayAccessGeneralSettings && <section className="users-settings admin-section equipment-settings-section"><div className="settings-toolbar"><button type="button" className="back-button" onClick={() => setView("settings")}>← К общим настройкам</button><div className="toolbar-actions" id="equipment-registry-actions" /></div><EquipmentAccountingView key={`equipment-registry-${siteId}`} siteId={siteId} initialDate={initialToday} today={initialToday} mode="registry" /></section>}
+      {view === "projectEquipment" && <section className="users-settings admin-section equipment-settings-section"><div className="settings-toolbar"><button type="button" className="back-button" onClick={() => setView("projectSettings")}>← К настройкам проекта</button></div><EquipmentAccountingView key={`project-equipment-${siteId}`} siteId={siteId} initialDate={initialToday} today={initialToday} mode="project" /></section>}
+
+      {view === "settings" && <section className="settings-home general-settings-home"><p className="settings-scope-description">Общие данные используются во всей системе и не зависят от выбранного проекта.</p><div className="settings-list">{generalSettingsCards.map((card) => <button type="button" className="settings-list-item" key={card.title} onClick={() => { setError(""); setNotice(""); setUserDrafts([]); setUserFullRowEditIds([]); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setPositionDrafts([]); setPositionFullRowEditIds([]); setDirectoryDrafts([]); setSiteDrafts([]); setSiteFullRowEditIds([]); setInvitationResults([]); setEmployeePendingDeletes([]); setPositionPendingDeletes([]); setUserPendingDeletes([]); setSitePendingDeletes([]); setEmployeeDeleteConfirmationOpen(false); setEmployeeBulkEditOpen(false); setPositionDeleteConfirmationOpen(false); setUserDeleteConfirmationOpen(false); setSiteDeleteConfirmationOpen(false); if (card.focus) { setDirectoryFocus(card.focus); setView("directories"); } else if (card.view) setView(card.view); }}><span className="settings-card-icon">{card.icon}</span><span className="settings-row-copy"><strong>{card.title}</strong><span>{card.description}</span></span><span className="settings-list-arrow" aria-hidden="true">›</span></button>)}</div></section>}
       {view === "projectSettings" && <section className="settings-home">
         <div className="settings-grid">{projectSettingsCards.map((card) => <button type="button" key={card.title} onClick={() => { setError(""); setNotice(""); setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false); setProjectEmployeeDrafts([]); if (card.focus) { setDirectoryFocus(card.focus); setView("directories"); } else if (card.view) setView(card.view); }}><span className="settings-card-icon">{card.icon}</span><strong>{card.title}</strong><p>{card.description}</p></button>)}</div>
       </section>}
       {view === "projectEmployees" && <section className="users-settings admin-section reference-section">
         <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { setView("projectSettings"); setProjectEmployeeDrafts([]); setProjectEmployeePendingDeletes([]); setProjectEmployeeDeleteConfirmationOpen(false); }}>← К настройкам проекта</button><div className="toolbar-actions"><button type="button" onClick={exportProjectEmployees}>Экспорт в Excel</button>{mayEditProjectSettings && <><button type="button" onClick={downloadProjectEmployeeTemplate}>Скачать шаблон</button><button type="button" onClick={() => projectEmployeeFileInput.current?.click()} disabled={importing}>Импорт из Excel</button><input ref={projectEmployeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProjectEmployees(file); }} /></>}</div></div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
-        <ProjectEmployeeAgGrid rows={visibleProjectEmployees} allEmployees={(data?.employees ?? []).filter((employee) => employee.source !== "bitrix24")} drafts={projectEmployeeDrafts} pendingDeletes={projectEmployeePendingDeletes} readOnly={!mayEditProjectSettings} onPatchDraft={patchProjectEmployeeDraft} onSelectionChange={(ids) => { setProjectEmployeePendingDeletes(ids); setError(""); setNotice(""); }} />
+        <ProjectEmployeeAgGrid rows={visibleProjectEmployees} allEmployees={data?.employees ?? []} drafts={projectEmployeeDrafts} pendingDeletes={projectEmployeePendingDeletes} readOnly={!mayEditProjectSettings} onPatchDraft={patchProjectEmployeeDraft} onSelectionChange={(ids) => { setProjectEmployeePendingDeletes(ids); setError(""); setNotice(""); }} />
         {mayEditProjectSettings && <AdminGridFooter addLabel="Добавить сотрудника в проект" countLabel="Всего в проекте" count={visibleProjectEmployees.length} deletingCount={projectEmployeePendingDeletes.length} deletingLabel="Убрать из проекта" uniformActions editorOpen={Boolean(projectEmployeeDrafts.length)} pendingCount={projectEmployeeDrafts.length} saving={saving} allowMultiple onAdd={() => { setProjectEmployeeDrafts((current) => [...current, { key: newKey(), employeeId: "", employeeQuery: "" }]); setNotice(""); }} onDelete={() => setProjectEmployeeDeleteConfirmationOpen(true)} onClearSelection={() => { setProjectEmployeePendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={() => { setProjectEmployeeDrafts([]); setError(""); setNotice(""); }} onSave={() => void assignProjectEmployees()} />}
       </section>}
       {mayEditProjectSettings && projectEmployeeDeleteConfirmationOpen && <AdminDeleteConfirmation title="Убрать выбранных сотрудников из проекта?" text={`Сотрудники (${projectEmployeePendingDeletes.length}) исчезнут только из проекта «${activeSite?.name ?? ""}». Их общие карточки и история отчётов сохранятся.`} saving={saving} onCancel={() => setProjectEmployeeDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingProjectEmployees()} />}
       {view === "employees" && <section className="users-settings admin-section employee-section">
         <div className="settings-toolbar">
-          <button type="button" className="back-button" onClick={() => { setView("settings"); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setEmployeePendingDeletes([]); setEmployeeDeleteConfirmationOpen(false); setEmployeeBulkEditOpen(false); }}>← К настройкам</button>
-          <div className="toolbar-actions">{mayManageBitrix24 && <><span className="cooldown-button-wrapper" title={inspectBitrix24Title}><button type="button" onClick={() => void inspectBitrix24Connection()} disabled={syncingBitrix24 || importing || inspectBitrix24Remaining > 0}>{syncingBitrix24 ? "Проверяем…" : "Проверить Битрикс24"}</button></span><span className="cooldown-button-wrapper" title={syncBitrix24Title}><button type="button" className="bitrix-sync-button" onClick={() => void synchronizeEmployeesWithBitrix24()} disabled={syncingBitrix24 || importing || syncBitrix24Remaining > 0}>Актуализировать из Битрикс24</button></span></>}<button type="button" onClick={exportEmployees}>Экспорт в Excel</button>{mayEditGlobalEmployees && <><button type="button" onClick={() => employeeFileInput.current?.click()} disabled={importing || syncingBitrix24}>Импорт из Excel</button><input ref={employeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importEmployees(file); }} /></>}</div>
+          <button type="button" className="back-button" onClick={() => { setView("settings"); setBitrixCheckResult(null); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setEmployeePendingDeletes([]); setEmployeeDeleteConfirmationOpen(false); setEmployeeBulkEditOpen(false); }}>← К настройкам</button>
+          <div className="toolbar-actions">{mayManageBitrix24 && <span className="cooldown-button-wrapper" title={inspectBitrix24Title}><button type="button" className="bitrix-check-button" onClick={() => void inspectBitrix24Connection()} disabled={syncingBitrix24 || importing || inspectBitrix24Remaining > 0}>{syncingBitrix24 ? "Проверяем…" : "Проверить с Битрикс24"}</button></span>}<button type="button" onClick={exportEmployees}>Экспорт в Excel</button>{mayEditGlobalEmployees && <><button type="button" onClick={() => employeeFileInput.current?.click()} disabled={importing || syncingBitrix24}>Импорт из Excel</button><input ref={employeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importEmployees(file); }} /></>}</div>
         </div>
-        {data?.syncStatus && <div className={`employee-sync-status ${data.syncStatus.status}`}><span>Последняя актуализация: {new Date(data.syncStatus.completedAt ?? data.syncStatus.startedAt).toLocaleString("ru-RU")}</span><strong>{data.syncStatus.status === "success" ? "Выполнена" : data.syncStatus.status === "failed" ? "Ошибка" : "Выполняется"}</strong></div>}
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}
         {notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
         <EmployeeAgGrid
@@ -1578,6 +1676,13 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         />
         <AdminGridFooter addLabel="Добавить сотрудника" countLabel="Всего сотрудников" count={visibleEmployees.length} deletingCount={employeePendingDeletes.length} deletingLabel="Удалить сотрудников" editSelectionLabel="Редактировать" bulkEditSelectionLabel="Массовое редактирование" uniformActions editorOpen={Boolean(employeeDrafts.length)} editingExisting={employeeDrafts.some((draft) => Boolean(draft.id))} pendingCount={employeeDrafts.length} saving={saving} allowMultiple onAdd={() => { setEmployeeDrafts((current) => current.some((draft) => draft.id) ? current : [...current, { key: newKey(), fullName: "", employmentType: "", department: "", position: "", projectSiteId: String(siteId) }]); setNotice(""); }} onDelete={() => setEmployeeDeleteConfirmationOpen(true)} onEditSelection={editSelectedEmployeeRows} onBulkEditSelection={openEmployeeBulkEdit} onClearSelection={() => { setEmployeePendingDeletes([]); setEmployeeBulkEditOpen(false); setEmployeeBulkEditError(""); setNotice(""); }} onCancelEditing={cancelEmployeeEditing} onSave={() => void saveEmployees()} />
       </section>}
+
+      {bitrixCheckResult && <div className="bitrix-check-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setBitrixCheckResult(null); }}><section className={`bitrix-check-dialog ${bitrixCheckResult.status}`} role="dialog" aria-modal="true" aria-labelledby="bitrix-check-title">
+        <div className="bitrix-check-heading"><span className="bitrix-check-icon" aria-hidden="true">{bitrixCheckResult.status === "ok" ? "✓" : "!"}</span><div><small>ПРОВЕРКА БЕЗ ИЗМЕНЕНИЯ ДАННЫХ</small><h2 id="bitrix-check-title">{bitrixCheckResult.status === "ok" ? "Всё в порядке" : "Найдены расхождения"}</h2><p>{bitrixCheckResult.status === "ok" ? "Связанные карточки сотрудников совпадают с данными Битрикс24." : "Система ничего не изменила. Проверьте найденные отличия и при необходимости исправьте карточки вручную."}</p></div><button type="button" className="bitrix-check-close" aria-label="Закрыть результат проверки" onClick={() => setBitrixCheckResult(null)}>×</button></div>
+        <div className="bitrix-check-stats"><div><span>Прочитано</span><strong>{bitrixCheckResult.sourceReceived}</strong></div><div><span>Сравнено</span><strong>{bitrixCheckResult.compared}</strong></div><div><span>Совпадает</span><strong>{bitrixCheckResult.matched}</strong></div><div><span>Расхождений</span><strong>{bitrixCheckResult.totalDifferences}</strong></div></div>
+        {bitrixCheckResult.status === "mismatch" && <div className="bitrix-check-differences">{bitrixCheckResult.differences.map((difference, index) => <article key={`${difference.kind}-${difference.employeeName}-${index}`}><div><strong>{difference.employeeName}</strong><span>{difference.details}</span></div><em>{BITRIX_DIFFERENCE_LABELS[difference.kind]}</em></article>)}{bitrixCheckResult.totalDifferences > bitrixCheckResult.differences.length && <p>Показаны первые {bitrixCheckResult.differences.length} из {bitrixCheckResult.totalDifferences} расхождений.</p>}</div>}
+        <div className="bitrix-check-footer"><span>Сотрудники, добавленные вручную или через Excel, не изменялись и не считаются отсутствующими.</span><button type="button" onClick={() => setBitrixCheckResult(null)}>Закрыть</button></div>
+      </section></div>}
 
       {employeeBulkEditOpen && <div className="confirmation-backdrop employee-bulk-edit-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setEmployeeBulkEditOpen(false); }}><section className="employee-bulk-edit-dialog" role="dialog" aria-modal="true" aria-labelledby="employee-bulk-edit-title">
         <div className="employee-bulk-edit-heading"><div><h2 id="employee-bulk-edit-title">Массовое редактирование сотрудников</h2><p>Выбрано сотрудников: {employeePendingDeletes.length}. Укажите только те поля, которые нужно изменить у всех отмеченных сотрудников. Остальные значения сохранятся.</p></div><button type="button" className="bulk-edit-close" aria-label="Закрыть массовое редактирование" onClick={() => setEmployeeBulkEditOpen(false)}>×</button></div>
