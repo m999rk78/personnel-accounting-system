@@ -82,6 +82,8 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
     undoStack.current = [...undoStack.current.slice(-49), changes.map((change) => ({ ...change }))];
   }, []);
 
+  const notify = useCallback((message: string) => setStatus(message), []);
+
   const previousValues = useCallback((changes: TimesheetClipboardChange[]) => changes.map((change) => ({
     rowIndex: change.rowIndex,
     columnIndex: change.columnIndex,
@@ -356,5 +358,6 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
     }),
     shellHandlers: { onCopy, onPaste: onClipboardPaste, onKeyDown },
     rememberUndo,
+    notify,
   };
 }

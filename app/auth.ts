@@ -1,4 +1,6 @@
 import { getDatabase } from "../db/client";
+import { loadEffectivePermissions } from "./permissions";
+import type { PermissionSet } from "./permissionModel";
 import type { UserRole } from "./roles";
 
 export type AuthUser = {
@@ -7,6 +9,8 @@ export type AuthUser = {
   email: string;
   role: UserRole;
   assignedSiteId: number | null;
+  permissions: PermissionSet;
+  permissionsCustomized: boolean;
 };
 
 const SESSION_COOKIE = "personnel_session";
@@ -158,8 +162,10 @@ export async function getAuthUser(request: Request): Promise<AuthUser | null> {
   const user = await database().prepare(`SELECT u.id, u.full_name AS fullName, u.email, CASE WHEN u.role = 'office' THEN 'superadmin' ELSE u.role END AS role, u.assigned_site_id AS assignedSiteId
     FROM user_sessions s JOIN app_users u ON u.id = s.user_id
     WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > CURRENT_TIMESTAMP AND u.active = 1`)
-    .bind(tokenHash).first<AuthUser>();
-  return user ?? null;
+    .bind(tokenHash).first<Omit<AuthUser, "permissions" | "permissionsCustomized">>();
+  if (!user) return null;
+  const access = await loadEffectivePermissions(user.id, user.role);
+  return { ...user, ...access };
 }
 
 export async function createSession(userId: number, request: Request) {

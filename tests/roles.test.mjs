@@ -12,7 +12,7 @@ import {
   canViewAllProjects,
 } from "../app/roles.ts";
 
-test("foremen only manage today's report for their assigned project in the API and view project settings", () => {
+test("foremen stay limited to their assigned project and view-only project settings", () => {
   assert.equal(canAccessGeneralSettings("foreman"), false);
   assert.equal(canViewAllProjects("foreman"), false);
   assert.equal(canEditProjectSettings("foreman"), false);

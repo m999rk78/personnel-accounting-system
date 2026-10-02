@@ -71,11 +71,37 @@ test("returns ownership, revision, shared usage, and foreman progress with repor
   assert.match(api, /revision = revision \+ 1/);
 });
 
+test("allows permitted historical report actions without weakening foreman scope and ownership", async () => {
+  const [api, app] = await Promise.all([
+    source("app/api/data/route.ts"),
+    source("app/PersonnelApp.tsx"),
+  ]);
+
+  const permissionGuard = section(api, "function canManagePlacement", "function canRunAction");
+  assert.match(permissionGuard, /hasPermission\(user\.permissions, "workers_report", action\)/);
+  assert.match(permissionGuard, /user\.role !== "foreman" \|\| user\.assignedSiteId === siteId/);
+  assert.doesNotMatch(permissionGuard, /todayInMoscow|workDate\s*[!=]==?\s*today/);
+
+  assert.match(api, /canManagePlacement\(authUser, asPositiveInteger\(row\.siteId\) \?\? undefined, row\.workDate, "create"\)/);
+  assert.match(api, /canManagePlacement\(authUser, asPositiveInteger\(entry\.siteId\) \?\? undefined, entry\.workDate, "update"\)/);
+  assert.match(api, /if \(!entity\) return hasPermission\(user\.permissions, "workers_report", "delete"\)/);
+
+  const ownership = section(api, "function assertPlacementOwnership", "function assertEntryRevisions");
+  assert.match(ownership, /entry\.responsibleUserId !== user\.id/);
+
+  const clientPermissions = section(app, "const canCreateReportDate", "const entryTypeById");
+  assert.match(clientPermissions, /const canCreateReportDate = mayCreateWorkersReport/);
+  assert.match(clientPermissions, /const canUpdateReportDate = mayUpdateWorkersReport/);
+  assert.match(clientPermissions, /const canDeleteReportDate = mayDeleteWorkersReport/);
+  assert.match(clientPermissions, /const rosterMode = useDailyRosterReport && workDate === initialToday && canEditDate/);
+  assert.match(app, /<ReportGridFooter[\s\S]*canCreate=\{canCreateReportDate\}[\s\S]*canUpdate=\{canUpdateReportDate\}[\s\S]*canDelete=\{canDeleteReportDate\}/);
+});
+
 test("serializes daily-hour mutations and reports a conflict instead of overspending 10 hours", async () => {
   const api = await source("app/api/data/route.ts");
   const lock = section(api, "async function lockPlacementHours", "async function resolveResponsibleUsers");
-  const patch = section(api, "export async function PATCH", "export async function DELETE");
-  const deletion = api.slice(api.indexOf("export async function DELETE"));
+  const patch = section(api, "async function handlePATCH", "async function handleDELETE");
+  const deletion = section(api, "async function handleDELETE", "export async function POST");
 
   assert.match(lock, /placement-hours:\$\{key\}/);
   assert.match(lock, /\[\.\.\.keys\]\.sort\(\)/);
@@ -104,7 +130,7 @@ test("keeps personal submission separate from the engineer's global finalization
   assert.match(api, /finalizeGlobalReport\(db, authUser, finalizationSiteId, finalizationWorkDate\)/);
   assert.match(api, /if \(finalization && authUser\.role === "foreman"\) return forbidden\(\)/);
 
-  assert.match(app, /data\.placementEmployees\.map\(\(employee\) => \[employee\.id, employee\]\)/);
+  assert.match(app, /data\.reportEmployees\.map\(\(employee\) => \[employee\.id, employee\]\)/);
   assert.match(app, /scope=carryover&beforeDate=\$\{workDate\}/);
   assert.match(app, /submitOwnReport: \{ siteId, workDate \}/);
   assert.match(app, /finalizeReport: \{ siteId, workDate \}/);

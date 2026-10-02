@@ -20,6 +20,9 @@ type UserAccessCardsProps = {
   onSave: () => void;
   saving: boolean;
   readOnly?: boolean;
+  canCreate?: boolean;
+  canUpdate?: boolean;
+  canDelete?: boolean;
 };
 
 function normalize(value: string) {
@@ -85,9 +88,14 @@ function UserEditorDialog({ drafts, sites, saving, onPatch, onCancel, onSave }: 
   </div>;
 }
 
-export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onSelectionChange, onPatchDraft, onCancelEditing, onSave, saving, readOnly = false }: UserAccessCardsProps) {
+export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onSelectionChange, onPatchDraft, onCancelEditing, onSave, saving, readOnly = false, canCreate, canUpdate, canDelete }: UserAccessCardsProps) {
   const [query, setQuery] = useState("");
   const editorOpen = drafts.length > 0;
+  const mayCreate = canCreate ?? !readOnly;
+  const mayUpdate = canUpdate ?? !readOnly;
+  const mayDelete = canDelete ?? !readOnly;
+  const locked = !mayUpdate && !mayDelete;
+  const mayShowEditor = drafts.some((draft) => Boolean(draft.id)) ? mayUpdate : mayCreate;
   const search = normalize(query);
   const visibleRows = useMemo(() => rows.filter((user) => !search || normalize(`${user.fullName} ${user.email} ${ROLE_LABELS[user.role]} ${sites.find((site) => site.id === user.assignedSiteId)?.name ?? ""}`).includes(search)), [rows, search, sites]);
   const activeCount = rows.filter((user) => user.status === "active").length;
@@ -95,11 +103,11 @@ export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onSe
   const adminCount = rows.filter((user) => user.role === "superadmin").length;
 
   function toggleUser(id: number) {
-    if (readOnly || editorOpen) return;
+    if (!mayDelete || editorOpen) return;
     onSelectionChange(selectedIds.includes(id) ? selectedIds.filter((selectedId) => selectedId !== id) : [...selectedIds, id]);
   }
 
-  return <section className="user-access-shell" aria-label="Управление пользователями и правами">
+  return <section className="user-access-shell" aria-label="Пользователи системы">
     <div className="user-access-overview">
       <div className="user-access-stats" aria-label="Сводка по пользователям">
         <div><strong>{rows.length}</strong><span>пользователей</span></div>
@@ -116,7 +124,7 @@ export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onSe
         const siteName = sites.find((site) => site.id === user.assignedSiteId)?.name ?? "Проект не назначен";
         const scopeTitle = user.role === "foreman" ? "Проектный доступ" : user.role === "engineer" ? "Рабочий доступ" : "Полный доступ";
         const scopeText = user.role === "foreman" ? siteName : user.role === "engineer" ? "Все проекты, сотрудники и настройки проектов" : "Все проекты и глобальные настройки";
-        return <article className={`${selected ? "user-access-card selected" : "user-access-card"}${readOnly ? " read-only" : ""}`} key={user.id} onDoubleClick={(event) => { if (!readOnly && !editorOpen && !(event.target as Element).closest("button,input")) onEdit(user); }}>
+        return <article className={`${selected ? "user-access-card selected" : "user-access-card"}${locked ? " read-only" : ""}`} key={user.id} onDoubleClick={(event) => { if (mayUpdate && !editorOpen && !(event.target as Element).closest("button,input")) onEdit(user); }}>
           <div className="user-access-identity">
             <span className="user-access-avatar" aria-hidden="true">{initials(user.fullName)}</span>
             <div><div className="user-access-name-line"><h2>{user.fullName}</h2><span className={user.status === "active" ? "user-status active" : "user-status invited"}>{user.status === "active" ? "Активен" : "Приглашён"}</span></div><a href={`mailto:${user.email}`}>{user.email}</a></div>
@@ -125,14 +133,14 @@ export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onSe
             <span className={`user-role ${user.role}`}>{ROLE_LABELS[user.role]}</span>
             <div><strong>{scopeTitle}</strong><span>{scopeText}</span></div>
           </div>
-          {!readOnly && <div className="user-access-card-actions">
-            <button type="button" className="user-access-configure" onClick={() => onEdit(user)} disabled={editorOpen}>Настроить доступ</button>
-            <label className="user-access-select"><input type="checkbox" checked={selected} disabled={editorOpen} onChange={() => toggleUser(user.id)} aria-label={`Выбрать пользователя ${user.fullName}`} /><span aria-hidden="true">✓</span></label>
+          {(mayUpdate || mayDelete) && <div className="user-access-card-actions">
+            {mayUpdate && <button type="button" className="user-access-configure" onClick={() => onEdit(user)} disabled={editorOpen}>Редактировать</button>}
+            {mayDelete && <label className="user-access-select"><input type="checkbox" checked={selected} disabled={editorOpen} onChange={() => toggleUser(user.id)} aria-label={`Выбрать пользователя ${user.fullName}`} /><span aria-hidden="true">✓</span></label>}
           </div>}
         </article>;
       })}
       {!drafts.length && !visibleRows.length && <div className="user-access-empty"><strong>Пользователи не найдены</strong><span>Попробуйте изменить поисковый запрос.</span></div>}
     </div>
-    {!readOnly && drafts.length > 0 && <UserEditorDialog drafts={drafts} sites={sites} saving={saving} onPatch={onPatchDraft} onCancel={onCancelEditing} onSave={onSave} />}
+    {mayShowEditor && drafts.length > 0 && <UserEditorDialog drafts={drafts} sites={sites} saving={saving} onPatch={onPatchDraft} onCancel={onCancelEditing} onSave={onSave} />}
   </section>;
 }

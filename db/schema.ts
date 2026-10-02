@@ -65,7 +65,9 @@ export const employees = pgTable("employees", {
   source: text("source").notNull().default("excel"),
   siteId: integer("site_id").references(() => sites.id),
   active: integer("active").notNull().default(1),
-});
+}, (table) => [
+  index("idx_employees_active_name").on(table.fullName, table.id).where(sql`${table.active} = 1`),
+]);
 
 export const employeeProfileVersions = pgTable("employee_profile_versions", {
   id: serial("id").primaryKey(),
@@ -128,6 +130,7 @@ export const employeeProjectAssignments = pgTable("employee_project_assignments"
 }, (table) => [
   uniqueIndex("idx_employee_project_assignment_active").on(table.employeeId, table.siteId).where(sql`${table.active} = 1`),
   index("idx_employee_project_assignment_site").on(table.siteId, table.active),
+  index("idx_employee_project_assignment_site_employee_active").on(table.siteId, table.employeeId).where(sql`${table.active} = 1`),
 ]);
 
 export const positionCatalog = pgTable("position_catalog", {
@@ -213,6 +216,8 @@ export const placementEntries = pgTable("placement_entries", {
   index("idx_entries_site_date").on(table.siteId, table.workDate),
   index("idx_entries_active_site_date").on(table.siteId, table.workDate).where(sql`${table.deletedAt} IS NULL`),
   index("idx_entries_employee_date").on(table.employeeId, table.workDate),
+  index("idx_entries_opr_site_date_employee").on(table.siteId, table.workDate, table.employeeId)
+    .where(sql`${table.deletedAt} IS NULL AND upper(trim(${table.employmentTypeSnapshot})) = 'ОПР'`),
   index("idx_entries_responsible_site_date").on(table.responsibleUserId, table.siteId, table.workDate).where(sql`${table.responsibleUserId} IS NOT NULL AND ${table.deletedAt} IS NULL`),
   check("placement_hours_range", sql`${table.hours} BETWEEN 1 AND 10`),
   check("placement_entry_revision_positive", sql`${table.revision} > 0`),
@@ -277,6 +282,8 @@ export const equipmentUnits = pgTable("equipment_units", {
 }, (table) => [
   uniqueIndex("idx_equipment_units_site_identity").on(table.siteId, table.identityKey),
   index("idx_equipment_units_site_active").on(table.siteId, table.active),
+  index("idx_equipment_units_active_sort").on(table.equipmentType, table.model, table.registrationNumber, table.id)
+    .where(sql`${table.active} = 1`),
 ]);
 
 export const equipmentProjectAssignments = pgTable("equipment_project_assignments", {
@@ -289,6 +296,8 @@ export const equipmentProjectAssignments = pgTable("equipment_project_assignment
 }, (table) => [
   uniqueIndex("idx_equipment_project_assignment_unique").on(table.equipmentId, table.siteId),
   index("idx_equipment_project_assignment_site").on(table.siteId, table.active),
+  index("idx_equipment_project_assignment_site_equipment_active").on(table.siteId, table.equipmentId)
+    .where(sql`${table.active} = 1`),
 ]);
 
 export const equipmentEntries = pgTable("equipment_entries", {

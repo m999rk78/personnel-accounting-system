@@ -1,6 +1,7 @@
 import { getDatabase } from "../../../db/client";
+import { withAuditTrail } from "../../auditLog";
 import { assertSameOrigin, getAuthUser } from "../../auth";
-import { canAccessTimesheets } from "../../roles";
+import { hasPermission } from "../../permissionModel";
 
 type TimesheetEmployee = {
   id: number;
@@ -80,7 +81,10 @@ async function ensureTimesheetSchema() {
   return schemaPromise;
 }
 
-async function resolveSite(requestedSiteId: number, authUser: NonNullable<Awaited<ReturnType<typeof getAuthUser>>>) {
+async function resolveSite(
+  requestedSiteId: number,
+  authUser: NonNullable<Awaited<ReturnType<typeof getAuthUser>>>,
+): Promise<{ error: Response } | { siteId: number; site: { id: number; name: string } }> {
   if (authUser.role === "foreman" && !authUser.assignedSiteId) return { error: errorResponse("Для пользователя не назначен объект.", 403) };
   const siteId = authUser.role === "foreman" ? authUser.assignedSiteId! : requestedSiteId;
   const site = await getDatabase().prepare("SELECT id, name FROM sites WHERE id = ? AND active = 1")
@@ -93,7 +97,7 @@ export async function GET(request: Request) {
   try {
     const authUser = await getAuthUser(request);
     if (!authUser) return errorResponse("Требуется авторизация.", 401);
-    if (!canAccessTimesheets(authUser.role)) return errorResponse("Табели доступны только инженеру и супер-администратору.", 403);
+    if (!hasPermission(authUser.permissions, "workers_timesheet", "view")) return errorResponse("Нет доступа к табелю рабочих.", 403);
 
     const url = new URL(request.url);
     const requestedSiteId = positiveInteger(url.searchParams.get("siteId"));
@@ -118,6 +122,7 @@ export async function GET(request: Request) {
           SELECT 1 FROM placement_entries pe
           WHERE pe.employee_id = e.id AND pe.site_id = ?
             AND pe.work_date >= ? AND pe.work_date < ? AND pe.deleted_at IS NULL
+            AND UPPER(TRIM(pe.employment_type_snapshot)) = 'ОПР'
         ) OR EXISTS (
           SELECT 1 FROM timesheet_marks tm
           WHERE tm.employee_id = e.id AND tm.site_id = ? AND tm.work_date >= ? AND tm.work_date < ?
@@ -131,6 +136,7 @@ export async function GET(request: Request) {
         LEFT JOIN masters m ON m.id = pe.master_id
         LEFT JOIN zones z ON z.id = pe.zone_id
         WHERE pe.site_id = ? AND pe.work_date >= ? AND pe.work_date < ? AND pe.deleted_at IS NULL
+          AND UPPER(TRIM(pe.employment_type_snapshot)) = 'ОПР'
         GROUP BY pe.employee_id, pe.work_date
         ORDER BY pe.work_date, pe.employee_id`).bind(siteId, startDate, endDate),
       db.prepare(`SELECT employee_id AS employeeId, work_date AS workDate, hours, code, note, created_by AS updatedBy
@@ -143,7 +149,12 @@ export async function GET(request: Request) {
       siteId,
       siteName: site.name,
       month,
-      canEdit: true,
+      canEdit: hasPermission(authUser.permissions, "workers_timesheet", "create")
+        || hasPermission(authUser.permissions, "workers_timesheet", "update")
+        || hasPermission(authUser.permissions, "workers_timesheet", "delete"),
+      canCreate: hasPermission(authUser.permissions, "workers_timesheet", "create"),
+      canUpdate: hasPermission(authUser.permissions, "workers_timesheet", "update"),
+      canDelete: hasPermission(authUser.permissions, "workers_timesheet", "delete"),
       employees: employeesResult.results as TimesheetEmployee[],
       entries: entriesResult.results as TimesheetEntry[],
       marks: marksResult.results as TimesheetMark[],
@@ -154,12 +165,12 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request): Promise<Response> {
   try {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return errorResponse("Требуется авторизация.", 401);
-    if (!canAccessTimesheets(authUser.role)) return errorResponse("Табели доступны только инженеру и супер-администратору.", 403);
+    if (!hasPermission(authUser.permissions, "workers_timesheet", "view")) return errorResponse("Нет доступа к табелю рабочих.", 403);
 
     const payload = await request.json() as { siteId?: unknown; employeeId?: unknown; workDate?: unknown; value?: unknown; note?: unknown };
     const requestedSiteId = positiveInteger(payload.siteId);
@@ -169,19 +180,29 @@ export async function POST(request: Request) {
     const resolved = await resolveSite(requestedSiteId, authUser);
     if ("error" in resolved) return resolved.error;
     const { siteId } = resolved;
+    const workMonth = payload.workDate.slice(0, 7);
+    const monthStartDate = `${workMonth}-01`;
+    const monthEndDate = nextMonthStart(workMonth);
     const db = getDatabase();
     const employee = await db.prepare(`SELECT e.id FROM employees e WHERE e.id = ? AND (
         EXISTS (SELECT 1 FROM employee_project_assignments epa WHERE epa.employee_id = e.id AND epa.site_id = ? AND epa.active = 1)
-        OR EXISTS (SELECT 1 FROM placement_entries pe WHERE pe.employee_id = e.id AND pe.site_id = ? AND pe.work_date = ? AND pe.deleted_at IS NULL)
-        OR EXISTS (SELECT 1 FROM timesheet_marks tm WHERE tm.employee_id = e.id AND tm.site_id = ? AND tm.work_date = ?)
-      )`).bind(employeeId, siteId, siteId, payload.workDate, siteId, payload.workDate).first<{ id: number }>();
+        OR EXISTS (SELECT 1 FROM placement_entries pe WHERE pe.employee_id = e.id AND pe.site_id = ? AND pe.work_date >= ? AND pe.work_date < ? AND pe.deleted_at IS NULL AND UPPER(TRIM(pe.employment_type_snapshot)) = 'ОПР')
+        OR EXISTS (SELECT 1 FROM timesheet_marks tm WHERE tm.employee_id = e.id AND tm.site_id = ? AND tm.work_date >= ? AND tm.work_date < ?)
+      )`).bind(employeeId, siteId, siteId, monthStartDate, monthEndDate, siteId, monthStartDate, monthEndDate).first<{ id: number }>();
     if (!employee) return errorResponse("Сотрудник не относится к выбранному проекту.", 404);
 
     const rawValue = typeof payload.value === "number" ? String(payload.value) : String(payload.value ?? "").trim().toLocaleUpperCase("ru-RU");
+    const existingMark = await db.prepare("SELECT id FROM timesheet_marks WHERE site_id = ? AND employee_id = ? AND work_date = ?")
+      .bind(siteId, employeeId, payload.workDate).first<{ id: number }>();
     if (!rawValue) {
+      if (!existingMark) return Response.json({ deleted: false, employeeId, workDate: payload.workDate });
+      if (!hasPermission(authUser.permissions, "workers_timesheet", "delete")) return errorResponse("Нет права удалять отметки табеля.", 403);
       await db.prepare("DELETE FROM timesheet_marks WHERE site_id = ? AND employee_id = ? AND work_date = ?")
         .bind(siteId, employeeId, payload.workDate).run();
       return Response.json({ deleted: true, employeeId, workDate: payload.workDate });
+    }
+    if (!hasPermission(authUser.permissions, "workers_timesheet", existingMark ? "update" : "create")) {
+      return errorResponse(existingMark ? "Нет права изменять отметки табеля." : "Нет права добавлять отметки табеля.", 403);
     }
 
     const numericHours = /^\d+$/.test(rawValue) ? Number(rawValue) : null;
@@ -205,4 +226,8 @@ export async function POST(request: Request) {
     console.error("Timesheet update failed", error);
     return errorResponse(error instanceof Error ? error.message : "Не удалось сохранить отметку табеля.", 400);
   }
+}
+
+export async function POST(request: Request) {
+  return withAuditTrail(request, handlePOST);
 }

@@ -1,8 +1,10 @@
 import { getDatabase } from "../../../db/client";
+import { withAuditTrail } from "../../auditLog";
 import { assertSameOrigin, createInvitation, ensureAuthSchema, getAuthUser, sendInvitationEmail, type AuthUser } from "../../auth";
 import { bitrix24Cooldown, type Bitrix24Action, type Bitrix24Cooldowns } from "../../bitrix24Cooldown";
 import { compareBitrixEmployees, fetchBitrixEmployeeSnapshot, normalizeBitrixText, selectBitrixEmployeesForImport, type BitrixEmployeeSnapshot, type EmployeeAvailabilityStatus } from "../../bitrix24Sync";
-import { canEditGlobalEmployees, canEditGlobalReferences, canEditProjectSettings, canInspectBitrix24, canManageBitrix24, canViewAllProjects, isUserRole, type UserRole } from "../../roles";
+import { hasPermission, type PermissionAction, type PermissionResource } from "../../permissionModel";
+import { canViewAllProjects, isUserRole, type UserRole } from "../../roles";
 
 const env = { get DB() { return getDatabase(); } };
 type DatabaseExecutor = Pick<ReturnType<typeof getDatabase>, "prepare" | "batch" | "readBatch">;
@@ -284,12 +286,16 @@ const TABLE_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_entries_site_date ON placement_entries(site_id, work_date)`,
   `CREATE INDEX IF NOT EXISTS idx_entries_active_site_date ON placement_entries(site_id, work_date) WHERE deleted_at IS NULL`,
   `CREATE INDEX IF NOT EXISTS idx_entries_employee_date ON placement_entries(employee_id, work_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_entries_opr_site_date_employee ON placement_entries(site_id, work_date, employee_id)
+    WHERE deleted_at IS NULL AND upper(trim(employment_type_snapshot)) = 'ОПР'`,
   `CREATE INDEX IF NOT EXISTS idx_report_contributions_site_date_status ON placement_report_contributions(site_id, work_date, status)`,
   `CREATE INDEX IF NOT EXISTS idx_report_contributions_foreman_date ON placement_report_contributions(foreman_id, work_date)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_timesheet_marks_unique_day ON timesheet_marks(site_id, employee_id, work_date)`,
   `CREATE INDEX IF NOT EXISTS idx_timesheet_marks_month ON timesheet_marks(site_id, work_date)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_employee_project_assignment_active ON employee_project_assignments(employee_id, site_id) WHERE active = 1`,
   `CREATE INDEX IF NOT EXISTS idx_employee_project_assignment_site ON employee_project_assignments(site_id, active)`,
+  `CREATE INDEX IF NOT EXISTS idx_employee_project_assignment_site_employee_active ON employee_project_assignments(site_id, employee_id) WHERE active = 1`,
+  `CREATE INDEX IF NOT EXISTS idx_employees_active_name ON employees(full_name, id) WHERE active = 1`,
   `CREATE INDEX IF NOT EXISTS idx_employee_profile_versions_period ON employee_profile_versions(employee_id, valid_from, valid_to)`,
   `CREATE INDEX IF NOT EXISTS idx_employee_availability_periods_period ON employee_availability_periods(employee_id, valid_from, valid_to)`,
   `CREATE INDEX IF NOT EXISTS idx_employee_sync_issues_run ON employee_sync_issues(run_id)`,
@@ -592,33 +598,53 @@ function todayInMoscow() {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
-function canManagePlacement(user: AuthUser, siteId: number | undefined, workDate: string | undefined) {
-  return user.role !== "foreman" || (user.assignedSiteId === siteId && workDate === todayInMoscow());
+function canManagePlacement(user: AuthUser, siteId: number | undefined, workDate: string | undefined, action: PermissionAction = "update") {
+  if (!hasPermission(user.permissions, "workers_report", action)) return false;
+  if (!workDate || !validDate(workDate)) return false;
+  return user.role !== "foreman" || user.assignedSiteId === siteId;
 }
 
-function canRunAction(role: UserRole, payload: UserPayload) {
+function canRunAction(user: AuthUser, payload: UserPayload) {
   const action = payload.action;
   if (!action) return true;
-  if (action === "inspect-bitrix24") return canInspectBitrix24(role);
-  if (action === "sync-bitrix24") return canManageBitrix24(role);
-  if (action === "create-employee" || action === "update-employee" || action === "import-employees") return canEditGlobalEmployees(role);
-  if (action === "assign-employee-project" || action === "save-directory-items") return canEditProjectSettings(role);
+  if (action === "inspect-bitrix24") return hasPermission(user.permissions, "employees", "view");
+  if (action === "sync-bitrix24" || action === "update-employee") return hasPermission(user.permissions, "employees", "update");
+  if (action === "create-employee") return hasPermission(user.permissions, "employees", "create");
+  if (action === "import-employees") return hasPermission(user.permissions, "employees", "create") || hasPermission(user.permissions, "employees", "update");
+  if (action === "assign-employee-project") return hasPermission(user.permissions, "project_employees", "create");
+  if (action === "save-directory-items") {
+    const rows = payload.directories ?? [];
+    const creates = rows.some((row) => !asPositiveInteger(row.directoryId));
+    const updates = rows.some((row) => Boolean(asPositiveInteger(row.directoryId)));
+    return (!creates || hasPermission(user.permissions, "project_directories", "create"))
+      && (!updates || hasPermission(user.permissions, "project_directories", "update"));
+  }
   if (action === "create-directory" || action === "update-directory") {
     const directory = directoryTable(payload.entity);
-    return directory?.global ? canEditGlobalReferences(role) : canEditProjectSettings(role);
+    const resource: PermissionResource = directory?.global ? "positions" : "project_directories";
+    return hasPermission(user.permissions, resource, action === "create-directory" ? "create" : "update");
   }
-  return canEditGlobalReferences(role);
+  if (action === "create-user") return hasPermission(user.permissions, "system_users", "create");
+  if (action === "update-user" || action === "assign-site") return hasPermission(user.permissions, "system_users", "update");
+  if (action === "create-position" || action === "import-positions") return hasPermission(user.permissions, "positions", "create");
+  if (action === "update-position") return hasPermission(user.permissions, "positions", "update");
+  if (action === "create-site") return hasPermission(user.permissions, "projects", "create");
+  if (action === "update-site") return hasPermission(user.permissions, "projects", "update");
+  return false;
 }
 
-function canDeleteEntity(role: UserRole, entity: string | null, kind: string | null) {
-  if (!entity) return true;
-  if (entity === "employee") return canEditGlobalEmployees(role);
-  if (entity === "employee-assignment") return canEditProjectSettings(role);
+function canDeleteEntity(user: AuthUser, entity: string | null, kind: string | null) {
+  if (!entity) return hasPermission(user.permissions, "workers_report", "delete");
+  if (entity === "employee") return hasPermission(user.permissions, "employees", "delete");
+  if (entity === "employee-assignment") return hasPermission(user.permissions, "project_employees", "delete");
+  if (entity === "user") return hasPermission(user.permissions, "system_users", "delete");
+  if (entity === "site") return hasPermission(user.permissions, "projects", "delete");
+  if (entity === "position") return hasPermission(user.permissions, "positions", "delete");
   if (entity === "directory") {
     const directory = directoryTable(kind);
-    return directory?.global ? canEditGlobalReferences(role) : canEditProjectSettings(role);
+    return hasPermission(user.permissions, directory?.global ? "positions" : "project_directories", "delete");
   }
-  return canEditGlobalReferences(role);
+  return false;
 }
 
 function asPositiveInteger(value: unknown) {
@@ -628,6 +654,10 @@ function asPositiveInteger(value: unknown) {
 
 function validDate(value: unknown): value is string {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function isOprEmploymentType(value: string) {
+  return value.trim().toLocaleUpperCase("ru-RU") === "ОПР";
 }
 
 function placementEntriesStatement(siteId: number, workDate: string, responsibleUserId?: number) {
@@ -650,8 +680,37 @@ function placementEntriesStatement(siteId: number, workDate: string, responsible
     JOIN subwork_types sw ON sw.id = pe.subwork_type_id
     JOIN masters m ON m.id = pe.master_id
     LEFT JOIN app_users responsible ON responsible.id = pe.responsible_user_id
-    WHERE pe.site_id = ? AND pe.work_date = ? AND pe.deleted_at IS NULL ${ownershipFilter}
+    WHERE pe.site_id = ? AND pe.work_date = ? AND pe.deleted_at IS NULL
+      AND UPPER(TRIM(COALESCE(NULLIF(pe.employment_type_snapshot, ''), e.employment_type))) = 'ОПР'
+      ${ownershipFilter}
     ORDER BY e.full_name, pe.created_at, pe.id`).bind(...(responsibleUserId ? [siteId, workDate, responsibleUserId] : [siteId, workDate]));
+}
+
+function placementEntriesForRangeStatement(siteId: number, rangeStart: string, rangeEnd: string, responsibleUserId?: number) {
+  const ownershipFilter = responsibleUserId ? "AND pe.responsible_user_id = ?" : "";
+  return env.DB.prepare(`SELECT pe.id, pe.site_id AS siteId, pe.work_date AS workDate, pe.employee_id AS employeeId,
+    pe.shift_id AS shiftId, pe.zone_id AS zoneId, pe.main_work_type_id AS mainWorkTypeId,
+    pe.subwork_type_id AS subworkTypeId, pe.note, pe.master_id AS masterId, pe.hours,
+    pe.responsible_user_id AS responsibleUserId, responsible.full_name AS responsibleUserName, pe.revision,
+    pe.position_snapshot AS positionSnapshot,
+    COALESCE(NULLIF(pe.employee_name_snapshot, ''), e.full_name) AS employeeName,
+    COALESCE(NULLIF(pe.employment_type_snapshot, ''), e.employment_type) AS employmentType,
+    COALESCE(NULLIF(pe.department_snapshot, ''), e.department) AS department,
+    s.name AS shiftName, z.name AS zoneName, mw.name AS mainWorkTypeName, sw.name AS subworkTypeName,
+    COALESCE(NULLIF(pe.master_name_snapshot, ''), m.name) AS masterName
+    FROM placement_entries pe
+    JOIN employees e ON e.id = pe.employee_id
+    JOIN shifts s ON s.id = pe.shift_id
+    JOIN zones z ON z.id = pe.zone_id
+    JOIN main_work_types mw ON mw.id = pe.main_work_type_id
+    JOIN subwork_types sw ON sw.id = pe.subwork_type_id
+    JOIN masters m ON m.id = pe.master_id
+    LEFT JOIN app_users responsible ON responsible.id = pe.responsible_user_id
+    WHERE pe.site_id = ? AND pe.work_date >= ? AND pe.work_date <= ? AND pe.deleted_at IS NULL
+      AND UPPER(TRIM(COALESCE(NULLIF(pe.employment_type_snapshot, ''), e.employment_type))) = 'ОПР'
+      ${ownershipFilter}
+    ORDER BY pe.work_date, e.full_name, pe.created_at, pe.id`)
+    .bind(...(responsibleUserId ? [siteId, rangeStart, rangeEnd, responsibleUserId] : [siteId, rangeStart, rangeEnd]));
 }
 
 function filledDatesStatement(siteId: number, rangeStart: string, rangeEnd: string, responsibleUserId?: number) {
@@ -661,6 +720,7 @@ function filledDatesStatement(siteId: number, rangeStart: string, rangeEnd: stri
       UNION
       SELECT work_date AS "workDate" FROM placement_entries
       WHERE site_id = ? AND responsible_user_id = ? AND work_date >= ? AND work_date <= ? AND deleted_at IS NULL
+        AND UPPER(TRIM(employment_type_snapshot)) = 'ОПР'
       ORDER BY "workDate"`).bind(siteId, responsibleUserId, rangeStart, rangeEnd, siteId, responsibleUserId, rangeStart, rangeEnd);
   }
   return env.DB.prepare(`SELECT work_date AS "workDate" FROM placement_report_days
@@ -668,6 +728,7 @@ function filledDatesStatement(siteId: number, rangeStart: string, rangeEnd: stri
     UNION
     SELECT work_date AS "workDate" FROM placement_entries
     WHERE site_id = ? AND work_date >= ? AND work_date <= ? AND deleted_at IS NULL
+      AND UPPER(TRIM(employment_type_snapshot)) = 'ОПР'
     ORDER BY "workDate"`).bind(siteId, rangeStart, rangeEnd, siteId, rangeStart, rangeEnd);
 }
 
@@ -689,6 +750,7 @@ function employeeUsageStatement(workDate: string) {
     FROM placement_entries pe
     LEFT JOIN app_users responsible ON responsible.id = pe.responsible_user_id
     WHERE pe.work_date = ? AND pe.deleted_at IS NULL
+      AND UPPER(TRIM(pe.employment_type_snapshot)) = 'ОПР'
     GROUP BY pe.employee_id, pe.responsible_user_id, responsible.full_name
     ORDER BY pe.employee_id, responsible.full_name`).bind(workDate);
 }
@@ -712,19 +774,23 @@ function foremanProgressStatement(siteId: number, workDate: string) {
       ON contribution.foreman_id = foreman.id AND contribution.site_id = ? AND contribution.work_date = ?
     LEFT JOIN placement_entries entry
       ON entry.responsible_user_id = foreman.id AND entry.site_id = ? AND entry.work_date = ? AND entry.deleted_at IS NULL
+      AND UPPER(TRIM(entry.employment_type_snapshot)) = 'ОПР'
     WHERE (foreman.active = 1 AND foreman.role = 'foreman' AND foreman.assigned_site_id = ?)
       OR contribution.foreman_id IS NOT NULL
     GROUP BY foreman.id, foreman.full_name, contribution.status, contribution.submitted_at
     ORDER BY foreman.full_name`).bind(siteId, workDate, siteId, workDate, siteId);
 }
 
-function reportEmployeesStatement() {
-  return env.DB.prepare(`SELECT id, full_name AS fullName, employment_type AS employmentType, department, position, source,
-    bitrix24_stage AS bitrix24Stage, availability_status AS availabilityStatus, sync_error AS syncError,
-    site_id AS siteId, NULL AS siteName
-    FROM employees
-    WHERE active = 1 AND full_name <> '' AND position <> ''
-    ORDER BY full_name`);
+function reportEmployeesStatement(siteId: number) {
+  return env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
+    e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
+    epa.site_id AS siteId, s.name AS siteName
+    FROM employees e
+    JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1
+    JOIN sites s ON s.id = epa.site_id AND s.active = 1
+    WHERE e.active = 1 AND epa.site_id = ? AND e.full_name <> '' AND e.position <> ''
+      AND UPPER(TRIM(e.employment_type)) = 'ОПР'
+    ORDER BY e.full_name`).bind(siteId);
 }
 
 async function validatePayload(db: DatabaseExecutor, payload: EntryPayload, excludedId?: number) {
@@ -757,6 +823,7 @@ async function validatePayload(db: DatabaseExecutor, payload: EntryPayload, excl
       WHERE e.id = ? AND e.active = 1`)
       .bind(siteId, employeeId).first<{ position: string; fullName: string; employmentType: string; department: string }>();
   if (!employee?.position) throw new Error("Сотрудник отсутствует в справочнике или у него не заполнена должность.");
+  if (!isOprEmploymentType(employee.employmentType)) throw new Error("В отчёт рабочих можно добавлять только сотрудников с типом ОПР.");
 
   const refs = await db.batch([
     db.prepare("SELECT id FROM shifts WHERE id = ? AND site_id = ? AND active = 1").bind(shiftId, siteId),
@@ -770,7 +837,7 @@ async function validatePayload(db: DatabaseExecutor, payload: EntryPayload, excl
   if (refs.some((result) => result.results.length === 0)) throw new Error("Одно из значений не относится к выбранному объекту.");
 
   const excluded = excludedId ? "AND id <> ?" : "";
-  const statement = db.prepare(`SELECT COALESCE(SUM(hours), 0) AS used FROM placement_entries WHERE employee_id = ? AND work_date = ? AND deleted_at IS NULL ${excluded}`);
+  const statement = db.prepare(`SELECT COALESCE(SUM(hours), 0) AS used FROM placement_entries WHERE employee_id = ? AND work_date = ? AND deleted_at IS NULL AND UPPER(TRIM(employment_type_snapshot)) = 'ОПР' ${excluded}`);
   const total = excludedId
     ? await statement.bind(employeeId, payload.workDate, excludedId).first<{ used: number }>()
     : await statement.bind(employeeId, payload.workDate).first<{ used: number }>();
@@ -814,7 +881,7 @@ async function validateBulkPayloads(db: DatabaseExecutor, payloads: EntryPayload
     db.prepare("SELECT id FROM main_work_types WHERE site_id = ? AND active = 1").bind(siteId),
     db.prepare("SELECT id FROM subwork_types WHERE site_id = ? AND active = 1").bind(siteId),
     db.prepare("SELECT id, name, active FROM masters WHERE site_id = ?").bind(siteId),
-    db.prepare("SELECT employee_id AS employeeId, SUM(hours) AS used FROM placement_entries WHERE work_date = ? AND deleted_at IS NULL GROUP BY employee_id").bind(workDate),
+    db.prepare("SELECT employee_id AS employeeId, SUM(hours) AS used FROM placement_entries WHERE work_date = ? AND deleted_at IS NULL AND UPPER(TRIM(employment_type_snapshot)) = 'ОПР' GROUP BY employee_id").bind(workDate),
   ]);
 
   const employees = new Map((employeesResult.results as Array<{ id: number; position: string; fullName: string; employmentType: string; department: string }>).map((employee) => [employee.id, employee]));
@@ -853,6 +920,7 @@ async function validateBulkPayloads(db: DatabaseExecutor, payloads: EntryPayload
     }
     if (hours < 1 || hours > 10) throw new Error(`Строка ${index + 1}: количество часов должно быть от 1 до 10.`);
     if (!employee?.position) throw new Error(`Строка ${index + 1}: сотрудник недоступен или у него не заполнена должность.`);
+    if (!isOprEmploymentType(employee.employmentType)) throw new Error(`Строка ${index + 1}: в отчёт рабочих можно добавлять только сотрудников с типом ОПР.`);
     if (!shifts.has(shiftId) || !zones.has(zoneId) || !mainWorks.has(mainWorkTypeId) || !subworks.has(subworkTypeId) || !master || (!master.active && !keepHistoricalMaster)) {
       throw new Error(`Строка ${index + 1}: одно из значений не относится к объекту.`);
     }
@@ -891,7 +959,7 @@ function existingPlacementEntriesStatement(db: DatabaseExecutor, ids: number[], 
 function assertPlacementOwnership(user: AuthUser, entries: ExistingPlacementEntry[]) {
   if (user.role !== "foreman") return;
   if (entries.some((entry) => !canManagePlacement(user, entry.siteId, entry.workDate) || entry.responsibleUserId !== user.id)) {
-    throw new PlacementRequestError("Прораб может изменять только собственные строки сегодняшнего отчёта.", 403, "ENTRY_OWNERSHIP_FORBIDDEN");
+    throw new PlacementRequestError("Прораб может изменять только собственные строки отчёта назначенного проекта.", 403, "ENTRY_OWNERSHIP_FORBIDDEN");
   }
 }
 
@@ -1263,6 +1331,7 @@ export async function GET(request: Request) {
     const rangeEnd = url.searchParams.get("rangeEnd") ?? workDate;
     if (!validDate(rangeStart) || !validDate(rangeEnd) || rangeStart > rangeEnd) throw new Error("Некорректный диапазон дат отчёта.");
     const scope = url.searchParams.get("scope");
+    if (scope && !hasPermission(authUser.permissions, "workers_report", "view")) return forbidden();
     if (scope === "carryover") {
       const previous = authUser.role === "foreman"
         ? await env.DB.prepare(`SELECT work_date AS workDate
@@ -1295,10 +1364,16 @@ export async function GET(request: Request) {
         timesheetMarks: timesheetMarks.results,
       });
     }
+    if (scope === "export-range") {
+      const rangeDays = Math.floor((Date.parse(`${rangeEnd}T00:00:00Z`) - Date.parse(`${rangeStart}T00:00:00Z`)) / 86400000) + 1;
+      if (rangeDays > 366) throw new Error("Для выгрузки можно выбрать период не более 366 дней.");
+      const entries = await placementEntriesForRangeStatement(siteId, rangeStart, rangeEnd, responsibleUserId).all();
+      return Response.json({ entries: entries.results });
+    }
     if (scope === "workspace") {
       const [sites, reportEmployees, placementEmployees, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, reportSubmission, employeeUsage, foremanProgress, timesheetMarks] = await env.DB.readBatch([
         env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
-        reportEmployeesStatement(),
+        reportEmployeesStatement(siteId),
         env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
           e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
           epa.site_id AS siteId, s.name AS siteName
@@ -1351,7 +1426,7 @@ export async function GET(request: Request) {
         WHERE e.active = 1
         GROUP BY e.id, e.full_name, e.employment_type, e.department, e.position, e.source, e.bitrix24_stage, e.availability_status, e.sync_error, e.last_synced_at
         ORDER BY e.full_name`),
-      reportEmployeesStatement(),
+      reportEmployeesStatement(siteId),
       env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
         e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
         epa.site_id AS siteId, s.name AS siteName
@@ -1381,47 +1456,62 @@ export async function GET(request: Request) {
       foremanProgressStatement(siteId, workDate),
       reportTimesheetMarksStatement(siteId, workDate),
     ]);
+    const canViewWorkerReports = hasPermission(authUser.permissions, "workers_report", "view");
+    const canViewEmployees = hasPermission(authUser.permissions, "employees", "view");
+    const canManageEmployees = hasPermission(authUser.permissions, "employees", "create") || hasPermission(authUser.permissions, "employees", "update");
+    const canViewProjectEmployees = hasPermission(authUser.permissions, "project_employees", "view");
+    const canChooseProjectEmployees = hasPermission(authUser.permissions, "project_employees", "create");
+    const canViewPositions = hasPermission(authUser.permissions, "positions", "view") || canManageEmployees;
+    const canViewProjectDirectories = hasPermission(authUser.permissions, "project_directories", "view") || canViewWorkerReports;
+    const canViewSystemUsers = hasPermission(authUser.permissions, "system_users", "view");
+    const canViewAllSites = canViewAllProjects(authUser.role)
+      || hasPermission(authUser.permissions, "projects", "view")
+      || canViewSystemUsers
+      || canViewEmployees
+      || hasPermission(authUser.permissions, "equipment_registry", "view");
     return Response.json({
-      sites: canViewAllProjects(authUser.role) ? sites.results : sites.results.filter((site) => (site as { id: number }).id === siteId),
-      employees: canViewAllProjects(authUser.role) ? employees.results : placementEmployees.results,
-      reportEmployees: reportEmployees.results,
-      placementEmployees: placementEmployees.results,
-      projectEmployees: projectEmployees.results,
-      positionCatalog: positionCatalog.results,
-      employmentTypes: employmentTypes.results,
-      departments: departments.results,
-      positions: positions.results,
-      shifts: shifts.results,
-      zones: zones.results,
-      mainWorkTypes: mainWorkTypes.results,
-      subworkTypes: subworkTypes.results,
-      masters: masters.results,
-      entries: entries.results,
-      filledDates: filledDates.results.map((row) => (row as { workDate: string }).workDate),
-      reportSubmitted: Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
-      employeeUsage: employeeUsage.results,
-      foremanProgress: foremanProgress.results,
-      timesheetMarks: timesheetMarks.results,
-      users: canViewAllProjects(authUser.role) ? users.results : [],
-      syncStatus: syncStatus.results[0] ?? null,
-      bitrix24Cooldowns: canInspectBitrix24(authUser.role) ? mapBitrix24Cooldowns(bitrix24ActionLimits.results as Bitrix24ActionLimitRow[]) : undefined,
+      sites: canViewAllSites ? sites.results : sites.results.filter((site) => (site as { id: number }).id === siteId),
+      employees: canViewEmployees || canChooseProjectEmployees
+        ? employees.results
+        : [],
+      reportEmployees: canViewWorkerReports ? reportEmployees.results : [],
+      placementEmployees: canViewWorkerReports ? placementEmployees.results : [],
+      projectEmployees: canViewProjectEmployees ? projectEmployees.results : [],
+      positionCatalog: canViewPositions ? positionCatalog.results : [],
+      employmentTypes: canViewPositions ? employmentTypes.results : [],
+      departments: canViewPositions ? departments.results : [],
+      positions: canViewPositions ? positions.results : [],
+      shifts: canViewProjectDirectories ? shifts.results : [],
+      zones: canViewProjectDirectories ? zones.results : [],
+      mainWorkTypes: canViewProjectDirectories ? mainWorkTypes.results : [],
+      subworkTypes: canViewProjectDirectories ? subworkTypes.results : [],
+      masters: canViewProjectDirectories ? masters.results : [],
+      entries: canViewWorkerReports ? entries.results : [],
+      filledDates: canViewWorkerReports ? filledDates.results.map((row) => (row as { workDate: string }).workDate) : [],
+      reportSubmitted: canViewWorkerReports && Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
+      employeeUsage: canViewWorkerReports ? employeeUsage.results : [],
+      foremanProgress: canViewWorkerReports ? foremanProgress.results : [],
+      timesheetMarks: canViewWorkerReports ? timesheetMarks.results : [],
+      users: canViewSystemUsers ? users.results : [],
+      syncStatus: canViewEmployees ? syncStatus.results[0] ?? null : null,
+      bitrix24Cooldowns: hasPermission(authUser.permissions, "employees", "view") ? mapBitrix24Cooldowns(bitrix24ActionLimits.results as Bitrix24ActionLimitRow[]) : undefined,
     });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Не удалось загрузить данные." }, { status: 500 });
   }
 }
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   try {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
     await ensureDatabaseInitialized();
     const payload = (await request.json()) as EntryPayload & UserPayload & { entries?: EntryPayload[] };
-    if (payload.action && !canRunAction(authUser.role, payload)) return forbidden();
+    if (payload.action && !canRunAction(authUser, payload)) return forbidden();
     if (!payload.action) {
       const placementRows = payload.entries?.length ? payload.entries : [payload];
-      if (placementRows.some((row) => !canManagePlacement(authUser, asPositiveInteger(row.siteId) ?? undefined, row.workDate))) return forbidden();
+      if (placementRows.some((row) => !canManagePlacement(authUser, asPositiveInteger(row.siteId) ?? undefined, row.workDate, "create"))) return forbidden();
     }
     if (payload.action === "sync-bitrix24") {
       const cooldown = await reserveBitrix24Action(payload.action);
@@ -1558,6 +1648,12 @@ export async function POST(request: Request) {
         const siteIds = [...new Set(projectNames.map((name) => sitesByKey.get(name.toLocaleLowerCase("ru-RU"))!))];
         return { fullName, normalizedName, employmentType, department, position, siteIds };
       });
+      if (validatedRows.some((row) => employeesByName.has(row.normalizedName)) && !hasPermission(authUser.permissions, "employees", "update")) {
+        return Response.json({ error: "Файл содержит сотрудников, которые уже есть в справочнике. Для обновления таких строк нужно право редактирования." }, { status: 403 });
+      }
+      if (validatedRows.some((row) => !employeesByName.has(row.normalizedName)) && !hasPermission(authUser.permissions, "employees", "create")) {
+        return Response.json({ error: "Файл содержит новых сотрудников. Для их импорта нужно право добавления." }, { status: 403 });
+      }
       const employeeStatements = validatedRows.map((row) => {
         const existingId = employeesByName.get(row.normalizedName)?.id;
         return existingId
@@ -1706,7 +1802,7 @@ export async function POST(request: Request) {
   }
 }
 
-export async function PATCH(request: Request) {
+async function handlePATCH(request: Request) {
   try {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
@@ -1726,15 +1822,15 @@ export async function PATCH(request: Request) {
     const ownSubmissionWorkDate = ownSubmission?.workDate;
     const finalizationSiteId = finalization ? asPositiveInteger(finalization.siteId) : null;
     const finalizationWorkDate = finalization?.workDate;
-    if (payload.action && !canRunAction(authUser.role, payload)) return forbidden();
+    if (payload.action && !canRunAction(authUser, payload)) return forbidden();
     if (!payload.action) {
-      const placementRows = placementUpdates || placementCreates
-        ? [...(placementUpdates ?? []), ...(placementCreates ?? [])]
-        : ownSubmission || finalization ? [] : [payload];
-      if (placementRows.some((entry) => !canManagePlacement(authUser, asPositiveInteger(entry.siteId) ?? undefined, entry.workDate))) return forbidden();
-      if (ownSubmission && (authUser.role !== "foreman" || !ownSubmissionSiteId || !validDate(ownSubmissionWorkDate) || !canManagePlacement(authUser, ownSubmissionSiteId, ownSubmissionWorkDate))) return forbidden();
+      const placementRows = placementUpdates || placementCreates ? [] : ownSubmission || finalization ? [] : [payload];
+      if ((placementUpdates ?? []).some((entry) => !canManagePlacement(authUser, asPositiveInteger(entry.siteId) ?? undefined, entry.workDate, "update"))) return forbidden();
+      if ((placementCreates ?? []).some((entry) => !canManagePlacement(authUser, asPositiveInteger(entry.siteId) ?? undefined, entry.workDate, "create"))) return forbidden();
+      if (placementRows.some((entry) => !canManagePlacement(authUser, asPositiveInteger(entry.siteId) ?? undefined, entry.workDate, "update"))) return forbidden();
+      if (ownSubmission && (authUser.role !== "foreman" || !ownSubmissionSiteId || !validDate(ownSubmissionWorkDate) || !canManagePlacement(authUser, ownSubmissionSiteId, ownSubmissionWorkDate, "update"))) return forbidden();
       if (finalization && authUser.role === "foreman") return forbidden();
-      if (finalization && (!finalizationSiteId || !validDate(finalizationWorkDate) || !canManagePlacement(authUser, finalizationSiteId, finalizationWorkDate))) return forbidden();
+      if (finalization && (!finalizationSiteId || !validDate(finalizationWorkDate) || !canManagePlacement(authUser, finalizationSiteId, finalizationWorkDate, "update"))) return forbidden();
     }
     if (payload.action === "update-user") {
       const userId = asPositiveInteger(payload.userId);
@@ -1983,7 +2079,7 @@ export async function PATCH(request: Request) {
   }
 }
 
-export async function DELETE(request: Request) {
+async function handleDELETE(request: Request) {
   try {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
@@ -1991,7 +2087,7 @@ export async function DELETE(request: Request) {
     await ensureDatabaseInitialized();
     const url = new URL(request.url);
     const entity = url.searchParams.get("entity");
-    if (!canDeleteEntity(authUser.role, entity, url.searchParams.get("kind"))) return forbidden();
+    if (!canDeleteEntity(authUser, entity, url.searchParams.get("kind"))) return forbidden();
     if (!entity) {
       const body = request.headers.get("content-type")?.includes("application/json")
         ? await request.json() as { ids?: unknown[] }
@@ -2118,4 +2214,16 @@ export async function DELETE(request: Request) {
   } catch (error) {
     return placementErrorResponse(error, "Не удалось удалить строку.");
   }
+}
+
+export async function POST(request: Request) {
+  return withAuditTrail(request, handlePOST);
+}
+
+export async function PATCH(request: Request) {
+  return withAuditTrail(request, handlePATCH);
+}
+
+export async function DELETE(request: Request) {
+  return withAuditTrail(request, handleDELETE);
 }

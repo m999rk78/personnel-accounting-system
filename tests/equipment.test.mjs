@@ -4,6 +4,56 @@ import test from "node:test";
 import { createEquipmentTimesheetXlsx } from "../app/placementXlsx.ts";
 import { equipmentUnavailableReason, isEquipmentUnavailable } from "../app/equipmentAvailability.ts";
 import { buildEquipmentCarryoverDrafts } from "../app/equipmentCarryover.ts";
+import { buildEquipmentTimesheetRange, selectEquipmentTimesheetRange } from "../app/timesheetExportRange.ts";
+
+test("loads and combines equipment timesheet dates from different months", () => {
+  const unit = { id: 3, organization: "РХИ", equipmentType: "Кран", brand: "SANY", model: "", registrationNumber: "001" };
+  const result = buildEquipmentTimesheetRange([
+    {
+      units: [unit],
+      entries: [{ ...unit, equipmentId: 3, workDate: "2026-09-30", hours: 10, subworkTypeName: "Работа" }],
+      marks: [],
+    },
+    {
+      units: [unit],
+      entries: [{ ...unit, equipmentId: 3, workDate: "2026-10-01", hours: 4, subworkTypeName: "Простой" }],
+      marks: [{ equipmentId: 3, workDate: "2026-10-01", productiveHours: 6, downtimeHours: 2, note: "", updatedBy: "Инженер" }],
+    },
+  ], "2026-09-30", "2026-10-01");
+
+  assert.deepEqual(result.dates, ["2026-09-30", "2026-10-01"]);
+  assert.deepEqual(result.rows[0].dailyValues, [10, "6 / П 2"]);
+  assert.equal(result.productiveTotal, 16);
+  assert.equal(result.downtimeTotal, 2);
+  assert.equal(result.totalHours, 18);
+  assert.deepEqual(result.dayTotals, [10, 8]);
+});
+
+test("limits an equipment timesheet export to the selected dates and recalculates totals", () => {
+  const result = selectEquipmentTimesheetRange(
+    ["2026-10-01", "2026-10-02", "2026-10-03"],
+    [{
+      equipmentName: "Кран 50 т",
+      organization: "РХИ",
+      dailyValues: [10, "П 2", "6 / П 1"],
+      dailyProductiveHours: [10, 0, 6],
+      dailyDowntimeHours: [0, 2, 1],
+      productiveHours: 16,
+      downtimeHours: 3,
+      totalHours: 19,
+    }],
+    [10, 2, 7],
+    "2026-10-02",
+    "2026-10-03",
+  );
+
+  assert.deepEqual(result.dates, ["2026-10-02", "2026-10-03"]);
+  assert.deepEqual(result.rows[0].dailyValues, ["П 2", "6 / П 1"]);
+  assert.equal(result.productiveTotal, 6);
+  assert.equal(result.downtimeTotal, 3);
+  assert.equal(result.totalHours, 9);
+  assert.deepEqual(result.dayTotals, [2, 7]);
+});
 
 test("blocks equipment only when the timesheet contains downtime without productive work", () => {
   assert.equal(isEquipmentUnavailable({ productiveHours: 0, downtimeHours: 8, note: "Плановое ТО" }), true);
@@ -55,7 +105,7 @@ test("exports the equipment timesheet as a formatted monthly workbook", async ()
     "Усть-Луга ГПЗ",
     "Сентябрь 2026 г.",
     ["2026-09-01", "2026-09-02"],
-    [{ equipmentName: "Экскаватор CAT 320", organization: "ООО Техника", dailyValues: [8, "П 2"], productiveHours: 8, downtimeHours: 2, totalHours: 10 }],
+    [{ equipmentName: "Экскаватор // CAT 320 // А123ВС // ООО Техника", organization: "ООО Техника", equipmentType: "Экскаватор", registrationNumber: "А123ВС", dailyValues: [8, "П 2"], dailyProductiveHours: [8, 0], dailyDowntimeHours: [0, 2], dailyReportHours: [8, 2], productiveHours: 8, downtimeHours: 2, reportHours: 10, totalHours: 10 }],
     [8, 2],
     8,
     2,
@@ -63,15 +113,18 @@ test("exports the equipment timesheet as a formatted monthly workbook", async ()
   );
   const contents = new TextDecoder().decode(await workbook.arrayBuffer());
 
-  assert.match(contents, /sheet name="Табель"/);
-  assert.match(contents, /pane xSplit="3" ySplit="2"/);
+  assert.match(contents, /sheet name="Сентябрь"/);
+  assert.match(contents, /pane xSplit="4" ySplit="5"/);
   assert.match(contents, /orientation="landscape"/);
-  assert.match(contents, /<t xml:space="preserve">РАБОТА<\/t>/);
+  assert.match(contents, /<t xml:space="preserve">Уникальное наименование единицы<\/t>/);
+  assert.match(contents, /<t xml:space="preserve">ГРЗ<\/t>/);
+  assert.match(contents, /<t xml:space="preserve">ЧАСЫ<\/t>/);
   assert.match(contents, /<t xml:space="preserve">ПРОСТОЙ<\/t>/);
-  assert.match(contents, /<f>SUM\(AI3:AI3\)<\/f><v>8<\/v>/);
-  assert.match(contents, /<f>SUM\(AJ3:AJ3\)<\/f><v>2<\/v>/);
-  assert.match(contents, /<f>SUM\(AK3:AK3\)<\/f><v>10<\/v>/);
-  assert.match(contents, /autoFilter ref="A2:C4"/);
+  assert.match(contents, /<t xml:space="preserve">РАСТ<\/t>/);
+  assert.match(contents, /<f>SUM\(E6:AI6\)<\/f><v>8<\/v>/);
+  assert.match(contents, /<c r="AK6" s="11"><v>2<\/v><\/c>/);
+  assert.match(contents, /<f>AJ6\+AK6-10<\/f><v>0<\/v>/);
+  assert.match(contents, /autoFilter ref="B5:AL6"/);
   assert.match(contents, /Усть-Луга ГПЗ — Сентябрь 2026 г\./);
 });
 
@@ -86,15 +139,15 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   const grids = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
 
   assert.match(api, /getAuthUser\(request\)/);
-  assert.match(api, /viewMode === "timesheet" && !canAccessTimesheets\(authUser\.role\)/);
-  assert.match(api, /canEditTimesheet: canAccessTimesheets\(authUser\.role\)/);
+  assert.match(api, /viewMode === "timesheet"[\s\S]*"equipment_timesheet"/);
+  assert.match(api, /canEditTimesheet: hasPermission\(authUser\.permissions, "equipment_timesheet", "create"\)/);
   assert.match(api, /authUser\.role === "foreman"/);
-  assert.match(api, /workDate === todayInMoscow\(\)/);
+  assert.doesNotMatch(api, /workDate\s*(?:===|!==|>=|<=|>|<)\s*todayInMoscow\(\)/);
   assert.match(api, /validateReferenceIds/);
   assert.match(api, /hours > 10/);
   assert.match(api, /payload\.action === "import-units"/);
   assert.match(api, /payload\.action === "import-entries"/);
-  assert.match(api, /Прораб может импортировать данные только в сегодняшний отчёт/);
+  assert.match(api, /hasPermission\(authUser\.permissions, "equipment_report", "create"\)/);
   assert.match(api, /SELECT DISTINCT work_date AS "workDate"/);
   assert.match(api, /INSERT INTO equipment_entries/);
   assert.match(api, /equipment_project_assignments/);
@@ -134,7 +187,8 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(view, /Удалить технику/);
   assert.match(view, /Сохранить изменения/);
   assert.match(view, /normalize\(entry\.subworkTypeName\)\.includes\("простой"\)/);
-  assert.match(view, /Итоги за месяц/);
+  assert.match(view, /equipment-timesheet-summary timesheet-top-summary/);
+  assert.match(view, /timesheet-fill-row[\s\S]*colSpan=\{monthDays\.length \+ 6\}/);
   assert.match(view, /TimesheetFilterableHeading/);
   assert.match(view, /label="Техника"/);
   assert.match(view, /label="Организация"/);
@@ -186,7 +240,8 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(view, /Экспорт в Excel/);
   assert.match(view, /Импорт из Excel/);
   assert.match(view, /createTableXlsx/);
-  assert.match(view, /createEquipmentTimesheetXlsx/);
+  assert.match(view, /openTimesheetExportPreview/);
+  assert.match(view, /kind: "equipment-timesheet"/);
   assert.match(view, /Табель_техники_/);
   assert.match(view, /equipment-timesheet-page-actions/);
   assert.match(parser, /function columnLetter/);
@@ -210,10 +265,9 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(parser, /export async function parseEquipmentRegistryXlsx/);
   assert.match(parser, /export function createEquipmentTimesheetXlsx/);
   assert.match(parser, /orientation="landscape"/);
-  assert.match(parser, /pane xSplit="3" ySplit="2"/);
-  assert.match(parser, /sumDataColumn\(columnLetter\(productiveColumn\)\)/);
-  assert.match(parser, /sumDataColumn\(columnLetter\(downtimeColumn\)\)/);
-  assert.match(parser, /workbookFiles\(worksheet, undefined, "Табель"\)/);
+  assert.match(parser, /pane xSplit="4" ySplit="5"/);
+  assert.match(parser, /"Уникальное наименование единицы"/);
+  assert.match(parser, /workbookFiles\(worksheet, undefined, timesheetSheetName\(dates\), "Справочники", timesheetStylesXml\)/);
   assert.match(parser, /export async function parseEquipmentEntriesXlsx/);
   assert.match(parser, /ГРЗ \/ Инв\. №/);
   assert.match(parser, /projectName/);
@@ -249,9 +303,17 @@ test("separates the daily equipment report into foreman contributions", async ()
   assert.match(schema, /export const equipmentReportContributions = pgTable\("equipment_report_contributions"/);
   assert.match(schema, /equipmentEntries[\s\S]*responsibleUserId: integer\("responsible_user_id"\)/);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS "equipment_report_contributions"/);
+  assert.match(api, /const siteId = authUser\.role === "foreman" \? authUser\.assignedSiteId! : requestedSiteId/);
+  assert.match(api, /canCreateDaily: hasPermission\(authUser\.permissions, "equipment_report", "create"\)/);
+  assert.match(api, /canUpdateDaily: hasPermission\(authUser\.permissions, "equipment_report", "update"\)/);
+  assert.match(api, /canDeleteDaily: hasPermission\(authUser\.permissions, "equipment_report", "delete"\)/);
+  assert.match(api, /hasPermission\(authUser\.permissions, "equipment_report", entryId \? "update" : "create"\)/);
+  assert.match(api, /payload\.action === "delete-entry"[\s\S]*hasPermission\(authUser\.permissions, "equipment_report", "delete"\)/);
+  assert.doesNotMatch(api, /Прораб[^\n]*(?:сегодняшн|только сегодня)/i);
   assert.match(api, /responsibleUserId = authUser\.role === "foreman" && section === "daily" \? authUser\.id : null/);
   assert.match(api, /ee\.responsible_user_id = \?/);
-  assert.match(api, /Прораб может изменять только собственные строки сегодняшнего отчёта/);
+  assert.match(api, /Прораб может изменять только собственные строки отчёта назначенного проекта/);
+  assert.match(api, /Прораб может удалять только собственные строки отчёта назначенного проекта/);
   assert.match(api, /payload\.action === "submit-daily-report"/);
   assert.match(api, /INSERT INTO equipment_report_contributions[\s\S]*RETURNING revision/);
   assert.match(api, /INSERT INTO equipment_report_days[\s\S]*RETURNING site_id/);
@@ -260,9 +322,18 @@ test("separates the daily equipment report into foreman contributions", async ()
   assert.match(api, /За сутки можно указать не более 20 ч/);
   assert.match(view, /Сдали прорабы:/);
   assert.match(view, /Сохранить мою часть/);
+  assert.match(view, /Если всё как вчера, сразу сохраните свою часть/);
+  assert.match(view, /for \(const draft of entryDrafts\) await post\(\{ action: "save-entry", workDate, \.\.\.draft \}\)/);
   assert.match(view, /Принять отчёт за день/);
+  assert.match(view, /if \(!payload \|\| \(entry \? !payload\.canUpdateDaily : !payload\.canCreateDaily\)\) return/);
   assert.match(view, /entryDrafts\.length === 0 && selectedEntryIds\.length === 0 && <div className="employee-footer-base">/);
-  assert.match(view, /payload\?\.canEditDaily && <button[^>]+onClick=\{\(\) => openEntry\(\)\}/);
+  assert.match(view, /payload\?\.canCreateDaily && <button[^>]+onClick=\{\(\) => openEntry\(\)\}/);
+  assert.match(view, /onClick=\{\(\) => \{ const selected = dailyEntries\.filter/);
+  assert.match(view, /disabled=\{saving \|\| !payload\?\.canUpdateDaily\} title=\{payload\?\.canUpdateDaily \? undefined : "Нет права редактирования"\}>Редактировать/);
+  assert.match(view, /onClick=\{\(\) => void deleteSelectedEntries\(\)\} disabled=\{saving \|\| !payload\?\.canDeleteDaily\} title=\{payload\?\.canDeleteDaily \? undefined : "Нет права удаления"\}/);
+  assert.match(view, /payload\.currentUserRole !== "foreman" \|\| !payload\.canCreateDaily\) return/);
+  assert.match(view, /workDate !== today \|\| payload\?\.workDate !== workDate[\s\S]*scope=carryover/);
+  assert.match(view, /equipmentCarryoverMode = section === "daily" && workDate === today[\s\S]*payload\.currentUserRole === "foreman" && payload\.canCreateDaily/);
   assert.match(view, /unitDrafts\.length === 0 && selectedUnitIds\.length === 0 && <div className="employee-footer-base">/);
   assert.match(view, /projectUnitDrafts\.length === 0 && selectedProjectUnitIds\.length === 0 && <div className="employee-footer-base">/);
   assert.match(grids, /headerName: "Ответственный прораб"/);

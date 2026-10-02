@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { EquipmentDailyAgGrid, EquipmentRegistryAgGrid, ProjectEquipmentAgGrid, type GridEquipmentDraft, type GridEquipmentEntry, type GridEquipmentRegistryDraft, type GridEquipmentUnit, type GridProjectEquipmentDraft } from "./AgDataGrids";
 import { CustomSelect } from "./CustomSelect";
-import { createEquipmentTimesheetXlsx, createTableXlsx, parseEquipmentEntriesXlsx, parseEquipmentRegistryXlsx } from "./placementXlsx";
+import { ExcelActionsMenu } from "./ExcelActionsMenu";
+import { openExcelExportPreview } from "./excelExportPreviewStore";
+import { createTableXlsx, parseEquipmentEntriesXlsx, parseEquipmentRegistryXlsx, type EquipmentPlacementExportRow } from "./placementXlsx";
 import { TIMESHEET_ALL_OPTION, TimesheetFilterableHeading, type TimesheetFilterOption } from "./TimesheetColumnFilter";
 import { TimesheetCellPopover } from "./TimesheetCellPopover";
 import { useTimesheetClipboard, type TimesheetClipboardChange } from "./useTimesheetClipboard";
@@ -46,9 +48,21 @@ type EquipmentPayload = {
   workDate: string;
   month: string;
   canEditDaily: boolean;
+  canCreateDaily: boolean;
+  canUpdateDaily: boolean;
+  canDeleteDaily: boolean;
   canEditTimesheet: boolean;
+  canCreateTimesheet: boolean;
+  canUpdateTimesheet: boolean;
+  canDeleteTimesheet: boolean;
   canManageRegistry: boolean;
+  canCreateRegistry: boolean;
+  canUpdateRegistry: boolean;
+  canDeleteRegistry: boolean;
   canManageAssignments: boolean;
+  canCreateAssignments: boolean;
+  canUpdateAssignments: boolean;
+  canDeleteAssignments: boolean;
   currentUserRole: "foreman" | "engineer" | "superadmin";
   currentUserName: string;
   reportSubmitted: boolean;
@@ -147,9 +161,10 @@ function formatEquipmentHours(productiveHours: number, downtimeHours: number) {
   return String(productiveHours);
 }
 
-function EquipmentTimesheetMarkList({ value, canReset, disabled, onChoose, onClose }: {
+function EquipmentTimesheetMarkList({ value, canReset, canWrite, disabled, onChoose, onClose }: {
   value: string;
   canReset: boolean;
+  canWrite: boolean;
   disabled: boolean;
   onChoose: (value: string) => void;
   onClose: () => void;
@@ -158,7 +173,9 @@ function EquipmentTimesheetMarkList({ value, canReset, disabled, onChoose, onClo
     ...EQUIPMENT_MARK_OPTIONS,
     ...(canReset ? [{ value: "", label: "Вернуть значение из отчёта", group: "reset" as const }] : []),
   ], [canReset]);
-  const initialIndex = Math.max(0, options.findIndex((option) => option.value === value));
+  const optionEnabled = (option: typeof options[number]) => canWrite || option.group === "reset";
+  const selectedIndex = options.findIndex((option) => optionEnabled(option) && option.value === value);
+  const initialIndex = Math.max(0, selectedIndex >= 0 ? selectedIndex : options.findIndex(optionEnabled));
   const [activeIndex, setActiveIndex] = useState(initialIndex);
   const optionButtons = useRef<Array<HTMLButtonElement | null>>([]);
 
@@ -168,7 +185,14 @@ function EquipmentTimesheetMarkList({ value, canReset, disabled, onChoose, onClo
   }, [activeIndex]);
 
   function moveActive(offset: number) {
-    setActiveIndex((current) => (current + offset + options.length) % options.length);
+    setActiveIndex((current) => {
+      let next = current;
+      for (let index = 0; index < options.length; index += 1) {
+        next = (next + offset + options.length) % options.length;
+        if (optionEnabled(options[next])) return next;
+      }
+      return current;
+    });
   }
 
   return <div className="custom-select-options timesheet-mark-options equipment-mark-options" role="listbox" aria-label="Значение табеля техники">
@@ -187,16 +211,17 @@ function EquipmentTimesheetMarkList({ value, canReset, disabled, onChoose, onClo
           option.group === "downtime" && options[index - 1]?.group !== "downtime" ? "equipment-mark-downtime-start" : "",
           option.group === "reset" ? "timesheet-mark-reset-option" : "",
         ].filter(Boolean).join(" ")}
-        disabled={disabled}
+        disabled={disabled || (!canWrite && option.group !== "reset")}
         tabIndex={activeIndex === index ? 0 : -1}
-        onMouseEnter={() => setActiveIndex(index)}
+        onMouseEnter={() => { if (optionEnabled(option)) setActiveIndex(index); }}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
             moveActive(event.key === "ArrowDown" ? 1 : -1);
           } else if (event.key === "Home" || event.key === "End") {
             event.preventDefault();
-            setActiveIndex(event.key === "Home" ? 0 : options.length - 1);
+            const enabledIndex = event.key === "Home" ? options.findIndex(optionEnabled) : options.findLastIndex(optionEnabled);
+            if (enabledIndex >= 0) setActiveIndex(enabledIndex);
           } else if (event.key === "Escape") {
             event.preventDefault();
             onClose();
@@ -343,6 +368,10 @@ function normalize(value: string) {
   return value.trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/g, " ");
 }
 
+function safeFilePart(value: string) {
+  return value.replace(/[\\/:*?"<>|]+/g, "_").replace(/\s+/g, "_");
+}
+
 function isDowntime(entry: Pick<EquipmentEntry, "subworkTypeName">) {
   return normalize(entry.subworkTypeName).includes("простой");
 }
@@ -437,7 +466,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   const recentDates = useMemo(() => recentDateKeys(reportRangeEnd), [reportRangeEnd]);
 
   useEffect(() => {
-    const targetId = section === "daily" ? "equipment-report-actions" : section === "registry" ? "equipment-registry-actions" : section === "month" ? "equipment-timesheet-actions" : "";
+    const targetId = section === "daily" ? "equipment-report-actions" : section === "registry" ? "equipment-registry-actions" : section === "project" ? "project-equipment-actions" : section === "month" ? "equipment-timesheet-actions" : "";
     const task = window.setTimeout(() => setHeaderActionsTarget(targetId ? document.getElementById(targetId) : null), 0);
     return () => window.clearTimeout(task);
   }, [section]);
@@ -504,7 +533,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }, [month, recentDates, reloadKey, reportRangeEnd, section, siteId, workDate]);
 
   useEffect(() => {
-    if (section !== "daily" || workDate !== today || payload?.workDate !== workDate || payload.currentUserRole !== "foreman" || !payload.canEditDaily) return;
+    if (section !== "daily" || workDate !== today || payload?.workDate !== workDate || payload.currentUserRole !== "foreman" || !payload.canCreateDaily) return;
     const key = `${siteId}:${workDate}`;
     if (payload.reportSubmitted) {
       setPreviousDayReport({ key, date: "", entries: [] });
@@ -530,7 +559,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         setError(carryError instanceof Error ? carryError.message : "Не удалось загрузить последний отчёт техники.");
       });
     return () => controller.abort();
-  }, [month, payload?.canEditDaily, payload?.currentUserRole, payload?.reportSubmitted, payload?.workDate, section, siteId, today, workDate]);
+  }, [month, payload?.canCreateDaily, payload?.currentUserRole, payload?.reportSubmitted, payload?.workDate, section, siteId, today, workDate]);
 
   const post = useCallback(async (body: Record<string, unknown>) => {
     const response = await fetch("/api/equipment", {
@@ -568,6 +597,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }
 
   function openEntry(entry?: EquipmentEntry, changes: Partial<EntryDraft> = {}) {
+    if (!payload || (entry ? !payload.canUpdateDaily : !payload.canCreateDaily)) return;
     setNotice("");
     setError("");
     setSelectedEntryIds([]);
@@ -615,6 +645,10 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
 
   async function saveEntries() {
     if (!entryDrafts.length) return;
+    if (entryDrafts.some((draft) => draft.id ? !payload?.canUpdateDaily : !payload?.canCreateDaily)) {
+      setError(entryDrafts.some((draft) => Boolean(draft.id)) ? "Недостаточно прав для редактирования строк отчёта техники." : "Недостаточно прав для добавления строк отчёта техники.");
+      return;
+    }
     const invalid = entryDrafts.find((draft) => !draft.equipmentId || !draft.shiftId || !draft.zoneId || !draft.mainWorkTypeId || !draft.subworkTypeId || !/^([1-9]|10)$/.test(draft.hours));
     if (invalid) {
       setError("Заполните технику, смену, зону, работу, вид подработ и часы от 1 до 10 во всех редактируемых строках.");
@@ -629,7 +663,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     setError("");
     try {
       for (const draft of entryDrafts) await post({ action: "save-entry", workDate, ...draft });
-      await post({ action: "submit-daily-report", workDate });
+      if (payload?.canUpdateDaily) await post({ action: "submit-daily-report", workDate });
       setEntryDrafts([]);
       setSelectedEntryDraftKeys([]);
       setNotice(payload?.currentUserRole === "foreman" ? "Ваша часть отчёта техники сохранена." : "Отчёт техники за день принят.");
@@ -656,6 +690,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }
 
   async function deleteSelectedEntries() {
+    if (!payload?.canDeleteDaily) return;
     if (!selectedEntryIds.length || !window.confirm(`Удалить выбранные строки (${selectedEntryIds.length}) из ежедневного отчёта?`)) return;
     setSaving(true);
     setError("");
@@ -672,6 +707,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }
 
   function openUnit(unit: EquipmentUnit, changes: Partial<UnitDraft> = {}) {
+    if (!payload?.canUpdateRegistry) return;
     setSelectedUnitIds([]);
     setUnitDrafts((current) => {
       if (current.some((draft) => !draft.id)) return current;
@@ -688,6 +724,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }
 
   function editSelectedUnits() {
+    if (!payload?.canUpdateRegistry) return;
     const selected = (payload?.units ?? []).filter((unit) => selectedUnitIds.includes(unit.id));
     setUnitDrafts(selected.map((unit) => ({ key: `equipment-unit-${unit.id}`, id: unit.id, organization: unit.organization, equipmentType: unit.equipmentType, brand: unit.brand, model: unit.model, registrationNumber: unit.registrationNumber, note: unit.note, projectSiteId: unit.assignedSiteId ? String(unit.assignedSiteId) : "" })));
     setUnitFullRowEditIds(selected.map((unit) => unit.id));
@@ -705,6 +742,10 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
 
   async function saveUnits() {
     if (!unitDrafts.length) return;
+    if (unitDrafts.some((draft) => draft.id ? !payload?.canUpdateRegistry : !payload?.canCreateRegistry)) {
+      setError(unitDrafts.some((draft) => Boolean(draft.id)) ? "Недостаточно прав для редактирования реестра техники." : "Недостаточно прав для добавления техники в реестр.");
+      return;
+    }
     const invalidIndex = unitDrafts.findIndex((draft) => !draft.organization.trim() || !draft.equipmentType.trim() || !draft.model.trim());
     if (invalidIndex >= 0) {
       setError(`Строка ${invalidIndex + 1}: заполните организацию, тип техники и модель.`);
@@ -729,6 +770,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }
 
   async function deleteSelectedUnits() {
+    if (!payload?.canDeleteRegistry) return;
     if (!selectedUnitIds.length || !window.confirm(`Удалить выбранные единицы техники (${selectedUnitIds.length}) из активного реестра? История отчётов сохранится.`)) return;
     setSaving(true);
     setError("");
@@ -751,6 +793,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }
 
   async function assignProjectUnits() {
+    if (!payload?.canCreateAssignments) return;
     if (!projectUnitDrafts.length) return;
     const assigned = new Set((payload?.units ?? []).map((unit) => unit.id));
     for (let index = 0; index < projectUnitDrafts.length; index += 1) {
@@ -779,6 +822,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }
 
   async function removeSelectedProjectUnits() {
+    if (!payload?.canDeleteAssignments) return;
     if (!selectedProjectUnitIds.length || !window.confirm(`Убрать выбранную технику (${selectedProjectUnitIds.length}) из проекта? Общие карточки и история отчётов сохранятся.`)) return;
     setSaving(true);
     setError("");
@@ -837,6 +881,19 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }
 
   const dailyEntries = useMemo(() => (payload?.entries ?? []).filter((entry) => entry.workDate === workDate), [payload?.entries, workDate]);
+  const dailyExportHeaders = ["Дата", "Уникальное наименование единицы", "Смена", "Зона", "Виды основных работ", "Виды подработ", "Примечание", "Часы"];
+  const dailyExportWorkbookRows = useMemo<EquipmentPlacementExportRow[]>(() => dailyEntries.map((entry) => ({
+    workDate: entry.workDate,
+    equipmentName: `${entry.equipmentType} // ${[entry.brand, entry.model].filter(Boolean).join(" ")} // ${entry.registrationNumber || "-"} // ${entry.organization}`,
+    shiftName: entry.shiftName,
+    zoneName: entry.zoneName,
+    mainWorkTypeName: entry.mainWorkTypeName,
+    subworkTypeName: entry.subworkTypeName,
+    note: entry.note,
+    hours: entry.hours,
+  })), [dailyEntries]);
+  const dailyExportRows = useMemo(() => dailyExportWorkbookRows.map((entry) => [entry.workDate, entry.equipmentName, entry.shiftName, entry.zoneName, entry.mainWorkTypeName, entry.subworkTypeName, entry.note, entry.hours]), [dailyExportWorkbookRows]);
+  const dailyExportFileName = `Отчёт_техники_${siteId}_${workDate}.xlsx`;
   const blockedDailyEquipment = useMemo(() => new Map((payload?.dailyTimesheetMarks ?? [])
     .filter(isEquipmentUnavailable)
     .map((mark) => [mark.equipmentId, equipmentUnavailableReason(mark)])), [payload?.dailyTimesheetMarks]);
@@ -850,7 +907,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }, { total: 0, productive: 0, downtime: 0, units: new Set<number>() }), [dailyEntries]);
   const carryoverSessionKey = `${siteId}:${workDate}`;
   const equipmentCarryoverMode = section === "daily" && workDate === today && payload?.workDate === workDate
-    && payload.currentUserRole === "foreman" && payload.canEditDaily;
+    && payload.currentUserRole === "foreman" && payload.canCreateDaily;
   const previousDayLoading = Boolean(equipmentCarryoverMode && previousDayReport?.key !== carryoverSessionKey);
   const carriedEntryDrafts = entryDrafts.filter((draft) => draft.carriedFromPreviousDay);
   const hasEquipmentCarryoverSource = Boolean(equipmentCarryoverMode && !payload?.reportSubmitted && previousDayReport?.date && previousDayReport.entries.length);
@@ -986,12 +1043,19 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
       if (!row || !day) return "";
       return timesheetMarksByCell.get(equipmentCellKey(row.unit.id, `${month}-${String(day).padStart(2, "0")}`))?.note ?? "";
     },
-    canPaste: (rowIndex, columnIndex) => Boolean(payload?.canEditTimesheet && monthRows[rowIndex] && monthDays[columnIndex]),
+    canPaste: (rowIndex, columnIndex) => {
+      const row = monthRows[rowIndex];
+      const day = monthDays[columnIndex];
+      if (!payload || !row || !day) return false;
+      const workDate = `${month}-${String(day).padStart(2, "0")}`;
+      const existingMark = timesheetMarksByCell.has(equipmentCellKey(row.unit.id, workDate));
+      return existingMark ? payload.canUpdateTimesheet || payload.canDeleteTimesheet : payload.canCreateTimesheet;
+    },
     onPaste: pasteEquipmentTimesheetCells,
     canDelete: (rowIndex, columnIndex) => {
       const row = monthRows[rowIndex];
       const day = monthDays[columnIndex];
-      if (!payload?.canEditTimesheet || !row || !day) return false;
+      if (!payload?.canDeleteTimesheet || !row || !day) return false;
       const workDate = `${month}-${String(day).padStart(2, "0")}`;
       return timesheetMarksByCell.has(equipmentCellKey(row.unit.id, workDate));
     },
@@ -1017,7 +1081,8 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }, [timesheetClipboardActiveCell, timesheetInlineEditor]);
 
   function openTimesheetEditor(equipmentId: number, editorWorkDate: string, anchor: HTMLElement) {
-    if (!payload?.canEditTimesheet) return;
+    const existingMark = timesheetMarksByCell.has(equipmentCellKey(equipmentId, editorWorkDate));
+    if (!payload || (existingMark ? !payload.canUpdateTimesheet && !payload.canDeleteTimesheet : !payload.canCreateTimesheet)) return;
     if (timesheetEditor?.equipmentId === equipmentId && timesheetEditor.workDate === editorWorkDate) {
       if (!savingTimesheetMark) closeTimesheetEditorAndRestoreFocus();
       return;
@@ -1035,7 +1100,8 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }
 
   function openTimesheetInlineEditor(equipmentId: number, editorWorkDate: string, rowIndex: number, columnIndex: number, typedValue?: string) {
-    if (!payload?.canEditTimesheet) return;
+    const existingMark = timesheetMarksByCell.has(equipmentCellKey(equipmentId, editorWorkDate));
+    if (!payload || (existingMark ? !payload.canUpdateTimesheet : !payload.canCreateTimesheet)) return;
     const row = monthRows.find((item) => item.unit.id === equipmentId);
     const value = row?.byDate.get(editorWorkDate);
     setTimesheetEditor(null);
@@ -1061,6 +1127,11 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
 
   async function persistEquipmentTimesheetMark(target: { equipmentId: number; workDate: string }, value: { clear: boolean; productiveHours: number; downtimeHours: number; note: string }) {
     if (!payload) throw new Error("Табель техники ещё не загружен.");
+    const existingMark = timesheetMarksByCell.has(equipmentCellKey(target.equipmentId, target.workDate));
+    if (value.clear && !existingMark) return;
+    if (value.clear && !payload.canDeleteTimesheet) throw new Error("Недостаточно прав для удаления отметки табеля техники.");
+    if (!value.clear && existingMark && !payload.canUpdateTimesheet) throw new Error("Недостаточно прав для изменения отметки табеля техники.");
+    if (!value.clear && !existingMark && !payload.canCreateTimesheet) throw new Error("Недостаточно прав для добавления отметки табеля техники.");
     setSavingTimesheetMark(true);
     const previousMark = timesheetMarksByCell.get(equipmentCellKey(target.equipmentId, target.workDate));
     const undoRowIndex = monthRows.findIndex((row) => row.unit.id === target.equipmentId);
@@ -1130,13 +1201,20 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
 
   async function pasteEquipmentTimesheetCells(changes: TimesheetClipboardChange[]) {
     if (!payload?.canEditTimesheet) throw new Error("Недостаточно прав для изменения табеля техники");
-    const prepared = changes.map((change) => {
+    const prepared = changes.flatMap((change) => {
       const row = monthRows[change.rowIndex];
       const day = monthDays[change.columnIndex];
       const workDate = day ? `${month}-${String(day).padStart(2, "0")}` : "";
       if (!row || !workDate) throw new Error("Выбранный диапазон содержит недоступные ячейки");
-      return { equipmentId: row.unit.id, workDate, note: change.note ?? "", ...parseEquipmentClipboardHours(change.value) };
+      const value = parseEquipmentClipboardHours(change.value);
+      const existingMark = timesheetMarksByCell.has(equipmentCellKey(row.unit.id, workDate));
+      if (value.clear && !existingMark) return [];
+      if (value.clear && !payload.canDeleteTimesheet) throw new Error("Недостаточно прав для удаления отметок табеля техники.");
+      if (!value.clear && existingMark && !payload.canUpdateTimesheet) throw new Error("Недостаточно прав для изменения отметок табеля техники.");
+      if (!value.clear && !existingMark && !payload.canCreateTimesheet) throw new Error("Недостаточно прав для добавления отметок табеля техники.");
+      return [{ equipmentId: row.unit.id, workDate, note: change.note ?? "", ...value }];
     });
+    if (!prepared.length) return 0;
 
     const results = await Promise.all(prepared.map(async (item) => {
       const result = await post({
@@ -1168,57 +1246,141 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
-  function exportDailyReport() {
-    if (!dailyEntries.length) return;
-    const rows = dailyEntries.map((entry) => [
-      entry.workDate,
-      `${entry.equipmentType} // ${[entry.brand, entry.model].filter(Boolean).join(" ")} // ${entry.registrationNumber || "-"} // ${entry.organization}`,
-      entry.organization,
-      entry.shiftName,
-      entry.zoneName,
-      entry.mainWorkTypeName,
-      entry.subworkTypeName,
-      entry.hours,
-      entry.note,
-    ]);
-    download(createTableXlsx("Отчёт техники", `Отчёт техники — ${payload?.siteName ?? "Объект"}, ${workDate}`, ["Дата", "Уникальное наименование единицы", "Организация", "Смена", "Зона", "Виды основных работ", "Виды подработ", "Часы", "Примечание"], rows), `Отчёт_техники_${siteId}_${workDate}.xlsx`);
+  function openDailyExportPreview() {
+    if (!payload) return;
+    setError("");
+    try {
+      openExcelExportPreview({
+        version: 1,
+        title: "Отчёт техники",
+        description: `${payload?.siteName ?? "Объект"} · ${workDate}`,
+        fileName: dailyExportFileName,
+        headers: dailyExportHeaders,
+        rows: dailyExportRows,
+        workbook: { kind: "equipment-placement", siteName: payload?.siteName ?? "Объект", rangeStart: workDate, rangeEnd: workDate, rows: dailyExportWorkbookRows },
+        source: { kind: "equipment", siteId, siteName: payload.siteName ?? "Объект", initialDate: workDate },
+      });
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "Не удалось открыть предпросмотр Excel.");
+    }
   }
 
-  function exportTimesheet() {
+  function downloadDailyReportTemplate() {
+    const rows = Array.from({ length: 25 }, () => [workDate, "", "", "", "", "", "", "", ""]);
+    download(createTableXlsx("Отчёт техники", `Шаблон отчёта техники — ${payload?.siteName ?? "Объект"}`, ["Дата", "Уникальное наименование единицы", "Организация", "Смена", "Зона", "Виды основных работ", "Виды подработ", "Часы", "Примечание"], rows), `Шаблон_отчёта_техники_${siteId}_${workDate}.xlsx`);
+  }
+
+  function openTimesheetExportPreview() {
     const dates = monthDays.map((day) => `${month}-${String(day).padStart(2, "0")}`);
     const rows = monthRows.map((row) => {
+      const dailyProductiveHours: number[] = [];
+      const dailyDowntimeHours: number[] = [];
+      const dailyReportHours: number[] = [];
       const dayValues = monthDays.map((day) => {
         const date = `${month}-${String(day).padStart(2, "0")}`;
         const value = row.byDate.get(date);
+        dailyProductiveHours.push(value?.productive ?? 0);
+        dailyDowntimeHours.push(value?.downtime ?? 0);
+        dailyReportHours.push((value?.reportProductive ?? 0) + (value?.reportDowntime ?? 0));
         if (!value) return "";
         if (value.productive && value.downtime) return `${value.productive} / П ${value.downtime}`;
         if (value.downtime) return `П ${value.downtime}`;
         return value.productive || "";
       });
       return {
-        equipmentName: unitTitle(row.unit),
+        equipmentName: `${row.unit.equipmentType} // ${[row.unit.brand, row.unit.model].filter(Boolean).join(" ")} // ${row.unit.registrationNumber || "-"} // ${row.unit.organization}`,
         organization: row.unit.organization,
+        equipmentType: row.unit.equipmentType,
+        registrationNumber: row.unit.registrationNumber,
         dailyValues: dayValues,
+        dailyProductiveHours,
+        dailyDowntimeHours,
+        dailyReportHours,
         productiveHours: row.productive,
         downtimeHours: row.downtime,
+        reportHours: dailyReportHours.reduce((sum, value) => sum + value, 0),
         totalHours: row.total,
       };
     });
-    download(createEquipmentTimesheetXlsx(
-      payload?.siteName ?? "Объект",
-      titleCase(MONTH_FORMATTER.format(new Date(`${month}-01T00:00:00Z`))),
-      dates,
-      rows,
-      dates.map((date) => monthDayTotals.get(date) ?? 0),
-      monthSummary.productive,
-      monthSummary.downtime,
-      monthSummary.total,
-    ), `Табель_техники_${month}.xlsx`);
+    const currentMonthLabel = titleCase(MONTH_FORMATTER.format(new Date(`${month}-01T00:00:00Z`)));
+    const headers = ["Тип", "Уникальное наименование единицы", "ГРЗ", ...monthDays.map(String), "ЧАСЫ", "ПРОСТОЙ", "РАСТ"];
+    const previewRows = rows.map((row) => [
+      row.equipmentType,
+      row.equipmentName,
+      row.registrationNumber,
+      ...row.dailyProductiveHours.map((value) => value || ""),
+      row.productiveHours,
+      row.downtimeHours,
+      row.productiveHours + row.downtimeHours - row.reportHours,
+    ]);
+    setError("");
+    try {
+      openExcelExportPreview({
+        version: 1,
+        title: "Табель техники",
+        description: `${payload?.siteName ?? "Объект"} · ${currentMonthLabel}`,
+        fileName: `Табель_техники_${month}.xlsx`,
+        headers,
+        rows: previewRows,
+        workbook: {
+          kind: "equipment-timesheet",
+          siteName: payload?.siteName ?? "Объект",
+          monthLabel: currentMonthLabel,
+          dates,
+          rows,
+          dayTotals: dates.map((date) => monthDayTotals.get(date) ?? 0),
+          productiveTotal: monthSummary.productive,
+          downtimeTotal: monthSummary.downtime,
+          totalHours: monthSummary.total,
+        },
+        source: { kind: "equipment-timesheet", siteId, siteName: payload?.siteName ?? "Объект", initialDate: dates[0] },
+      });
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "Не удалось открыть предпросмотр Excel.");
+    }
   }
 
-  function exportRegistry() {
+  function openRegistryExportPreview() {
     if (!registryUnits.length) return;
-    download(createTableXlsx("Реестр техники", "Общий реестр техники", ["Организация", "Тип", "Марка", "Модель", "ГРЗ / Инв. №", "Проект", "Примечание"], registryUnits.map((unit) => [unit.organization, unit.equipmentType, unit.brand, unit.model, unit.registrationNumber, unit.assignedSiteName ?? "", unit.note])), "Реестр_техники.xlsx");
+    const units = visibleUnitIds === null ? registryUnits : registryUnits.filter((unit) => visibleUnitIds.includes(unit.id));
+    const headers = ["Организация", "Тип", "Марка", "Модель", "ГРЗ / Инв. №", "Проект", "Примечание"];
+    const rows = units.map((unit) => [unit.organization, unit.equipmentType, unit.brand, unit.model, unit.registrationNumber, unit.assignedSiteName ?? "", unit.note]);
+    setError("");
+    try {
+      openExcelExportPreview({
+        version: 1,
+        title: "Реестр техники",
+        description: `Строк в выгрузке: ${rows.length}`,
+        fileName: "Реестр_техники.xlsx",
+        headers,
+        rows,
+        workbook: { kind: "table", sheetName: "Реестр техники", workbookTitle: "Общий реестр техники", rows },
+      });
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "Не удалось открыть предпросмотр Excel.");
+    }
+  }
+
+  function openProjectEquipmentExportPreview() {
+    const units = payload?.units ?? [];
+    if (!units.length) return;
+    const projectName = payload?.siteName ?? "Проект";
+    const headers = ["Организация", "Тип", "Марка", "Модель", "ГРЗ / Инв. №", "Примечание"];
+    const rows = units.map((unit) => [unit.organization, unit.equipmentType, unit.brand, unit.model, unit.registrationNumber, unit.note]);
+    setError("");
+    try {
+      openExcelExportPreview({
+        version: 1,
+        title: "Техника проекта",
+        description: `${projectName} · строк в выгрузке: ${rows.length}`,
+        fileName: `Техника_${safeFilePart(projectName)}.xlsx`,
+        headers,
+        rows,
+        workbook: { kind: "table", sheetName: "Техника проекта", workbookTitle: `Техника проекта — ${projectName}`, rows },
+      });
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "Не удалось открыть предпросмотр Excel.");
+    }
   }
 
   function downloadRegistryTemplate() {
@@ -1228,47 +1390,63 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
 
   if (loading && !payload) return <section className="equipment-state"><span className="equipment-state-spinner" /><strong>Загружаем учёт техники…</strong></section>;
 
-  return <section className="equipment-page">
-    {section === "daily" && headerActionsTarget && createPortal(<section className="excel-actions" aria-label="Действия с Excel для отчёта техники">
-      <button type="button" onClick={exportDailyReport} disabled={!dailyEntries.length}>Экспорт в Excel</button>
-      {payload?.canEditDaily && <><button type="button" onClick={() => dailyFileInput.current?.click()} disabled={importing}>{importing ? "Загружаем…" : "Импорт из Excel"}</button><input ref={dailyFileInput} hidden type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importEntries(file); }} /></>}
-    </section>, headerActionsTarget)}
-    {section === "registry" && headerActionsTarget && createPortal(<div className="toolbar-actions" aria-label="Действия с Excel для реестра техники">
-      <button type="button" onClick={exportRegistry} disabled={!registryUnits.length}>Экспорт в Excel</button>
-      {payload?.canManageRegistry && <><button type="button" onClick={downloadRegistryTemplate}>Скачать шаблон</button><button type="button" onClick={() => fileInput.current?.click()} disabled={importing}>{importing ? "Загружаем…" : "Импорт из Excel"}</button><input ref={fileInput} hidden type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importRegistry(file); }} /></>}
+  return <section className={["equipment-page", section === "month" ? "equipment-timesheet-page" : ""].filter(Boolean).join(" ")}>
+    {section === "daily" && headerActionsTarget && createPortal(<div className="report-heading-controls">
+      <div className="report-heading-date"><EquipmentReportDateNavigation dates={recentDates} value={workDate} today={today} filledDates={filledDates} onChange={changeWorkDate} onRangeChange={changeReportRange} /></div>
+      <ExcelActionsMenu actions={[
+        { label: "Экспорт в Excel", onSelect: openDailyExportPreview, disabled: !payload },
+        ...(payload?.canCreateDaily ? [
+          { label: importing ? "Импортируем…" : "Импорт из Excel", onSelect: () => dailyFileInput.current?.click(), disabled: importing },
+          { label: "Скачать шаблон", onSelect: downloadDailyReportTemplate },
+        ] : []),
+      ]} />
+      <input ref={dailyFileInput} hidden type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importEntries(file); }} />
     </div>, headerActionsTarget)}
-    {section === "month" && headerActionsTarget && createPortal(<div className="excel-actions equipment-timesheet-page-actions">
+    {section === "registry" && headerActionsTarget && createPortal(<div className="toolbar-actions" aria-label="Действия с Excel для реестра техники">
+      <button type="button" onClick={openRegistryExportPreview} disabled={!registryUnits.length}>Экспорт в Excel</button>
+      {payload?.canCreateRegistry && <><button type="button" onClick={downloadRegistryTemplate}>Скачать шаблон</button><button type="button" onClick={() => fileInput.current?.click()} disabled={importing}>{importing ? "Загружаем…" : "Импорт из Excel"}</button><input ref={fileInput} hidden type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importRegistry(file); }} /></>}
+    </div>, headerActionsTarget)}
+    {section === "project" && headerActionsTarget && createPortal(<div className="toolbar-actions" aria-label="Действия с Excel для техники проекта">
+      <button type="button" onClick={openProjectEquipmentExportPreview} disabled={!payload?.units.length}>Экспорт в Excel</button>
+    </div>, headerActionsTarget)}
+    {section === "month" && headerActionsTarget && createPortal(<div className="excel-actions equipment-timesheet-page-actions timesheet-heading-actions">
       {monthActiveFilterCount > 0 && <button type="button" className="timesheet-header-filter-reset" onClick={() => { setEquipmentNameFilter([]); setOrganizationFilter([]); setMonthDayFilters({}); setProductiveTotalFilter([]); setDowntimeTotalFilter([]); setEquipmentTotalFilter([]); }}>Сбросить фильтры <span>{monthActiveFilterCount}</span></button>}
-      <button type="button" onClick={exportTimesheet} disabled={loading || monthRows.length === 0}>Экспорт в Excel</button>
+      <button type="button" onClick={openTimesheetExportPreview} disabled={loading || monthRows.length === 0}>Экспорт в Excel</button>
       <button type="button" className="equipment-timesheet-info-button" aria-label="Информация" title="Информация" onClick={() => setTimesheetInfoOpen(true)}><span aria-hidden="true">i</span></button>
     </div>, headerActionsTarget)}
     {error && <div className="equipment-message error"><strong>Нужно проверить данные</strong><span>{error}</span><button type="button" onClick={() => setError("")}>×</button></div>}
     {notice && <div className="equipment-message success"><strong>Готово</strong><span>{notice}</span><button type="button" onClick={() => setNotice("")}>×</button></div>}
 
     {section === "daily" && <>
-      <section className="control-strip equipment-report-date-strip">
-        <EquipmentReportDateNavigation dates={recentDates} value={workDate} today={today} filledDates={filledDates} onChange={changeWorkDate} onRangeChange={changeReportRange} />
-      </section>
       {!referencesReady && payload?.canEditDaily && <div className="equipment-empty-hint"><strong>Сначала заполните справочники</strong><span>Для новой записи нужны техника, смены, зоны, виды работ и подработ.</span></div>}
       <div className="table-card equipment-report-card">
         {payload?.currentUserRole !== "foreman" && Boolean(payload?.foremanProgress.length) && <div className="foreman-report-progress" role="status"><strong>Сдали прорабы: {payload!.foremanProgress.filter((item) => item.status === "submitted").length} из {payload!.foremanProgress.length}</strong><span>{payload!.foremanProgress.map((item) => `${item.foremanName}: ${item.status === "submitted" ? `${item.equipmentCount} ед., ${item.hours} ч.` : item.status === "draft" ? "заполняет" : "не сдал"}`).join(" · ")}</span></div>}
-        {showEquipmentCarryover && <div className="foreman-report-progress equipment-carryover-status" role="status"><strong>Подставлена техника из отчёта за {shortDate(previousDayReport!.date)}</strong><span>Проверьте строки, измените данные на сегодня и удалите технику, которая не работала.</span></div>}
-        <EquipmentDailyAgGrid entries={dailyEntries} drafts={entryDrafts} units={payload?.units ?? []} dailyTimesheetMarks={payload?.dailyTimesheetMarks ?? []} shifts={payload?.shifts ?? []} zones={payload?.zones ?? []} mainWorkTypes={payload?.mainWorkTypes ?? []} subworkTypes={payload?.subworkTypes ?? []} loading={loading || previousDayLoading} canEdit={Boolean(payload?.canEditDaily)} showResponsibleUser={payload?.currentUserRole !== "foreman"} currentUserName={payload?.currentUserName} selectedIds={selectedEntryIds} selectedDraftKeys={selectedEntryDraftKeys} onEdit={openEntry} onPatchDraft={patchEntryDraft} onSelectionChange={(ids) => { setSelectedEntryIds(ids); if (ids.length) setSelectedEntryDraftKeys([]); }} onDraftSelectionChange={(keys) => { setSelectedEntryDraftKeys(keys); if (keys.length) setSelectedEntryIds([]); }} />
+        {showEquipmentCarryover && <div className="foreman-report-progress equipment-carryover-status" role="status"><strong>Подставлена техника из отчёта за {shortDate(previousDayReport!.date)}</strong><span>Если всё как вчера, сразу сохраните свою часть. Измените только отличия и удалите технику, которая сегодня не работала.</span></div>}
+        <EquipmentDailyAgGrid entries={dailyEntries} drafts={entryDrafts} units={payload?.units ?? []} dailyTimesheetMarks={payload?.dailyTimesheetMarks ?? []} shifts={payload?.shifts ?? []} zones={payload?.zones ?? []} mainWorkTypes={payload?.mainWorkTypes ?? []} subworkTypes={payload?.subworkTypes ?? []} loading={loading || previousDayLoading} canCreate={Boolean(payload?.canCreateDaily)} canUpdate={Boolean(payload?.canUpdateDaily)} canDelete={Boolean(payload?.canDeleteDaily)} showResponsibleUser={payload?.currentUserRole !== "foreman"} currentUserName={payload?.currentUserName} selectedIds={selectedEntryIds} selectedDraftKeys={selectedEntryDraftKeys} onEdit={openEntry} onPatchDraft={patchEntryDraft} onSelectionChange={(ids) => { setSelectedEntryIds(ids); if (ids.length) setSelectedEntryDraftKeys([]); }} onDraftSelectionChange={(keys) => { setSelectedEntryDraftKeys(keys); if (keys.length) setSelectedEntryIds([]); }} />
         <div className="table-edit-footer employee-table-footer uniform-footer-actions report-table-footer equipment-report-footer">
-          {selectedEntryIds.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedEntryIds.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-primary" onClick={() => { const selected = dailyEntries.filter((entry) => selectedEntryIds.includes(entry.id)); selected.forEach((entry) => openEntry(entry)); }} disabled={saving}>Редактировать</button><button type="button" className="employee-action-button employee-action-danger" onClick={() => void deleteSelectedEntries()} disabled={saving}>Удалить строки</button><button type="button" className="employee-action-button clear-selection-button" onClick={() => setSelectedEntryIds([])} disabled={saving}>Снять выделение</button></div></div>}
+          {selectedEntryIds.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedEntryIds.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-primary" onClick={() => { const selected = dailyEntries.filter((entry) => selectedEntryIds.includes(entry.id)); selected.forEach((entry) => openEntry(entry)); }} disabled={saving || !payload?.canUpdateDaily} title={payload?.canUpdateDaily ? undefined : "Нет права редактирования"}>Редактировать</button><button type="button" className="employee-action-button employee-action-danger" onClick={() => void deleteSelectedEntries()} disabled={saving || !payload?.canDeleteDaily} title={payload?.canDeleteDaily ? undefined : "Нет права удаления"}>Удалить строки</button><button type="button" className="employee-action-button clear-selection-button" onClick={() => setSelectedEntryIds([])} disabled={saving}>Снять выделение</button></div></div>}
           {selectedEntryDraftKeys.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано строк: <strong>{selectedEntryDraftKeys.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-danger" onClick={removeSelectedEntryDrafts} disabled={saving}>Убрать из отчёта</button><button type="button" className="employee-action-button clear-selection-button" onClick={() => setSelectedEntryDraftKeys([])} disabled={saving}>Снять выделение</button></div></div>}
-          {entryDrafts.length > 0 && selectedEntryDraftKeys.length === 0 && <div className="employee-editing-bar"><div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>{showEquipmentCarryover ? "Подготовлено строк" : "Редактируется"}: <strong>{entryDrafts.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-primary" onClick={() => openEntry()} disabled={!referencesReady || saving}>Добавить запись</button><button type="button" className="employee-action-button cancel-editing-button" onClick={resetEntryDrafts} disabled={saving}>{hasEquipmentCarryoverSource ? "Вернуть исходный список" : "Отменить редактирование"}</button><button type="button" className="employee-action-button employee-save-button" onClick={() => void saveEntries()} disabled={saving}>{saving ? "Сохраняем…" : payload?.currentUserRole === "foreman" ? "Сохранить мою часть" : "Принять отчёт за день"}</button></div></div>}
-          {entryDrafts.length === 0 && selectedEntryIds.length === 0 && selectedEntryDraftKeys.length === 0 && payload?.canEditDaily && !payload.reportSubmitted && <div className="employee-editing-bar roster-save-bar"><div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>{payload.currentUserRole === "foreman" ? "После заполнения сохраните свою часть отчёта" : "Проверьте строки всех прорабов перед принятием отчёта"}</span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-save-button" onClick={() => void submitDailyReport()} disabled={saving}>{saving ? "Сохраняем…" : payload.currentUserRole === "foreman" ? "Сохранить мою часть" : "Принять отчёт за день"}</button></div></div>}
-          {entryDrafts.length === 0 && selectedEntryIds.length === 0 && <div className="employee-footer-base">{payload?.canEditDaily && <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={() => openEntry()} disabled={!referencesReady || saving}>Добавить запись</button>}<span className="employee-total-count">Всего машино-часов: <strong>{dailySummary.total}</strong></span></div>}
+          {entryDrafts.length > 0 && selectedEntryDraftKeys.length === 0 && <div className="employee-editing-bar"><div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>{showEquipmentCarryover ? "Подготовлено строк" : "Редактируется"}: <strong>{entryDrafts.length}</strong></span></div><div className="employee-selection-actions">{payload?.canCreateDaily && <button type="button" className="employee-action-button employee-action-primary" onClick={() => openEntry()} disabled={!referencesReady || saving}>Добавить запись</button>}<button type="button" className="employee-action-button cancel-editing-button" onClick={resetEntryDrafts} disabled={saving}>{hasEquipmentCarryoverSource ? "Вернуть исходный список" : "Отменить редактирование"}</button><button type="button" className="employee-action-button employee-save-button" onClick={() => void saveEntries()} disabled={saving}>{saving ? "Сохраняем…" : payload?.currentUserRole === "foreman" ? "Сохранить мою часть" : "Сохранить изменения"}</button></div></div>}
+          {entryDrafts.length === 0 && selectedEntryIds.length === 0 && selectedEntryDraftKeys.length === 0 && payload?.canUpdateDaily && !payload.reportSubmitted && <div className="employee-editing-bar roster-save-bar"><div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>{payload.currentUserRole === "foreman" ? "После заполнения сохраните свою часть отчёта" : "Проверьте строки всех прорабов перед принятием отчёта"}</span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-save-button" onClick={() => void submitDailyReport()} disabled={saving}>{saving ? "Сохраняем…" : payload.currentUserRole === "foreman" ? "Сохранить мою часть" : "Принять отчёт за день"}</button></div></div>}
+          {entryDrafts.length === 0 && selectedEntryIds.length === 0 && <div className="employee-footer-base">{payload?.canCreateDaily && <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={() => openEntry()} disabled={!referencesReady || saving}>Добавить запись</button>}<span className="employee-total-count">Всего машино-часов: <strong>{dailySummary.total}</strong></span></div>}
         </div>
       </div>
     </>}
 
     {section === "month" && <>
-      <div className="equipment-timesheet-month-row"><div className="timesheet-month-control equipment-timesheet-month-control" aria-label="Выбор месяца табеля"><button type="button" onClick={() => changeMonth(shiftMonth(month, -1))} aria-label="Предыдущий месяц">‹</button><EquipmentMonthPicker value={month} current={today.slice(0, 7)} onChange={changeMonth} /><button type="button" onClick={() => changeMonth(shiftMonth(month, 1))} aria-label="Следующий месяц">›</button></div></div>
+      <div className="equipment-timesheet-summary timesheet-top-summary" aria-label={`Период и итоги за ${titleCase(MONTH_FORMATTER.format(new Date(`${month}-01T00:00:00Z`)))}`}>
+        <div className="timesheet-month-control timesheet-summary-month-control" aria-label="Выбор месяца табеля">
+          <button type="button" onClick={() => changeMonth(shiftMonth(month, -1))} aria-label="Предыдущий месяц">‹</button>
+          <EquipmentMonthPicker value={month} current={today.slice(0, 7)} onChange={changeMonth} />
+          <button type="button" onClick={() => changeMonth(shiftMonth(month, 1))} aria-label="Следующий месяц">›</button>
+        </div>
+        <span><small>Техника в работе</small><strong>{monthRows.filter((row) => row.total > 0).length}</strong></span>
+        <span className="productive"><small>Работа</small><strong>{monthSummary.productive} ч.</strong></span>
+        <span className="downtime"><small>Простой</small><strong>{monthSummary.downtime} ч.</strong></span>
+      </div>
       {/* The spreadsheet shell must receive focus so native copy and paste events reach it. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-      <div ref={timesheetClipboardShellRef} className="timesheet-grid-shell equipment-timesheet-shell timesheet-clipboard-shell" role="application" tabIndex={0} aria-label="Табель техники. Стрелки перемещают выбранную ячейку, Enter или F2 открывают редактирование." {...timesheetClipboardShellHandlers}>{timesheetClipboardStatus && <div className="timesheet-clipboard-status" role="status">{timesheetClipboardStatus}</div>}<table className="timesheet-table equipment-month-table"><thead><tr><th className="timesheet-sticky equipment-number-column" rowSpan={2}>№</th><th className="timesheet-sticky equipment-machine-column" rowSpan={2}><TimesheetFilterableHeading label="Техника" value={selectedEquipmentName} options={[TIMESHEET_ALL_OPTION, ...equipmentNames.map((value) => ({ value, label: value }))]} onChange={setEquipmentNameFilter}>Техника</TimesheetFilterableHeading></th><th className="timesheet-sticky equipment-organization-column" rowSpan={2}><TimesheetFilterableHeading label="Организация" value={selectedOrganization} options={[TIMESHEET_ALL_OPTION, ...equipmentOrganizations.map((value) => ({ value, label: value }))]} onChange={setOrganizationFilter}>Организация</TimesheetFilterableHeading></th><th colSpan={monthDays.length}>Дни месяца</th><th className="timesheet-total-column equipment-work-total" rowSpan={2}><TimesheetFilterableHeading label="Работа" value={productiveTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setProductiveTotalFilter}>Работа</TimesheetFilterableHeading></th><th className="timesheet-total-column equipment-idle-total" rowSpan={2}><TimesheetFilterableHeading label="Простой" value={downtimeTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setDowntimeTotalFilter}>Простой</TimesheetFilterableHeading></th><th className="timesheet-total-column equipment-all-total" rowSpan={2}><TimesheetFilterableHeading label="Всего" value={equipmentTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setEquipmentTotalFilter}>Всего</TimesheetFilterableHeading></th></tr><tr>{monthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; const dateObject = new Date(`${date}T00:00:00Z`); const weekend = [0, 6].includes(dateObject.getUTCDay()); const weekday = WEEKDAY_FORMATTER.format(dateObject).replace(".", ""); return <th key={day} className={`${weekend ? "weekend" : ""} ${date === today ? "today" : ""}`}><TimesheetFilterableHeading compact label={`${day} ${weekday}`} value={monthDayFilters[date] ?? []} options={EQUIPMENT_DAY_FILTERS} onChange={(value) => setMonthDayFilters((current) => ({ ...current, [date]: value }))}><span>{day}</span><small>{weekday}</small></TimesheetFilterableHeading></th>; })}</tr></thead>
+      <div ref={timesheetClipboardShellRef} className={["timesheet-grid-shell", "equipment-timesheet-shell", "timesheet-clipboard-shell", timesheetClipboardActiveCell ? "timesheet-selection-active" : ""].filter(Boolean).join(" ")} role="application" tabIndex={0} aria-label="Табель техники. Стрелки перемещают выбранную ячейку, Enter или F2 открывают редактирование." {...timesheetClipboardShellHandlers}>{timesheetClipboardStatus && <div className="timesheet-clipboard-status" role="status">{timesheetClipboardStatus}</div>}<table className="timesheet-table equipment-month-table"><thead><tr><th className="timesheet-sticky equipment-number-column" rowSpan={2}>№</th><th className="timesheet-sticky equipment-machine-column" rowSpan={2}><TimesheetFilterableHeading label="Техника" value={selectedEquipmentName} options={[TIMESHEET_ALL_OPTION, ...equipmentNames.map((value) => ({ value, label: value }))]} onChange={setEquipmentNameFilter}>Техника</TimesheetFilterableHeading></th><th className="timesheet-sticky equipment-organization-column" rowSpan={2}><TimesheetFilterableHeading label="Организация" value={selectedOrganization} options={[TIMESHEET_ALL_OPTION, ...equipmentOrganizations.map((value) => ({ value, label: value }))]} onChange={setOrganizationFilter}>Организация</TimesheetFilterableHeading></th><th colSpan={monthDays.length}>Дни месяца</th><th className="timesheet-total-column equipment-work-total" rowSpan={2}><TimesheetFilterableHeading label="Работа" value={productiveTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setProductiveTotalFilter}>Работа</TimesheetFilterableHeading></th><th className="timesheet-total-column equipment-idle-total" rowSpan={2}><TimesheetFilterableHeading label="Простой" value={downtimeTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setDowntimeTotalFilter}>Простой</TimesheetFilterableHeading></th><th className="timesheet-total-column equipment-all-total" rowSpan={2}><TimesheetFilterableHeading label="Всего" value={equipmentTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setEquipmentTotalFilter}>Всего</TimesheetFilterableHeading></th></tr><tr>{monthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; const dateObject = new Date(`${date}T00:00:00Z`); const weekend = [0, 6].includes(dateObject.getUTCDay()); const weekday = WEEKDAY_FORMATTER.format(dateObject).replace(".", ""); return <th key={day} className={`${weekend ? "weekend" : ""} ${date === today ? "today" : ""}`}><TimesheetFilterableHeading compact label={`${day} ${weekday}`} value={monthDayFilters[date] ?? []} options={EQUIPMENT_DAY_FILTERS} onChange={(value) => setMonthDayFilters((current) => ({ ...current, [date]: value }))}><span>{day}</span><small>{weekday}</small></TimesheetFilterableHeading></th>; })}</tr></thead>
         <tbody>{monthRows.length ? monthRows.map((row, index) => <tr key={row.unit.id}><td className="timesheet-sticky equipment-number-column">{index + 1}</td><th scope="row" className="timesheet-sticky equipment-machine-column" title={unitTitle(row.unit)}><span>{unitTitle(row.unit)}</span><small>{row.unit.registrationNumber || "Номер не указан"}</small></th><td className="timesheet-sticky equipment-organization-column">{row.unit.organization}</td>{monthDays.map((day) => {
           const date = `${month}-${String(day).padStart(2, "0")}`;
           const value = row.byDate.get(date);
@@ -1325,7 +1503,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
             {timesheetInlineEditor.error && <span className="timesheet-cell-inline-error" role="alert" title={timesheetInlineEditor.error}>!</span>}
           </div> : <>
             <span className="timesheet-cell-value">{hasValue ? <>{value?.productive || (!value?.downtime && value?.mark ? "0" : null)}{value?.downtime ? <small>П {value.downtime}</small> : null}</> : ""}</span>
-            {payload?.canEditTimesheet && isActiveCell && <button
+            {payload && (value?.mark ? payload.canUpdateTimesheet || payload.canDeleteTimesheet : payload.canCreateTimesheet) && isActiveCell && <button
               type="button"
               className="timesheet-cell-dropdown equipment-timesheet-cell-dropdown"
               aria-label={`Выбрать значение: ${unitTitle(row.unit)}, ${fullDate(date)}`}
@@ -1340,11 +1518,9 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
               }}
             ><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4 6 8l3.5-4Z" /></svg></button>}
           </>}</td>;
-        })}<td className="timesheet-total-column equipment-work-total">{row.productive || "—"}</td><td className="timesheet-total-column equipment-idle-total has-difference">{row.downtime || "—"}</td><td className="timesheet-total-column equipment-all-total">{row.total || "—"}</td></tr>) : <tr><td colSpan={monthDays.length + 6}><div className="equipment-table-empty"><strong>В этом месяце данных нет</strong><span>Записи появятся после заполнения ежедневных отчётов техники.</span></div></td></tr>}</tbody>
+        })}<td className="timesheet-total-column equipment-work-total">{row.productive || "—"}</td><td className="timesheet-total-column equipment-idle-total has-difference">{row.downtime || "—"}</td><td className="timesheet-total-column equipment-all-total">{row.total || "—"}</td></tr>) : <tr><td colSpan={monthDays.length + 6}><div className="equipment-table-empty"><strong>В этом месяце данных нет</strong><span>Записи появятся после заполнения ежедневных отчётов техники.</span></div></td></tr>}{monthRows.length > 0 && <tr className="timesheet-fill-row" aria-hidden="true"><td colSpan={monthDays.length + 6} /></tr>}</tbody>
         {monthRows.length > 0 && <tfoot><tr><th className="timesheet-sticky timesheet-summary-label" colSpan={3}>Итого по дням</th>{monthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; return <td key={date}>{monthDayTotals.get(date) || ""}</td>; })}<th className="timesheet-total-column equipment-work-total">{monthSummary.productive}</th><th className="timesheet-total-column equipment-idle-total has-difference">{monthSummary.downtime}</th><th className="timesheet-total-column equipment-all-total">{monthSummary.total}</th></tr></tfoot>}
       </table></div>
-      <div className="equipment-timesheet-summary" aria-label={`Итоги за ${titleCase(MONTH_FORMATTER.format(new Date(`${month}-01T00:00:00Z`)))}`}><span className="equipment-timesheet-summary-label">Итоги за месяц</span><span><strong>{monthRows.filter((row) => row.total > 0).length}</strong> ед. техники</span><span className="productive"><strong>{monthSummary.productive} ч.</strong> работы</span><span className="downtime"><strong>{monthSummary.downtime} ч.</strong> простоя</span></div>
-
       {timesheetInfoOpen && <div className="equipment-reference-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setTimesheetInfoOpen(false); }}><section className="equipment-reference-dialog" role="dialog" aria-modal="true" aria-labelledby="equipment-timesheet-reference-title">
         <header><div><span>ТАБЕЛЬ ТЕХНИКИ</span><h2 id="equipment-timesheet-reference-title">Информация и справочник</h2><p>Цвета в таблице и обозначения, которые используются в табеле.</p></div><button type="button" aria-label="Закрыть справочник" onClick={() => setTimesheetInfoOpen(false)}>×</button></header>
         <section className="equipment-reference-section"><h3>Цвета ячеек</h3><div className="equipment-reference-colors">
@@ -1366,6 +1542,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         {timesheetEditor.mode === "list" ? <EquipmentTimesheetMarkList
           value={formatEquipmentHours(editingTimesheetMark?.productiveHours ?? editingTimesheetReport.productive, editingTimesheetMark?.downtimeHours ?? editingTimesheetReport.downtime)}
           canReset={Boolean(editingTimesheetMark)}
+          canWrite={Boolean(editingTimesheetMark ? payload?.canUpdateTimesheet : payload?.canCreateTimesheet)}
           disabled={savingTimesheetMark}
           onClose={closeTimesheetEditorAndRestoreFocus}
           onChoose={(value) => void saveTimesheetListValue(value)}
@@ -1393,6 +1570,9 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         selectedIds={selectedUnitIds}
         fullRowEditIds={unitFullRowEditIds}
         loading={loading}
+        canCreate={Boolean(payload?.canCreateRegistry)}
+        canUpdate={Boolean(payload?.canUpdateRegistry)}
+        canSelect={Boolean(payload?.canUpdateRegistry || payload?.canDeleteRegistry)}
         onEdit={openUnit}
         onSelectionChange={(ids) => { setSelectedUnitIds(ids); setNotice(""); setError(""); }}
         onPatchDraft={patchUnitDraft}
@@ -1400,9 +1580,9 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         onValidationError={(message) => { setError(message); setNotice(""); }}
       />
       {payload?.canManageRegistry && <div className="table-edit-footer employee-table-footer uniform-footer-actions equipment-registry-footer">
-        {selectedUnitIds.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedUnitIds.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-primary" onClick={editSelectedUnits} disabled={saving}>Редактировать</button><button type="button" className="employee-action-button employee-action-danger" onClick={() => void deleteSelectedUnits()} disabled={saving}>Удалить технику</button><button type="button" className="employee-action-button clear-selection-button" onClick={() => { setSelectedUnitIds([]); setNotice(""); setError(""); }} disabled={saving}>Снять выделение</button></div></div>}
+        {selectedUnitIds.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedUnitIds.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-primary" onClick={editSelectedUnits} disabled={saving || !payload.canUpdateRegistry} title={payload.canUpdateRegistry ? undefined : "Нет права редактирования"}>Редактировать</button><button type="button" className="employee-action-button employee-action-danger" onClick={() => void deleteSelectedUnits()} disabled={saving || !payload.canDeleteRegistry} title={payload.canDeleteRegistry ? undefined : "Нет права удаления"}>Удалить технику</button><button type="button" className="employee-action-button clear-selection-button" onClick={() => { setSelectedUnitIds([]); setNotice(""); setError(""); }} disabled={saving}>Снять выделение</button></div></div>}
         {unitDrafts.length > 0 && <div className="employee-editing-bar"><div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>Редактируется: <strong>{unitDrafts.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button cancel-editing-button" onClick={cancelUnitEditing} disabled={saving}>Отменить редактирование</button><button type="button" className="employee-action-button employee-save-button" onClick={() => void saveUnits()} disabled={saving}>{saving ? "Сохраняем…" : "Сохранить изменения"}</button></div></div>}
-        {unitDrafts.length === 0 && selectedUnitIds.length === 0 && <div className="employee-footer-base"><button type="button" className="secondary-button footer-action-button employee-add-button" onClick={() => { setUnitDrafts((current) => [...current, emptyUnit()]); setNotice(""); setError(""); }}>Добавить технику</button><span className="employee-total-count">Всего техники: <strong>{visibleUnitIds?.length ?? registryUnits.length}</strong></span></div>}
+        {unitDrafts.length === 0 && selectedUnitIds.length === 0 && <div className="employee-footer-base">{payload.canCreateRegistry && <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={() => { setUnitDrafts((current) => [...current, emptyUnit()]); setNotice(""); setError(""); }}>Добавить технику</button>}<span className="employee-total-count">Всего техники: <strong>{visibleUnitIds?.length ?? registryUnits.length}</strong></span></div>}
       </div>}
     </>}
 
@@ -1413,14 +1593,15 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         drafts={projectUnitDrafts}
         selectedIds={selectedProjectUnitIds}
         loading={loading}
-        readOnly={!payload?.canManageAssignments}
+        canCreate={Boolean(payload?.canCreateAssignments)}
+        canSelect={Boolean(payload?.canDeleteAssignments)}
         onPatchDraft={patchProjectUnitDraft}
         onSelectionChange={(ids) => { setSelectedProjectUnitIds(ids); setError(""); setNotice(""); }}
       />
       {payload?.canManageAssignments && <div className="table-edit-footer employee-table-footer uniform-footer-actions equipment-project-footer">
-        {selectedProjectUnitIds.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedProjectUnitIds.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-danger" onClick={() => void removeSelectedProjectUnits()} disabled={saving}>Убрать из проекта</button><button type="button" className="employee-action-button clear-selection-button" onClick={() => { setSelectedProjectUnitIds([]); setError(""); setNotice(""); }} disabled={saving}>Снять выделение</button></div></div>}
+        {selectedProjectUnitIds.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedProjectUnitIds.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-danger" onClick={() => void removeSelectedProjectUnits()} disabled={saving || !payload.canDeleteAssignments} title={payload.canDeleteAssignments ? undefined : "Нет права удаления"}>Убрать из проекта</button><button type="button" className="employee-action-button clear-selection-button" onClick={() => { setSelectedProjectUnitIds([]); setError(""); setNotice(""); }} disabled={saving}>Снять выделение</button></div></div>}
         {projectUnitDrafts.length > 0 && <div className="employee-editing-bar"><div className="employee-editing-summary"><span aria-hidden="true">＋</span><span>Добавляется: <strong>{projectUnitDrafts.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button cancel-editing-button" onClick={() => { setProjectUnitDrafts([]); setError(""); setNotice(""); }} disabled={saving}>Отменить добавление</button><button type="button" className="employee-action-button employee-save-button" onClick={() => void assignProjectUnits()} disabled={saving}>{saving ? "Сохраняем…" : "Добавить в проект"}</button></div></div>}
-        {projectUnitDrafts.length === 0 && selectedProjectUnitIds.length === 0 && <div className="employee-footer-base"><button type="button" className="secondary-button footer-action-button employee-add-button" onClick={() => { setProjectUnitDrafts((current) => [...current, { key: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `project-equipment-${Date.now()}-${Math.random()}`, equipmentId: "" }]); setError(""); setNotice(""); }}>Добавить технику в проект</button><span className="employee-total-count">Всего в проекте: <strong>{payload?.units.length ?? 0}</strong></span></div>}
+        {projectUnitDrafts.length === 0 && selectedProjectUnitIds.length === 0 && <div className="employee-footer-base">{payload.canCreateAssignments && <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={() => { setProjectUnitDrafts((current) => [...current, { key: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `project-equipment-${Date.now()}-${Math.random()}`, equipmentId: "" }]); setError(""); setNotice(""); }}>Добавить технику в проект</button>}<span className="employee-total-count">Всего в проекте: <strong>{payload?.units.length ?? 0}</strong></span></div>}
       </div>}
     </>}
 

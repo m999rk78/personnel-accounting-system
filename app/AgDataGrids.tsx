@@ -97,7 +97,6 @@ export type GridDraftRow = {
   roster?: boolean;
   lockedEmployee?: boolean;
   carriedFromPreviousDay?: boolean;
-  reviewed?: boolean;
   employeeId: string;
   employeeQuery: string;
   shiftId: string;
@@ -286,7 +285,9 @@ type PlacementGridProps = {
   subworkTypes: GridOption[];
   masters: GridOption[];
   loading: boolean;
-  canEdit: boolean;
+  canCreate: boolean;
+  canUpdate: boolean;
+  canDelete: boolean;
   rosterMode?: boolean;
   showResponsibleUser?: boolean;
   currentUserName?: string;
@@ -597,7 +598,8 @@ export function PlacementAgGrid(props: PlacementGridProps) {
 
   const openCellEditor = useCallback((row: PlacementRow, columnId: string) => {
     const current = propsRef.current;
-    if (!current.canEdit || !placementEditableFields.includes(columnId as PlacementEditableField)) return false;
+    const canEditRow = row.kind === "draft" ? current.canCreate : current.canUpdate;
+    if (!canEditRow || !placementEditableFields.includes(columnId as PlacementEditableField)) return false;
     if (columnId === "employeeName" && row.draft?.lockedEmployee) return false;
     if (row.kind === "entry") {
       if (!row.entry || (!current.rosterMode && current.draftRows.length > 0) || current.pendingDeletes.includes(row.entry.id)) return false;
@@ -662,8 +664,10 @@ export function PlacementAgGrid(props: PlacementGridProps) {
 
   const { employees, shifts, zones, mainWorkTypes, subworkTypes, masters, onEdit } = props;
   const pasteIntoRow = useCallback(({ row, values }: SpreadsheetPastePayload<PlacementRow>) => {
+    const current = propsRef.current;
+    if (row.kind === "draft" ? !current.canCreate : !current.canUpdate) return false;
     if (row.kind !== "entry" && !row.draft) return false;
-    if (row.kind === "entry" && propsRef.current.draftRows.length) return false;
+    if (row.kind === "entry" && current.draftRows.length) return false;
     const changes: Partial<GridDraftRow> = {};
     if (values.employeeName !== undefined && !row.draft?.lockedEmployee) {
       const employee = employees.find((item) => normalizeSearch(item.fullName) === normalizeSearch(values.employeeName));
@@ -737,10 +741,17 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     rowClassRules={{
       "editable-row": (params) => params.data?.kind === "edit" || params.data?.kind === "draft",
       "carried-row": (params) => Boolean(params.data?.draft?.carriedFromPreviousDay),
-      "reviewed-row": (params) => Boolean(params.data?.draft?.carriedFromPreviousDay && params.data?.draft?.reviewed),
       "timesheet-conflict-row": (params) => Boolean(params.data?.timesheetConflict),
     }}
-    rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.canEdit && (propsRef.current.rosterMode ? params.data?.kind === "draft" || Boolean(params.data?.entry) : propsRef.current.draftRows.length === 0 && propsRef.current.editing.length === 0 && params.data?.kind === "entry"), headerCheckbox: props.rosterMode ? props.canEdit : props.draftRows.length === 0 && props.editing.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.canEdit && (propsRef.current.rosterMode ? node.data?.kind === "draft" || Boolean(node.data?.entry) : propsRef.current.draftRows.length === 0 && propsRef.current.editing.length === 0 && node.data?.kind === "entry") }}
+    rowSelection={{ mode: "multiRow", checkboxes: (params) => {
+      const current = propsRef.current;
+      const allowed = params.data?.kind === "draft" ? current.canCreate : Boolean(params.data?.entry) && (current.canUpdate || current.canDelete);
+      return Boolean(allowed && (current.rosterMode || current.draftRows.length === 0 && current.editing.length === 0 && params.data?.kind === "entry"));
+    }, headerCheckbox: props.rosterMode ? props.canCreate || props.canUpdate || props.canDelete : (props.canUpdate || props.canDelete) && props.draftRows.length === 0 && props.editing.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => {
+      const current = propsRef.current;
+      const allowed = node.data?.kind === "draft" ? current.canCreate : Boolean(node.data?.entry) && (current.canUpdate || current.canDelete);
+      return Boolean(allowed && (current.rosterMode || current.draftRows.length === 0 && current.editing.length === 0 && node.data?.kind === "entry"));
+    } }}
     selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }}
     onGridReady={(event: GridReadyEvent<PlacementRow>) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }}
     onGridSizeChanged={(event) => event.api.sizeColumnsToFit()}
@@ -856,7 +867,9 @@ type EquipmentGridProps = {
   mainWorkTypes: GridOption[];
   subworkTypes: GridOption[];
   loading: boolean;
-  canEdit: boolean;
+  canCreate: boolean;
+  canUpdate: boolean;
+  canDelete: boolean;
   showResponsibleUser?: boolean;
   currentUserName?: string;
   selectedIds: number[];
@@ -1064,7 +1077,9 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
     if (draft) propsRef.current.onPatchDraft(draft.key, changes);
   }, [propsRef]);
   const openCellEditor = useCallback((row: EquipmentTableRow, columnId: string) => {
-    if (!propsRef.current.canEdit || !equipmentEditableFields.includes(columnId as EquipmentEditableField)) return false;
+    const current = propsRef.current;
+    const canEditRow = row.kind === "draft" ? current.canCreate : current.canUpdate;
+    if (!canEditRow || !equipmentEditableFields.includes(columnId as EquipmentEditableField)) return false;
     if (row.kind === "entry" && row.entry) propsRef.current.onEdit(row.entry);
     else if (!row.draft) return false;
     setActiveEditor({ rowKey: row.rowKey, field: columnId as EquipmentEditableField });
@@ -1121,7 +1136,8 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
   }, [activeEditor, blockedEquipment, openCellEditor, patchRow, propsRef]);
 
   const pasteIntoRow = useCallback(({ row, values }: SpreadsheetPastePayload<EquipmentTableRow>) => {
-    if (!propsRef.current.canEdit) return false;
+    const current = propsRef.current;
+    if (row.kind === "draft" ? !current.canCreate : !current.canUpdate) return false;
     const changes: Partial<GridEquipmentDraft> = {};
     if (values.equipment !== undefined) changes.equipmentId = pastedOptionId(unitOptions, values.equipment);
     if (values.shift !== undefined) changes.shiftId = pastedOptionId(propsRef.current.shifts, values.shift);
@@ -1173,7 +1189,17 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
     loadingOverlayComponent={() => <span className="ag-overlay-message">Загружаем отчёт техники…</span>}
     noRowsOverlayComponent={() => <span className="ag-overlay-message">За выбранный день записей нет</span>}
     rowClassRules={{ "editable-row": (params) => params.data?.kind === "edit" || params.data?.kind === "draft", "carried-row": (params) => Boolean(params.data?.draft?.carriedFromPreviousDay), "equipment-downtime-row": (params) => normalizeSearch(String(valueGetter("subwork")(params))).includes("простой"), "timesheet-conflict-row": (params) => Boolean(params.data?.timesheetConflict) }}
-    rowSelection={{ mode: "multiRow", checkboxes: (params) => Boolean(propsRef.current.canEdit && (propsRef.current.drafts.length ? params.data?.kind === "draft" : params.data?.kind === "entry")), headerCheckbox: props.canEdit, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => Boolean(propsRef.current.canEdit && (propsRef.current.drafts.length ? node.data?.kind === "draft" : node.data?.kind === "entry")) }}
+    rowSelection={{ mode: "multiRow", checkboxes: (params) => {
+      const current = propsRef.current;
+      return Boolean(current.drafts.length
+        ? current.canCreate && params.data?.kind === "draft"
+        : (current.canUpdate || current.canDelete) && params.data?.kind === "entry");
+    }, headerCheckbox: props.drafts.length ? props.canCreate : props.canUpdate || props.canDelete, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => {
+      const current = propsRef.current;
+      return Boolean(current.drafts.length
+        ? current.canCreate && node.data?.kind === "draft"
+        : (current.canUpdate || current.canDelete) && node.data?.kind === "entry");
+    } }}
     selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }}
     onGridReady={(event: GridReadyEvent<EquipmentTableRow>) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }}
     onGridSizeChanged={(event) => event.api.sizeColumnsToFit()}
@@ -1218,6 +1244,9 @@ type EquipmentRegistryGridProps = {
   selectedIds: number[];
   fullRowEditIds: number[];
   loading: boolean;
+  canCreate: boolean;
+  canUpdate: boolean;
+  canSelect: boolean;
   onEdit: (unit: GridEquipmentUnit, changes?: Partial<GridEquipmentRegistryDraft>) => void;
   onSelectionChange: (ids: number[]) => void;
   onPatchDraft: (key: string, changes: Partial<GridEquipmentRegistryDraft>) => void;
@@ -1292,7 +1321,8 @@ export function EquipmentRegistryAgGrid(props: EquipmentRegistryGridProps) {
 
   const openCellEditor = useCallback((row: EquipmentRegistryTableRow, columnId: string) => {
     const field = columnId as EquipmentRegistryField;
-    if (!equipmentRegistryFields.includes(field) || (row.kind === "entry" && newDraftCount > 0)) return false;
+    const canEditRow = row.kind === "draft" ? propsRef.current.canCreate : propsRef.current.canUpdate;
+    if (!canEditRow || !equipmentRegistryFields.includes(field) || (row.kind === "entry" && newDraftCount > 0)) return false;
     if (row.kind === "entry" && row.unit) propsRef.current.onEdit(row.unit);
     else if (!row.draft) return false;
     setActiveEditor({ rowKey: row.rowKey, field });
@@ -1326,6 +1356,7 @@ export function EquipmentRegistryAgGrid(props: EquipmentRegistryGridProps) {
 
   const pasteIntoRow = useCallback(({ row, values }: SpreadsheetPastePayload<EquipmentRegistryTableRow>) => {
     const currentProps = propsRef.current;
+    if (row.kind === "draft" ? !currentProps.canCreate : !currentProps.canUpdate) return false;
     if (row.kind === "entry" && currentProps.drafts.some((draft) => !draft.id)) return false;
     const changes: Partial<GridEquipmentRegistryDraft> = {};
     for (const field of equipmentRegistryTextFields) {
@@ -1387,7 +1418,7 @@ export function EquipmentRegistryAgGrid(props: EquipmentRegistryGridProps) {
         loadingOverlayComponent={() => <span className="ag-overlay-message">Загружаем реестр техники…</span>}
         noRowsOverlayComponent={() => <span className="ag-overlay-message">Реестр техники пока пуст</span>}
         rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }}
-        rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }}
+        rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.canSelect && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.canSelect && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.canSelect && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }}
         selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }}
         onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }}
         onGridSizeChanged={(event) => event.api.sizeColumnsToFit()}
@@ -1395,7 +1426,7 @@ export function EquipmentRegistryAgGrid(props: EquipmentRegistryGridProps) {
         onModelUpdated={(event) => reportVisibleRows(event.api)}
         onFilterChanged={(event) => reportVisibleRows(event.api)}
         onSortChanged={(event) => reportVisibleRows(event.api)}
-        onSelectionChanged={(event) => propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.unit?.id ? [row.unit.id] : []))}
+        onSelectionChanged={(event) => { if (propsRef.current.canSelect) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.unit?.id ? [row.unit.id] : [])); }}
         onCellMouseDown={(event) => {
           if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return;
           const rowKey = event.data?.rowKey;
@@ -1431,7 +1462,8 @@ type ProjectEquipmentGridProps = {
   drafts: GridProjectEquipmentDraft[];
   selectedIds: number[];
   loading: boolean;
-  readOnly?: boolean;
+  canCreate: boolean;
+  canSelect: boolean;
   onPatchDraft: (key: string, changes: Partial<GridProjectEquipmentDraft>) => void;
   onSelectionChange: (ids: number[]) => void;
 };
@@ -1475,7 +1507,7 @@ export function ProjectEquipmentAgGrid(props: ProjectEquipmentGridProps) {
     return propsRef.current.allUnits.filter((unit) => !assigned.has(unit.id));
   }, [propsRef]);
   const openCellEditor = useCallback((row: ProjectEquipmentTableRow, columnId: string) => {
-    if (propsRef.current.readOnly || row.kind !== "draft" || !row.draft || columnId !== "equipmentType") return false;
+    if (!propsRef.current.canCreate || row.kind !== "draft" || !row.draft || columnId !== "equipmentType") return false;
     setActiveEditor(row.rowKey);
     return true;
   }, [propsRef]);
@@ -1520,12 +1552,12 @@ export function ProjectEquipmentAgGrid(props: ProjectEquipmentGridProps) {
     loadingOverlayComponent={() => <span className="ag-overlay-message">Загружаем технику проекта…</span>}
     noRowsOverlayComponent={() => <span className="ag-overlay-message">В проекте пока нет техники</span>}
     rowClassRules={{ "editable-row": (params) => params.data?.kind === "draft" }}
-    rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.readOnly && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.readOnly && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.readOnly && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }}
+    rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.canSelect && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.canSelect && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.canSelect && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }}
     selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }}
     onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }}
     onGridSizeChanged={(event) => event.api.sizeColumnsToFit()}
     onColumnResized={keepGridFilled}
-    onSelectionChanged={(event) => { if (!propsRef.current.readOnly) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.unit?.id ? [row.unit.id] : [])); }}
+    onSelectionChanged={(event) => { if (propsRef.current.canSelect) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.unit?.id ? [row.unit.id] : [])); }}
     onCellMouseDown={(event) => { if (!activeEditor || isInteractiveGridTarget(event.event)) return; if (event.data?.rowKey !== activeEditor || event.column.getColId() !== "equipmentType") setActiveEditor(null); }}
     onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }}
     onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)}
@@ -1551,6 +1583,8 @@ type EmployeeGridProps = {
   sites: GridOption[];
   selectedIds: number[];
   fullRowEditIds: number[];
+  readOnly?: boolean;
+  selectionDisabled?: boolean;
   onEdit: (employee: GridEmployee, changes?: Partial<GridEmployeeDraft>) => void;
   onSelectionChange: (ids: number[]) => void;
   onPatchDraft: (key: string, changes: Partial<GridEmployeeDraft>) => void;
@@ -1608,6 +1642,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
   }, [selectedIdsKey]);
 
   const openCellEditor = useCallback((row: EmployeeTableRow, columnId: string) => {
+    if (propsRef.current.readOnly && row.kind !== "draft") return false;
     if (!["fullName", "employmentType", "department", "position", "siteName"].includes(columnId) || (row.kind === "entry" && newDraftCount > 0)) return false;
     if (row.kind === "entry" && row.employee) propsRef.current.onEdit(row.employee);
     else if (!row.draft) return false;
@@ -1645,6 +1680,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
 
   const pasteIntoRow = useCallback(({ row, values }: SpreadsheetPastePayload<EmployeeTableRow>) => {
     const currentProps = propsRef.current;
+    if (currentProps.readOnly && row.kind !== "draft") return false;
     if (row.kind === "entry" && currentProps.drafts.some((draft) => !draft.id)) return false;
     const changes: Partial<GridEmployeeDraft> = {};
     if (values.fullName !== undefined) {
@@ -1720,7 +1756,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
         headerHeight={TABLE_HEADER_HEIGHT}
         animateRows
         rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }}
-        rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }}
+        rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }}
         selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }}
         onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }}
         onGridSizeChanged={(event) => event.api.sizeColumnsToFit()}
@@ -1728,7 +1764,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
         onModelUpdated={(event) => reportVisibleRows(event.api)}
         onFilterChanged={(event) => reportVisibleRows(event.api)}
         onSortChanged={(event) => reportVisibleRows(event.api)}
-        onSelectionChanged={(event) => propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.employee?.id ? [row.employee.id] : []))}
+        onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.employee?.id ? [row.employee.id] : [])); }}
         onCellMouseDown={(event) => {
           if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return;
           const rowKey = event.data?.rowKey;
@@ -1757,6 +1793,7 @@ type ProjectEmployeeGridProps = {
   drafts: GridProjectEmployeeDraft[];
   pendingDeletes: number[];
   readOnly?: boolean;
+  selectionDisabled?: boolean;
   onPatchDraft: (key: string, changes: Partial<GridProjectEmployeeDraft>) => void;
   onSelectionChange: (ids: number[]) => void;
 };
@@ -1840,7 +1877,7 @@ export function ProjectEmployeeAgGrid(props: ProjectEmployeeGridProps) {
     { field: "position", headerName: "Должность", minWidth: 220, flex: 1.35, headerComponentParams: pinnableHeader, valueGetter: valueGetter("position"), cellRenderer },
   ], [cellRenderer, valueGetter]);
   const defaultColDef = useMemo<ColDef<ProjectEmployeeTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
-  return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<ProjectEmployeeTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => params.data?.kind === "draft" }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.readOnly && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.readOnly && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.readOnly && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => { if (!propsRef.current.readOnly) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.employee?.id ? [row.employee.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || isInteractiveGridTarget(event.event)) return; if (event.data?.rowKey !== activeEditor || event.column.getColId() !== "fullName") setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} suppressCellFocus /></div></AgGridProvider>;
+  return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<ProjectEmployeeTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => params.data?.kind === "draft" }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.employee?.id ? [row.employee.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || isInteractiveGridTarget(event.event)) return; if (event.data?.rowKey !== activeEditor || event.column.getColId() !== "fullName") setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} suppressCellFocus /></div></AgGridProvider>;
 }
 
 type DirectoryTableRow = { rowKey: string; kind: "entry" | "edit" | "draft"; number: number; item?: GridOption; draft?: GridDirectoryDraft; pending?: boolean } & GridDisplayFields<"name" | "employmentType" | "department" | "position">;
@@ -1852,6 +1889,7 @@ type DirectoryGridProps = {
   selectEmployee?: boolean;
   pendingDeletes: number[];
   readOnly?: boolean;
+  selectionDisabled?: boolean;
   onEdit: (item: GridOption) => void;
   onSelectionChange: (ids: number[]) => void;
   onPatchDraft: (key: string, changes: Partial<GridDirectoryDraft>) => void;
@@ -1914,7 +1952,7 @@ export function DirectoryAgGrid(props: DirectoryGridProps) {
   }, [propsRef]);
   const openCellEditor = useCallback((row: DirectoryTableRow, columnId: string) => {
     const currentProps = propsRef.current;
-    if (currentProps.readOnly || columnId !== "name" || row.pending) return false;
+    if ((currentProps.readOnly && row.kind !== "draft") || columnId !== "name" || row.pending) return false;
     if (row.kind === "entry") {
       if (currentProps.drafts.some((draft) => !draft.id) || !row.item) return false;
       currentProps.onEdit(row.item);
@@ -1937,7 +1975,7 @@ export function DirectoryAgGrid(props: DirectoryGridProps) {
     return <span title={String(params.value ?? "")}>{params.value}</span>;
   }, [activeEditor, openCellEditor, propsRef]);
   const pasteIntoRow = useCallback(({ row, values }: SpreadsheetPastePayload<DirectoryTableRow>) => {
-    if (propsRef.current.readOnly) return false;
+    if (propsRef.current.readOnly && row.kind !== "draft") return false;
     if (row.kind === "entry" || !row.draft || values.name === undefined) return false;
     const currentProps = propsRef.current;
     if (currentProps.selectEmployee) {
@@ -1958,7 +1996,7 @@ export function DirectoryAgGrid(props: DirectoryGridProps) {
     return [numberColumn, { field: "name", headerName: props.title, minWidth: 260, flex: 1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("name"), cellRenderer: editableRenderer }];
   }, [editableRenderer, props.selectEmployee, props.title, valueGetter]);
   const defaultColDef = useMemo<ColDef<DirectoryTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
-  return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<DirectoryTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => params.data?.kind !== "entry" }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.readOnly && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.readOnly && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.readOnly && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => { if (!propsRef.current.readOnly) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.item?.id ? [row.item.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || isInteractiveGridTarget(event.event)) return; if (event.data?.rowKey !== activeEditor || event.column.getColId() !== "name") setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} suppressCellFocus /></div></AgGridProvider>;
+  return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<DirectoryTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => params.data?.kind !== "entry" }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.item?.id ? [row.item.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || isInteractiveGridTarget(event.event)) return; if (event.data?.rowKey !== activeEditor || event.column.getColId() !== "name") setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} suppressCellFocus /></div></AgGridProvider>;
 }
 
 type PositionGridProps = {
@@ -1969,6 +2007,7 @@ type PositionGridProps = {
   pendingDeletes: number[];
   fullRowEditIds: number[];
   readOnly?: boolean;
+  selectionDisabled?: boolean;
   onEdit: (position: GridPosition, changes?: Partial<GridPositionDraft>) => void;
   onSelectionChange: (ids: number[]) => void;
   onPatchDraft: (key: string, changes: Partial<GridPositionDraft>) => void;
@@ -2016,7 +2055,7 @@ export function PositionAgGrid(props: PositionGridProps) {
   }, [propsRef]);
   const openCellEditor = useCallback((row: PositionTableRow, columnId: string) => {
     const currentProps = propsRef.current;
-    if (currentProps.readOnly || !["employmentType", "department", "position"].includes(columnId)) return false;
+    if ((currentProps.readOnly && row.kind !== "draft") || !["employmentType", "department", "position"].includes(columnId)) return false;
     if (row.kind === "entry") {
       if (currentProps.drafts.some((draft) => !draft.id) || !row.record) return false;
       currentProps.onEdit(row.record);
@@ -2038,7 +2077,7 @@ export function PositionAgGrid(props: PositionGridProps) {
     return <EmployeeTextEditor value={draft.position} placeholder="Должность" onBlur={() => setActiveEditor(null)} onChange={(position) => currentProps.onPatchDraft(draft.key, { position })} />;
   }, [activeEditor, openCellEditor, propsRef]);
   const pasteIntoRow = useCallback(({ row, values }: SpreadsheetPastePayload<PositionTableRow>) => {
-    if (propsRef.current.readOnly) return false;
+    if (propsRef.current.readOnly && row.kind !== "draft") return false;
     if (row.kind === "entry" && propsRef.current.drafts.some((draft) => !draft.id)) return false;
     const changes: Partial<GridPositionDraft> = {};
     if (values.employmentType !== undefined) changes.employmentType = values.employmentType;
@@ -2058,7 +2097,7 @@ export function PositionAgGrid(props: PositionGridProps) {
   ], [editableRenderer, valueGetter]);
   const reportVisibleRows = useCallback((api: GridApi<PositionTableRow>) => { const ids: number[] = []; api.forEachNodeAfterFilterAndSort((node) => { if (node.data?.record?.id) ids.push(node.data.record.id); }); props.onVisibleIdsChange(ids); }, [props]);
   const defaultColDef = useMemo<ColDef<PositionTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
-  return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<PositionTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.readOnly && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.readOnly && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.readOnly && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onModelUpdated={(event) => reportVisibleRows(event.api)} onFilterChanged={(event) => reportVisibleRows(event.api)} onSortChanged={(event) => reportVisibleRows(event.api)} onSelectionChanged={(event) => { if (!propsRef.current.readOnly) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.record?.id ? [row.record.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return; const rowKey = event.data?.rowKey; const field = event.column.getColDef().field; if (rowKey !== activeEditor.rowKey || field !== activeEditor.field) setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} spreadsheetSelectionResetKey={`${draftStructureKey}:${props.fullRowEditIds.join("|")}`} suppressCellFocus /></div></AgGridProvider>;
+  return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<PositionTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onModelUpdated={(event) => reportVisibleRows(event.api)} onFilterChanged={(event) => reportVisibleRows(event.api)} onSortChanged={(event) => reportVisibleRows(event.api)} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.record?.id ? [row.record.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return; const rowKey = event.data?.rowKey; const field = event.column.getColDef().field; if (rowKey !== activeEditor.rowKey || field !== activeEditor.field) setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} spreadsheetSelectionResetKey={`${draftStructureKey}:${props.fullRowEditIds.join("|")}`} suppressCellFocus /></div></AgGridProvider>;
 }
 
 type UserTableRow = { rowKey: string; kind: "entry" | "edit" | "draft"; number: number; user?: GridUser; draft?: GridUserDraft } & GridDisplayFields<"fullName" | "email" | "status" | "role" | "site">;

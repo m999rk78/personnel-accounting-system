@@ -22,6 +22,9 @@ type ProjectCardsProps = {
   onSave: () => void;
   saving: boolean;
   readOnly?: boolean;
+  canCreate?: boolean;
+  canUpdate?: boolean;
+  canDelete?: boolean;
 };
 
 function normalize(value: string) {
@@ -70,9 +73,14 @@ function ProjectEditorDialog({ drafts, saving, onPatch, onCancel, onSave }: { dr
   </div>;
 }
 
-export function ProjectCards({ rows, drafts, employees, users, currentSiteId, selectedIds, onEdit, onSelectionChange, onPatchDraft, onCancelEditing, onSave, saving, readOnly = false }: ProjectCardsProps) {
+export function ProjectCards({ rows, drafts, employees, users, currentSiteId, selectedIds, onEdit, onSelectionChange, onPatchDraft, onCancelEditing, onSave, saving, readOnly = false, canCreate, canUpdate, canDelete }: ProjectCardsProps) {
   const [query, setQuery] = useState("");
   const editorOpen = drafts.length > 0;
+  const mayCreate = canCreate ?? !readOnly;
+  const mayUpdate = canUpdate ?? !readOnly;
+  const mayDelete = canDelete ?? !readOnly;
+  const locked = !mayUpdate && !mayDelete;
+  const mayShowEditor = drafts.some((draft) => Boolean(draft.id)) ? mayUpdate : mayCreate;
   const search = normalize(query);
   const employeeCounts = useMemo(() => {
     const counts = new Map<number, number>();
@@ -89,7 +97,7 @@ export function ProjectCards({ rows, drafts, employees, users, currentSiteId, se
   const assignedForemen = users.filter((user) => user.role === "foreman" && user.assignedSiteId && rows.some((project) => project.id === user.assignedSiteId)).length;
 
   function toggleProject(id: number) {
-    if (readOnly || editorOpen) return;
+    if (!mayDelete || editorOpen) return;
     onSelectionChange(selectedIds.includes(id) ? selectedIds.filter((selectedId) => selectedId !== id) : [...selectedIds, id]);
   }
 
@@ -103,7 +111,7 @@ export function ProjectCards({ rows, drafts, employees, users, currentSiteId, se
       {visibleRows.map((project) => {
         const selected = selectedIds.includes(project.id);
         const current = project.id === currentSiteId;
-        return <article className={`${selected ? "project-card selected" : "project-card"}${readOnly ? " read-only" : ""}`} key={project.id} onDoubleClick={(event) => { if (!readOnly && !editorOpen && !(event.target as Element).closest("button,input")) onEdit(project); }}>
+        return <article className={`${selected ? "project-card selected" : "project-card"}${locked ? " read-only" : ""}`} key={project.id} onDoubleClick={(event) => { if (mayUpdate && !editorOpen && !(event.target as Element).closest("button,input")) onEdit(project); }}>
           <div className="project-card-heading">
             <span className="project-card-mark" aria-hidden="true">{projectMark(project.name)}</span>
             <div className="project-card-title"><h2>{project.name}</h2>{current && <span>Текущий проект</span>}</div>
@@ -112,14 +120,14 @@ export function ProjectCards({ rows, drafts, employees, users, currentSiteId, se
             <span><strong>{employeeCounts.get(project.id) ?? 0}</strong> сотрудников</span>
             <span><strong>{foremanCounts.get(project.id) ?? 0}</strong> прорабов</span>
           </div>
-          {!readOnly && <div className="project-card-actions">
-            <button type="button" className="project-card-edit" onClick={() => onEdit(project)} disabled={editorOpen}>Изменить проект</button>
-            <label className="project-card-select"><input type="checkbox" checked={selected} disabled={editorOpen} onChange={() => toggleProject(project.id)} aria-label={`Выбрать проект ${project.name}`} /><span aria-hidden="true">✓</span></label>
+          {(mayUpdate || mayDelete) && <div className="project-card-actions">
+            {mayUpdate && <button type="button" className="project-card-edit" onClick={() => onEdit(project)} disabled={editorOpen}>Изменить проект</button>}
+            {mayDelete && <label className="project-card-select"><input type="checkbox" checked={selected} disabled={editorOpen} onChange={() => toggleProject(project.id)} aria-label={`Выбрать проект ${project.name}`} /><span aria-hidden="true">✓</span></label>}
           </div>}
         </article>;
       })}
       {!visibleRows.length && <div className="project-cards-empty"><strong>Проекты не найдены</strong><span>Попробуйте изменить поисковый запрос.</span></div>}
     </div>
-    {!readOnly && drafts.length > 0 && <ProjectEditorDialog drafts={drafts} saving={saving} onPatch={onPatchDraft} onCancel={onCancelEditing} onSave={onSave} />}
+    {mayShowEditor && drafts.length > 0 && <ProjectEditorDialog drafts={drafts} saving={saving} onPatch={onPatchDraft} onCancel={onCancelEditing} onSave={onSave} />}
   </section>;
 }

@@ -9,6 +9,8 @@ test("maps every workspace section to a stable address", () => {
   assert.equal(workspaceUrl("timesheet", "all", "2026-10-01", "2026-10"), "/timesheets/workers?month=2026-10");
   assert.equal(workspaceUrl("equipmentTimesheet", "all", "2026-10-01", "2026-10"), "/timesheets/equipment?month=2026-10");
   assert.equal(workspacePath("employees"), "/settings/general/employees");
+  assert.equal(workspacePath("auditLog"), "/settings/general/activity");
+  assert.equal(workspacePath("accessRights"), "/settings/general/access");
   assert.equal(workspacePath("projectEquipment"), "/settings/project/equipment");
   assert.equal(workspacePath("directories", "zone"), "/settings/project/zones");
   assert.equal(workspacePath("directories", "mainWorkType"), "/settings/project/work-types");
@@ -40,6 +42,8 @@ test("restores a section and its period from the browser address", () => {
 
 test("marks protected route families and serves direct workspace links", async () => {
   assert.equal(isGeneralSettingsView("employees"), true);
+  assert.equal(isGeneralSettingsView("auditLog"), true);
+  assert.equal(isGeneralSettingsView("accessRights"), true);
   assert.equal(isGeneralSettingsView("projectEmployees"), false);
   assert.equal(isTimesheetView("timesheet"), true);
   assert.equal(isTimesheetView("placement"), false);

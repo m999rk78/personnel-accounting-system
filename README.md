@@ -137,6 +137,12 @@ BITRIX24_PROJECT_MAP={"123":"GPZ-U2","Объект 1":"GPZ-U2"}
 - `npm start` — запуск standalone-сборки.
 - `npm run lint` — проверка кода.
 - `npm test` — сборка и тесты.
+- `npm run test:stress` — изолированный нагрузочный тест PostgreSQL на 100 000
+  сотрудников и сотнях тысяч строк. Команда разрешает локальную БД, создаёт
+  отдельную схему `stress_test_*` и гарантированно удаляет её после замеров.
+  Размеры можно переопределить аргументами `--employees=`,
+  `--personnel-entries=`, `--equipment-units=`, `--equipment-entries=` и
+  `--audit-events=`.
 - `npm run db:generate` — создать миграцию после изменения схемы.
 - `npm run db:migrate` — применить миграции к `DATABASE_URL`.
 - `npm run db:migrate-postgres` — применить миграции PostgreSQL после проверки

@@ -1,9 +1,10 @@
 import { getDatabase } from "../../../../db/client";
+import { withAuditTrail } from "../../../auditLog";
 import { assertSameOrigin, createSession, ensureAuthSchema, getAuthUser, hashPassword, loginAttemptKey, verifyPassword } from "../../../auth";
 
 const env = { get DB() { return getDatabase(); } };
 
-export async function POST(request: Request) {
+async function handlePOST(request: Request) {
   try {
     assertSameOrigin(request);
     await ensureAuthSchema();
@@ -38,4 +39,8 @@ export async function POST(request: Request) {
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Не удалось изменить пароль." }, { status: 400 });
   }
+}
+
+export async function POST(request: Request) {
+  return withAuditTrail(request, handlePOST);
 }

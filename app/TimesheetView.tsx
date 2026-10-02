@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { createPersonnelTimesheetXlsx } from "./placementXlsx";
+import { openExcelExportPreview } from "./excelExportPreviewStore";
 import { TIMESHEET_ALL_OPTION, TimesheetFilterableHeading, type TimesheetFilterOption, type TimesheetSortOption } from "./TimesheetColumnFilter";
 import { TimesheetCellPopover } from "./TimesheetCellPopover";
 import { useTimesheetClipboard, type TimesheetClipboardChange } from "./useTimesheetClipboard";
@@ -37,6 +37,9 @@ type TimesheetPayload = {
   siteName: string;
   month: string;
   canEdit: boolean;
+  canCreate: boolean;
+  canUpdate: boolean;
+  canDelete: boolean;
   employees: TimesheetEmployee[];
   entries: TimesheetEntry[];
   marks: TimesheetMark[];
@@ -45,6 +48,7 @@ type TimesheetPayload = {
 
 type EditorCell = { employeeId: number; workDate: string; anchor: HTMLElement };
 type InlineEditorCell = { employeeId: number; workDate: string; rowIndex: number; columnIndex: number; value: string; error: string; selectAll: boolean };
+type InlineEditorMove = { row: number; column: number };
 type EmployeeSortMode = "type-opr-last" | "type-opr-first" | "type-asc" | "type-desc" | "department-asc" | "department-desc" | "employee-asc" | "employee-desc" | "position-asc" | "position-desc";
 
 const MONTH_FORMATTER = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric", timeZone: "UTC" });
@@ -76,9 +80,10 @@ const DEPARTMENT_SORT_OPTIONS: TimesheetSortOption[] = [{ value: "department-asc
 const EMPLOYEE_SORT_OPTIONS: TimesheetSortOption[] = [{ value: "employee-asc", label: "От А до Я ↑" }, { value: "employee-desc", label: "От Я до А ↓" }];
 const POSITION_SORT_OPTIONS: TimesheetSortOption[] = [{ value: "position-asc", label: "От А до Я ↑" }, { value: "position-desc", label: "От Я до А ↓" }];
 
-function TimesheetMarkList({ value, canReset, disabled, onChoose, onClose }: {
+function TimesheetMarkList({ value, canReset, canWrite, disabled, onChoose, onClose }: {
   value: string;
   canReset: boolean;
+  canWrite: boolean;
   disabled: boolean;
   onChoose: (value: string) => void;
   onClose: () => void;
@@ -87,7 +92,9 @@ function TimesheetMarkList({ value, canReset, disabled, onChoose, onClose }: {
     ...TIMESHEET_MARK_OPTIONS,
     ...(canReset ? [{ value: "", label: "Вернуть значение из отчёта", reset: true }] : []),
   ], [canReset]);
-  const initialIndex = Math.max(0, options.findIndex((option) => option.value === value));
+  const optionEnabled = (option: typeof options[number]) => canWrite || ("reset" in option && option.reset === true);
+  const selectedIndex = options.findIndex((option) => optionEnabled(option) && option.value === value);
+  const initialIndex = Math.max(0, selectedIndex >= 0 ? selectedIndex : options.findIndex(optionEnabled));
   const [activeIndex, setActiveIndex] = useState(initialIndex);
   const optionButtons = useRef<Array<HTMLButtonElement | null>>([]);
 
@@ -97,7 +104,14 @@ function TimesheetMarkList({ value, canReset, disabled, onChoose, onClose }: {
   }, [activeIndex]);
 
   function moveActive(offset: number) {
-    setActiveIndex((current) => (current + offset + options.length) % options.length);
+    setActiveIndex((current) => {
+      let next = current;
+      for (let index = 0; index < options.length; index += 1) {
+        next = (next + offset + options.length) % options.length;
+        if (optionEnabled(options[next])) return next;
+      }
+      return current;
+    });
   }
 
   return <div className="custom-select-options timesheet-mark-options" role="listbox" aria-label="Значение табеля">
@@ -110,16 +124,17 @@ function TimesheetMarkList({ value, canReset, disabled, onChoose, onClose }: {
         role="option"
         aria-selected={selected}
         className={["custom-select-option", selected ? "selected" : "", activeIndex === index ? "active" : "", "reset" in option && option.reset ? "timesheet-mark-reset-option" : ""].filter(Boolean).join(" ")}
-        disabled={disabled}
+        disabled={disabled || (!canWrite && !("reset" in option && option.reset))}
         tabIndex={activeIndex === index ? 0 : -1}
-        onMouseEnter={() => setActiveIndex(index)}
+        onMouseEnter={() => { if (optionEnabled(option)) setActiveIndex(index); }}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
             moveActive(event.key === "ArrowDown" ? 1 : -1);
           } else if (event.key === "Home" || event.key === "End") {
             event.preventDefault();
-            setActiveIndex(event.key === "Home" ? 0 : options.length - 1);
+            const enabledIndex = event.key === "Home" ? options.findIndex(optionEnabled) : options.findLastIndex(optionEnabled);
+            if (enabledIndex >= 0) setActiveIndex(enabledIndex);
           } else if (event.key === "Escape") {
             event.preventDefault();
             onClose();
@@ -260,6 +275,10 @@ function isMismatch(employee: TimesheetEmployee, entry: TimesheetEntry | undefin
   return isReportTracked(employee) && Boolean(mark) && effectiveHours(entry, mark) !== Number(entry?.hours ?? 0);
 }
 
+function isExpectedManualMark(employee: TimesheetEmployee, mark: TimesheetMark | undefined) {
+  return !isReportTracked(employee) && mark?.hours !== null && mark?.hours !== undefined;
+}
+
 function matchesDayFilter(filters: string[], employee: TimesheetEmployee, entry: TimesheetEntry | undefined, mark: TimesheetMark | undefined) {
   if (filters.length === 0) return true;
   const value = markValue(mark, entry);
@@ -314,6 +333,9 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
   const [editor, setEditor] = useState<EditorCell | null>(null);
   const [inlineEditor, setInlineEditor] = useState<InlineEditorCell | null>(null);
   const inlineInputRef = useRef<HTMLInputElement>(null);
+  const inlineSaveInFlight = useRef(false);
+  const inlineCancelPending = useRef(false);
+  const inlineGridFocusPending = useRef(false);
   const [savingMark, setSavingMark] = useState(false);
   const [editorError, setEditorError] = useState("");
   const inlineEditorEmployeeId = inlineEditor?.employeeId;
@@ -493,6 +515,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     cellHandlers: clipboardCellHandlers,
     shellHandlers: clipboardShellHandlers,
     rememberUndo: rememberTimesheetUndo,
+    notify: notifyTimesheetClipboard,
     activeCell: clipboardActiveCell,
     focusCell: focusClipboardCell,
   } = useTimesheetClipboard({
@@ -519,12 +542,18 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
       if (!employee || !day) return "";
       return marksByCell.get(cellKey(employee.id, dateForDay(month, day)))?.note ?? "";
     },
-    canPaste: (rowIndex, columnIndex) => Boolean(payload?.canEdit && visibleEmployees[rowIndex] && days[columnIndex]),
+    canPaste: (rowIndex, columnIndex) => {
+      const employee = visibleEmployees[rowIndex];
+      const day = days[columnIndex];
+      if (!payload || !employee || !day) return false;
+      const existingMark = marksByCell.has(cellKey(employee.id, dateForDay(month, day)));
+      return existingMark ? payload.canUpdate || payload.canDelete : payload.canCreate;
+    },
     onPaste: pasteTimesheetCells,
     canDelete: (rowIndex, columnIndex) => {
       const employee = visibleEmployees[rowIndex];
       const day = days[columnIndex];
-      if (!payload?.canEdit || !employee || !day) return false;
+      if (!payload?.canDelete || !employee || !day) return false;
       const workDate = dateForDay(month, day);
       return marksByCell.has(cellKey(employee.id, workDate));
     },
@@ -543,12 +572,22 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
   });
 
   useEffect(() => {
+    if (inlineEditor || !inlineGridFocusPending.current) return;
+    const frame = requestAnimationFrame(() => {
+      inlineGridFocusPending.current = false;
+      clipboardShellRef.current?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [clipboardShellRef, inlineEditor]);
+
+  useEffect(() => {
     if (!inlineEditor) return;
     if (!clipboardActiveCell || clipboardActiveCell.rowIndex !== inlineEditor.rowIndex || clipboardActiveCell.columnIndex !== inlineEditor.columnIndex) setInlineEditor(null);
   }, [clipboardActiveCell, inlineEditor]);
 
   function openEditor(employeeId: number, workDate: string, anchor: HTMLElement) {
-    if (!payload?.canEdit) return;
+    const existingMark = marksByCell.has(cellKey(employeeId, workDate));
+    if (!payload || (existingMark ? !payload.canUpdate && !payload.canDelete : !payload.canCreate)) return;
     if (editor?.employeeId === employeeId && editor.workDate === workDate) {
       if (!savingMark) closeEditorAndRestoreGridFocus();
       return;
@@ -560,9 +599,11 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
   }
 
   function openInlineEditor(employeeId: number, workDate: string, rowIndex: number, columnIndex: number, typedValue?: string) {
-    if (!payload?.canEdit) return;
+    const existingMark = marksByCell.has(cellKey(employeeId, workDate));
+    if (!payload || (existingMark ? !payload.canUpdate : !payload.canCreate)) return;
     const entry = entriesByCell.get(cellKey(employeeId, workDate));
     const mark = marksByCell.get(cellKey(employeeId, workDate));
+    inlineCancelPending.current = false;
     setEditor(null);
     setInlineEditor({
       employeeId,
@@ -586,6 +627,11 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
 
   async function persistMark(target: { employeeId: number; workDate: string }, value: string, note = "") {
     if (!payload) throw new Error("Табель ещё не загружен.");
+    const existingMark = marksByCell.has(cellKey(target.employeeId, target.workDate));
+    if (!value && !existingMark) return;
+    if (!value && !payload.canDelete) throw new Error("Недостаточно прав для удаления отметки табеля.");
+    if (value && existingMark && !payload.canUpdate) throw new Error("Недостаточно прав для изменения отметки табеля.");
+    if (value && !existingMark && !payload.canCreate) throw new Error("Недостаточно прав для добавления отметки табеля.");
     setSavingMark(true);
     const previousMark = marksByCell.get(cellKey(target.employeeId, target.workDate));
     const undoRowIndex = visibleEmployees.findIndex((employee) => employee.id === target.employeeId);
@@ -627,27 +673,42 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     }
   }
 
-  async function saveInlineEditor() {
-    if (!inlineEditor) return;
-    const normalizedValue = inlineEditor.value.trim().toLocaleUpperCase("ru-RU");
-    const valid = /^([1-9]|10)$/.test(normalizedValue) || CODE_VALUES.has(normalizedValue as typeof TIMESHEET_CODES[number]["value"]);
+  async function saveInlineEditor(move?: InlineEditorMove, valueOverride?: string, returnFocus = true) {
+    const target = inlineEditor;
+    if (!target || inlineSaveInFlight.current) return;
+    const normalizedValue = (valueOverride ?? target.value).trim().toLocaleUpperCase("ru-RU");
+    const valid = normalizedValue === "" || /^([1-9]|10)$/.test(normalizedValue) || CODE_VALUES.has(normalizedValue as typeof TIMESHEET_CODES[number]["value"]);
     if (!valid) {
-      setInlineEditor((current) => current ? { ...current, value: normalizedValue, error: "Недопустимое значение" } : current);
+      const validationMessage = "Недопустимое значение. Введите часы от 1 до 10 или табельный код.";
+      if (move) {
+        inlineGridFocusPending.current = true;
+        setInlineEditor(null);
+        focusClipboardCell(target.rowIndex + move.row, target.columnIndex + move.column);
+        notifyTimesheetClipboard("Изменение не сохранено: допустимы часы 1–10 или табельный код");
+        return;
+      }
+      setInlineEditor((current) => current ? { ...current, value: normalizedValue, error: validationMessage } : current);
       return;
     }
+    inlineSaveInFlight.current = true;
     try {
-      const currentMark = marksByCell.get(cellKey(inlineEditor.employeeId, inlineEditor.workDate));
-      await persistMark(inlineEditor, normalizedValue, currentMark?.note ?? "");
-      setInlineEditor(null);
-      restoreGridFocus();
+      const currentMark = marksByCell.get(cellKey(target.employeeId, target.workDate));
+      await persistMark(target, normalizedValue, currentMark?.note ?? "");
+      if (returnFocus) inlineGridFocusPending.current = true;
+      setInlineEditor((current) => current?.employeeId === target.employeeId && current.workDate === target.workDate ? null : current);
+      if (move) focusClipboardCell(target.rowIndex + move.row, target.columnIndex + move.column);
     } catch (saveError) {
-      setInlineEditor((current) => current ? { ...current, error: saveError instanceof Error ? saveError.message : "Не удалось сохранить отметку" } : current);
+      setInlineEditor((current) => current?.employeeId === target.employeeId && current.workDate === target.workDate
+        ? { ...current, error: saveError instanceof Error ? saveError.message : "Не удалось сохранить отметку" }
+        : current);
+    } finally {
+      inlineSaveInFlight.current = false;
     }
   }
 
   async function pasteTimesheetCells(changes: TimesheetClipboardChange[]) {
     if (!payload?.canEdit) throw new Error("Недостаточно прав для изменения табеля");
-    const prepared = changes.map((change) => {
+    const prepared = changes.flatMap((change) => {
       const employee = visibleEmployees[change.rowIndex];
       const day = days[change.columnIndex];
       const workDate = day ? dateForDay(month, day) : "";
@@ -656,8 +717,14 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
       if (value && !/^([1-9]|10)$/.test(value) && !CODE_VALUES.has(value as typeof TIMESHEET_CODES[number]["value"])) {
         throw new Error(`Значение «${change.value}» нельзя вставить. Используйте часы 1–10 или табельный код.`);
       }
-      return { employeeId: employee.id, workDate, value, note: change.note ?? "" };
+      const existingMark = marksByCell.has(cellKey(employee.id, workDate));
+      if (!value && !existingMark) return [];
+      if (!value && !payload.canDelete) throw new Error("Недостаточно прав для удаления отметок табеля.");
+      if (value && existingMark && !payload.canUpdate) throw new Error("Недостаточно прав для изменения отметок табеля.");
+      if (value && !existingMark && !payload.canCreate) throw new Error("Недостаточно прав для добавления отметок табеля.");
+      return [{ employeeId: employee.id, workDate, value, note: change.note ?? "" }];
     });
+    if (!prepared.length) return 0;
 
     const results = await Promise.all(prepared.map(async (item) => {
       const response = await fetch("/api/timesheet", {
@@ -685,18 +752,26 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     return results.length;
   }
 
-  function exportTimesheet() {
+  function openTimesheetExportPreview() {
     const dates = days.map((day) => dateForDay(month, day));
     const rows = visibleEmployees.map((employee) => {
-      const totals = reconciliationRows.get(employee.id) ?? { timesheet: 0, reports: 0 };
       const masters = new Set<string>();
+      const dailyTimesheetHours: number[] = [];
+      const dailyReportHours: number[] = [];
+      const dailyMasters: string[] = [];
       const dayValues = days.map((day) => {
         const workDate = dateForDay(month, day);
         const entry = entriesByCell.get(cellKey(employee.id, workDate));
         const mark = marksByCell.get(cellKey(employee.id, workDate));
-        for (const master of entry?.masters.split(/[,;]/).map((value) => value.trim()).filter(Boolean) ?? []) masters.add(master);
+        const dayMasterNames = entry?.masters.split(/[,;]/).map((value) => value.trim()).filter(Boolean) ?? [];
+        for (const master of dayMasterNames) masters.add(master);
+        dailyTimesheetHours.push(effectiveHours(entry, mark));
+        dailyReportHours.push(Number(entry?.hours ?? 0));
+        dailyMasters.push(dayMasterNames.join(", "));
         return mark?.code ?? mark?.hours ?? entry?.hours ?? "";
       });
+      const timesheetHours = dailyTimesheetHours.reduce((sum, value) => sum + value, 0);
+      const reportHours = dailyReportHours.reduce((sum, value) => sum + value, 0);
       return {
         employmentType: employee.employmentType,
         department: employee.department,
@@ -704,45 +779,76 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
         position: employee.position,
         positionNote: "",
         dailyValues: dayValues,
-        timesheetHours: totals.timesheet,
-        reportHours: totals.reports,
+        dailyTimesheetHours,
+        dailyReportHours,
+        dailyMasters,
+        timesheetHours,
+        reportHours,
         masters: Array.from(masters).join(", "),
       };
     });
-    const blob = createPersonnelTimesheetXlsx(
-      payload?.siteName ?? "Объект",
-      monthLabel(month),
-      dates,
-      rows,
-      dates.map((date) => dayTotals.get(date)?.timesheet ?? 0),
-      reconciliationTimesheet,
-      reconciliationDifference,
-    );
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `Табель_рабочих_${month}.xlsx`;
-    link.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    const headers = ["Тип", "Отдел", "Фамилия, имя, отчество", "Должность", "Примечание к должности", ...days.map(String), "ЧАСЫ", "РАСТ", "Мастер"];
+    const previewRows = rows.map((row) => [
+      row.employmentType,
+      row.department,
+      row.fullName,
+      row.position,
+      row.positionNote,
+      ...row.dailyValues,
+      row.timesheetHours,
+      row.employmentType === "ОПР" ? row.timesheetHours - row.reportHours : 0,
+      row.masters,
+    ]);
+    setError("");
+    try {
+      openExcelExportPreview({
+        version: 1,
+        title: "Табель рабочих",
+        description: `${payload?.siteName ?? "Объект"} · ${monthLabel(month)}`,
+        fileName: `Табель_рабочих_${month}.xlsx`,
+        headers,
+        rows: previewRows,
+        workbook: {
+          kind: "personnel-timesheet",
+          siteName: payload?.siteName ?? "Объект",
+          monthLabel: monthLabel(month),
+          dates,
+          rows,
+          dayTotals: dates.map((date) => dayTotals.get(date)?.timesheet ?? 0),
+          totalHours: reconciliationTimesheet,
+          totalDifference: reconciliationDifference,
+        },
+        source: { kind: "personnel-timesheet", siteId, siteName: payload?.siteName ?? "Объект", initialDate: dates[0] },
+      });
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "Не удалось открыть предпросмотр Excel.");
+    }
   }
 
   return <section className="timesheet-page" aria-label="Табель учёта рабочего времени">
-    {headerActionsTarget && createPortal(<div className="excel-actions personnel-timesheet-page-actions">
+    {headerActionsTarget && createPortal(<div className="excel-actions personnel-timesheet-page-actions timesheet-heading-actions">
       {activeFilterCount > 0 && <button type="button" className="timesheet-filter-reset timesheet-header-filter-reset" onClick={() => { setEmploymentType([]); setDepartment([]); setEmployeeFilter([]); setPositionFilter([]); setDayFilters({}); setTimesheetTotalFilter([]); setReportTotalFilter([]); setDifferenceFilter([]); }}>Сбросить фильтры <span>{activeFilterCount}</span></button>}
-      <button type="button" className="timesheet-export-button" onClick={exportTimesheet} disabled={loading || visibleEmployees.length === 0}>Экспорт в Excel</button>
+      <button type="button" className="timesheet-export-button" onClick={openTimesheetExportPreview} disabled={loading || visibleEmployees.length === 0}>Экспорт в Excel</button>
       <button type="button" className="timesheet-info-button" aria-label="Информация" title="Информация" onClick={() => setCodesOpen(true)}><span aria-hidden="true">i</span></button>
     </div>, headerActionsTarget)}
 
-    <div className="equipment-timesheet-month-row personnel-timesheet-month-row"><div className="timesheet-month-control equipment-timesheet-month-control personnel-timesheet-month-control" aria-label="Выбор месяца">
-      <button type="button" onClick={() => changeMonth(shiftMonth(month, -1))} aria-label="Предыдущий месяц">‹</button>
-      <TimesheetMonthPicker value={month} current={currentMonth} onChange={changeMonth} />
-      <button type="button" onClick={() => changeMonth(shiftMonth(month, 1))} aria-label="Следующий месяц">›</button>
-    </div></div>
-
     {error && <div className="timesheet-state timesheet-state-error"><strong>Не удалось открыть табель</strong><span>{error}</span><button type="button" onClick={() => setReloadKey((value) => value + 1)}>Повторить</button></div>}
+    {!error && <div className="personnel-timesheet-summary timesheet-top-summary" aria-label={`Период и итоги за ${monthLabel(month)}`} aria-busy={loading}>
+      <div className="timesheet-month-control timesheet-summary-month-control" aria-label="Выбор месяца">
+        <button type="button" onClick={() => changeMonth(shiftMonth(month, -1))} aria-label="Предыдущий месяц">‹</button>
+        <TimesheetMonthPicker value={month} current={currentMonth} onChange={changeMonth} />
+        <button type="button" onClick={() => changeMonth(shiftMonth(month, 1))} aria-label="Следующий месяц">›</button>
+      </div>
+      {!loading && <>
+        <span><small>Сотрудники</small><strong>{visibleEmployees.length}</strong></span>
+        <span><small>С отчётами</small><strong>{employeesWithReports}</strong></span>
+        <span className="productive"><small>По табелю</small><strong>{reconciliationTimesheet} ч.</strong></span>
+        <span className={reconciliationDifference === 0 ? "difference ok" : "difference warning"}><small>Разница</small><strong>{reconciliationDifference > 0 ? "+" : ""}{reconciliationDifference} ч.</strong></span>
+      </>}
+    </div>}
     {/* The spreadsheet shell must receive focus so native copy and paste events reach it. */}
     {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-    {!error && <div ref={clipboardShellRef} className="timesheet-grid-shell timesheet-grid-shell-reconciled timesheet-clipboard-shell" role="application" tabIndex={0} aria-busy={loading} aria-label="Табель рабочих. Стрелки перемещают выбранную ячейку, Enter или F2 открывают редактирование." {...clipboardShellHandlers}>
+    {!error && <div ref={clipboardShellRef} className={["timesheet-grid-shell", "timesheet-grid-shell-reconciled", "timesheet-clipboard-shell", clipboardActiveCell ? "timesheet-selection-active" : ""].filter(Boolean).join(" ")} role="application" tabIndex={0} aria-busy={loading} aria-label="Табель рабочих. Стрелки перемещают выбранную ячейку, Enter или F2 открывают редактирование." {...clipboardShellHandlers}>
       {clipboardStatus && <div className="timesheet-clipboard-status" role="status">{clipboardStatus}</div>}
       {loading && <div className="timesheet-loading">Формируем табель…</div>}
       {!loading && visibleEmployees.length === 0 && <div className="timesheet-empty"><strong>Нет сотрудников для отображения</strong><span>Измените фильтр или выберите другой месяц.</span></div>}
@@ -785,6 +891,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
                 const dayOfWeek = new Date(`${workDate}T00:00:00Z`).getUTCDay();
                 const display = mark?.code ?? mark?.hours ?? entry?.hours ?? "";
                 const mismatch = isMismatch(employee, entry, mark);
+                const expectedManualMark = isExpectedManualMark(employee, mark);
                 const isInlineEditing = inlineEditor?.employeeId === employee.id && inlineEditor.workDate === workDate;
                 const isActiveCell = clipboardActiveCell?.rowIndex === employeeIndex && clipboardActiveCell.columnIndex === day - 1;
                 return <td
@@ -792,6 +899,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
                   className={[
                     entry || mark ? "filled" : "",
                     mark ? "manual" : "",
+                    expectedManualMark ? "manual-expected" : "",
                     mark?.code ? "coded" : "",
                     mismatch ? "mismatch" : "",
                     payload?.canEdit ? "editable" : "",
@@ -818,22 +926,35 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
                       onMouseDown={(event) => event.stopPropagation()}
                       onDoubleClick={(event) => event.stopPropagation()}
                       onChange={(event) => setInlineEditor((current) => current ? { ...current, value: event.target.value, error: "", selectAll: false } : current)}
+                      onBlur={(event) => {
+                        if (!inlineCancelPending.current) void saveInlineEditor(undefined, event.currentTarget.value, false);
+                      }}
                       onKeyDown={(event) => {
                         event.stopPropagation();
-                        if (event.key === "Enter") {
+                        const movement: Record<string, InlineEditorMove> = {
+                          ArrowLeft: { row: 0, column: -1 },
+                          ArrowRight: { row: 0, column: 1 },
+                          ArrowUp: { row: -1, column: 0 },
+                          ArrowDown: { row: 1, column: 0 },
+                        };
+                        if (movement[event.key]) {
                           event.preventDefault();
-                          void saveInlineEditor();
+                          void saveInlineEditor(movement[event.key], event.currentTarget.value);
+                        } else if (event.key === "Enter") {
+                          event.preventDefault();
+                          void saveInlineEditor(undefined, event.currentTarget.value);
                         } else if (event.key === "Escape") {
                           event.preventDefault();
+                          inlineCancelPending.current = true;
+                          inlineGridFocusPending.current = true;
                           setInlineEditor(null);
-                          restoreGridFocus();
                         }
                       }}
                     />
                     {inlineEditor.error && <span className="timesheet-cell-inline-error" role="alert" title={inlineEditor.error}>!</span>}
                   </div> : <>
                     <span className="timesheet-cell-value">{display}</span>
-                    {payload?.canEdit && isActiveCell && <button
+                    {payload && (mark ? payload.canUpdate || payload.canDelete : payload.canCreate) && isActiveCell && <button
                       type="button"
                       className="timesheet-cell-dropdown personnel-timesheet-cell-dropdown"
                       aria-label={`Выбрать значение: ${employee.fullName}, ${dateLabel(workDate)}`}
@@ -855,6 +976,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
               <td className={`timesheet-total-column timesheet-difference-total ${difference ? "has-difference" : ""}`}>{difference > 0 ? "+" : ""}{difference || "—"}</td>
             </tr>;
           })}
+          <tr className="timesheet-fill-row" aria-hidden="true"><td colSpan={days.length + 8} /></tr>
         </tbody>
         <tfoot>
           <tr>
@@ -872,13 +994,11 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
       </table>}
     </div>}
 
-    {!error && !loading && <div className="personnel-timesheet-summary" aria-label={`Итоги за ${monthLabel(month)}`}><span className="personnel-timesheet-summary-label">Итоги за месяц</span><span><strong>{visibleEmployees.length}</strong> сотрудников</span><span><strong>{employeesWithReports}</strong> с отчётами</span><span className="productive"><strong>{reconciliationTimesheet} ч.</strong> по табелю</span><span className={reconciliationDifference === 0 ? "difference ok" : "difference warning"}><strong>{reconciliationDifference > 0 ? "+" : ""}{reconciliationDifference} ч.</strong> разница</span></div>}
-
     {codesOpen && <div className="equipment-reference-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setCodesOpen(false); }}><section className="equipment-reference-dialog" role="dialog" aria-modal="true" aria-labelledby="personnel-timesheet-reference-title">
       <header><div><span>ТАБЕЛЬ РАБОЧИХ</span><h2 id="personnel-timesheet-reference-title">Информация</h2><p>Цвета и обозначения, используемые в табеле.</p></div><button type="button" aria-label="Закрыть информацию" onClick={() => setCodesOpen(false)}>×</button></header>
       <div className="equipment-reference-section"><h3>Обозначения в таблице</h3><div className="equipment-reference-colors">
-        <div><i className="work" /><div><strong>Часы из отчёта</strong><small>Данные, перенесённые из ежедневного отчёта рабочих.</small></div></div>
-        <div><i className="manual" /><div><strong>Ручная отметка</strong><small>Значение изменено непосредственно в табеле.</small></div></div>
+        <div><i className="work" /><div><strong>Корректные часы</strong><small>Часы из отчёта или ручные часы сотрудника не-ОПР.</small></div></div>
+        <div><i className="manual" /><div><strong>Ручная отметка</strong><small>Табельный код или ручное значение сотрудника ОПР.</small></div></div>
         <div><i className="idle" /><div><strong>Расхождение ОПР</strong><small>Для сотрудника ОПР табель отличается от сохранённого отчёта. Для остальных типов сотрудников это не считается ошибкой.</small></div></div>
       </div></div>
       <div className="equipment-reference-section"><h3>Табельные коды</h3><div className="equipment-reference-codes">{TIMESHEET_CODES.map((code) => <div key={code.value}><strong>{code.value}</strong><span>{code.label}</span></div>)}</div></div>
@@ -889,6 +1009,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
       <TimesheetMarkList
         value={String(editingMark?.code ?? editingMark?.hours ?? "")}
         canReset={Boolean(editingMark)}
+        canWrite={Boolean(editingMark ? payload?.canUpdate : payload?.canCreate)}
         disabled={savingMark}
         onClose={closeEditorAndRestoreGridFocus}
         onChoose={(value) => void saveMark(value === "", value)}

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import PersonnelApp from "./PersonnelApp";
+import type { PermissionSet } from "./permissionModel";
 import type { UserRole } from "./roles";
 
 export type CurrentUser = {
@@ -10,6 +11,8 @@ export type CurrentUser = {
   email: string;
   role: UserRole;
   assignedSiteId: number | null;
+  permissions: PermissionSet;
+  permissionsCustomized: boolean;
 };
 
 export default function AuthGate({ initialToday }: { initialToday: string }) {

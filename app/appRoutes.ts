@@ -1,4 +1,4 @@
-export type WorkspaceView = "placement" | "equipment" | "timesheet" | "equipmentTimesheet" | "equipmentRegistry" | "projectEquipment" | "employees" | "positions" | "projects" | "directories" | "settings" | "projectSettings" | "projectEmployees" | "users";
+export type WorkspaceView = "placement" | "equipment" | "timesheet" | "equipmentTimesheet" | "equipmentRegistry" | "projectEquipment" | "employees" | "positions" | "projects" | "auditLog" | "accessRights" | "directories" | "settings" | "projectSettings" | "projectEmployees" | "users";
 
 export type WorkspaceDirectoryFocus = "all" | "sites" | "employmentType" | "department" | "position" | "shift" | "zone" | "mainWorkType" | "subworkType" | "master";
 
@@ -21,6 +21,8 @@ const ROUTES: Array<{ path: string; view: WorkspaceView; directoryFocus?: Worksp
   { path: "/settings/general/positions", view: "positions" },
   { path: "/settings/general/users", view: "users" },
   { path: "/settings/general/projects", view: "projects" },
+  { path: "/settings/general/activity", view: "auditLog" },
+  { path: "/settings/general/access", view: "accessRights" },
   { path: "/settings/project", view: "projectSettings" },
   { path: "/settings/project/employees", view: "projectEmployees" },
   { path: "/settings/project/equipment", view: "projectEquipment" },
@@ -78,7 +80,7 @@ export function workspaceUrl(view: WorkspaceView, directoryFocus: WorkspaceDirec
 }
 
 export function isGeneralSettingsView(view: WorkspaceView) {
-  return view === "settings" || view === "employees" || view === "equipmentRegistry" || view === "positions" || view === "users" || view === "projects";
+  return view === "settings" || view === "employees" || view === "equipmentRegistry" || view === "positions" || view === "users" || view === "projects" || view === "auditLog" || view === "accessRights";
 }
 
 export function isTimesheetView(view: WorkspaceView) {

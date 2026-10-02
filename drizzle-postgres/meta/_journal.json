@@ -99,6 +99,27 @@
       "when": 1790956800000,
       "tag": "0013_equipment_foreman_report_contributions",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1791043200000,
+      "tag": "0014_audit_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1791129600000,
+      "tag": "0015_user_permissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1791216000000,
+      "tag": "0016_scale_performance_indexes",
+      "breakpoints": true
     }
   ]
 }

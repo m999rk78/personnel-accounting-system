@@ -31,7 +31,7 @@ test("server-renders the protected personnel accounting workspace", async () => 
     new URL("../app/PersonnelApp.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(app, /Отчет персонала/);
+  assert.match(app, /Отчёт персонала/);
   assert.match(app, /PlacementAgGrid/);
   assert.match(app, /Общее количество часов ОПР/);
   assert.match(app, /aria-label="Дата отчёта"/);
@@ -456,9 +456,11 @@ test("uses checkbox selection and footer actions in reports and project settings
     assert.doesNotMatch(source, /colId: "actions"/);
   }
   assert.match(app, /function ReportGridFooter/);
-  assert.match(app, /onSelectionChange=\{changeReportSelection\}/);
+  assert.match(app, /onSelectionChange=\{\(ids\) => \{ changeReportSelection\(ids\)/);
   assert.match(app, /onSelectionChange=\{changeDirectorySelection\}/);
   assert.match(app, /function editSelectedReportRows\(\)[\s\S]*setEditingRows\(\(current\)/);
+  assert.match(app, /selectedSavedEntries && <button[^>]+onClick=\{onEditSelection\}/);
+  assert.match(app, /disabled=\{saving \|\| !canDelete\}[^>]*title=\{canDelete \? undefined : "Нет права удаления"\}/);
   assert.match(app, /function editSelectedDirectoryItems\(\)[\s\S]*setDirectoryDrafts\(\(current\)/);
   assert.doesNotMatch(app, /selected\.forEach\(\(entry\) => startEdit\(entry\)\)/);
   assert.match(grid, /const editingStructureKey = props\.editing\.map/);
@@ -473,15 +475,16 @@ test("keeps creation, selection, and editing as exclusive table modes", async ()
   const projects = await readFile(new URL("../app/ProjectCards.tsx", import.meta.url), "utf8");
   const users = await readFile(new URL("../app/UserAccessCards.tsx", import.meta.url), "utf8");
 
-  assert.match(app, /const showAdd = !editorOpen && !editingExisting && deletingCount === 0/);
+  assert.match(app, /const showAdd = canCreate && !editorOpen && !editingExisting && deletingCount === 0/);
   assert.match(app, /!editorOpen && deletingCount === 0 && <div className="employee-footer-base">/);
   assert.match(app, /changedCount === 0 && selectedCount === 0 && <div className="employee-footer-base">/);
   assert.match(app, /!editorOpen && selectedCount === 0 && <div className="employee-footer-base">/);
   assert.match(app, /editingCount === 0 && newCount === 0 && selectedCount === 0[^\n]+Добавить запись/);
   assert.ok([...app.matchAll(/editingExisting=\{[^}]+\.some\(\(draft\) => Boolean\(draft\.id\)\)\}/g)].length >= 5);
-  assert.match(app, /function addRow[\s\S]*if \(!canEditDate \|\| \(!rosterMode && editingRows\.length\)\) return/);
+  assert.match(app, /function addRow[\s\S]*if \(!canCreateReportDate \|\| \(!rosterMode && editingRows\.length\)\) return/);
   assert.match(app, /function addDirectoryItem[\s\S]*directoryDrafts\.some\(\(draft\) => Boolean\(draft\.id\)\)/);
-  assert.match(grid, /propsRef\.current\.draftRows\.length === 0 && propsRef\.current\.editing\.length === 0/);
+  assert.match(grid, /current\.rosterMode \|\| current\.draftRows\.length === 0 && current\.editing\.length === 0/);
+  assert.match(grid, /params\.data\?\.kind === "draft" \? current\.canCreate : Boolean\(params\.data\?\.entry\) && \(current\.canUpdate \|\| current\.canDelete\)/);
   assert.ok([...grid.matchAll(/propsRef\.current\.drafts\.length === 0 && params\.data\?\.kind === "entry"/g)].length >= 5);
   assert.ok([...grid.matchAll(/row\.kind === "entry" && [^\n]+\.drafts\.some\(\(draft\) => !draft\.id\)/g)].length >= 4);
   for (const source of [projects, users]) {
@@ -497,7 +500,7 @@ test("builds a foreman's report from the last personal submission and keeps proj
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
   assert.match(app, /const useDailyRosterReport = true/);
-  assert.match(app, /function buildRosterDraftRows[\s\S]*data\.placementEmployees/);
+  assert.match(app, /function buildRosterDraftRows[\s\S]*data\.reportEmployees/);
   assert.match(app, /<RosterReportFooter mode=\{role === "foreman" \? "foreman" : "engineer"\}/);
   assert.match(app, /editorOpen=\{rosterEditorOpen\}/);
   assert.match(app, /const rosterEditorOpen = editingRows\.length > 0 \|\| draftRows\.some\(\(row\) => !row\.carriedFromPreviousDay\)/);
@@ -518,22 +521,24 @@ test("builds a foreman's report from the last personal submission and keeps proj
   assert.match(app, /function takeReportDraftSession[\s\S]*initializedRosterSession\.current = key/);
   assert.match(app, /function saveRosterReport[\s\S]*clearCurrentReportDraftSession\(\)[\s\S]*setDraftRows\(\[\]\)/);
   assert.doesNotMatch(app, /roster-carryover-banner/);
-  assert.match(app, /role === "foreman" \? \{ submitOwnReport: \{ siteId, workDate \} \} : \{ finalizeReport: \{ siteId, workDate \} \}/);
+  assert.match(app, /canUpdateReportDate \? role === "foreman" \? \{ submitOwnReport: \{ siteId, workDate \} \} : \{ finalizeReport: \{ siteId, workDate \} \} : \{\}/);
   assert.match(app, /setEditingRows\(\[\]\)/);
   assert.match(app, /if \(data\.reportSubmitted\) return \[\];/);
   assert.match(app, /setDraftRows\(\[\]\);\s*setEditingRows\(\[\]\);\s*setSelectedRosterDraftKeys\(\[\]\);/);
-  assert.match(app, /showReviewActions=\{!data\?\.reportSubmitted \|\| editingRows\.length > 0 \|\| draftRows\.length > 0\}/);
-  assert.match(app, /carriedFromPreviousDay: true,[\s\S]*reviewed: false/);
-  assert.match(app, /function confirmSelectedCarriedEmployees/);
+  assert.match(app, /showReviewActions=\{editingRows\.length > 0 \|\| draftRows\.length > 0 \|\| \(canUpdateReportDate && !data\?\.reportSubmitted\)\}/);
+  assert.doesNotMatch(app, /reviewed\??:/);
+  assert.doesNotMatch(app, /function confirmSelectedCarriedEmployees/);
   assert.match(app, /showCarryoverProgress && total > 0 && <div className="roster-report-progress">/);
-  assert.match(app, /Проверено сотрудников: \{completed\} из \{total\}/);
+  assert.match(app, /Готово к сохранению: \{completed\} из \{total\}/);
   assert.match(app, /const rosterTotal = carriedRowsByEmployee\.size/);
-  assert.match(app, /row\.reviewed && draftRowComplete\(row\)/);
-  assert.match(app, /Проверьте перенесённых сотрудников/);
+  assert.match(app, /rows\.every\(draftRowComplete\)/);
+  assert.match(app, /Если всё как вчера, сразу сохраните/);
+  assert.doesNotMatch(app, /unreviewedCarriedEmployees/);
+  assert.match(app, /const newRows = draftRows\.filter\(draftRowComplete\)/);
   assert.match(app, /showCarryoverProgress=\{showCarryoverProgress\}/);
   assert.match(grid, /draft\.lockedEmployee[\s\S]*ag-roster-employee/);
   assert.match(grid, /"carried-row"[\s\S]*carriedFromPreviousDay/);
-  assert.match(grid, /"reviewed-row"[\s\S]*draft\?\.reviewed/);
+  assert.doesNotMatch(grid, /reviewed-row/);
   assert.match(grid, /onDraftSelectionChange/);
   assert.match(grid, /if \(!props\.rosterMode\) return rows/);
   assert.match(api, /scope === "carryover"/);
@@ -555,8 +560,8 @@ test("shows users as access cards while keeping the grid fallback", async () => 
   assert.match(app, /useUserAccessCardLayout\s*\? <UserAccessCards/);
   assert.match(app, /: <UserAgGrid/);
   assert.match(grid, /export function UserAgGrid/);
-  assert.match(cards, /Управление пользователями и правами/);
-  assert.match(cards, /Настроить доступ/);
+  assert.match(cards, /Пользователи системы/);
+  assert.match(cards, />Редактировать</);
   assert.match(cards, /function UserEditorDialog/);
   assert.match(cards, /Редактирование пользователя/);
   assert.match(cards, /Сохранить изменения/);
@@ -623,11 +628,90 @@ test("writes worksheet elements in Excel-compatible order", async () => {
 
   assert.equal(
     [...xlsx.matchAll(/<\/sheetData><autoFilter[^>]*\/><mergeCells/g)].length,
-    3,
+    2,
   );
   assert.doesNotMatch(xlsx, /<\/sheetData><mergeCells[^]*?<autoFilter/);
   assert.match(xlsx, /export function createTableXlsx/);
   assert.match(xlsx, /export async function parseTableXlsx/);
   assert.match(xlsx, /getElementsByTagNameNS\("\*", name\)/);
   assert.doesNotMatch(xlsx, /getElementsByTagName\("(?:row|c|si|is|v)"\)/);
+});
+
+test("selects personnel and equipment export ranges directly in one calendar", async () => {
+  const preview = await readFile(new URL("../app/ExcelExportPreview.tsx", import.meta.url), "utf8");
+  const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+  const equipmentApi = await readFile(new URL("../app/api/equipment/route.ts", import.meta.url), "utf8");
+  const equipmentView = await readFile(new URL("../app/EquipmentAccountingView.tsx", import.meta.url), "utf8");
+  const xlsx = await readFile(new URL("../app/placementXlsx.ts", import.meta.url), "utf8");
+
+  assert.match(preview, /aria-label="Выбор периода отчёта"/);
+  assert.match(preview, /selectCalendarDay/);
+  assert.match(preview, /Весь месяц/);
+  assert.match(preview, /Теперь выберите последнюю дату/);
+  assert.match(preview, /scope: "export-range"/);
+  assert.doesNotMatch(preview, /type="(?:date|month)"/);
+  assert.match(api, /function placementEntriesForRangeStatement/);
+  assert.match(api, /pe\.work_date >= \? AND pe\.work_date <= \?/);
+  assert.match(api, /scope === "export-range"/);
+  assert.match(preview, /\/api\/equipment\?\$\{query\.toString\(\)\}/);
+  assert.match(preview, /Отчёт_техники_/);
+  assert.match(equipmentApi, /scope === "export-range"/);
+  assert.match(equipmentApi, /ee\.work_date >= \? AND ee\.work_date <= \?/);
+  assert.match(equipmentView, /kind: "equipment"/);
+  assert.match(xlsx, /"Виды основных работ"/);
+  assert.match(xlsx, /"Тип - 2"/);
+  assert.match(xlsx, /sheet1Name = "Расстановка"/);
+  assert.match(xlsx, /"Расстановка1"/);
+  assert.match(xlsx, /"Расстановка2"/);
+  assert.match(xlsx, /SUBTOTAL\(9,J4:J\$\{lastRow\}\)/);
+  assert.match(xlsx, /SUBTOTAL\(9,I4:I\$\{lastRow\}\)/);
+  assert.match(preview, /excel-template-preview-table/);
+  assert.match(preview, /ИТОГО ПО ФИЛЬТРУ/);
+  assert.match(preview, /kind: "equipment-placement"/);
+});
+
+test("previews personnel and equipment timesheets before downloading Excel", async () => {
+  const preview = await readFile(new URL("../app/ExcelExportPreview.tsx", import.meta.url), "utf8");
+  const store = await readFile(new URL("../app/excelExportPreviewStore.ts", import.meta.url), "utf8");
+  const personnel = await readFile(new URL("../app/TimesheetView.tsx", import.meta.url), "utf8");
+  const equipment = await readFile(new URL("../app/EquipmentAccountingView.tsx", import.meta.url), "utf8");
+
+  assert.match(store, /kind: "personnel-timesheet"/);
+  assert.match(store, /kind: "equipment-timesheet"/);
+  assert.match(personnel, /openExcelExportPreview/);
+  assert.match(personnel, /kind: "personnel-timesheet"/);
+  assert.match(equipment, /kind: "equipment-timesheet"/);
+  assert.match(preview, /createPersonnelTimesheetXlsx/);
+  assert.match(preview, /createEquipmentTimesheetXlsx/);
+  assert.match(preview, /payload\.workbook\.kind === "personnel-timesheet"/);
+  assert.match(preview, /selectPersonnelTimesheetRange/);
+  assert.match(preview, /selectEquipmentTimesheetRange/);
+  assert.match(preview, /buildPersonnelTimesheetRange/);
+  assert.match(preview, /buildEquipmentTimesheetRange/);
+  assert.match(preview, /monthKeysInRange/);
+  assert.match(preview, /\/api\/timesheet\?/);
+  assert.match(preview, /view: "timesheet"/);
+  assert.doesNotMatch(preview, /disabled=\{unavailable\}/);
+  assert.match(preview, /rangeEnabled/);
+  assert.match(preview, /Скачать Excel/);
+});
+
+test("previews every settings table export before downloading Excel", async () => {
+  const personnel = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const equipment = await readFile(new URL("../app/EquipmentAccountingView.tsx", import.meta.url), "utf8");
+
+  assert.match(personnel, /function openSettingsExportPreview/);
+  assert.match(personnel, /function exportEmployees/);
+  assert.match(personnel, /function exportPositions/);
+  assert.match(personnel, /function exportProjectEmployees/);
+  assert.match(personnel, /function exportProjectDirectory/);
+  assert.match(personnel, /function exportProjects/);
+  assert.match(personnel, /function exportUsers/);
+  assert.match(personnel, /id="project-equipment-actions"/);
+  assert.match(personnel, /workbook: \{ kind: "table"/);
+  assert.match(equipment, /function openRegistryExportPreview/);
+  assert.match(equipment, /function openProjectEquipmentExportPreview/);
+  assert.match(equipment, /section === "project" \? "project-equipment-actions"/);
+  assert.match(equipment, /title: "Техника проекта"/);
+  assert.match(equipment, /workbook: \{ kind: "table"/);
 });
