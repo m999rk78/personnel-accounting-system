@@ -109,8 +109,41 @@ function equipmentPlanConflictMessage(conflict: EquipmentPlanConflict) {
   return `Техника «${title}» недоступна по табелю: ${reason}. Удалите её из отчёта или исправьте отметку в табеле техники.`;
 }
 
+function equipmentAccessPayload(authUser: NonNullable<Awaited<ReturnType<typeof getAuthUser>>>) {
+  return {
+    canEditDaily: hasPermission(authUser.permissions, "equipment_report", "create")
+      || hasPermission(authUser.permissions, "equipment_report", "update")
+      || hasPermission(authUser.permissions, "equipment_report", "delete"),
+    canCreateDaily: hasPermission(authUser.permissions, "equipment_report", "create"),
+    canUpdateDaily: hasPermission(authUser.permissions, "equipment_report", "update"),
+    canDeleteDaily: hasPermission(authUser.permissions, "equipment_report", "delete"),
+    canEditTimesheet: hasPermission(authUser.permissions, "equipment_timesheet", "create")
+      || hasPermission(authUser.permissions, "equipment_timesheet", "update")
+      || hasPermission(authUser.permissions, "equipment_timesheet", "delete"),
+    canCreateTimesheet: hasPermission(authUser.permissions, "equipment_timesheet", "create"),
+    canUpdateTimesheet: hasPermission(authUser.permissions, "equipment_timesheet", "update"),
+    canDeleteTimesheet: hasPermission(authUser.permissions, "equipment_timesheet", "delete"),
+    canManageRegistry: hasPermission(authUser.permissions, "equipment_registry", "create")
+      || hasPermission(authUser.permissions, "equipment_registry", "update")
+      || hasPermission(authUser.permissions, "equipment_registry", "delete"),
+    canCreateRegistry: hasPermission(authUser.permissions, "equipment_registry", "create"),
+    canUpdateRegistry: hasPermission(authUser.permissions, "equipment_registry", "update"),
+    canDeleteRegistry: hasPermission(authUser.permissions, "equipment_registry", "delete"),
+    canManageAssignments: hasPermission(authUser.permissions, "project_equipment", "create")
+      || hasPermission(authUser.permissions, "project_equipment", "update")
+      || hasPermission(authUser.permissions, "project_equipment", "delete"),
+    canCreateAssignments: hasPermission(authUser.permissions, "project_equipment", "create"),
+    canUpdateAssignments: hasPermission(authUser.permissions, "project_equipment", "update"),
+    canDeleteAssignments: hasPermission(authUser.permissions, "project_equipment", "delete"),
+  };
+}
+
 async function ensureEquipmentSchema() {
   if (!equipmentSchemaPromise) {
+    if (process.env.NODE_ENV === "production" && process.env.DATABASE_RUNTIME_BOOTSTRAP !== "true") {
+      equipmentSchemaPromise = Promise.resolve();
+      return equipmentSchemaPromise;
+    }
     const db = getDatabase();
     equipmentSchemaPromise = db.batch([
       db.prepare(`CREATE TABLE IF NOT EXISTS equipment_units (
@@ -355,6 +388,15 @@ export async function GET(request: Request) {
     if ("error" in resolved) return resolved.error;
     const { siteId, site } = resolved;
     const db = getDatabase();
+    const responseBase = {
+      siteId,
+      siteName: site.name,
+      workDate,
+      month,
+      ...equipmentAccessPayload(authUser),
+      currentUserRole: authUser.role,
+      currentUserName: authUser.fullName,
+    };
     if (scope === "export-range") {
       const rangeStart = requestedRangeStart ?? workDate;
       const rangeEnd = requestedRangeEnd ?? workDate;
@@ -394,6 +436,115 @@ export async function GET(request: Request) {
     }
     const monthStart = `${month}-01`;
     const monthEnd = nextMonthStart(month);
+    if (viewMode === "timesheet" && section === "month" && scope === "project") {
+      const [units, entries, marks] = await db.readBatch([
+        db.prepare(`SELECT eu.id, eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
+          eu.registration_number AS "registrationNumber", eu.note
+          FROM equipment_units eu JOIN equipment_project_assignments epa ON epa.equipment_id = eu.id
+          WHERE eu.active = 1 AND epa.site_id = ? AND epa.active = 1
+          ORDER BY eu.equipment_type, eu.model, eu.registration_number, eu.id`).bind(siteId),
+        db.prepare(`SELECT ee.id, ee.work_date AS "workDate", ee.equipment_id AS "equipmentId",
+          ee.shift_id AS "shiftId", ee.zone_id AS "zoneId", ee.main_work_type_id AS "mainWorkTypeId",
+          ee.subwork_type_id AS "subworkTypeId", ee.note, ee.hours,
+          ee.responsible_user_id AS "responsibleUserId", responsible.full_name AS "responsibleUserName", ee.revision,
+          eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
+          eu.registration_number AS "registrationNumber",
+          s.name AS "shiftName", z.name AS "zoneName", mw.name AS "mainWorkTypeName", sw.name AS "subworkTypeName"
+          FROM equipment_entries ee
+          JOIN equipment_units eu ON eu.id = ee.equipment_id
+          JOIN shifts s ON s.id = ee.shift_id
+          JOIN zones z ON z.id = ee.zone_id
+          JOIN main_work_types mw ON mw.id = ee.main_work_type_id
+          JOIN subwork_types sw ON sw.id = ee.subwork_type_id
+          LEFT JOIN app_users responsible ON responsible.id = ee.responsible_user_id
+          WHERE ee.site_id = ? AND ee.work_date >= ? AND ee.work_date < ? AND ee.deleted_at IS NULL
+          ORDER BY ee.work_date, eu.equipment_type, eu.model, ee.id`).bind(siteId, monthStart, monthEnd),
+        db.prepare(`SELECT equipment_id AS "equipmentId", work_date AS "workDate",
+          productive_hours AS "productiveHours", downtime_hours AS "downtimeHours",
+          note, created_by AS "updatedBy"
+          FROM equipment_timesheet_marks
+          WHERE site_id = ? AND work_date >= ? AND work_date < ?
+          ORDER BY work_date, equipment_id`).bind(siteId, monthStart, monthEnd),
+      ]);
+      return Response.json({
+        ...responseBase,
+        reportSubmitted: false,
+        foremanProgress: [],
+        units: units.results,
+        availableUnits: [],
+        sites: [],
+        entries: entries.results,
+        marks: marks.results,
+        dailyTimesheetMarks: [],
+        filledDates: [],
+        shifts: [],
+        zones: [],
+        mainWorkTypes: [],
+        subworkTypes: [],
+      });
+    }
+    if (viewMode === "registry" && section === "registry" && scope === "global") {
+      const [units, sites] = await db.readBatch([
+        db.prepare(`SELECT eu.id, eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
+          eu.registration_number AS "registrationNumber", eu.note,
+          (SELECT epa.site_id FROM equipment_project_assignments epa
+            WHERE epa.equipment_id = eu.id AND epa.active = 1 ORDER BY epa.assigned_at DESC LIMIT 1) AS "assignedSiteId",
+          (SELECT s.name FROM equipment_project_assignments epa JOIN sites s ON s.id = epa.site_id
+            WHERE epa.equipment_id = eu.id AND epa.active = 1 ORDER BY epa.assigned_at DESC LIMIT 1) AS "assignedSiteName"
+          FROM equipment_units eu WHERE eu.active = 1
+          ORDER BY eu.equipment_type, eu.model, eu.registration_number, eu.id`),
+        db.prepare("SELECT id, name FROM sites WHERE active = 1 ORDER BY name"),
+      ]);
+      return Response.json({
+        ...responseBase,
+        reportSubmitted: false,
+        foremanProgress: [],
+        units: units.results,
+        availableUnits: [],
+        sites: sites.results,
+        entries: [],
+        marks: [],
+        dailyTimesheetMarks: [],
+        filledDates: [],
+        shifts: [],
+        zones: [],
+        mainWorkTypes: [],
+        subworkTypes: [],
+      });
+    }
+    if (viewMode === "project" && section === "project" && scope === "assignments") {
+      const [units, availableUnits] = await db.readBatch([
+        db.prepare(`SELECT eu.id, eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
+          eu.registration_number AS "registrationNumber", eu.note
+          FROM equipment_units eu JOIN equipment_project_assignments epa ON epa.equipment_id = eu.id
+          WHERE eu.active = 1 AND epa.site_id = ? AND epa.active = 1
+          ORDER BY eu.equipment_type, eu.model, eu.registration_number, eu.id`).bind(siteId),
+        db.prepare(`SELECT eu.id, eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
+          eu.registration_number AS "registrationNumber", eu.note,
+          (SELECT epa.site_id FROM equipment_project_assignments epa
+            WHERE epa.equipment_id = eu.id AND epa.active = 1 ORDER BY epa.assigned_at DESC LIMIT 1) AS "assignedSiteId",
+          (SELECT s.name FROM equipment_project_assignments epa JOIN sites s ON s.id = epa.site_id
+            WHERE epa.equipment_id = eu.id AND epa.active = 1 ORDER BY epa.assigned_at DESC LIMIT 1) AS "assignedSiteName"
+          FROM equipment_units eu WHERE eu.active = 1
+          ORDER BY eu.equipment_type, eu.model, eu.registration_number, eu.id`),
+      ]);
+      return Response.json({
+        ...responseBase,
+        reportSubmitted: false,
+        foremanProgress: [],
+        units: units.results,
+        availableUnits: availableUnits.results,
+        sites: [],
+        entries: [],
+        marks: [],
+        dailyTimesheetMarks: [],
+        filledDates: [],
+        shifts: [],
+        zones: [],
+        mainWorkTypes: [],
+        subworkTypes: [],
+      });
+    }
     const rangeStart = requestedRangeStart && validDate(requestedRangeStart) ? requestedRangeStart : monthStart;
     const rangeEnd = requestedRangeEnd && validDate(requestedRangeEnd) ? requestedRangeEnd : workDate;
     const responsibleUserId = authUser.role === "foreman" && section === "daily" ? authUser.id : null;
@@ -411,17 +562,6 @@ export async function GET(request: Request) {
         FROM equipment_units eu JOIN equipment_project_assignments epa ON epa.equipment_id = eu.id
         WHERE eu.active = 1 AND epa.site_id = ? AND epa.active = 1
         ORDER BY eu.equipment_type, eu.model, eu.registration_number, eu.id`).bind(siteId);
-    const availableUnitsStatement = scope === "assignments"
-      ? db.prepare(`SELECT eu.id, eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
-          eu.registration_number AS "registrationNumber", eu.note,
-          (SELECT epa.site_id FROM equipment_project_assignments epa
-            WHERE epa.equipment_id = eu.id AND epa.active = 1 ORDER BY epa.assigned_at DESC LIMIT 1) AS "assignedSiteId",
-          (SELECT s.name FROM equipment_project_assignments epa JOIN sites s ON s.id = epa.site_id
-            WHERE epa.equipment_id = eu.id AND epa.active = 1 ORDER BY epa.assigned_at DESC LIMIT 1) AS "assignedSiteName"
-        FROM equipment_units eu WHERE eu.active = 1
-        ORDER BY eu.equipment_type, eu.model, eu.registration_number, eu.id`)
-      : db.prepare(`SELECT eu.id, eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
-          eu.registration_number AS "registrationNumber", eu.note FROM equipment_units eu WHERE 1 = 0`);
     const entriesStatement = db.prepare(`SELECT ee.id, ee.work_date AS "workDate", ee.equipment_id AS "equipmentId",
         ee.shift_id AS "shiftId", ee.zone_id AS "zoneId", ee.main_work_type_id AS "mainWorkTypeId",
         ee.subwork_type_id AS "subworkTypeId", ee.note, ee.hours,
@@ -436,10 +576,10 @@ export async function GET(request: Request) {
       JOIN main_work_types mw ON mw.id = ee.main_work_type_id
       JOIN subwork_types sw ON sw.id = ee.subwork_type_id
       LEFT JOIN app_users responsible ON responsible.id = ee.responsible_user_id
-      WHERE ee.site_id = ? AND ee.work_date >= ? AND ee.work_date < ? AND ee.deleted_at IS NULL
+      WHERE ee.site_id = ? AND ee.work_date = ? AND ee.deleted_at IS NULL
         ${responsibleUserId ? "AND ee.responsible_user_id = ?" : ""}
       ORDER BY ee.work_date, responsible.full_name NULLS LAST, eu.equipment_type, eu.model, s.name, ee.id`)
-      .bind(...(responsibleUserId ? [siteId, monthStart, monthEnd, responsibleUserId] : [siteId, monthStart, monthEnd]));
+      .bind(...(responsibleUserId ? [siteId, workDate, responsibleUserId] : [siteId, workDate]));
     const filledDatesStatement = db.prepare(`SELECT DISTINCT work_date AS "workDate" FROM equipment_entries
       WHERE site_id = ? AND work_date >= ? AND work_date <= ? AND deleted_at IS NULL
         ${responsibleUserId ? "AND responsible_user_id = ?" : ""}
@@ -448,19 +588,9 @@ export async function GET(request: Request) {
       ? db.prepare(`SELECT status = 'submitted' AS submitted FROM equipment_report_contributions
           WHERE site_id = ? AND work_date = ? AND foreman_id = ?`).bind(siteId, workDate, authUser.id)
       : db.prepare("SELECT TRUE AS submitted FROM equipment_report_days WHERE site_id = ? AND work_date = ?").bind(siteId, workDate);
-    const [units, entries, marks, dailyTimesheetMarks, filledDates, shifts, zones, mainWorkTypes, subworkTypes, sites, availableUnits, reportSubmission, foremanProgress] = await db.readBatch([
+    const [units, entries, dailyTimesheetMarks, filledDates, shifts, zones, mainWorkTypes, subworkTypes, reportSubmission, foremanProgress] = await db.readBatch([
       unitsStatement,
       entriesStatement,
-      hasPermission(authUser.permissions, "equipment_timesheet", "view") ? db.prepare(`SELECT equipment_id AS "equipmentId", work_date AS "workDate",
-          productive_hours AS "productiveHours", downtime_hours AS "downtimeHours",
-          note, created_by AS "updatedBy"
-        FROM equipment_timesheet_marks
-        WHERE site_id = ? AND work_date >= ? AND work_date < ?
-        ORDER BY work_date, equipment_id`).bind(siteId, monthStart, monthEnd)
-        : db.prepare(`SELECT equipment_id AS "equipmentId", work_date AS "workDate",
-            productive_hours AS "productiveHours", downtime_hours AS "downtimeHours",
-            note, created_by AS "updatedBy"
-          FROM equipment_timesheet_marks WHERE 1 = 0`),
       db.prepare(`SELECT equipment_id AS "equipmentId", work_date AS "workDate",
           productive_hours AS "productiveHours", downtime_hours AS "downtimeHours",
           note, created_by AS "updatedBy"
@@ -472,52 +602,19 @@ export async function GET(request: Request) {
       db.prepare("SELECT id, name FROM zones WHERE site_id = ? AND active = 1 ORDER BY name").bind(siteId),
       db.prepare("SELECT id, name FROM main_work_types WHERE site_id = ? AND active = 1 ORDER BY name").bind(siteId),
       db.prepare("SELECT id, name FROM subwork_types WHERE site_id = ? AND active = 1 ORDER BY name").bind(siteId),
-      db.prepare("SELECT id, name FROM sites WHERE active = 1 ORDER BY name"),
-      availableUnitsStatement,
       reportSubmissionStatement,
       equipmentForemanProgressStatement(siteId, workDate),
     ]);
 
     return Response.json({
-      siteId,
-      siteName: site.name,
-      workDate,
-      month,
-      canEditDaily: (
-        hasPermission(authUser.permissions, "equipment_report", "create")
-        || hasPermission(authUser.permissions, "equipment_report", "update")
-        || hasPermission(authUser.permissions, "equipment_report", "delete")
-      ),
-      canCreateDaily: hasPermission(authUser.permissions, "equipment_report", "create"),
-      canUpdateDaily: hasPermission(authUser.permissions, "equipment_report", "update"),
-      canDeleteDaily: hasPermission(authUser.permissions, "equipment_report", "delete"),
-      canEditTimesheet: hasPermission(authUser.permissions, "equipment_timesheet", "create")
-        || hasPermission(authUser.permissions, "equipment_timesheet", "update")
-        || hasPermission(authUser.permissions, "equipment_timesheet", "delete"),
-      canCreateTimesheet: hasPermission(authUser.permissions, "equipment_timesheet", "create"),
-      canUpdateTimesheet: hasPermission(authUser.permissions, "equipment_timesheet", "update"),
-      canDeleteTimesheet: hasPermission(authUser.permissions, "equipment_timesheet", "delete"),
-      canManageRegistry: hasPermission(authUser.permissions, "equipment_registry", "create")
-        || hasPermission(authUser.permissions, "equipment_registry", "update")
-        || hasPermission(authUser.permissions, "equipment_registry", "delete"),
-      canCreateRegistry: hasPermission(authUser.permissions, "equipment_registry", "create"),
-      canUpdateRegistry: hasPermission(authUser.permissions, "equipment_registry", "update"),
-      canDeleteRegistry: hasPermission(authUser.permissions, "equipment_registry", "delete"),
-      canManageAssignments: hasPermission(authUser.permissions, "project_equipment", "create")
-        || hasPermission(authUser.permissions, "project_equipment", "update")
-        || hasPermission(authUser.permissions, "project_equipment", "delete"),
-      canCreateAssignments: hasPermission(authUser.permissions, "project_equipment", "create"),
-      canUpdateAssignments: hasPermission(authUser.permissions, "project_equipment", "update"),
-      canDeleteAssignments: hasPermission(authUser.permissions, "project_equipment", "delete"),
-      currentUserRole: authUser.role,
-      currentUserName: authUser.fullName,
+      ...responseBase,
       reportSubmitted: Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
       foremanProgress: foremanProgress.results,
       units: units.results,
-      availableUnits: availableUnits.results,
-      sites: sites.results,
+      availableUnits: [],
+      sites: [],
       entries: entries.results,
-      marks: marks.results as EquipmentTimesheetMark[],
+      marks: [],
       dailyTimesheetMarks: dailyTimesheetMarks.results as EquipmentTimesheetMark[],
       filledDates: filledDates.results.map((row) => String(row.workDate)),
       shifts: shifts.results,

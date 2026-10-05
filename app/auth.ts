@@ -97,10 +97,6 @@ async function initializeAuthSchema() {
   await db.prepare("UPDATE app_users SET role = 'superadmin', assigned_site_id = NULL WHERE role = 'office'").run();
 }
 
-async function migrateLegacyRoles() {
-  await database().prepare("UPDATE app_users SET role = 'superadmin', assigned_site_id = NULL WHERE role = 'office'").run();
-}
-
 type AuthGlobals = typeof globalThis & {
   personnelAuthSchemaPromise?: Promise<void>;
 };
@@ -109,7 +105,7 @@ export function ensureAuthSchema() {
   const globals = globalThis as AuthGlobals;
   if (!globals.personnelAuthSchemaPromise) {
     const schemaTask = process.env.NODE_ENV === "production" && process.env.DATABASE_RUNTIME_BOOTSTRAP !== "true"
-      ? migrateLegacyRoles()
+      ? Promise.resolve()
       : initializeAuthSchema();
     globals.personnelAuthSchemaPromise = schemaTask.catch((error) => {
       delete globals.personnelAuthSchemaPromise;

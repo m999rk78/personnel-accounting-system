@@ -6,21 +6,26 @@ let permissionSchemaPromise: Promise<void> | null = null;
 
 export function ensurePermissionSchema() {
   if (!permissionSchemaPromise) {
-    const db = getDatabase();
-    permissionSchemaPromise = db.batch([
-      db.prepare(`CREATE TABLE IF NOT EXISTS user_permissions (
-        user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
-        resource TEXT NOT NULL,
-        can_view INTEGER NOT NULL DEFAULT 0,
-        can_create INTEGER NOT NULL DEFAULT 0,
-        can_update INTEGER NOT NULL DEFAULT 0,
-        can_delete INTEGER NOT NULL DEFAULT 0,
-        updated_by_user_id INTEGER REFERENCES app_users(id) ON DELETE SET NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (user_id, resource)
-      )`),
-      db.prepare("CREATE INDEX IF NOT EXISTS idx_user_permissions_user ON user_permissions(user_id)"),
-    ]).then(() => undefined).catch((error) => {
+    const schemaTask = process.env.NODE_ENV === "production" && process.env.DATABASE_RUNTIME_BOOTSTRAP !== "true"
+      ? Promise.resolve()
+      : (() => {
+        const db = getDatabase();
+        return db.batch([
+          db.prepare(`CREATE TABLE IF NOT EXISTS user_permissions (
+            user_id INTEGER NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+            resource TEXT NOT NULL,
+            can_view INTEGER NOT NULL DEFAULT 0,
+            can_create INTEGER NOT NULL DEFAULT 0,
+            can_update INTEGER NOT NULL DEFAULT 0,
+            can_delete INTEGER NOT NULL DEFAULT 0,
+            updated_by_user_id INTEGER REFERENCES app_users(id) ON DELETE SET NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, resource)
+          )`),
+          db.prepare("CREATE INDEX IF NOT EXISTS idx_user_permissions_user ON user_permissions(user_id)"),
+        ]).then(() => undefined);
+      })();
+    permissionSchemaPromise = schemaTask.catch((error) => {
       permissionSchemaPromise = null;
       throw error;
     });

@@ -447,9 +447,9 @@ button,input,select { font:inherit; } button { cursor:pointer; }
 .personnel-timesheet-code-toggle:hover { color:#27272a; }
 .personnel-timesheet-code-toggle > span { width:17px; height:17px; display:grid; place-items:center; border:1px solid #d4d4d8; border-radius:5px; background:#fff; color:#71717a; font-size:12px; line-height:1; }
 .personnel-timesheet-code-list { width:100%; display:flex; align-items:center; gap:8px 12px; flex-wrap:wrap; padding-top:8px; border-top:1px solid #ececef; }
-.equipment-timesheet-page { gap:8px; }
+.equipment-timesheet-page { gap:10px; }
 .equipment-timesheet-summary,.personnel-timesheet-summary { min-height:42px; display:grid; align-items:stretch; gap:5px; padding:4px; border:1px solid #e1e1e5; border-radius:10px; background:#f6f6f7; color:#71717a; font-size:9px; }
-.equipment-timesheet-summary { grid-template-columns:minmax(184px,1.2fr) repeat(3,minmax(0,1fr)); }
+.equipment-timesheet-summary { grid-template-columns:minmax(184px,1.2fr) repeat(4,minmax(0,1fr)); }
 .personnel-timesheet-summary { grid-template-columns:minmax(184px,1.2fr) repeat(4,minmax(0,1fr)); }
 .equipment-timesheet-summary > span,.personnel-timesheet-summary > span { min-height:32px; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 10px; border:0; border-left:1px solid #e1e1e5; background:transparent; white-space:nowrap; }
 .equipment-timesheet-summary small,.personnel-timesheet-summary small { color:#8b8b94; font-size:8px; font-weight:650; }
@@ -463,28 +463,40 @@ button,input,select { font:inherit; } button { cursor:pointer; }
 .timesheet-summary-month-control .timesheet-month-popover { top:38px; }
 .equipment-timesheet-summary .productive strong { color:#18794e; }
 .equipment-timesheet-summary .downtime strong { color:#b42318; }
+.equipment-timesheet-summary .equipment-total strong { color:#27272a; }
 .personnel-timesheet-summary .productive strong,.personnel-timesheet-summary .difference.ok strong { color:#18794e; }
 .personnel-timesheet-summary .difference.warning strong { color:#b42318; }
 .equipment-timesheet-shell { height:calc(100vh - 160px); min-height:500px; max-height:none; }
+.equipment-timesheet-shell .equipment-month-table { font-size:11px; }
 .equipment-timesheet-shell .equipment-month-table th,
 .equipment-timesheet-shell .equipment-month-table td { width:48px; min-width:48px; max-width:48px; height:46px; padding:0 7px; font-size:11px; }
 .equipment-timesheet-shell .equipment-month-table thead tr:first-child th { height:40px; top:0; }
 .equipment-timesheet-shell .equipment-month-table thead tr:nth-child(2) th { height:48px; top:40px; padding:4px 2px; }
+.equipment-timesheet-shell .equipment-month-table thead tr:nth-child(2) th span { font-size:12px; }
+.equipment-timesheet-shell .equipment-month-table thead tr:nth-child(2) th small { margin-top:2px; font-size:8px; font-weight:650; }
 .equipment-timesheet-shell .equipment-month-table .equipment-number-column { width:44px; min-width:44px; max-width:44px; left:0; }
-.equipment-timesheet-shell .equipment-month-table .equipment-machine-column { width:245px; min-width:245px; max-width:245px; left:44px; padding:0 12px; text-align:left; }
-.equipment-timesheet-shell .equipment-month-table .equipment-organization-column { width:130px; min-width:130px; max-width:130px; left:289px; padding:0 12px; text-align:left; box-shadow:5px 0 8px -8px rgba(24,24,27,.65); }
-.equipment-timesheet-shell .equipment-month-table .timesheet-total-column { width:88px; min-width:88px; max-width:88px; padding:0 10px; overflow:visible; text-overflow:clip; white-space:nowrap; }
+.equipment-timesheet-shell .equipment-month-table .equipment-machine-column { width:288px; min-width:288px; max-width:288px; left:44px; padding:0 12px; text-align:left; }
+.equipment-timesheet-shell .equipment-month-table .equipment-organization-column { width:170px; min-width:170px; max-width:170px; left:332px; padding:0 12px; text-align:left; box-shadow:5px 0 8px -8px rgba(24,24,27,.65); }
+.equipment-timesheet-shell .equipment-month-table .timesheet-total-column { width:72px; min-width:72px; max-width:72px; padding:0 8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .equipment-timesheet-shell .equipment-machine-column span,
 .equipment-timesheet-shell .equipment-machine-column small { display:block; overflow:hidden; text-overflow:ellipsis; }
 .equipment-timesheet-shell .equipment-machine-column small { margin-top:3px; color:#92929b; font-size:8px; font-weight:500; }
-.equipment-timesheet-shell .equipment-month-table .timesheet-summary-label { width:419px!important; min-width:419px!important; max-width:419px!important; }
+.equipment-timesheet-shell .equipment-month-table .timesheet-summary-label { width:502px!important; min-width:502px!important; max-width:502px!important; }
+.equipment-timesheet-shell .equipment-month-table .weekend:not(.filled) { background:#fffaf0; }
+.equipment-timesheet-shell .equipment-month-table thead .weekend { background:#fff5dc; }
 .equipment-timesheet-shell .equipment-month-table .equipment-work-total { background:#f2fbf5!important; color:#18794e!important; }
 .equipment-timesheet-shell .equipment-month-table .equipment-idle-total { background:#fff3f0!important; color:#b42318!important; }
 .equipment-timesheet-shell .equipment-month-table .equipment-all-total { background:#fff8e8!important; color:#825400!important; }
 .equipment-timesheet-shell .equipment-month-table td.has-downtime { background:#fff0ee; color:#b42318; }
 .equipment-timesheet-shell .equipment-month-table td.manual { background:#fff4d6; color:#8a5900; }
 .equipment-timesheet-shell .equipment-month-table td.mismatch { background:#fff0ee; color:#b42318; box-shadow:inset 0 0 0 1px #efaaa2; }
-.equipment-timesheet-shell .equipment-month-table td.future { cursor:default; color:#b4b4bb; }
+.equipment-timesheet-shell .equipment-month-table .future { background:#fafafa; color:#c2c2c7; }
+.equipment-timesheet-shell .equipment-month-table thead th.future { background:#fafafa; color:#c2c2c7; }
+.equipment-timesheet-shell .equipment-month-table tbody td.future:not(.filled):not(.manual):not(.mismatch):not(.has-downtime) { background:#fbfbfc; }
+.equipment-timesheet-shell .equipment-month-table tbody td.today:not(.weekend):not(.filled):not(.manual):not(.mismatch):not(.has-downtime) { background:#fff; }
+.equipment-timesheet-shell .equipment-month-table td.future.editable { cursor:cell; color:#71717a; background:#fbfbfc; }
+.equipment-timesheet-shell .equipment-month-table td.future.editable.filled { color:#16794b; background:#edf8f0; }
+.equipment-timesheet-shell .equipment-month-table td.future.editable.manual { color:#8a5a00; background:#fff5dc; }
 .equipment-timesheet-hour-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
 .equipment-timesheet-hour-field { display:grid; gap:7px; color:#52525b; font-size:10px; font-weight:750; }
 .equipment-timesheet-hour-field > div { height:44px; display:flex; align-items:center; overflow:hidden; border:1px solid #d4d4d8; border-radius:9px; background:#fff; }

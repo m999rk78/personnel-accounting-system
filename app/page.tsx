@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import AuthGate from "./AuthGate";
+import { getAuthUser } from "./auth";
 
 export const metadata: Metadata = {
   title: "Расстановка | Учёт персонала",
@@ -19,6 +20,9 @@ function currentDateInProjectTimezone() {
 }
 
 export default async function Home() {
-  await headers();
-  return <AuthGate initialToday={currentDateInProjectTimezone()} />;
+  const requestHeaders = await headers();
+  const initialUser = process.env.DATABASE_URL || process.env.PGHOST
+    ? await getAuthUser(new Request("http://localhost/", { headers: requestHeaders }))
+    : undefined;
+  return <AuthGate initialToday={currentDateInProjectTimezone()} initialUser={initialUser} />;
 }

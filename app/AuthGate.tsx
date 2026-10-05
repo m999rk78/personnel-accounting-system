@@ -15,11 +15,15 @@ export type CurrentUser = {
   permissionsCustomized: boolean;
 };
 
-export default function AuthGate({ initialToday }: { initialToday: string }) {
-  const [user, setUser] = useState<CurrentUser | null>(null);
-  const [checking, setChecking] = useState(true);
+export default function AuthGate({ initialToday, initialUser }: { initialToday: string; initialUser?: CurrentUser | null }) {
+  const [user, setUser] = useState<CurrentUser | null>(initialUser ?? null);
+  const [checking, setChecking] = useState(initialUser === undefined);
 
   useEffect(() => {
+    if (initialUser !== undefined) {
+      if (!initialUser) window.location.replace("/login");
+      return;
+    }
     let active = true;
     void fetch("/api/auth/status", { cache: "no-store" })
       .then(async (response) => response.json() as Promise<{ authenticated: boolean; user: CurrentUser | null }>)
@@ -34,7 +38,7 @@ export default function AuthGate({ initialToday }: { initialToday: string }) {
       })
       .catch(() => { if (active) window.location.replace("/login"); });
     return () => { active = false; };
-  }, []);
+  }, [initialUser]);
 
   if (checking || !user) return <main className="auth-loading"><div className="auth-spinner" /><p>Проверяем доступ…</p></main>;
   return <PersonnelApp initialToday={initialToday} currentUser={user} />;

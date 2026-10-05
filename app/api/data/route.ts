@@ -527,7 +527,7 @@ function ensureDatabaseInitialized() {
   const globals = globalThis as DataGlobals;
   if (!globals.personnelDatabaseInitializationPromise) {
     const initializationTask = process.env.NODE_ENV === "production" && process.env.DATABASE_RUNTIME_BOOTSTRAP !== "true"
-      ? env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_entries_active_site_date ON placement_entries(site_id, work_date) WHERE deleted_at IS NULL").run().then(() => undefined)
+      ? Promise.resolve()
       : initializeDatabase();
     globals.personnelDatabaseInitializationPromise = initializationTask.catch((error) => {
       delete globals.personnelDatabaseInitializationPromise;
@@ -1437,7 +1437,16 @@ export async function GET(request: Request) {
     const rangeEnd = url.searchParams.get("rangeEnd") ?? workDate;
     if (!validDate(rangeStart) || !validDate(rangeEnd) || rangeStart > rangeEnd) throw new Error("Некорректный диапазон дат отчёта.");
     const scope = url.searchParams.get("scope");
-    if (scope && !hasPermission(authUser.permissions, "workers_report", "view")) return forbidden();
+    if (scope === "navigation") {
+      const sites = await env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id").all();
+      const canViewAllSites = canViewAllProjects(authUser.role)
+        || (["projects", "system_users", "employees", "equipment_registry"] as PermissionResource[])
+          .some((resource) => hasPermission(authUser.permissions, resource, "view"));
+      return Response.json({
+        sites: canViewAllSites ? sites.results : sites.results.filter((site) => (site as { id: number }).id === siteId),
+      });
+    }
+    if (scope && scope !== "settings" && !hasPermission(authUser.permissions, "workers_report", "view")) return forbidden();
     if (scope === "carryover") {
       const previous = authUser.role === "foreman"
         ? await env.DB.prepare(`SELECT work_date AS workDate
@@ -1519,6 +1528,76 @@ export async function GET(request: Request) {
         foremanProgress: foremanProgress.results,
         timesheetMarks: timesheetMarks.results,
         users: [],
+      });
+    }
+    if (scope === "settings") {
+      const settingsResources: PermissionResource[] = [
+        "employees", "positions", "system_users", "projects", "project_employees", "project_directories",
+      ];
+      if (!settingsResources.some((resource) => hasPermission(authUser.permissions, resource, "view"))) return forbidden();
+      const [sites, employees, projectEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, users, syncStatus, bitrix24ActionLimits] = await env.DB.readBatch([
+        env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
+        env.DB.prepare(`SELECT e.id, e.bitrix24_id AS bitrix24Id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
+          e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError, e.last_synced_at AS lastSyncedAt,
+          MIN(epa.site_id) AS siteId, STRING_AGG(assigned_site.name, ', ' ORDER BY assigned_site.name) AS siteName
+          FROM employees e
+          LEFT JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1
+          LEFT JOIN sites assigned_site ON assigned_site.id = epa.site_id AND assigned_site.active = 1
+          WHERE e.active = 1
+          GROUP BY e.id, e.bitrix24_id, e.full_name, e.employment_type, e.department, e.position, e.source, e.bitrix24_stage, e.availability_status, e.sync_error, e.last_synced_at
+          ORDER BY e.full_name`),
+        env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
+          e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
+          epa.site_id AS siteId, s.name AS siteName
+          FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
+          WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.full_name`).bind(siteId),
+        env.DB.prepare("SELECT id, employment_type AS employmentType, department, position FROM position_catalog WHERE active = 1 ORDER BY employment_type, department, position"),
+        env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'employmentType' ORDER BY name"),
+        env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'department' ORDER BY name"),
+        env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'position' ORDER BY name"),
+        env.DB.prepare("SELECT id, name FROM shifts WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+        env.DB.prepare("SELECT id, name FROM zones WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+        env.DB.prepare("SELECT id, name FROM main_work_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+        env.DB.prepare("SELECT id, name FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+        env.DB.prepare("SELECT id, name FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+        env.DB.prepare("SELECT id, full_name AS fullName, email, CASE WHEN role = 'office' THEN 'superadmin' ELSE role END AS role, assigned_site_id AS assignedSiteId, CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END AS status FROM app_users WHERE active = 1 ORDER BY full_name"),
+        env.DB.prepare("SELECT id, status, started_at AS startedAt, completed_at AS completedAt, summary, error_text AS errorText FROM employee_sync_runs ORDER BY id DESC LIMIT 1"),
+        env.DB.prepare("SELECT action_key AS actionKey, last_started_at AS lastStartedAt FROM bitrix24_action_limits WHERE action_key IN ('inspect-bitrix24', 'sync-bitrix24')"),
+      ]);
+      const canViewEmployees = hasPermission(authUser.permissions, "employees", "view");
+      const canManageEmployees = hasPermission(authUser.permissions, "employees", "create") || hasPermission(authUser.permissions, "employees", "update");
+      const canViewProjectEmployees = hasPermission(authUser.permissions, "project_employees", "view");
+      const canChooseProjectEmployees = hasPermission(authUser.permissions, "project_employees", "create");
+      const canViewPositions = hasPermission(authUser.permissions, "positions", "view") || canManageEmployees;
+      const canViewProjectDirectories = hasPermission(authUser.permissions, "project_directories", "view");
+      const canViewSystemUsers = hasPermission(authUser.permissions, "system_users", "view");
+      const canViewAllSites = canViewAllProjects(authUser.role)
+        || hasPermission(authUser.permissions, "projects", "view")
+        || canViewSystemUsers || canViewEmployees;
+      return Response.json({
+        sites: canViewAllSites ? sites.results : sites.results.filter((site) => (site as { id: number }).id === siteId),
+        employees: canViewEmployees || canChooseProjectEmployees ? employees.results : [],
+        reportEmployees: [],
+        placementEmployees: canViewProjectEmployees ? projectEmployees.results : [],
+        projectEmployees: canViewProjectEmployees ? projectEmployees.results : [],
+        positionCatalog: canViewPositions ? positionCatalog.results : [],
+        employmentTypes: canViewPositions ? employmentTypes.results : [],
+        departments: canViewPositions ? departments.results : [],
+        positions: canViewPositions ? positions.results : [],
+        shifts: canViewProjectDirectories ? shifts.results : [],
+        zones: canViewProjectDirectories ? zones.results : [],
+        mainWorkTypes: canViewProjectDirectories ? mainWorkTypes.results : [],
+        subworkTypes: canViewProjectDirectories ? subworkTypes.results : [],
+        masters: canViewProjectDirectories ? masters.results : [],
+        entries: [],
+        filledDates: [],
+        reportSubmitted: false,
+        employeeUsage: [],
+        foremanProgress: [],
+        timesheetMarks: [],
+        users: canViewSystemUsers ? users.results : [],
+        syncStatus: canViewEmployees ? syncStatus.results[0] ?? null : null,
+        bitrix24Cooldowns: canViewEmployees ? mapBitrix24Cooldowns(bitrix24ActionLimits.results as Bitrix24ActionLimitRow[]) : undefined,
       });
     }
     const [sites, employees, reportEmployees, placementEmployees, projectEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, reportSubmission, users, syncStatus, bitrix24ActionLimits, employeeUsage, foremanProgress, timesheetMarks] = await env.DB.readBatch([

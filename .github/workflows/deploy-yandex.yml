@@ -97,7 +97,11 @@ jobs:
           revision-cores: 1
           revision-memory: 1Gb
           revision-core-fraction: 100
-          revision-concurrency: 4
+          # A browser requests the HTML and many immutable JS/CSS assets in
+          # parallel. A low limit made Yandex start several cold containers for
+          # one page view. Node can serve these lightweight requests safely from
+          # one instance, so keep the burst on the warm instance when possible.
+          revision-concurrency: 16
           revision-image-url: cr.yandex/${{ env.YC_REGISTRY_ID }}/${{ env.IMAGE_REPOSITORY }}:${{ github.sha }}
           revision-execution-timeout: 30
           revision-runtime: http

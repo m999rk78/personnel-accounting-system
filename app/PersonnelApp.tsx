@@ -41,6 +41,31 @@ type DataSet = {
   syncStatus?: { id: number; status: string; startedAt: string; completedAt: string | null; summary: string | null; errorText: string | null } | null;
   bitrix24Cooldowns?: Bitrix24Cooldowns;
 };
+function emptyDataSet(sites: Site[] = []): DataSet {
+  return {
+    sites,
+    employees: [],
+    reportEmployees: [],
+    placementEmployees: [],
+    projectEmployees: [],
+    positionCatalog: [],
+    employmentTypes: [],
+    departments: [],
+    positions: [],
+    shifts: [],
+    zones: [],
+    mainWorkTypes: [],
+    subworkTypes: [],
+    masters: [],
+    entries: [],
+    filledDates: [],
+    users: [],
+    reportSubmitted: false,
+    employeeUsage: [],
+    foremanProgress: [],
+    timesheetMarks: [],
+  };
+}
 type BitrixCheckDifference = { kind: "missing_locally" | "changed" | "outside_scope" | "missing_in_bitrix" | "incomplete" | "unknown_stage"; employeeName: string; details: string; bitrix24Id?: string; suggestedEmployeeIds?: number[] };
 type BitrixCheckResult = { status: "ok" | "mismatch"; checkedAt: string; sourceReceived: number; compared: number; matched: number; totalDifferences: number; differences: BitrixCheckDifference[]; autoLinkable: number; needsReview: number; unmatched: number; linked?: number };
 const BITRIX_DIFFERENCE_LABELS: Record<BitrixCheckDifference["kind"], string> = {
@@ -532,6 +557,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const loadedSiteId = useRef<number | null>(null);
   const loadedWorkDate = useRef<string | null>(null);
   const loadedReportRange = useRef<string | null>(null);
+  const workspaceDataLoaded = useRef(false);
   const initializedRosterSession = useRef<string | null>(null);
   const reportDraftSessions = useRef(new Map<string, ReportDraftSession>());
   const adminDataLoaded = useRef(false);
@@ -615,7 +641,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&${reportRangeQuery}`, { cache: "no-store" });
+      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=settings&${reportRangeQuery}`, { cache: "no-store" });
       if (response.status === 401) { window.location.replace("/login"); return; }
       const payload = await response.json() as DataSet & { error?: string };
       if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить данные.");
@@ -624,6 +650,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       loadedWorkDate.current = workDate;
       loadedReportRange.current = reportRangeQuery;
       adminDataLoaded.current = true;
+      workspaceDataLoaded.current = false;
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить данные.");
     } finally { setLoading(false); }
@@ -642,8 +669,28 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       loadedWorkDate.current = workDate;
       loadedReportRange.current = reportRangeQuery;
       adminDataLoaded.current = false;
+      workspaceDataLoaded.current = true;
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить рабочее пространство.");
+    } finally { setLoading(false); }
+  }, [siteId, workDate, reportRangeQuery]);
+
+  const loadNavigation = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=navigation`, { cache: "no-store" });
+      if (response.status === 401) { window.location.replace("/login"); return; }
+      const payload = await response.json() as Pick<DataSet, "sites"> & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить список проектов.");
+      setData(emptyDataSet(payload.sites));
+      loadedSiteId.current = siteId;
+      loadedWorkDate.current = workDate;
+      loadedReportRange.current = reportRangeQuery;
+      adminDataLoaded.current = false;
+      workspaceDataLoaded.current = false;
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить список проектов.");
     } finally { setLoading(false); }
   }, [siteId, workDate, reportRangeQuery]);
 
@@ -664,18 +711,20 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }, [siteId, workDate, reportRangeQuery]);
 
   useEffect(() => {
-    const reportView = view === "placement" || view === "equipment" || view === "timesheet" || view === "equipmentTimesheet" || view === "equipmentRegistry" || view === "projectEquipment";
+    const settingsDataView = view === "employees" || view === "positions" || view === "users" || view === "projects" || view === "projectEmployees" || view === "directories";
     const loader = loadedSiteId.current !== siteId
-      ? reportView ? loadWorkspace : loadData
-      : !reportView && !adminDataLoaded.current
+      ? view === "placement" ? loadWorkspace : settingsDataView ? loadData : loadNavigation
+      : settingsDataView && !adminDataLoaded.current
         ? loadData
-        : view === "placement" && (loadedWorkDate.current !== workDate || loadedReportRange.current !== reportRangeQuery)
-          ? loadEntries
-          : null;
+        : view === "placement" && !workspaceDataLoaded.current
+          ? loadWorkspace
+          : view === "placement" && (loadedWorkDate.current !== workDate || loadedReportRange.current !== reportRangeQuery)
+            ? loadEntries
+            : null;
     if (!loader) return;
     const task = window.setTimeout(() => void loader(), 0);
     return () => window.clearTimeout(task);
-  }, [siteId, workDate, view, reportRangeQuery, loadData, loadEntries, loadWorkspace]);
+  }, [siteId, workDate, view, reportRangeQuery, loadData, loadEntries, loadNavigation, loadWorkspace]);
 
   const filteredEntries = data?.entries ?? [];
   const exportEntries = visibleEntryIds === null

@@ -56,24 +56,29 @@ function errorResponse(message: string, status: number) {
 
 async function ensureTimesheetSchema() {
   if (!schemaPromise) {
-    const db = getDatabase();
-    schemaPromise = db.batch([
-      db.prepare(`CREATE TABLE IF NOT EXISTS timesheet_marks (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        site_id INTEGER NOT NULL,
-        employee_id INTEGER NOT NULL,
-        work_date TEXT NOT NULL,
-        hours INTEGER CHECK (hours BETWEEN 1 AND 10),
-        code TEXT,
-        note TEXT NOT NULL DEFAULT '',
-        created_by TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        CHECK ((hours IS NOT NULL AND code IS NULL) OR (hours IS NULL AND code IS NOT NULL))
-      )`),
-      db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_timesheet_marks_unique_day ON timesheet_marks(site_id, employee_id, work_date)"),
-      db.prepare("CREATE INDEX IF NOT EXISTS idx_timesheet_marks_month ON timesheet_marks(site_id, work_date)"),
-    ]).then(() => undefined).catch((error) => {
+    const schemaTask = process.env.NODE_ENV === "production" && process.env.DATABASE_RUNTIME_BOOTSTRAP !== "true"
+      ? Promise.resolve()
+      : (() => {
+        const db = getDatabase();
+        return db.batch([
+          db.prepare(`CREATE TABLE IF NOT EXISTS timesheet_marks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            site_id INTEGER NOT NULL,
+            employee_id INTEGER NOT NULL,
+            work_date TEXT NOT NULL,
+            hours INTEGER CHECK (hours BETWEEN 1 AND 10),
+            code TEXT,
+            note TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK ((hours IS NOT NULL AND code IS NULL) OR (hours IS NULL AND code IS NOT NULL))
+          )`),
+          db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_timesheet_marks_unique_day ON timesheet_marks(site_id, employee_id, work_date)"),
+          db.prepare("CREATE INDEX IF NOT EXISTS idx_timesheet_marks_month ON timesheet_marks(site_id, work_date)"),
+        ]).then(() => undefined);
+      })();
+    schemaPromise = schemaTask.catch((error) => {
       schemaPromise = null;
       throw error;
     });

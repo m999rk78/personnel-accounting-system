@@ -137,6 +137,7 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   const assignmentMigration = await readFile(new URL("../drizzle-postgres/0010_equipment_project_assignments.sql", import.meta.url), "utf8");
   const timesheetMigration = await readFile(new URL("../drizzle-postgres/0011_equipment_timesheet_marks.sql", import.meta.url), "utf8");
   const grids = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
   assert.match(api, /getAuthUser\(request\)/);
   assert.match(api, /viewMode === "timesheet"[\s\S]*"equipment_timesheet"/);
@@ -188,6 +189,9 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(view, /Сохранить изменения/);
   assert.match(view, /normalize\(entry\.subworkTypeName\)\.includes\("простой"\)/);
   assert.match(view, /equipment-timesheet-summary timesheet-top-summary/);
+  assert.match(view, /section === "month" \? "timesheet-page"/);
+  assert.match(view, /className="timesheet-export-button"/);
+  assert.match(view, /className="equipment-total"><small>Всего<\/small><strong>\{monthSummary\.total\} ч\.<\/strong>/);
   assert.match(view, /timesheet-fill-row[\s\S]*colSpan=\{monthDays\.length \+ 6\}/);
   assert.match(view, /TimesheetFilterableHeading/);
   assert.match(view, /label="Техника"/);
@@ -198,6 +202,7 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(view, /EquipmentMonthPicker/);
   assert.match(view, /current=\{today\.slice\(0, 7\)\}/);
   assert.doesNotMatch(view, /disabled=\{month >= today\.slice\(0, 7\)\}/);
+  assert.match(view, /date > today \? "future" : ""/);
   assert.match(view, /timesheet-month-popover/);
   assert.match(view, /Выбор месяца табеля/);
   assert.doesNotMatch(view, /type="month"/);
@@ -244,6 +249,14 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(view, /kind: "equipment-timesheet"/);
   assert.match(view, /Табель_техники_/);
   assert.match(view, /equipment-timesheet-page-actions/);
+  assert.match(styles, /equipment-timesheet-summary \{ grid-template-columns:minmax\(184px,1\.2fr\) repeat\(4,minmax\(0,1fr\)\)/);
+  assert.match(styles, /equipment-machine-column \{ width:288px; min-width:288px; max-width:288px; left:44px/);
+  assert.match(styles, /equipment-organization-column \{ width:170px; min-width:170px; max-width:170px; left:332px/);
+  assert.match(styles, /equipment-month-table \.timesheet-total-column \{ width:72px; min-width:72px; max-width:72px/);
+  assert.match(styles, /equipment-month-table \.timesheet-summary-label \{ width:502px!important/);
+  assert.match(styles, /equipment-month-table \.future \{ background:#fafafa; color:#c2c2c7/);
+  assert.match(styles, /equipment-month-table thead th\.future \{ background:#fafafa; color:#c2c2c7/);
+  assert.match(styles, /tbody td\.today:not\(\.weekend\):not\(\.filled\)[^{]*\{ background:#fff/);
   assert.match(parser, /function columnLetter/);
   assert.doesNotMatch(view, /<div className="equipment-overview">/);
   assert.doesNotMatch(view, /Назначить на проект/);
