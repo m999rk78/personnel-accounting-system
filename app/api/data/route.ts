@@ -1073,19 +1073,20 @@ async function finalizeGlobalReport(db: DatabaseExecutor, user: AuthUser, siteId
     RETURNING site_id`).bind(siteId, workDate, user.id).all();
 }
 
-async function validateEmployeeDirectoryValues(employmentType: string, department: string, position: string, projectSiteId: number) {
-  const refs = await env.DB.batch([
+async function validateEmployeeDirectoryValues(employmentType: string, department: string, position: string, projectSiteId: number | null) {
+  const statements = [
     env.DB.prepare("SELECT id FROM personnel_options WHERE kind = 'employmentType' AND name = ? AND active = 1").bind(employmentType),
     env.DB.prepare("SELECT id FROM personnel_options WHERE kind = 'department' AND name = ? AND active = 1").bind(department),
     env.DB.prepare("SELECT id FROM personnel_options WHERE kind = 'position' AND name = ? AND active = 1").bind(position),
     env.DB.prepare("SELECT id FROM position_catalog WHERE employment_type = ? AND department = ? AND position = ? AND active = 1").bind(employmentType, department, position),
-    env.DB.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(projectSiteId),
-  ]);
+  ];
+  if (projectSiteId) statements.push(env.DB.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(projectSiteId));
+  const refs = await env.DB.batch(statements);
   if (!refs[0].results.length) throw new Error(`Значение «${employmentType}» не относится к столбцу «Тип».`);
   if (!refs[1].results.length) throw new Error(`Значение «${department}» не относится к столбцу «Отдел».`);
   if (!refs[2].results.length) throw new Error(`Значение «${position}» не относится к столбцу «Должность».`);
   if (!refs[3].results.length) throw new Error("Сочетание типа, отдела и должности отсутствует в справочнике должностей.");
-  if (!refs[4].results.length) throw new Error("Выбранный проект не найден или уже закрыт.");
+  if (projectSiteId && !refs[4]?.results.length) throw new Error("Выбранный проект не найден или уже закрыт.");
 }
 
 type ExistingBitrixEmployee = {
@@ -1187,7 +1188,7 @@ async function synchronizeBitrixEmployees() {
       const safeEmployee = employee.syncError && existing
         ? { ...employee, fullName: existing.fullName, employmentType: existing.employmentType, department: existing.department, position: existing.position }
         : employee;
-      const primarySiteId = employee.siteIds[0] ?? null;
+      const primarySiteId = employee.availabilityStatus === "on_site" ? employee.siteIds[0] ?? null : null;
       return db.prepare(`INSERT INTO employees
         (bitrix24_id, bitrix24_stage, availability_status, bitrix24_updated_at, last_synced_at, sync_error, sync_miss_count,
          full_name, employment_type, department, position, source, site_id, active)
@@ -1204,7 +1205,11 @@ async function synchronizeBitrixEmployees() {
           department = EXCLUDED.department,
           position = EXCLUDED.position,
           source = 'bitrix24',
-          site_id = CASE WHEN EXCLUDED.active = 0 THEN NULL ELSE COALESCE(EXCLUDED.site_id, employees.site_id) END,
+          site_id = CASE
+            WHEN EXCLUDED.sync_error IS NOT NULL THEN employees.site_id
+            WHEN EXCLUDED.active = 0 OR EXCLUDED.availability_status <> 'on_site' OR EXCLUDED.site_id IS NULL THEN NULL
+            ELSE EXCLUDED.site_id
+          END,
           active = EXCLUDED.active`)
         .bind(employee.bitrix24Id, employee.stageName, employee.availabilityStatus, employee.sourceUpdatedAt, startedAt, employee.syncError,
           safeEmployee.fullName, safeEmployee.employmentType, safeEmployee.department, safeEmployee.position, primarySiteId, employee.active);
@@ -1232,6 +1237,8 @@ async function synchronizeBitrixEmployees() {
       else if (employeeProfileChanged(previous, employee) || previous.availabilityStatus !== employee.availabilityStatus || previous.active !== employee.active) updated += 1;
       if (employee.availabilityStatus !== "on_site" && employee.active) unavailable += 1;
       if (!employee.active && (!previous || previous.active)) archived += 1;
+      const nextPrimarySiteId = employee.availabilityStatus === "on_site" ? employee.siteIds[0] ?? null : null;
+      if (!employee.syncError && previous && previous.siteId !== nextPrimarySiteId) moved += 1;
       if (!employee.syncError && (employeeProfileChanged(previous, employee) || !profileVersionEmployeeIds.has(current.id))) {
         const effectiveAt = employee.sourceUpdatedAt ?? startedAt;
         historyStatements.push(db.prepare("UPDATE employee_profile_versions SET valid_to = ? WHERE employee_id = ? AND valid_to IS NULL").bind(effectiveAt, current.id));
@@ -1250,21 +1257,19 @@ async function synchronizeBitrixEmployees() {
         assignmentStatements.push(db.prepare("UPDATE employee_project_assignments SET active = 0, end_date = CURRENT_DATE WHERE employee_id = ? AND active = 1").bind(current.id));
         continue;
       }
-      if (!employee.siteIds.length && ["transfer", "intershift", "vacation", "sick_leave"].includes(employee.availabilityStatus)) continue;
+      if (employee.availabilityStatus !== "on_site" || !employee.siteIds.length) {
+        assignmentStatements.push(db.prepare("UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, CURRENT_DATE) WHERE employee_id = ? AND active = 1").bind(current.id));
+        continue;
+      }
       if (employee.siteIds.length) {
         const placeholders = employee.siteIds.map(() => "?").join(", ");
-        assignmentStatements.push(db.prepare(`UPDATE employee_project_assignments SET active = 0, end_date = CURRENT_DATE
+        assignmentStatements.push(db.prepare(`UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, CURRENT_DATE)
           WHERE employee_id = ? AND active = 1 AND site_id NOT IN (${placeholders})`).bind(current.id, ...employee.siteIds));
         for (const siteId of employee.siteIds) {
-          assignmentStatements.push(db.prepare(`UPDATE employee_project_assignments SET active = 1, end_date = NULL, source = 'bitrix24'
-            WHERE id = (SELECT id FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 0 ORDER BY id DESC LIMIT 1)
-              AND NOT EXISTS (SELECT 1 FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 1)`)
-            .bind(current.id, siteId, current.id, siteId));
           assignmentStatements.push(db.prepare(`INSERT INTO employee_project_assignments (employee_id, site_id, source, start_date)
             SELECT ?, ?, 'bitrix24', CURRENT_DATE WHERE NOT EXISTS
             (SELECT 1 FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 1)`).bind(current.id, siteId, current.id, siteId));
         }
-        if (previous && employee.siteIds.length && previous.siteId !== employee.siteIds[0]) moved += 1;
       }
     }
     for (const employee of existingResult.results as ExistingBitrixEmployee[]) {
@@ -1570,12 +1575,16 @@ async function handlePOST(request: Request) {
       const department = payload.department?.trim() ?? "";
       const position = payload.position?.trim() ?? "";
       const projectSiteId = asPositiveInteger(payload.projectSiteId);
-      if (!fullName || !employmentType || !department || !position || !projectSiteId) throw new Error("Заполните ФИО, тип, отдел, должность и проект рабочего.");
+      if (!fullName || !employmentType || !department || !position) throw new Error("Заполните ФИО, тип, отдел и должность сотрудника.");
       await validateEmployeeDirectoryValues(employmentType, department, position, projectSiteId);
       const duplicate = await env.DB.prepare("SELECT id FROM employees WHERE full_name = ? AND active = 1").bind(fullName).first();
       if (duplicate) throw new Error("Рабочий с таким ФИО уже существует.");
-      const result = await env.DB.prepare("INSERT INTO employees (full_name, employment_type, department, position, source, site_id) VALUES (?, ?, ?, ?, 'manual', ?)").bind(fullName, employmentType, department, position, projectSiteId).run();
-      await env.DB.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source) VALUES (?, ?, 'manual')").bind(Number(result.meta.last_row_id), projectSiteId).run();
+      const result = await env.DB.prepare("INSERT INTO employees (full_name, employment_type, department, position, source, site_id, availability_status) VALUES (?, ?, ?, ?, 'manual', ?, ?)")
+        .bind(fullName, employmentType, department, position, projectSiteId, projectSiteId ? "on_site" : "unassigned").run();
+      if (projectSiteId) {
+        await env.DB.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source, start_date) VALUES (?, ?, 'manual', CURRENT_DATE)")
+          .bind(Number(result.meta.last_row_id), projectSiteId).run();
+      }
       return Response.json({ id: result.meta.last_row_id }, { status: 201 });
     }
     if (payload.action === "assign-employee-project") {
@@ -1589,10 +1598,10 @@ async function handlePOST(request: Request) {
       if (!employee.results.length || !site.results.length) throw new Error("Сотрудник или проект не найден.");
       const active = await env.DB.prepare("SELECT id FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 1").bind(employeeId, siteId).first();
       if (active) throw new Error("Сотрудник уже добавлен в этот проект.");
-      const existing = await env.DB.prepare("SELECT id FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? ORDER BY id DESC LIMIT 1").bind(employeeId, siteId).first<{ id: number }>();
-      if (existing) await env.DB.prepare("UPDATE employee_project_assignments SET active = 1, end_date = NULL, source = 'manual' WHERE id = ?").bind(existing.id).run();
-      else await env.DB.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source) VALUES (?, ?, 'manual')").bind(employeeId, siteId).run();
-      await env.DB.prepare("UPDATE employees SET site_id = COALESCE(site_id, ?) WHERE id = ?").bind(siteId, employeeId).run();
+      await env.DB.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source, start_date) VALUES (?, ?, 'manual', CURRENT_DATE)").bind(employeeId, siteId).run();
+      await env.DB.prepare(`UPDATE employees SET site_id = COALESCE(site_id, ?),
+        availability_status = CASE WHEN source = 'bitrix24' THEN availability_status ELSE 'on_site' END
+        WHERE id = ?`).bind(siteId, employeeId).run();
       return Response.json({ ok: true }, { status: 201 });
     }
     if (payload.action === "create-position") {
@@ -1638,8 +1647,11 @@ async function handlePOST(request: Request) {
         const employmentType = row.employmentType?.trim() ?? "";
         const department = row.department?.trim() ?? "";
         const position = row.position?.trim() ?? "";
-        const projectNames = (row.projectCode ?? "").split(",").map((name) => name.trim()).filter(Boolean);
-        if (!fullName || !employmentType || !department || !position || !projectNames.length) throw new Error(`Строка ${index + 1}: заполните ФИО, тип, отдел, должность и проект.`);
+        const rawProjectNames = (row.projectCode ?? "").split(",").map((name) => name.trim()).filter(Boolean);
+        const unassignedLabels = new Set(["без объекта", "не назначен", "не назначена", "без проекта", "-", "—"]);
+        const explicitlyUnassigned = rawProjectNames.length === 1 && unassignedLabels.has(normalizeBitrixText(rawProjectNames[0]));
+        const projectNames = explicitlyUnassigned ? [] : rawProjectNames;
+        if (!fullName || !employmentType || !department || !position) throw new Error(`Строка ${index + 1}: заполните ФИО, тип, отдел и должность.`);
         const normalizedName = fullName.toLocaleLowerCase("ru-RU");
         if (importedNames.has(normalizedName)) throw new Error(`Строка ${index + 1}: сотрудник «${fullName}» повторяется в файле.`);
         importedNames.add(normalizedName);
@@ -1657,8 +1669,11 @@ async function handlePOST(request: Request) {
       const employeeStatements = validatedRows.map((row) => {
         const existingId = employeesByName.get(row.normalizedName)?.id;
         return existingId
-          ? env.DB.prepare("UPDATE employees SET employment_type = ?, department = ?, position = ?, site_id = ? WHERE id = ?").bind(row.employmentType, row.department, row.position, row.siteIds[0], existingId)
-          : env.DB.prepare("INSERT INTO employees (full_name, employment_type, department, position, source, site_id) VALUES (?, ?, ?, ?, 'excel', ?)").bind(row.fullName, row.employmentType, row.department, row.position, row.siteIds[0]);
+          ? env.DB.prepare(`UPDATE employees SET employment_type = ?, department = ?, position = ?, site_id = ?,
+              availability_status = CASE WHEN source = 'bitrix24' THEN availability_status ELSE ? END
+            WHERE id = ?`).bind(row.employmentType, row.department, row.position, row.siteIds[0] ?? null, row.siteIds.length ? "on_site" : "unassigned", existingId)
+          : env.DB.prepare("INSERT INTO employees (full_name, employment_type, department, position, source, site_id, availability_status) VALUES (?, ?, ?, ?, 'excel', ?, ?)")
+              .bind(row.fullName, row.employmentType, row.department, row.position, row.siteIds[0] ?? null, row.siteIds.length ? "on_site" : "unassigned");
       });
       for (let offset = 0; offset < employeeStatements.length; offset += 100) await env.DB.batch(employeeStatements.slice(offset, offset + 100));
 
@@ -1667,17 +1682,20 @@ async function handlePOST(request: Request) {
       const assignmentStatements = validatedRows.flatMap((row) => {
         const employeeId = refreshedByName.get(row.normalizedName);
         if (!employeeId) throw new Error(`Не удалось найти сотрудника «${row.fullName}» после импорта.`);
+        if (!row.siteIds.length) {
+          return [env.DB.prepare("UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, DATE('now')) WHERE employee_id = ? AND active = 1").bind(employeeId)];
+        }
         const placeholders = row.siteIds.map(() => "?").join(", ");
         return [
-          env.DB.prepare(`UPDATE employee_project_assignments SET active = 0, end_date = DATE('now') WHERE employee_id = ? AND active = 1 AND site_id NOT IN (${placeholders})`).bind(employeeId, ...row.siteIds),
+          env.DB.prepare(`UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, DATE('now')) WHERE employee_id = ? AND active = 1 AND site_id NOT IN (${placeholders})`).bind(employeeId, ...row.siteIds),
           ...row.siteIds.flatMap((siteId) => [
             env.DB.prepare("UPDATE employee_project_assignments SET source = 'excel', end_date = NULL WHERE employee_id = ? AND site_id = ? AND active = 1").bind(employeeId, siteId),
-            env.DB.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source) SELECT ?, ?, 'excel' WHERE NOT EXISTS (SELECT 1 FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 1)").bind(employeeId, siteId, employeeId, siteId),
+            env.DB.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source, start_date) SELECT ?, ?, 'excel', DATE('now') WHERE NOT EXISTS (SELECT 1 FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 1)").bind(employeeId, siteId, employeeId, siteId),
           ]),
         ];
       });
       for (let offset = 0; offset < assignmentStatements.length; offset += 100) await env.DB.batch(assignmentStatements.slice(offset, offset + 100));
-      return Response.json({ count: rows.length }, { status: 201 });
+      return Response.json({ count: rows.length, unassigned: validatedRows.filter((row) => row.siteIds.length === 0).length }, { status: 201 });
     }
     if (payload.action === "create-site") {
       const name = payload.name?.trim() ?? "";
@@ -1862,15 +1880,27 @@ async function handlePATCH(request: Request) {
       const department = payload.department?.trim() ?? "";
       const position = payload.position?.trim() ?? "";
       const projectSiteId = asPositiveInteger(payload.projectSiteId);
-      if (!employeeId || !fullName || !employmentType || !department || !position || !projectSiteId) throw new Error("Заполните ФИО, тип, отдел, должность и проект рабочего.");
+      if (!employeeId || !fullName || !employmentType || !department || !position) throw new Error("Заполните ФИО, тип, отдел и должность сотрудника.");
       await validateEmployeeDirectoryValues(employmentType, department, position, projectSiteId);
       const duplicate = await env.DB.prepare("SELECT id FROM employees WHERE full_name = ? AND id <> ? AND active = 1").bind(fullName, employeeId).first();
       if (duplicate) throw new Error("Рабочий с таким ФИО уже существует.");
-      const result = await env.DB.prepare("UPDATE employees SET full_name = ?, employment_type = ?, department = ?, position = ?, site_id = ? WHERE id = ? AND active = 1").bind(fullName, employmentType, department, position, projectSiteId, employeeId).run();
+      const result = await env.DB.prepare(`UPDATE employees SET full_name = ?, employment_type = ?, department = ?, position = ?, site_id = ?,
+        availability_status = CASE WHEN source = 'bitrix24' THEN availability_status ELSE ? END
+        WHERE id = ? AND active = 1`)
+        .bind(fullName, employmentType, department, position, projectSiteId, projectSiteId ? "on_site" : "unassigned", employeeId).run();
       if (!result.meta.changes) throw new Error("Рабочий не найден.");
-      const existingAssignment = await env.DB.prepare("SELECT id FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? ORDER BY id DESC LIMIT 1").bind(employeeId, projectSiteId).first<{ id: number }>();
-      if (existingAssignment) await env.DB.prepare("UPDATE employee_project_assignments SET active = 1, end_date = NULL WHERE id = ?").bind(existingAssignment.id).run();
-      else await env.DB.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source) VALUES (?, ?, 'manual')").bind(employeeId, projectSiteId).run();
+      if (projectSiteId) {
+        await env.DB.prepare("UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, CURRENT_DATE) WHERE employee_id = ? AND active = 1 AND site_id <> ?")
+          .bind(employeeId, projectSiteId).run();
+        const activeAssignment = await env.DB.prepare("SELECT id FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 1").bind(employeeId, projectSiteId).first();
+        if (!activeAssignment) {
+          await env.DB.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source, start_date) VALUES (?, ?, 'manual', CURRENT_DATE)")
+            .bind(employeeId, projectSiteId).run();
+        }
+      } else {
+        await env.DB.prepare("UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, CURRENT_DATE) WHERE employee_id = ? AND active = 1")
+          .bind(employeeId).run();
+      }
       return Response.json({ ok: true });
     }
     if (payload.action === "update-position") {
@@ -2155,13 +2185,18 @@ async function handleDELETE(request: Request) {
     if (url.searchParams.get("entity") === "employee-assignment") {
       const siteId = asPositiveInteger(url.searchParams.get("siteId"));
       if (!siteId) throw new Error("Не указан проект сотрудника.");
-      const result = await env.DB.prepare(`UPDATE employee_project_assignments SET active = 0, end_date = DATE('now')
+      const result = await env.DB.prepare(`UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, DATE('now'))
         WHERE employee_id = ? AND site_id = ? AND active = 1
           AND EXISTS (SELECT 1 FROM employees WHERE id = ? AND active = 1)`).bind(id, siteId, id).run();
       if (!result.meta.changes) throw new Error("Сотрудник не относится к проекту.");
-      await env.DB.prepare(`UPDATE employees SET site_id = (
-        SELECT MIN(site_id) FROM employee_project_assignments WHERE employee_id = ? AND active = 1
-      ) WHERE id = ? AND site_id = ?`).bind(id, id, siteId).run();
+      await env.DB.prepare(`UPDATE employees SET
+        site_id = (SELECT MIN(site_id) FROM employee_project_assignments WHERE employee_id = ? AND active = 1),
+        availability_status = CASE
+          WHEN source = 'bitrix24' THEN availability_status
+          WHEN EXISTS (SELECT 1 FROM employee_project_assignments WHERE employee_id = ? AND active = 1) THEN 'on_site'
+          ELSE 'unassigned'
+        END
+        WHERE id = ?`).bind(id, id, id).run();
       return Response.json({ ok: true });
     }
     if (url.searchParams.get("entity") === "site") {

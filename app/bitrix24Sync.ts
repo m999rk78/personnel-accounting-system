@@ -1,4 +1,4 @@
-export const EMPLOYEE_AVAILABILITY_STATUSES = ["on_site", "transfer", "intershift", "vacation", "sick_leave", "dismissed", "out_of_scope", "deleted", "unknown"] as const;
+export const EMPLOYEE_AVAILABILITY_STATUSES = ["on_site", "unassigned", "transfer", "intershift", "vacation", "sick_leave", "dismissed", "out_of_scope", "deleted", "unknown"] as const;
 export type EmployeeAvailabilityStatus = typeof EMPLOYEE_AVAILABILITY_STATUSES[number];
 
 export type BitrixEmployeeSnapshot = {
@@ -41,6 +41,7 @@ export function classifyBitrixStage(stageId: string, stageName: string, configur
   if (configuredStatus) return configuredStatus;
   if (/уволен|увольнен|увольнение/.test(normalizedName)) return "dismissed";
   if (/перемещ/.test(normalizedName)) return "transfer";
+  if (/^мо\s*\/\s*о$|межобъект|ожидани.*объект|без объект/.test(normalizedName)) return "intershift";
   if (/межвахт/.test(normalizedName)) return "intershift";
   if (/отпуск/.test(normalizedName)) return "vacation";
   if (/больнич|нетрудоспособ/.test(normalizedName)) return "sick_leave";

@@ -29,4 +29,23 @@ test("keeps daily personnel reports limited to OPR employees", async () => {
 
   assert.match(timesheetApi, /UPPER\(TRIM\(pe\.employment_type_snapshot\)\) = 'ОПР'/);
   assert.match(timesheetApi, /EXISTS \(SELECT 1 FROM employee_project_assignments epa[\s\S]*epa\.active = 1/);
+  assert.match(timesheetApi, /OR EXISTS \([\s\S]*FROM placement_entries pe[\s\S]*pe\.work_date >= \? AND pe\.work_date < \?/);
+  assert.match(timesheetApi, /OR EXISTS \([\s\S]*FROM timesheet_marks tm[\s\S]*tm\.work_date >= \? AND tm\.work_date < \?/);
+});
+
+test("keeps project assignment history instead of rewriting past assignments", async () => {
+  const [api, app, grid] = await Promise.all([
+    source("app/api/data/route.ts"),
+    source("app/PersonnelApp.tsx"),
+    source("app/AgDataGrids.tsx"),
+  ]);
+
+  assert.match(api, /payload\.action === "create-employee"[\s\S]*projectSiteId \? "on_site" : "unassigned"/);
+  assert.match(api, /payload\.action === "update-employee"[\s\S]*end_date = COALESCE\(end_date, CURRENT_DATE\)/);
+  assert.match(api, /INSERT INTO employee_project_assignments \(employee_id, site_id, source, start_date\) VALUES \(\?, \?, 'manual', CURRENT_DATE\)/);
+  assert.doesNotMatch(api, /UPDATE employee_project_assignments SET active = 1, end_date = NULL/);
+  assert.match(api, /employee\.availabilityStatus !== "on_site" \|\| !employee\.siteIds\.length[\s\S]*active = 0, end_date = COALESCE/);
+  assert.match(app, /projectSiteId: draft\.projectSiteId \? Number\(draft\.projectSiteId\) : null/);
+  assert.match(app, /label: "Без объекта"/);
+  assert.match(grid, /row\.employee\?\.siteName \?\? "Без объекта"/);
 });

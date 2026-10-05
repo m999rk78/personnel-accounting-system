@@ -102,8 +102,10 @@ test("keeps business validation in the data API", async () => {
   assert.match(api, /CREATE TABLE IF NOT EXISTS position_catalog/);
   assert.match(api, /payload\.action === "import-employees"/);
   assert.match(api, /projectCode \?\? ""\)\.split\(","\)/);
-  assert.match(api, /UPDATE employee_project_assignments SET active = 0, end_date = DATE\('now'\)/);
-  assert.match(api, /INSERT INTO employee_project_assignments \(employee_id, site_id, source\) SELECT \?, \?, 'excel' WHERE NOT EXISTS/);
+  assert.match(api, /if \(!fullName \|\| !employmentType \|\| !department \|\| !position\)/);
+  assert.match(api, /UPDATE employee_project_assignments SET active = 0, end_date = COALESCE\(end_date, DATE\('now'\)\)/);
+  assert.match(api, /INSERT INTO employee_project_assignments \(employee_id, site_id, source, start_date\) SELECT \?, \?, 'excel', DATE\('now'\) WHERE NOT EXISTS/);
+  assert.match(api, /unassigned: validatedRows\.filter\(\(row\) => row\.siteIds\.length === 0\)\.length/);
   assert.match(api, /payload\.action === "import-positions"/);
   assert.match(api, /UPDATE app_users SET active = 0/);
   assert.match(api, /UPDATE employees SET active = 0, site_id = NULL WHERE id = ANY\(\?\) AND active = 1/);

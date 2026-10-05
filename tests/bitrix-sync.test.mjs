@@ -15,6 +15,7 @@ test("normalizeBitrixText makes Russian labels comparable", () => {
 test("classifyBitrixStage recognizes employee availability stages", () => {
   assert.equal(classifyBitrixStage("", "На объекте"), "on_site");
   assert.equal(classifyBitrixStage("", "Перемещения"), "transfer");
+  assert.equal(classifyBitrixStage("", "МО/О"), "intershift");
   assert.equal(classifyBitrixStage("", "Межвахта"), "intershift");
   assert.equal(classifyBitrixStage("", "Ежегодный отпуск"), "vacation");
   assert.equal(classifyBitrixStage("", "На больничном"), "sick_leave");

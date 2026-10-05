@@ -1141,7 +1141,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         const department = employeeBulkChanges.department || employee.department;
         const position = employeeBulkChanges.position || employee.position;
         if (!validPositionCombinations.has(normalize(`${employmentType}|${department}|${position}`))) throw new Error(`Для сотрудника «${employee.fullName}» сочетание «${employmentType} / ${department} / ${position}» отсутствует в справочнике должностей.`);
-        return { key: `employee-${employee.id}`, id: employee.id, fullName: employee.fullName, employmentType, department, position, projectSiteId: employeeBulkChanges.projectSiteId || (employee.siteId ? String(employee.siteId) : "") } satisfies EmployeeDraft;
+        const projectSiteId = employeeBulkChanges.projectSiteId === "__unassigned__"
+          ? ""
+          : employeeBulkChanges.projectSiteId || (employee.siteId ? String(employee.siteId) : "");
+        return { key: `employee-${employee.id}`, id: employee.id, fullName: employee.fullName, employmentType, department, position, projectSiteId } satisfies EmployeeDraft;
       });
       setEmployeeDrafts((current) => {
         const selectedIds = new Set(updates.map((draft) => draft.id));
@@ -1172,11 +1175,11 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       const validSites = new Set((data?.sites ?? []).map((site) => site.id));
       const validPositionCombinations = new Set((data?.positionCatalog ?? []).map((item) => normalize(`${item.employmentType}|${item.department}|${item.position}`)));
       employeeDrafts.forEach((draft, index) => {
-        if (!draft.fullName.trim() || !draft.employmentType.trim() || !draft.department.trim() || !draft.position.trim() || !Number(draft.projectSiteId)) throw new Error(`Строка ${index + 1}: заполните ФИО, тип, отдел, должность и проект.`);
+        if (!draft.fullName.trim() || !draft.employmentType.trim() || !draft.department.trim() || !draft.position.trim()) throw new Error(`Строка ${index + 1}: заполните ФИО, тип, отдел и должность.`);
         if (!validEmploymentTypes.has(normalize(draft.employmentType))) throw new Error(`Строка ${index + 1}: значение «${draft.employmentType}» не относится к столбцу «Тип».`);
         if (!validDepartments.has(normalize(draft.department))) throw new Error(`Строка ${index + 1}: значение «${draft.department}» не относится к столбцу «Отдел».`);
         if (!validPositions.has(normalize(draft.position))) throw new Error(`Строка ${index + 1}: значение «${draft.position}» не относится к столбцу «Должность».`);
-        if (!validSites.has(Number(draft.projectSiteId))) throw new Error(`Строка ${index + 1}: выбранный проект не найден или закрыт.`);
+        if (draft.projectSiteId && !validSites.has(Number(draft.projectSiteId))) throw new Error(`Строка ${index + 1}: выбранный проект не найден или закрыт.`);
         if (!validPositionCombinations.has(normalize(`${draft.employmentType}|${draft.department}|${draft.position}`))) throw new Error(`Строка ${index + 1}: сочетание типа, отдела и должности отсутствует в справочнике должностей.`);
         const name = normalize(draft.fullName);
         if (usedNames.has(name)) throw new Error(`Строка ${index + 1}: сотрудник «${draft.fullName.trim()}» уже есть в справочнике.`);
@@ -1184,7 +1187,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       });
       for (let index = 0; index < employeeDrafts.length; index += 1) {
         const draft = employeeDrafts[index];
-        const response = await fetch("/api/data", { method: draft.id ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: draft.id ? "update-employee" : "create-employee", employeeId: draft.id, fullName: draft.fullName, employmentType: draft.employmentType, department: draft.department, position: draft.position, projectSiteId: Number(draft.projectSiteId) }) });
+        const response = await fetch("/api/data", { method: draft.id ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: draft.id ? "update-employee" : "create-employee", employeeId: draft.id, fullName: draft.fullName, employmentType: draft.employmentType, department: draft.department, position: draft.position, projectSiteId: draft.projectSiteId ? Number(draft.projectSiteId) : null }) });
         const result = await response.json() as { error?: string };
         if (!response.ok) throw new Error(`Строка ${index + 1}: ${result.error ?? "не удалось сохранить сотрудника"}.`);
         setEmployeeDrafts((current) => current.filter((item) => item.key !== draft.key));
@@ -1308,7 +1311,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     if (!data) return;
     const employees = employeeVisibleIds === null ? visibleEmployees : visibleEmployees.filter((employee) => employeeVisibleIds.includes(employee.id));
     const headers = ["ФИО", "Тип", "Отдел", "Должность", "Проект"];
-    const rows = employees.map((employee) => [employee.fullName, employee.employmentType, employee.department, employee.position, employee.siteName ?? ""]);
+    const rows = employees.map((employee) => [employee.fullName, employee.employmentType, employee.department, employee.position, employee.siteName ?? "Без объекта"]);
     openSettingsExportPreview({ title: "Сотрудники", description: `Строк в выгрузке: ${rows.length}`, fileName: "Сотрудники.xlsx", sheetName: "Сотрудники", workbookTitle: "Список сотрудников", headers, rows });
   }
   async function inspectBitrix24Connection() {
@@ -1338,9 +1341,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       const { parseTableXlsx } = await loadPlacementXlsx();
       const rows = await parseTableXlsx(file, ["ФИО", "Тип", "Отдел", "Должность", "Проект"]);
       const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "import-employees", employees: rows.map((row) => ({ fullName: row["ФИО"], employmentType: row["Тип"], department: row["Отдел"], position: row["Должность"], projectCode: row["Проект"] })) }) });
-      const result = await response.json() as { error?: string; count?: number };
+      const result = await response.json() as { error?: string; count?: number; unassigned?: number };
       if (!response.ok) throw new Error(result.error ?? "Не удалось импортировать сотрудников.");
-      setNotice(`Импортировано сотрудников: ${result.count ?? rows.length}`); await loadData();
+      const imported = result.count ?? rows.length;
+      setNotice(`Импортировано сотрудников: ${imported}${result.unassigned ? ` · без объекта: ${result.unassigned}` : ""}`); await loadData();
     } catch (importError) { setError(importError instanceof Error ? importError.message : "Не удалось импортировать сотрудников."); }
     finally { setImporting(false); if (employeeFileInput.current) employeeFileInput.current.value = ""; }
   }
@@ -1887,7 +1891,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
           onVisibleIdsChange={(ids) => setEmployeeVisibleIds((current) => current?.length === ids.length && current.every((id, index) => id === ids[index]) ? current : ids)}
           onValidationError={(message) => { setError(message); setNotice(""); }}
         />
-        {mayEditGlobalEmployees && <AdminGridFooter addLabel="Добавить сотрудника" countLabel="Всего сотрудников" count={visibleEmployees.length} deletingCount={employeePendingDeletes.length} deletingLabel="Удалить сотрудников" editSelectionLabel="Редактировать" bulkEditSelectionLabel="Массовое редактирование" uniformActions editorOpen={Boolean(employeeDrafts.length)} editingExisting={employeeDrafts.some((draft) => Boolean(draft.id))} pendingCount={employeeDrafts.length} saving={saving} allowMultiple canCreate={mayCreateEmployees} canUpdate={mayUpdateEmployees} canDelete={mayDeleteEmployees} onAdd={() => { setEmployeeDrafts((current) => current.some((draft) => draft.id) ? current : [...current, { key: newKey(), fullName: "", employmentType: "", department: "", position: "", projectSiteId: String(siteId) }]); setNotice(""); }} onDelete={() => setEmployeeDeleteConfirmationOpen(true)} onEditSelection={editSelectedEmployeeRows} onBulkEditSelection={openEmployeeBulkEdit} onClearSelection={() => { setEmployeePendingDeletes([]); setEmployeeBulkEditOpen(false); setEmployeeBulkEditError(""); setNotice(""); }} onCancelEditing={cancelEmployeeEditing} onSave={() => void saveEmployees()} />}
+        {mayEditGlobalEmployees && <AdminGridFooter addLabel="Добавить сотрудника" countLabel="Всего сотрудников" count={visibleEmployees.length} deletingCount={employeePendingDeletes.length} deletingLabel="Удалить сотрудников" editSelectionLabel="Редактировать" bulkEditSelectionLabel="Массовое редактирование" uniformActions editorOpen={Boolean(employeeDrafts.length)} editingExisting={employeeDrafts.some((draft) => Boolean(draft.id))} pendingCount={employeeDrafts.length} saving={saving} allowMultiple canCreate={mayCreateEmployees} canUpdate={mayUpdateEmployees} canDelete={mayDeleteEmployees} onAdd={() => { setEmployeeDrafts((current) => current.some((draft) => draft.id) ? current : [...current, { key: newKey(), fullName: "", employmentType: "", department: "", position: "", projectSiteId: "" }]); setNotice(""); }} onDelete={() => setEmployeeDeleteConfirmationOpen(true)} onEditSelection={editSelectedEmployeeRows} onBulkEditSelection={openEmployeeBulkEdit} onClearSelection={() => { setEmployeePendingDeletes([]); setEmployeeBulkEditOpen(false); setEmployeeBulkEditError(""); setNotice(""); }} onCancelEditing={cancelEmployeeEditing} onSave={() => void saveEmployees()} />}
       </section>}
 
       {bitrixCheckResult && <div className="bitrix-check-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setBitrixCheckResult(null); }}><section className={`bitrix-check-dialog ${bitrixCheckResult.status}`} role="dialog" aria-modal="true" aria-labelledby="bitrix-check-title">
@@ -1904,7 +1908,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
           <div className="employee-bulk-edit-field"><span>Тип</span><CustomSelect value={employeeBulkChanges.employmentType} ariaLabel="Новый тип для выбранных сотрудников" onChange={(employmentType) => { setEmployeeBulkChanges((current) => ({ ...current, employmentType })); setEmployeeBulkEditError(""); }} options={[{ value: "", label: "Не изменять" }, ...(data?.employmentTypes ?? []).map((option) => ({ value: option.name, label: option.name }))]} /></div>
           <div className="employee-bulk-edit-field"><span>Отдел</span><CustomSelect value={employeeBulkChanges.department} ariaLabel="Новый отдел для выбранных сотрудников" onChange={(department) => { setEmployeeBulkChanges((current) => ({ ...current, department })); setEmployeeBulkEditError(""); }} options={[{ value: "", label: "Не изменять" }, ...(data?.departments ?? []).map((option) => ({ value: option.name, label: option.name }))]} /></div>
           <div className="employee-bulk-edit-field"><span>Должность</span><CustomSelect value={employeeBulkChanges.position} ariaLabel="Новая должность для выбранных сотрудников" onChange={(position) => { setEmployeeBulkChanges((current) => ({ ...current, position })); setEmployeeBulkEditError(""); }} options={[{ value: "", label: "Не изменять" }, ...(data?.positions ?? []).map((option) => ({ value: option.name, label: option.name }))]} /></div>
-          <div className="employee-bulk-edit-field"><span>Проект</span><CustomSelect value={employeeBulkChanges.projectSiteId} ariaLabel="Новый проект для выбранных сотрудников" onChange={(projectSiteId) => { setEmployeeBulkChanges((current) => ({ ...current, projectSiteId })); setEmployeeBulkEditError(""); }} options={[{ value: "", label: "Не изменять" }, ...(data?.sites ?? []).map((option) => ({ value: String(option.id), label: option.name }))]} /></div>
+          <div className="employee-bulk-edit-field"><span>Проект</span><CustomSelect value={employeeBulkChanges.projectSiteId} ariaLabel="Новый проект для выбранных сотрудников" onChange={(projectSiteId) => { setEmployeeBulkChanges((current) => ({ ...current, projectSiteId })); setEmployeeBulkEditError(""); }} options={[{ value: "", label: "Не изменять" }, { value: "__unassigned__", label: "Без объекта" }, ...(data?.sites ?? []).map((option) => ({ value: String(option.id), label: option.name }))]} /></div>
         </div>
         <div className="bulk-edit-selection-summary"><strong>Выбрано:</strong><span>{visibleEmployees.filter((employee) => employeePendingDeletes.includes(employee.id)).slice(0, 4).map((employee) => employee.fullName).join(", ")}{employeePendingDeletes.length > 4 ? ` и ещё ${employeePendingDeletes.length - 4}` : ""}</span></div>
         <div className="employee-bulk-edit-actions"><button type="button" className="secondary-button" onClick={() => setEmployeeBulkEditOpen(false)}>Отмена</button><button type="button" className="save-edits-button" onClick={applyEmployeeBulkEdit}>Применить к таблице</button></div>

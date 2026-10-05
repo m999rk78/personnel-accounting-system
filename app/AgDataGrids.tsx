@@ -1657,7 +1657,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     const currentProps = propsRef.current;
     const activeCellEditor = Boolean(field && activeEditor?.rowKey === row.rowKey && activeEditor.field === field && row.draft);
     if (!activeCellEditor) {
-      const value = field === "siteName" ? params.value || "Не назначен" : params.value;
+      const value = field === "siteName" ? params.value || "Без объекта" : params.value;
       const hasMenu = Boolean(row.draft && field && ["employmentType", "department", "position", "siteName"].includes(field));
       return row.draft
         ? <EditableCellDisplay value={String(value || "Не заполнено")} menuLabel={params.colDef?.headerName} onOpen={hasMenu ? () => openCellEditor(row, field!) : undefined} />
@@ -1668,7 +1668,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     if (field === "employmentType") return <div className="ag-cell-editor-host"><DraftNameSelect autoOpen value={draft.employmentType} options={currentProps.employmentTypes} placeholder="Тип" onChange={(employmentType) => { currentProps.onPatchDraft(draft.key, { employmentType }); setActiveEditor(null); }} /></div>;
     if (field === "department") return <div className="ag-cell-editor-host"><DraftNameSelect autoOpen value={draft.department} options={currentProps.departments} placeholder="Отдел" onChange={(department) => { currentProps.onPatchDraft(draft.key, { department }); setActiveEditor(null); }} /></div>;
     if (field === "position") return <div className="ag-cell-editor-host"><DraftNameSelect autoOpen value={draft.position} options={currentProps.positions} placeholder="Должность" onChange={(position) => { currentProps.onPatchDraft(draft.key, { position }); setActiveEditor(null); }} /></div>;
-    if (field === "siteName") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.projectSiteId} options={currentProps.sites} placeholder="Проект" onChange={(projectSiteId) => { currentProps.onPatchDraft(draft.key, { projectSiteId }); setActiveEditor(null); }} /></div>;
+    if (field === "siteName") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.projectSiteId} options={currentProps.sites} placeholder="Без объекта" onChange={(projectSiteId) => { currentProps.onPatchDraft(draft.key, { projectSiteId }); setActiveEditor(null); }} /></div>;
     return <span>{params.value}</span>;
   }, [activeEditor, openCellEditor, propsRef]);
 
@@ -1704,8 +1704,10 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
       changes.position = position;
     }
     if (values.siteName !== undefined) {
-      const projectSiteId = pastedOptionId(currentProps.sites, values.siteName);
-      if (!projectSiteId) { currentProps.onValidationError(`Значение «${values.siteName}» нельзя вставить в столбец «Проект». Выберите существующий проект.`); return false; }
+      const pasted = values.siteName.trim();
+      const unassigned = !pasted || ["без объекта", "не назначен", "не назначена", "без проекта", "—", "-"].includes(normalizeSearch(pasted));
+      const projectSiteId = unassigned ? "" : pastedOptionId(currentProps.sites, pasted);
+      if (!unassigned && !projectSiteId) { currentProps.onValidationError(`Значение «${pasted}» нельзя вставить в столбец «Проект». Выберите существующий проект или «Без объекта».`); return false; }
       changes.projectSiteId = projectSiteId;
     }
     if (!Object.keys(changes).length) return false;
@@ -1721,9 +1723,9 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     const row = params.data;
     if (!row) return "";
     if (field === "number") return row.number;
-    if (row.kind === "entry") return row.employee?.[field] ?? "";
+    if (row.kind === "entry") return field === "siteName" ? row.employee?.siteName ?? "Без объекта" : row.employee?.[field] ?? "";
     const draft = propsRef.current.drafts.find((candidate) => candidate.key === row.draft?.key) ?? row.draft;
-    if (field === "siteName") return propsRef.current.sites.find((site) => site.id === Number(draft?.projectSiteId))?.name ?? "";
+    if (field === "siteName") return propsRef.current.sites.find((site) => site.id === Number(draft?.projectSiteId))?.name ?? "Без объекта";
     return draft?.[field as keyof GridEmployeeDraft] ?? "";
   }, [propsRef]);
 
