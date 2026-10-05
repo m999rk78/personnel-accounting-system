@@ -19,7 +19,7 @@ import { ROLE_LABELS, canViewAllProjects, type UserRole } from "./roles";
 
 type Option = { id: number; name: string };
 type Site = Option & { code: string; timezone: string };
-type Employee = { id: number; fullName: string; employmentType: string; department: string; position: string; source: string; bitrix24Stage: string; availabilityStatus: string; syncError: string | null; lastSyncedAt?: string | null; siteId: number | null; siteName: string | null };
+type Employee = { id: number; bitrix24Id?: string | null; fullName: string; employmentType: string; department: string; position: string; source: string; bitrix24Stage: string; availabilityStatus: string; syncError: string | null; lastSyncedAt?: string | null; siteId: number | null; siteName: string | null };
 type PositionRecord = { id: number; employmentType: string; department: string; position: string };
 type AppUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; status?: "active" | "invited" };
 type CurrentUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; permissions: PermissionSet; permissionsCustomized: boolean };
@@ -41,8 +41,8 @@ type DataSet = {
   syncStatus?: { id: number; status: string; startedAt: string; completedAt: string | null; summary: string | null; errorText: string | null } | null;
   bitrix24Cooldowns?: Bitrix24Cooldowns;
 };
-type BitrixCheckDifference = { kind: "missing_locally" | "changed" | "outside_scope" | "missing_in_bitrix" | "incomplete" | "unknown_stage"; employeeName: string; details: string };
-type BitrixCheckResult = { status: "ok" | "mismatch"; checkedAt: string; sourceReceived: number; compared: number; matched: number; totalDifferences: number; differences: BitrixCheckDifference[] };
+type BitrixCheckDifference = { kind: "missing_locally" | "changed" | "outside_scope" | "missing_in_bitrix" | "incomplete" | "unknown_stage"; employeeName: string; details: string; bitrix24Id?: string; suggestedEmployeeIds?: number[] };
+type BitrixCheckResult = { status: "ok" | "mismatch"; checkedAt: string; sourceReceived: number; compared: number; matched: number; totalDifferences: number; differences: BitrixCheckDifference[]; autoLinkable: number; needsReview: number; unmatched: number; linked?: number };
 const BITRIX_DIFFERENCE_LABELS: Record<BitrixCheckDifference["kind"], string> = {
   missing_locally: "Нет в системе",
   changed: "Данные отличаются",
@@ -281,6 +281,7 @@ function RosterReportFooter({ mode, completed, total, selectedEntryCount, select
     {showReviewActions && (canCreate || canUpdate) && <div className="employee-editing-bar roster-save-bar">
       <div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>Если всё как вчера, сразу сохраните. Измените только отличия за сегодня</span></div>
       <div className="employee-selection-actions">
+        {editorOpen && canCreate && <button type="button" className="employee-action-button employee-add-button" onClick={onAdd} disabled={saving}>Добавить сотрудника</button>}
         <button type="button" className="employee-action-button cancel-editing-button" onClick={onReset} disabled={saving}>Вернуть исходные данные</button>
         <button type="button" className="employee-action-button employee-save-button" onClick={onSave} disabled={saving}>{saving ? "Сохраняем…" : saveLabel}</button>
       </div>
@@ -481,8 +482,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
   const [syncingBitrix24, setSyncingBitrix24] = useState(false);
+  const [linkingBitrix24, setLinkingBitrix24] = useState(false);
   const [bitrix24Clock, setBitrix24Clock] = useState(() => Date.now());
   const [bitrixCheckResult, setBitrixCheckResult] = useState<BitrixCheckResult | null>(null);
+  const [bitrixManualLinks, setBitrixManualLinks] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [profileOpen, setProfileOpen] = useState(false);
@@ -536,7 +539,11 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const reportRangeQuery = `rangeStart=${recentDates[0]}&rangeEnd=${reportRangeEnd}`;
   const filledDates = useMemo(() => new Set(data?.filledDates ?? []), [data?.filledDates]);
   const activeSite = data?.sites.find((site) => site.id === siteId);
-  const visibleEmployees = data?.employees ?? [];
+  const visibleEmployees = useMemo(() => data?.employees ?? [], [data?.employees]);
+  const bitrixAvailableEmployeeOptions = useMemo(() => [{ value: "", label: "Выберите сотрудника" }, ...visibleEmployees.filter((employee) => !employee.bitrix24Id).map((employee) => ({
+    value: String(employee.id),
+    label: `${employee.fullName} · ${employee.employmentType} / ${employee.department} / ${employee.position}`,
+  }))], [visibleEmployees]);
   const visibleProjectEmployees = data?.projectEmployees ?? data?.placementEmployees ?? [];
   const visiblePositions = data?.positionCatalog ?? [];
   const visibleUsers = data?.users ?? [];
@@ -1314,6 +1321,13 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     const rows = employees.map((employee) => [employee.fullName, employee.employmentType, employee.department, employee.position, employee.siteName ?? "Без объекта"]);
     openSettingsExportPreview({ title: "Сотрудники", description: `Строк в выгрузке: ${rows.length}`, fileName: "Сотрудники.xlsx", sheetName: "Сотрудники", workbookTitle: "Список сотрудников", headers, rows });
   }
+  function showBitrixCheckResult(result: BitrixCheckResult) {
+    setBitrixCheckResult(result);
+    setBitrixManualLinks(Object.fromEntries(result.differences.flatMap((difference) =>
+      difference.kind === "missing_locally" && difference.bitrix24Id && difference.suggestedEmployeeIds?.length === 1
+        ? [[difference.bitrix24Id, String(difference.suggestedEmployeeIds[0])]]
+        : [])));
+  }
   async function inspectBitrix24Connection() {
     setSyncingBitrix24(true); setBitrixCheckResult(null); setError(""); setNotice("");
     try {
@@ -1321,12 +1335,25 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       const result = await response.json() as BitrixCheckResult & { error?: string };
       if (!response.ok) throw new Error(result.error ?? "Не удалось проверить подключение к Битрикс24.");
       await loadData();
-      setBitrixCheckResult(result);
+      showBitrixCheckResult(result);
     } catch (inspectError) {
       const message = inspectError instanceof Error ? inspectError.message : "Не удалось проверить подключение к Битрикс24.";
       await loadData();
       setError(message);
     } finally { setSyncingBitrix24(false); }
+  }
+  async function linkBitrix24Employees(links?: Array<{ bitrix24Id: string; employeeId: number }>) {
+    setLinkingBitrix24(true); setError(""); setNotice("");
+    try {
+      const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "link-bitrix24-employees", ...(links ? { links } : {}) }) });
+      const result = await response.json() as BitrixCheckResult & { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Не удалось сопоставить сотрудников с Битрикс24.");
+      await loadData();
+      showBitrixCheckResult(result);
+      if (result.linked) setNotice(`Сопоставлено сотрудников с Битрикс24: ${result.linked}.`);
+    } catch (linkError) {
+      setError(linkError instanceof Error ? linkError.message : "Не удалось сопоставить сотрудников с Битрикс24.");
+    } finally { setLinkingBitrix24(false); }
   }
   function exportPositions() {
     if (!data) return;
@@ -1863,7 +1890,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       {view === "employees" && may("employees") && <section className="users-settings admin-section employee-section">
         <div className="settings-toolbar">
           <button type="button" className="back-button" onClick={() => { navigateTo("settings"); setBitrixCheckResult(null); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setEmployeePendingDeletes([]); setEmployeeDeleteConfirmationOpen(false); setEmployeeBulkEditOpen(false); }}>← К настройкам</button>
-          <div className="toolbar-actions">{mayInspectBitrix24 && <span className="cooldown-button-wrapper" title={inspectBitrix24Title}><button type="button" className="bitrix-check-button" onClick={() => void inspectBitrix24Connection()} disabled={syncingBitrix24 || importing || inspectBitrix24Remaining > 0}>{syncingBitrix24 ? "Проверяем…" : "Проверить с Битрикс24"}</button></span>}<button type="button" onClick={exportEmployees}>Экспорт в Excel</button>{(mayCreateEmployees || mayUpdateEmployees) && <><button type="button" onClick={() => employeeFileInput.current?.click()} disabled={importing || syncingBitrix24}>Импорт из Excel</button><input ref={employeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importEmployees(file); }} /></>}</div>
+          <div className="toolbar-actions">{mayInspectBitrix24 && <span className="cooldown-button-wrapper" title={inspectBitrix24Title}><button type="button" className="bitrix-check-button" onClick={() => void inspectBitrix24Connection()} disabled={syncingBitrix24 || linkingBitrix24 || importing || inspectBitrix24Remaining > 0}>{syncingBitrix24 ? "Проверяем…" : "Проверить с Битрикс24"}</button></span>}<button type="button" onClick={exportEmployees}>Экспорт в Excel</button>{(mayCreateEmployees || mayUpdateEmployees) && <><button type="button" onClick={() => employeeFileInput.current?.click()} disabled={importing || syncingBitrix24 || linkingBitrix24}>Импорт из Excel</button><input ref={employeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importEmployees(file); }} /></>}</div>
         </div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}
         {notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
@@ -1894,11 +1921,16 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         {mayEditGlobalEmployees && <AdminGridFooter addLabel="Добавить сотрудника" countLabel="Всего сотрудников" count={visibleEmployees.length} deletingCount={employeePendingDeletes.length} deletingLabel="Удалить сотрудников" editSelectionLabel="Редактировать" bulkEditSelectionLabel="Массовое редактирование" uniformActions editorOpen={Boolean(employeeDrafts.length)} editingExisting={employeeDrafts.some((draft) => Boolean(draft.id))} pendingCount={employeeDrafts.length} saving={saving} allowMultiple canCreate={mayCreateEmployees} canUpdate={mayUpdateEmployees} canDelete={mayDeleteEmployees} onAdd={() => { setEmployeeDrafts((current) => current.some((draft) => draft.id) ? current : [...current, { key: newKey(), fullName: "", employmentType: "", department: "", position: "", projectSiteId: "" }]); setNotice(""); }} onDelete={() => setEmployeeDeleteConfirmationOpen(true)} onEditSelection={editSelectedEmployeeRows} onBulkEditSelection={openEmployeeBulkEdit} onClearSelection={() => { setEmployeePendingDeletes([]); setEmployeeBulkEditOpen(false); setEmployeeBulkEditError(""); setNotice(""); }} onCancelEditing={cancelEmployeeEditing} onSave={() => void saveEmployees()} />}
       </section>}
 
-      {bitrixCheckResult && <div className="bitrix-check-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setBitrixCheckResult(null); }}><section className={`bitrix-check-dialog ${bitrixCheckResult.status}`} role="dialog" aria-modal="true" aria-labelledby="bitrix-check-title">
-        <div className="bitrix-check-heading"><span className="bitrix-check-icon" aria-hidden="true">{bitrixCheckResult.status === "ok" ? "✓" : "!"}</span><div><small>ПРОВЕРКА БЕЗ ИЗМЕНЕНИЯ ДАННЫХ</small><h2 id="bitrix-check-title">{bitrixCheckResult.status === "ok" ? "Всё в порядке" : "Найдены расхождения"}</h2><p>{bitrixCheckResult.status === "ok" ? "Связанные карточки сотрудников совпадают с данными Битрикс24." : "Система ничего не изменила. Проверьте найденные отличия и при необходимости исправьте карточки вручную."}</p></div><button type="button" className="bitrix-check-close" aria-label="Закрыть результат проверки" onClick={() => setBitrixCheckResult(null)}>×</button></div>
+      {bitrixCheckResult && <div className="bitrix-check-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !linkingBitrix24) setBitrixCheckResult(null); }}><section className={`bitrix-check-dialog ${bitrixCheckResult.status}`} role="dialog" aria-modal="true" aria-labelledby="bitrix-check-title">
+        <div className="bitrix-check-heading"><span className="bitrix-check-icon" aria-hidden="true">{bitrixCheckResult.status === "ok" ? "✓" : "!"}</span><div><small>{bitrixCheckResult.linked ? "СОПОСТАВЛЕНИЕ ВЫПОЛНЕНО" : "ПРОВЕРКА БЕЗ ИЗМЕНЕНИЯ ДАННЫХ"}</small><h2 id="bitrix-check-title">{bitrixCheckResult.status === "ok" ? "Всё в порядке" : "Найдены расхождения"}</h2><p>{bitrixCheckResult.linked ? `Сохранено связей: ${bitrixCheckResult.linked}. Кадровые данные, проекты, отчёты и табели не изменялись.` : bitrixCheckResult.status === "ok" ? "Связанные карточки сотрудников совпадают с данными Битрикс24." : "Проверка нашла отличия и возможные совпадения. Автоматически связываются только полностью совпадающие карточки."}</p></div><button type="button" className="bitrix-check-close" aria-label="Закрыть результат проверки" onClick={() => setBitrixCheckResult(null)} disabled={linkingBitrix24}>×</button></div>
         <div className="bitrix-check-stats"><div><span>Прочитано</span><strong>{bitrixCheckResult.sourceReceived}</strong></div><div><span>Сравнено</span><strong>{bitrixCheckResult.compared}</strong></div><div><span>Совпадает</span><strong>{bitrixCheckResult.matched}</strong></div><div><span>Расхождений</span><strong>{bitrixCheckResult.totalDifferences}</strong></div></div>
-        {bitrixCheckResult.status === "mismatch" && <div className="bitrix-check-differences">{bitrixCheckResult.differences.map((difference, index) => <article key={`${difference.kind}-${difference.employeeName}-${index}`}><div><strong>{difference.employeeName}</strong><span>{difference.details}</span></div><em>{BITRIX_DIFFERENCE_LABELS[difference.kind]}</em></article>)}{bitrixCheckResult.totalDifferences > bitrixCheckResult.differences.length && <p>Показаны первые {bitrixCheckResult.differences.length} из {bitrixCheckResult.totalDifferences} расхождений.</p>}</div>}
-        <div className="bitrix-check-footer"><span>Сотрудники, добавленные вручную или через Excel, не изменялись и не считаются отсутствующими.</span><button type="button" onClick={() => setBitrixCheckResult(null)}>Закрыть</button></div>
+        {bitrixCheckResult.status === "mismatch" && <div className="bitrix-check-differences">{bitrixCheckResult.differences.map((difference, index) => {
+          const selectedEmployeeId = difference.bitrix24Id ? bitrixManualLinks[difference.bitrix24Id] ?? "" : "";
+          const canLinkManually = mayUpdateEmployees && bitrixCheckResult.autoLinkable === 0 && difference.kind === "missing_locally" && Boolean(difference.bitrix24Id);
+          return <article key={`${difference.kind}-${difference.employeeName}-${index}`}><div><strong>{difference.employeeName}</strong><span>{difference.details}</span>{canLinkManually && <div className="bitrix-manual-link"><CustomSelect searchable className="bitrix-manual-select" value={selectedEmployeeId} ariaLabel={`Сотрудник системы для ${difference.employeeName}`} onChange={(employeeId) => setBitrixManualLinks((current) => ({ ...current, [difference.bitrix24Id!]: employeeId }))} options={bitrixAvailableEmployeeOptions} /><button type="button" disabled={!selectedEmployeeId || linkingBitrix24} onClick={() => void linkBitrix24Employees([{ bitrix24Id: difference.bitrix24Id!, employeeId: Number(selectedEmployeeId) }])}>{linkingBitrix24 ? "Сопоставляем…" : "Сопоставить"}</button></div>}</div><em>{BITRIX_DIFFERENCE_LABELS[difference.kind]}</em></article>;
+        })}{bitrixCheckResult.totalDifferences > bitrixCheckResult.differences.length && <p>Показаны первые {bitrixCheckResult.differences.length} из {bitrixCheckResult.totalDifferences} расхождений.</p>}</div>}
+        {error && <div className="bitrix-link-error" role="alert">{error}</div>}
+        <div className="bitrix-check-footer"><span>{bitrixCheckResult.autoLinkable > 0 ? `Найдено точных совпадений: ${bitrixCheckResult.autoLinkable}. Будет сохранена только связь с ID Битрикс24 — карточки и история не изменятся.` : bitrixCheckResult.needsReview || bitrixCheckResult.unmatched ? `Требуют ручной проверки: ${bitrixCheckResult.needsReview + bitrixCheckResult.unmatched}. Выберите соответствующего сотрудника непосредственно в строке.` : "Сотрудники, добавленные вручную или через Excel, не изменялись."}</span><div>{mayUpdateEmployees && bitrixCheckResult.autoLinkable > 0 && <button type="button" className="bitrix-auto-link-button" onClick={() => void linkBitrix24Employees()} disabled={linkingBitrix24}>{linkingBitrix24 ? "Сопоставляем…" : `Сопоставить автоматически: ${bitrixCheckResult.autoLinkable}`}</button>}<button type="button" onClick={() => setBitrixCheckResult(null)} disabled={linkingBitrix24}>Закрыть</button></div></div>
       </section></div>}
 
       {employeeBulkEditOpen && <div className="confirmation-backdrop employee-bulk-edit-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setEmployeeBulkEditOpen(false); }}><section className="employee-bulk-edit-dialog" role="dialog" aria-modal="true" aria-labelledby="employee-bulk-edit-title">

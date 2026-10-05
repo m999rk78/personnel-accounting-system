@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { BITRIX24_READ_ONLY_METHODS, classifyBitrixStage, compareBitrixEmployees, isBitrixEmployeeInImportScope, normalizeBitrixText, resolveBitrixFieldValues } from "../app/bitrix24Sync.ts";
+import { BITRIX24_READ_ONLY_METHODS, classifyBitrixStage, compareBitrixEmployees, isBitrixEmployeeInImportScope, normalizeBitrixText, resolveBitrixFieldValues, suggestBitrixEmployeeLinks } from "../app/bitrix24Sync.ts";
 
 test("Bitrix24 integration exposes only read methods", () => {
   assert.deepEqual(BITRIX24_READ_ONLY_METHODS, ["crm.item.fields", "crm.item.list", "crm.status.list"]);
@@ -62,4 +62,23 @@ test("Bitrix check reports differences without treating manual employees as miss
   assert.equal(changed.matched, 0);
   assert.deepEqual(changed.differences.map((difference) => difference.kind), ["changed", "missing_in_bitrix"]);
   assert.match(changed.differences[0].details, /должность/);
+});
+
+test("suggests only unique exact employee matches for automatic Bitrix linking", () => {
+  const source = [{
+    bitrix24Id: "101", fullName: "Иванов  Иван", employmentType: "ОПР", department: "УСР", position: "Монтажник",
+    stageId: "ON_SITE", stageName: "На объекте", availabilityStatus: "on_site", projectKeys: ["Усть-Луга"], sourceUpdatedAt: null,
+  }, {
+    bitrix24Id: "102", fullName: "Петров Пётр", employmentType: "ИТР", department: "ПТО", position: "Инженер",
+    stageId: "ON_SITE", stageName: "На объекте", availabilityStatus: "on_site", projectKeys: ["Усть-Луга"], sourceUpdatedAt: null,
+  }];
+  const local = [
+    { id: 1, bitrix24Id: null, fullName: "Иванов Иван", employmentType: "ОПР", department: "УСР", position: "Монтажник" },
+    { id: 2, bitrix24Id: null, fullName: "Петров Петр", employmentType: "ИТР", department: "ПТО", position: "Главный инженер" },
+  ];
+  assert.deepEqual(suggestBitrixEmployeeLinks(source, local), [
+    { bitrix24Id: "101", employeeName: "Иванов  Иван", kind: "safe", employeeIds: [1] },
+    { bitrix24Id: "102", employeeName: "Петров Пётр", kind: "review", employeeIds: [2] },
+  ]);
+  assert.equal(suggestBitrixEmployeeLinks(source, [{ ...local[0], bitrix24Id: "101" }, local[1]]).some((item) => item.bitrix24Id === "101"), false);
 });

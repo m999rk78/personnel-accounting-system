@@ -184,6 +184,7 @@ function actionDescription(path: string, method: string, payload: Record<string,
   }
   const descriptions: Record<string, [AuditCategory, string, string, string]> = {
     "sync-bitrix24": ["integration", "bitrix.sync", "Применил данные из Битрикс24", "employee"],
+    "link-bitrix24-employees": ["integration", "bitrix.link", "Сопоставил сотрудников с Битрикс24", "employee"],
     "create-user": ["access", "user.create", `Добавил пользователя «${String(payload.fullName ?? "") || "Без имени"}»`, "user"],
     "update-user": ["access", "user.update", `Изменил пользователя «${String(payload.fullName ?? "") || "Без имени"}»`, "user"],
     "create-employee": ["directories", "employee.create", `Добавил сотрудника «${String(payload.fullName ?? "") || "Без имени"}»`, "employee"],

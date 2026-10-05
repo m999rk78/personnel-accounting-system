@@ -507,6 +507,7 @@ test("builds a foreman's report from the last personal submission and keeps proj
   assert.match(app, /editorOpen=\{rosterEditorOpen\}/);
   assert.match(app, /const rosterEditorOpen = editingRows\.length > 0 \|\| draftRows\.some\(\(row\) => !row\.carriedFromPreviousDay\)/);
   assert.match(app, /!editorOpen && <button[^>]+>Добавить сотрудника<\/button>/);
+  assert.match(app, /editorOpen && canCreate && <button[^>]+onClick=\{onAdd\}[^>]+>Добавить сотрудника<\/button>/);
   assert.match(app, /editingCount === 0 && newCount === 0 && selectedCount === 0/);
   assert.match(app, /page-content personnel-report-page table-workspace-page/);
   assert.match(styles, /\.personnel-report-page,\.table-workspace-page \{ height:100vh;[\s\S]*overflow:hidden/);
@@ -603,13 +604,16 @@ test("shows projects as portfolio cards while keeping the grid fallback", async 
   assert.match(styles, /\.project-editor-dialog/);
 });
 
-test("keeps the Bitrix24 employee check read-only in the interface", async () => {
+test("checks Bitrix24 read-only and links only explicitly confirmed employee matches", async () => {
   const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
   const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
   assert.match(app, /Проверить с Битрикс24/);
   assert.match(app, /ПРОВЕРКА БЕЗ ИЗМЕНЕНИЯ ДАННЫХ/);
-  assert.match(app, /Сотрудники, добавленные вручную или через Excel, не изменялись/);
+  assert.match(app, /Сопоставить автоматически/);
+  assert.match(app, /link-bitrix24-employees/);
+  assert.match(app, /bitrixManualLinks/);
+  assert.match(app, /Кадровые данные, проекты, отчёты и табели не изменялись/);
   assert.doesNotMatch(app, /Актуализировать из Битрикс24/);
   assert.doesNotMatch(app, /"Стадия в Битрикс24"/);
   assert.doesNotMatch(grid, /headerName: "Стадия в Битрикс24"/);
@@ -617,7 +621,11 @@ test("keeps the Bitrix24 employee check read-only in the interface", async () =>
   assert.doesNotMatch(grid, /row\.employee\?\.source === "bitrix24"/);
   assert.doesNotMatch(grid, /params\.data\.employee\?\.source !== "bitrix24"/);
   assert.match(app, /allEmployees=\{data\?\.employees \?\? \[\]\}/);
-  assert.match(api, /FROM employees WHERE active = 1 AND bitrix24_id IS NOT NULL/);
+  assert.match(api, /suggestBitrixEmployeeLinks/);
+  assert.match(api, /payload\.action === "link-bitrix24-employees"/);
+  assert.match(api, /WHERE id = \? AND active = 1 AND bitrix24_id IS NULL/);
+  assert.match(api, /bitrix24_stage = \?/);
+  assert.match(api, /sourceById\.get\(link\.bitrix24Id\)/);
   assert.doesNotMatch(api, /Рабочий не найден или управляется Битрикс24/);
   assert.doesNotMatch(api, /Карточки сотрудников, связанные с Битрикс24, доступны только для чтения/);
 });

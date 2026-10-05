@@ -674,3 +674,18 @@ button,input,select { font:inherit; } button { cursor:pointer; }
   .access-user-panel { position:static; }
   .access-user-list { max-height:260px; }
 }
+
+.bitrix-manual-link { display:grid; grid-template-columns:minmax(260px,1fr) auto; align-items:center; gap:8px; margin-top:10px; }
+.bitrix-manual-select .custom-select-toggle { min-height:36px; border-color:#d4d4d8; background:#fff; font-size:10px; }
+.bitrix-manual-link > button { height:36px; padding:0 13px; border:1px solid #86bfa0; border-radius:7px; background:#f0f9f4; color:#17603a; font-size:10px; font-weight:700; }
+.bitrix-manual-link > button:disabled { cursor:not-allowed; opacity:.5; }
+.bitrix-link-error { margin:0 22px 14px; padding:10px 12px; border:1px solid #fecaca; border-radius:8px; background:#fff1f2; color:#b91c1c; font-size:10px; line-height:1.45; }
+.bitrix-check-footer > div { display:flex; align-items:center; justify-content:flex-end; gap:8px; }
+.bitrix-check-footer .bitrix-auto-link-button { background:#17603a; }
+.bitrix-check-footer .bitrix-auto-link-button:hover { background:#124b2e; }
+@media (max-width:680px) {
+  .bitrix-manual-link { grid-template-columns:1fr; }
+  .bitrix-manual-link > button { width:100%; }
+  .bitrix-link-error { margin-right:15px; margin-left:15px; }
+  .bitrix-check-footer > div { align-items:stretch; flex-direction:column; }
+}
