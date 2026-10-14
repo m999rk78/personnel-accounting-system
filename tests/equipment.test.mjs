@@ -186,9 +186,15 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(view, /assignedSiteName/);
   assert.match(view, /Редактируется:/);
   assert.match(view, /Удалить технику/);
+  assert.match(view, /function EquipmentDeleteConfirmation/);
+  assert.match(view, /deleteConfirmationTarget === "daily"[\s\S]*deleteConfirmationTarget === "registry"[\s\S]*deleteConfirmationTarget === "project"/);
+  assert.match(view, /Удалить выбранную технику\?/);
+  assert.match(view, /Убрать выбранную технику из проекта\?/);
+  assert.doesNotMatch(view, /window\.confirm|\bconfirm\s*\(/);
   assert.match(view, /Сохранить изменения/);
   assert.match(view, /normalize\(entry\.subworkTypeName\)\.includes\("простой"\)/);
   assert.match(view, /equipment-timesheet-summary timesheet-top-summary/);
+  assert.match(view, /onScroll=\{\(event\) => syncTimesheetHeaderScroll\(event\.currentTarget\)\}/);
   assert.match(view, /section === "month" \? "timesheet-page"/);
   assert.match(view, /className="timesheet-export-button"/);
   assert.match(view, /className="equipment-total"><small>Всего<\/small><strong>\{monthSummary\.total\} ч\.<\/strong>/);
@@ -270,6 +276,9 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(grids, /selectAll: "filtered"/);
   assert.match(grids, /onFilterChanged/);
   assert.match(grids, /function EquipmentCombobox/);
+  assert.equal((grids.match(/useState<\{ top: number; left: number; width: number \} \| null>\(null\)/g) ?? []).length, 2);
+  assert.equal((grids.match(/open && position && typeof document !== "undefined" && createPortal/g) ?? []).length, 2);
+  assert.doesNotMatch(grids, /useState\(\{ top: 0, left: 0, width: (?:360|420) \}\)/);
   assert.match(grids, /Недоступна по табелю/);
   assert.match(grids, /equipment-plan-blocked/);
   assert.match(grids, /Начните вводить название техники/);
@@ -343,7 +352,7 @@ test("separates the daily equipment report into foreman contributions", async ()
   assert.match(view, /payload\?\.canCreateDaily && <button[^>]+onClick=\{\(\) => openEntry\(\)\}/);
   assert.match(view, /onClick=\{\(\) => \{ const selected = dailyEntries\.filter/);
   assert.match(view, /disabled=\{saving \|\| !payload\?\.canUpdateDaily\} title=\{payload\?\.canUpdateDaily \? undefined : "Нет права редактирования"\}>Редактировать/);
-  assert.match(view, /onClick=\{\(\) => void deleteSelectedEntries\(\)\} disabled=\{saving \|\| !payload\?\.canDeleteDaily\} title=\{payload\?\.canDeleteDaily \? undefined : "Нет права удаления"\}/);
+  assert.match(view, /onClick=\{\(\) => setDeleteConfirmationTarget\("daily"\)\} disabled=\{saving \|\| !payload\?\.canDeleteDaily\} title=\{payload\?\.canDeleteDaily \? undefined : "Нет права удаления"\}/);
   assert.match(view, /payload\.currentUserRole !== "foreman" \|\| !payload\.canCreateDaily\) return/);
   assert.match(view, /workDate !== today \|\| payload\?\.workDate !== workDate[\s\S]*scope=carryover/);
   assert.match(view, /equipmentCarryoverMode = section === "daily" && workDate === today[\s\S]*payload\.currentUserRole === "foreman" && payload\.canCreateDaily/);

@@ -28,7 +28,7 @@ export function TimesheetColumnFilter({ label, value, options, onChange, compact
   const [draft, setDraft] = useState<string[]>(value);
   const [draftSort, setDraftSort] = useState(sortValue);
   const [search, setSearch] = useState("");
-  const [position, setPosition] = useState({ top: 0, left: 0 });
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLDivElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -39,14 +39,6 @@ export function TimesheetColumnFilter({ label, value, options, onChange, compact
 
   useEffect(() => {
     if (!open) return;
-    const rect = trigger.current?.getBoundingClientRect();
-    if (rect) {
-      const width = Math.min(348, window.innerWidth - 24);
-      const height = Math.min(470, window.innerHeight - 24);
-      const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12));
-      const top = rect.bottom + 7 + height <= window.innerHeight ? rect.bottom + 7 : Math.max(12, rect.top - height - 7);
-      setPosition({ top, left });
-    }
     const focusTask = window.setTimeout(() => searchInput.current?.focus(), 0);
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
     document.addEventListener("keydown", closeOnEscape);
@@ -58,6 +50,13 @@ export function TimesheetColumnFilter({ label, value, options, onChange, compact
 
   function toggle() {
     if (!open) {
+      const rect = trigger.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = Math.min(348, window.innerWidth - 24);
+      const height = Math.min(470, window.innerHeight - 24);
+      const left = Math.max(12, Math.min(rect.left, window.innerWidth - width - 12));
+      const top = rect.bottom + 7 + height <= window.innerHeight ? rect.bottom + 7 : Math.max(12, rect.top - height - 7);
+      setPosition({ top, left });
       setDraft(value);
       setDraftSort(sortValue);
       setSearch("");
@@ -74,7 +73,7 @@ export function TimesheetColumnFilter({ label, value, options, onChange, compact
     setDraft((current) => checked ? [...new Set([...current, optionValue])] : current.filter((item) => item !== optionValue));
   }
 
-  const popup = open && typeof document !== "undefined" ? createPortal(
+  const popup = open && position && typeof document !== "undefined" ? createPortal(
     <div className="timesheet-filter-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setOpen(false); }}>
     <div className="timesheet-filter-popover personnel-filter" ref={popover} role="dialog" aria-modal="false" aria-label={`Настройка фильтра и сортировки: ${label}`} style={{ top: position.top, left: position.left }}>
       <div className="grid-filter-heading"><strong>{label}</strong><span>{sortOptions.length > 0 ? "Фильтр и порядок строк" : "Фильтр по значениям"}</span></div>

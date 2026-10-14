@@ -1,18 +1,25 @@
 export const BITRIX24_ACTION_COOLDOWN_MS = 2 * 60 * 60 * 1000;
+// Temporarily disabled while the initial Bitrix24 directory is being reconciled.
+// Restore this to BITRIX24_ACTION_COOLDOWN_MS after the reconciliation period.
+export const BITRIX24_INSPECTION_COOLDOWN_MS = 0;
 
 export type Bitrix24Action = "inspect-bitrix24" | "sync-bitrix24";
 export type Bitrix24Cooldown = { nextAllowedAt: string | null; remainingSeconds: number };
 export type Bitrix24Cooldowns = { inspect: Bitrix24Cooldown; sync: Bitrix24Cooldown };
 
-export function bitrix24Cooldown(lastStartedAt: string | Date | null | undefined, now = Date.now()): Bitrix24Cooldown {
+export function bitrix24Cooldown(lastStartedAt: string | Date | null | undefined, now = Date.now(), durationMs = BITRIX24_ACTION_COOLDOWN_MS): Bitrix24Cooldown {
   if (!lastStartedAt) return { nextAllowedAt: null, remainingSeconds: 0 };
   const startedAt = new Date(lastStartedAt).getTime();
   if (!Number.isFinite(startedAt)) return { nextAllowedAt: null, remainingSeconds: 0 };
-  const nextAllowed = startedAt + BITRIX24_ACTION_COOLDOWN_MS;
+  const nextAllowed = startedAt + durationMs;
   return {
     nextAllowedAt: new Date(nextAllowed).toISOString(),
     remainingSeconds: Math.max(0, Math.ceil((nextAllowed - now) / 1000)),
   };
+}
+
+export function bitrix24ActionCooldown(action: Bitrix24Action, lastStartedAt: string | Date | null | undefined, now = Date.now()) {
+  return bitrix24Cooldown(lastStartedAt, now, action === "inspect-bitrix24" ? BITRIX24_INSPECTION_COOLDOWN_MS : BITRIX24_ACTION_COOLDOWN_MS);
 }
 
 export function formatBitrix24Cooldown(seconds: number) {

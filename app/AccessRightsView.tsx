@@ -152,7 +152,6 @@ export function AccessRightsView({ onBack }: { onBack: () => void }) {
 
   return <section className="access-rights-page">
     <div className="settings-toolbar access-rights-toolbar"><button type="button" className="back-button" onClick={onBack}>← К общим настройкам</button><button type="button" className="back-button" onClick={() => void load()} disabled={loading || saving}>Обновить</button></div>
-    <div className="access-rights-intro"><div><strong>Гибкие права поверх ролей</strong><span>Роль задаёт безопасный шаблон. Индивидуальные настройки позволяют открыть только нужные разделы и действия.</span></div><span>Сервер применяет изменения сразу</span></div>
     {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}
     {notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
     <div className="access-rights-layout">
@@ -170,7 +169,6 @@ export function AccessRightsView({ onBack }: { onBack: () => void }) {
       </aside>
       <div className="access-matrix-panel">
         {selectedUser ? <>
-          <header className="access-matrix-heading"><div><span>Права пользователя</span><h2>{selectedUser.fullName}</h2><p>{selectedUser.email} · {ROLE_LABELS[selectedUser.role]}{selectedUser.assignedSiteName ? ` · Проект: ${selectedUser.assignedSiteName}` : ""}</p></div><span className={selectedUser.customized ? "access-mode-badge custom" : "access-mode-badge"}>{selectedUser.customized ? "Индивидуальные права" : "Шаблон роли"}</span></header>
           <div className="access-preset-bar"><div><span>Быстрые настройки</span><strong>{changed ? "Есть несохранённые изменения" : "Все изменения сохранены"}</strong></div>{canManage && <div><button type="button" onClick={() => setDraft(clonePermissions(roleTemplate))} disabled={saving}>Шаблон роли</button><button type="button" onClick={applyViewOnly} disabled={saving}>Только просмотр</button><button type="button" onClick={applyFullAccess} disabled={saving}>Полный доступ</button></div>}</div>
           <div className="permission-matrix" role="table" aria-label={`Права доступа: ${selectedUser.fullName}`}>
             <div className="permission-matrix-header" role="row"><span role="columnheader">Раздел системы</span>{PERMISSION_ACTIONS.map((action) => <span role="columnheader" data-compact-label={COMPACT_ACTION_LABELS[action]} key={action}>{PERMISSION_ACTION_LABELS[action]}</span>)}</div>

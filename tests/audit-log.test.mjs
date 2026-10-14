@@ -17,6 +17,12 @@ test("records successful mutations in a server-side audit trail", async () => {
   assert.match(helper, /sensitiveKey/);
   assert.match(helper, /password\|token\|secret\|webhook/);
   assert.match(helper, /previousState/);
+  assert.match(helper, /bitrix\.employee\.create/);
+  assert.match(helper, /bitrix\.employee\.update/);
+  assert.match(helper, /bitrix\.employee\.update_selected/);
+  assert.match(helper, /bitrix\.employee\.delete/);
+  assert.match(helper, /bitrix\.difference\.acknowledge/);
+  assert.match(helper, /bitrix\.difference\.acknowledge_selected/);
   assert.match(helper, /Audit write failed/);
   assert.match(dataApi, /withAuditTrail\(request, handlePOST\)/);
   assert.match(dataApi, /withAuditTrail\(request, handlePATCH\)/);
@@ -32,7 +38,9 @@ test("shows the audit log in protected general settings", async () => {
 
   assert.match(route, /hasPermission\(authUser\.permissions, "audit_log", "view"\)/);
   assert.match(route, /ORDER BY id DESC/);
-  assert.match(view, /Неизменяемая история действий/);
+  assert.doesNotMatch(view, /audit-log-intro/);
+  assert.match(view, /audit-log-toolbar-actions/);
+  assert.match(view, /\{visibleEvents\.length\} событий/);
   assert.match(view, /<CustomSelect[^>]*ariaLabel="Раздел журнала"/);
   assert.match(view, /Показать подробности/);
   assert.match(app, /title: "Журнал действий"/);

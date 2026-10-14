@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { createElement, useCallback, useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { TableContextMenu } from "./TableContextMenu";
 
 export type TimesheetClipboardChange = {
   rowIndex: number;
@@ -72,6 +73,7 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
   const shellRef = useRef<HTMLDivElement>(null);
   const [selection, setSelection] = useState<ClipboardSelection | null>(null);
   const [status, setStatus] = useState("");
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; rowIndex: number; columnIndex: number; error: string } | null>(null);
   const selectionRef = useRef(selection);
   const dragging = useRef(false);
   const undoStack = useRef<TimesheetClipboardChange[][]>([]);
@@ -96,6 +98,7 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
     selectionRef.current = null;
     setSelection(null);
     setStatus("");
+    setContextMenu(null);
   }, []);
 
   useEffect(() => {
@@ -111,7 +114,7 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
   useEffect(() => {
     const clearOutside = (event: PointerEvent) => {
       const target = event.target;
-      if (target instanceof Element && target.closest(".timesheet-cell-popover, .custom-select-menu")) return;
+      if (target instanceof Element && target.closest(".timesheet-cell-popover, .custom-select-menu, .table-context-menu")) return;
       if (!selectionRef.current || !(target instanceof Node) || shellRef.current?.contains(target)) return;
       clearSelection();
     };
@@ -140,6 +143,7 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
     dragging.current = true;
     selectionRef.current = next;
     setSelection(next);
+    setContextMenu(null);
     shellRef.current?.focus({ preventScroll: true });
   }, []);
 
@@ -168,9 +172,9 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
     });
   }, [columnCount, rowCount]);
 
-  const onCopy = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
+  const selectedText = useCallback(() => {
     const bounds = selectionBounds(selectionRef.current);
-    if (!bounds) return;
+    if (!bounds) return undefined;
     const rows: string[] = [];
     for (let rowIndex = bounds.rowStart; rowIndex <= bounds.rowEnd; rowIndex++) {
       const values: string[] = [];
@@ -179,19 +183,25 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
       }
       rows.push(values.join("\t"));
     }
-    event.preventDefault();
-    event.clipboardData.setData("text/plain", rows.join("\n"));
-    setStatus(`Скопировано: ${bounds.rowEnd - bounds.rowStart + 1} × ${bounds.columnEnd - bounds.columnStart + 1}`);
+    return rows.join("\n");
   }, [getValue]);
 
-  const onClipboardPaste = useCallback(async (event: ClipboardEvent<HTMLDivElement>) => {
+  const onCopy = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
     const bounds = selectionBounds(selectionRef.current);
-    if (!bounds) return;
-    const lines = event.clipboardData.getData("text/plain").replace(/\r/g, "").split("\n");
+    const text = selectedText();
+    if (!bounds || text === undefined) return;
+    event.preventDefault();
+    event.clipboardData.setData("text/plain", text);
+    setStatus(`Скопировано: ${bounds.rowEnd - bounds.rowStart + 1} × ${bounds.columnEnd - bounds.columnStart + 1}`);
+  }, [selectedText]);
+
+  const pasteText = useCallback(async (text: string) => {
+    const bounds = selectionBounds(selectionRef.current);
+    if (!bounds) return 0;
+    const lines = text.replace(/\r/g, "").split("\n");
     if (lines.at(-1) === "") lines.pop();
     const matrix = lines.map((line) => line.split("\t"));
-    if (!matrix.length) return;
-    event.preventDefault();
+    if (!matrix.length) return 0;
 
     const sourceRows = matrix.length;
     const sourceColumns = Math.max(...matrix.map((line) => line.length));
@@ -217,7 +227,7 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
 
     if (!changes.length) {
       setStatus("В выбранном диапазоне нет доступных для редактирования ячеек");
-      return;
+      return 0;
     }
     setStatus("Вставляем данные…");
     const undoChanges = previousValues(changes);
@@ -225,10 +235,63 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
       const changed = await onPaste(changes);
       if (changed > 0) rememberUndo(undoChanges);
       setStatus(`Вставлено ячеек: ${changed}`);
+      return changed;
     } catch (pasteError) {
       setStatus(pasteError instanceof Error ? pasteError.message : "Не удалось вставить данные");
+      return 0;
     }
   }, [canPaste, columnCount, onPaste, previousValues, rememberUndo, rowCount]);
+
+  const onClipboardPaste = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
+    if (!selectionBounds(selectionRef.current)) return;
+    event.preventDefault();
+    void pasteText(event.clipboardData.getData("text/plain"));
+  }, [pasteText]);
+
+  const deleteSelection = useCallback(async () => {
+    if (!canDelete || !onDelete) return 0;
+    const bounds = selectionBounds(selectionRef.current);
+    if (!bounds) return 0;
+    const changes: TimesheetClipboardChange[] = [];
+    for (let rowIndex = bounds.rowStart; rowIndex <= bounds.rowEnd; rowIndex++) {
+      for (let columnIndex = bounds.columnStart; columnIndex <= bounds.columnEnd; columnIndex++) {
+        if (rowIndex < rowCount && columnIndex < columnCount && canDelete(rowIndex, columnIndex)) {
+          changes.push({ rowIndex, columnIndex, value: "" });
+        }
+      }
+    }
+    if (!changes.length) {
+      setStatus("В выбранном диапазоне нет ручных значений");
+      return 0;
+    }
+    setStatus("Удаляем ручные значения…");
+    const undoChanges = previousValues(changes);
+    try {
+      const changed = await onDelete(changes);
+      if (changed > 0) rememberUndo(undoChanges);
+      setStatus(`Удалено ручных значений: ${changed}`);
+      return changed;
+    } catch (deleteError) {
+      setStatus(deleteError instanceof Error ? deleteError.message : "Не удалось удалить ручные значения");
+      return 0;
+    }
+  }, [canDelete, columnCount, onDelete, previousValues, rememberUndo, rowCount]);
+
+  const openContextMenu = useCallback((rowIndex: number, columnIndex: number, event: MouseEvent<HTMLTableCellElement>) => {
+    event.preventDefault();
+    const point = { rowIndex, columnIndex };
+    const next = { start: point, end: point };
+    selectionRef.current = next;
+    setSelection(next);
+    shellRef.current?.focus({ preventScroll: true });
+    setContextMenu({
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 256)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 280)),
+      rowIndex,
+      columnIndex,
+      error: "",
+    });
+  }, []);
 
   const undoLastChange = useCallback(async () => {
     if (undoing.current) return;
@@ -304,32 +367,10 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
       onType(current.rowIndex, current.columnIndex, anchor, event.key);
       return;
     }
-    if ((event.key !== "Delete" && event.key !== "Backspace") || !canDelete || !onDelete) return;
-    const bounds = selectionBounds(selectionRef.current);
-    if (!bounds) return;
+    if (event.key !== "Delete" && event.key !== "Backspace") return;
     event.preventDefault();
-    const changes: TimesheetClipboardChange[] = [];
-    for (let rowIndex = bounds.rowStart; rowIndex <= bounds.rowEnd; rowIndex++) {
-      for (let columnIndex = bounds.columnStart; columnIndex <= bounds.columnEnd; columnIndex++) {
-        if (rowIndex < rowCount && columnIndex < columnCount && canDelete(rowIndex, columnIndex)) {
-          changes.push({ rowIndex, columnIndex, value: "" });
-        }
-      }
-    }
-    if (!changes.length) {
-      setStatus("В выбранном диапазоне нет ручных значений");
-      return;
-    }
-    setStatus("Удаляем ручные значения…");
-    const undoChanges = previousValues(changes);
-    try {
-      const changed = await onDelete(changes);
-      if (changed > 0) rememberUndo(undoChanges);
-      setStatus(`Удалено ручных значений: ${changed}`);
-    } catch (deleteError) {
-      setStatus(deleteError instanceof Error ? deleteError.message : "Не удалось удалить ручные значения");
-    }
-  }, [canDelete, clearSelection, columnCount, focusSelection, onActivate, onDelete, onType, previousValues, rememberUndo, rowCount, undoLastChange]);
+    await deleteSelection();
+  }, [clearSelection, deleteSelection, focusSelection, onActivate, onType, undoLastChange]);
 
   const cellClass = useCallback((rowIndex: number, columnIndex: number) => {
     const bounds = selectionBounds(selection);
@@ -352,11 +393,28 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
     cellHandlers: (rowIndex: number, columnIndex: number) => ({
       onMouseDown: (event: MouseEvent<HTMLTableCellElement>) => selectCell(rowIndex, columnIndex, event),
       onMouseEnter: () => extendSelection(rowIndex, columnIndex),
+      onContextMenu: (event: MouseEvent<HTMLTableCellElement>) => openContextMenu(rowIndex, columnIndex, event),
       "data-timesheet-row": rowIndex,
       "data-timesheet-column": columnIndex,
       "aria-selected": Boolean(cellClass(rowIndex, columnIndex)),
     }),
     shellHandlers: { onCopy, onPaste: onClipboardPaste, onKeyDown },
+    // Menu callbacks read the current selection only after the user chooses an action.
+    // eslint-disable-next-line react-hooks/refs
+    contextMenu: contextMenu ? createElement(TableContextMenu, {
+      x: contextMenu.x,
+      y: contextMenu.y,
+      caption: "Ячейка табеля",
+      value: getValue(contextMenu.rowIndex, contextMenu.columnIndex),
+      error: contextMenu.error,
+      onClose: () => setContextMenu(null),
+      actions: [
+        { label: "Копировать ячейку", shortcut: "Ctrl+C", onSelect: async () => { try { await navigator.clipboard.writeText(selectedText() ?? ""); setStatus("Ячейка скопирована"); setContextMenu(null); } catch { setContextMenu((current) => current ? { ...current, error: "Не удалось скопировать. Разрешите доступ к буферу обмена." } : current); } } },
+        { label: "Вставить в ячейку", shortcut: "Ctrl+V", disabled: !canPaste(contextMenu.rowIndex, contextMenu.columnIndex), title: canPaste(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Нет права редактирования этой ячейки", onSelect: async () => { try { const changed = await pasteText(await navigator.clipboard.readText()); if (changed) setContextMenu(null); else setContextMenu((current) => current ? { ...current, error: "Значение не вставлено." } : current); } catch { setContextMenu((current) => current ? { ...current, error: "Не удалось прочитать буфер обмена. Разрешите доступ в браузере." } : current); } } },
+        { label: "Редактировать ячейку", shortcut: "Enter", separatorBefore: true, disabled: !onActivate || !canPaste(contextMenu.rowIndex, contextMenu.columnIndex), title: onActivate && canPaste(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Нет права редактирования этой ячейки", onSelect: () => { const anchor = document.querySelector<HTMLElement>(`[data-timesheet-row="${contextMenu.rowIndex}"][data-timesheet-column="${contextMenu.columnIndex}"]`); if (anchor) onActivate?.(contextMenu.rowIndex, contextMenu.columnIndex, anchor); setContextMenu(null); } },
+        { label: "Удалить ручное значение", shortcut: "Delete", danger: true, separatorBefore: true, disabled: !canDelete?.(contextMenu.rowIndex, contextMenu.columnIndex), title: canDelete?.(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Удалить можно только ручное значение при наличии права", onSelect: async () => { const changed = await deleteSelection(); if (changed) setContextMenu(null); else setContextMenu((current) => current ? { ...current, error: "В ячейке нет доступного для удаления ручного значения." } : current); } },
+      ],
+    }) : null,
     rememberUndo,
     notify,
   };

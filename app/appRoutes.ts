@@ -79,6 +79,28 @@ export function workspaceUrl(view: WorkspaceView, directoryFocus: WorkspaceDirec
   return path;
 }
 
+export function workspaceTitle(view: WorkspaceView, directoryFocus: WorkspaceDirectoryFocus = "all") {
+  if (view === "placement") return "Отчёт персонала";
+  if (view === "equipment") return "Отчёт техники";
+  if (view === "timesheet") return "Табель рабочих";
+  if (view === "equipmentTimesheet") return "Табель техники";
+  if (view === "settings") return "Общие настройки";
+  if (view === "projectSettings") return "Настройки проекта";
+  if (view === "employees") return "Сотрудники";
+  if (view === "equipmentRegistry") return "Реестр техники";
+  if (view === "positions") return "Список должностей";
+  if (view === "users") return "Пользователи системы";
+  if (view === "projects") return "Проекты";
+  if (view === "auditLog") return "Журнал действий";
+  if (view === "accessRights") return "Права доступа";
+  if (view === "projectEmployees") return "Сотрудники проекта";
+  if (view === "projectEquipment") return "Техника проекта";
+  if (directoryFocus === "zone") return "Зоны";
+  if (directoryFocus === "mainWorkType") return "Виды работ";
+  if (directoryFocus === "subworkType") return "Виды подработ";
+  return "Мастера";
+}
+
 export function isGeneralSettingsView(view: WorkspaceView) {
   return view === "settings" || view === "employees" || view === "equipmentRegistry" || view === "positions" || view === "users" || view === "projects" || view === "auditLog" || view === "accessRights";
 }

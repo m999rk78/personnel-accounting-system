@@ -34,7 +34,8 @@ import { CustomSelect } from "./CustomSelect";
 import type { UserRole } from "./roles";
 
 // LocalizedGrid wraps AgGridReact with shared Russian filters and their summary.
-import { LocalizedGrid, personnelColumnFilter, personnelFilterParams, type SpreadsheetPastePayload } from "./GridFilters";
+import { LocalizedGrid, personnelColumnFilter, personnelFilterParams, type SpreadsheetContextPayload, type SpreadsheetPastePayload } from "./GridFilters";
+import type { TableContextMenuAction } from "./TableContextMenu";
 
 export type GridOption = { id: number; name: string };
 export type GridEmployee = {
@@ -46,6 +47,9 @@ export type GridEmployee = {
   source: string;
   siteId: number | null;
   siteName: string | null;
+  bitrixCheckStatus?: "mismatch" | "missing_in_bitrix" | "dismissed_in_bitrix" | null;
+  bitrixCheckDetails?: string | null;
+  bitrixCheckAcknowledged?: number | boolean;
 };
 export type GridEmployeeUsage = {
   employeeId: number;
@@ -298,6 +302,8 @@ type PlacementGridProps = {
   onDraftSelectionChange: (keys: string[]) => void;
   onPatchDraft: (key: string, changes: Partial<GridDraftRow>) => void;
   onPatchEditing: (id: number, changes: Partial<GridDraftRow>) => void;
+  onRemoveDraft: (key: string) => void;
+  onRequestDeleteEntry: (id: number) => void;
   onVisibleEntryIdsChange: (ids: number[]) => void;
 };
 
@@ -356,7 +362,7 @@ function EmployeeCombobox({ value, employees, usage = EMPTY_EMPLOYEE_USAGE, onCh
   const [searchQuery, setSearchQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [position, setPosition] = useState({ top: 0, left: 0, width: 360 });
+  const [position, setPosition] = useState<{ top: number; left: number; width: number } | null>(null);
   const query = normalizeSearch(searchQuery);
   const filtered = useMemo(() => employees.filter((employee) => normalizeSearch(`${employee.fullName} ${employee.employmentType} ${employee.department} ${employee.position}`).includes(query)).slice(0, 50), [employees, query]);
   const usageByEmployee = useMemo(() => {
@@ -374,6 +380,12 @@ function EmployeeCombobox({ value, employees, usage = EMPTY_EMPLOYEE_USAGE, onCh
     const top = spaceBelow >= Math.min(menuHeight, 190) ? rect.bottom + 5 : Math.max(8, rect.top - menuHeight - 5);
     setPosition({ top, left: Math.max(8, Math.min(rect.left, window.innerWidth - Math.max(360, rect.width) - 8)), width: Math.max(360, rect.width) });
   }, [filtered.length]);
+
+  function openMenu() {
+    if (open) return;
+    setPosition(null);
+    setOpen(true);
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -425,16 +437,16 @@ function EmployeeCombobox({ value, employees, usage = EMPTY_EMPLOYEE_USAGE, onCh
         const input = event.currentTarget;
         setSearchQuery("");
         setActiveIndex(0);
-        setOpen(true);
+        openMenu();
         requestAnimationFrame(() => input.select());
       }}
-      onClick={() => setOpen(true)}
+      onClick={openMenu}
       onChange={(event) => {
         const employeeQuery = event.target.value;
         setInputValue(employeeQuery);
         setSearchQuery(employeeQuery);
         setActiveIndex(0);
-        setOpen(true);
+        openMenu();
       }}
       onBlur={() => {
         if (inputValue === value) return;
@@ -443,15 +455,15 @@ function EmployeeCombobox({ value, employees, usage = EMPTY_EMPLOYEE_USAGE, onCh
         setSearchQuery("");
       }}
       onKeyDown={(event) => {
-        if (event.key === "ArrowDown") { event.preventDefault(); event.stopPropagation(); setOpen(true); setActiveIndex((index) => Math.min(index + 1, Math.max(filtered.length - 1, 0))); }
-        if (event.key === "ArrowUp") { event.preventDefault(); event.stopPropagation(); setOpen(true); setActiveIndex((index) => Math.max(index - 1, 0)); }
+        if (event.key === "ArrowDown") { event.preventDefault(); event.stopPropagation(); openMenu(); setActiveIndex((index) => Math.min(index + 1, Math.max(filtered.length - 1, 0))); }
+        if (event.key === "ArrowUp") { event.preventDefault(); event.stopPropagation(); openMenu(); setActiveIndex((index) => Math.max(index - 1, 0)); }
         if (event.key === "Enter" && open && filtered[activeIndex]) { event.preventDefault(); event.stopPropagation(); select(filtered[activeIndex]); }
         if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setOpen(false); }
         if (event.key === "Tab") setOpen(false);
       }}
     />
     <span className="ag-combobox-chevron" aria-hidden="true">⌄</span>
-    {open && typeof document !== "undefined" && createPortal(<div id="employee-search-options" ref={menu} className="ag-employee-menu" role="listbox" style={position}>
+    {open && position && typeof document !== "undefined" && createPortal(<div id="employee-search-options" ref={menu} className="ag-employee-menu" role="listbox" style={position}>
       <div className="ag-employee-menu-caption">{query ? `Найдено: ${filtered.length}` : "Начните вводить имя или выберите сотрудника"}</div>
       <div className="ag-employee-options">
         {filtered.map((employee, index) => {
@@ -727,6 +739,37 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     suppressMovable: true,
   }), []);
 
+  const placementContextActions = useCallback(({ row }: SpreadsheetContextPayload<PlacementRow>): TableContextMenuAction[] => {
+    const current = propsRef.current;
+    const entryCanOpen = Boolean(row.kind === "entry" && row.entry && (current.rosterMode || current.draftRows.length === 0) && !current.pendingDeletes.includes(row.entry.id));
+    const canEditRow = entryCanOpen && current.canUpdate;
+    const canRemoveDraft = Boolean(row.kind === "draft" && row.draft && current.canCreate);
+    const canDeleteEntry = Boolean(row.kind === "entry" && row.entry && current.canDelete && (current.rosterMode || current.draftRows.length === 0 && current.editing.length === 0));
+    const actions: TableContextMenuAction[] = [{
+      label: "Редактировать строку",
+      disabled: !canEditRow,
+      title: canEditRow ? undefined : "Нет права редактирования или строка уже открыта",
+      onSelect: () => { if (row.entry) current.onEdit(row.entry); },
+    }];
+    if (row.kind === "draft") actions.push({
+      label: "Убрать новую строку",
+      danger: true,
+      separatorBefore: true,
+      disabled: !canRemoveDraft,
+      title: canRemoveDraft ? undefined : "Нет права удаления новой строки",
+      onSelect: () => { if (row.draft) current.onRemoveDraft(row.draft.key); },
+    });
+    else actions.push({
+      label: "Убрать из отчёта",
+      danger: true,
+      separatorBefore: true,
+      disabled: !canDeleteEntry,
+      title: canDeleteEntry ? undefined : "Нет права удаления",
+      onSelect: () => { if (row.entry) current.onRequestDeleteEntry(row.entry.id); },
+    });
+    return actions;
+  }, [propsRef]);
+
   return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-placement-grid"><LocalizedGrid<PlacementRow>
     theme={gridTheme}
     rowData={rowData}
@@ -769,6 +812,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     onSpreadsheetPaste={pasteIntoRow}
     onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)}
     onSpreadsheetCancelEdit={() => setActiveEditor(null)}
+    getSpreadsheetContextActions={placementContextActions}
     spreadsheetFocusRequestKey={spreadsheetFocusRequestKey}
     spreadsheetSelectionResetKey={rowStructureKey}
     suppressCellFocus
@@ -897,7 +941,7 @@ function EquipmentCombobox({ value, units, blockedEquipment = EMPTY_BLOCKED_EQUI
   const [inputValue, setInputValue] = useState(selectedTitle);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [position, setPosition] = useState({ top: 0, left: 0, width: 420 });
+  const [position, setPosition] = useState<{ top: number; left: number; width: number } | null>(null);
   const query = normalizeSearch(inputValue);
   const filtered = useMemo(() => units.filter((unit) => normalizeSearch([
     equipmentGridTitle(unit),
@@ -929,6 +973,12 @@ function EquipmentCombobox({ value, units, blockedEquipment = EMPTY_BLOCKED_EQUI
     const top = spaceBelow >= Math.min(menuHeight, 190) ? rect.bottom + 5 : Math.max(8, rect.top - menuHeight - 5);
     setPosition({ top, left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)), width });
   }, [filtered.length]);
+
+  function openMenu() {
+    if (open) return;
+    setPosition(null);
+    setOpen(true);
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -974,12 +1024,12 @@ function EquipmentCombobox({ value, units, blockedEquipment = EMPTY_BLOCKED_EQUI
       aria-autocomplete="list"
       aria-expanded={open}
       aria-controls={listboxId}
-      onFocus={() => setOpen(true)}
-      onClick={() => setOpen(true)}
+      onFocus={openMenu}
+      onClick={openMenu}
       onChange={(event) => {
         setInputValue(event.target.value);
         setActiveIndex(selectableIndex(0, 1));
-        setOpen(true);
+        openMenu();
       }}
       onBlur={() => {
         if (normalizeSearch(inputValue) === normalizeSearch(selectedTitle)) return;
@@ -987,14 +1037,14 @@ function EquipmentCombobox({ value, units, blockedEquipment = EMPTY_BLOCKED_EQUI
         onChange(exact ? String(exact.id) : "");
       }}
       onKeyDown={(event) => {
-        if (event.key === "ArrowDown") { event.preventDefault(); setOpen(true); setActiveIndex((index) => selectableIndex(index + 1, 1)); }
+        if (event.key === "ArrowDown") { event.preventDefault(); openMenu(); setActiveIndex((index) => selectableIndex(index + 1, 1)); }
         if (event.key === "ArrowUp") { event.preventDefault(); setActiveIndex((index) => selectableIndex(index - 1, -1)); }
         if (event.key === "Enter" && open && filtered[activeIndex] && !blockedEquipment.has(filtered[activeIndex].id)) { event.preventDefault(); select(filtered[activeIndex]); }
         if (event.key === "Escape") setOpen(false);
       }}
     />
     <span className="ag-combobox-chevron" aria-hidden="true">⌄</span>
-    {open && typeof document !== "undefined" && createPortal(<div id={listboxId} ref={menu} className="ag-employee-menu ag-equipment-menu" role="listbox" style={position}>
+    {open && position && typeof document !== "undefined" && createPortal(<div id={listboxId} ref={menu} className="ag-employee-menu ag-equipment-menu" role="listbox" style={position}>
       <div className="ag-employee-menu-caption">{query ? `Найдено: ${filtered.length}` : "Начните вводить название или выберите технику"}</div>
       <div className="ag-employee-options">
         {filtered.map((unit, index) => {
@@ -1572,7 +1622,7 @@ type EmployeeTableRow = {
   number: number;
   employee?: GridEmployee;
   draft?: GridEmployeeDraft;
-} & GridDisplayFields<"fullName" | "employmentType" | "department" | "position" | "siteName">;
+} & GridDisplayFields<"fullName" | "employmentType" | "department" | "position" | "siteName" | "bitrixCheckLabel">;
 
 type EmployeeGridProps = {
   rows: GridEmployee[];
@@ -1719,15 +1769,31 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     return true;
   }, [propsRef]);
 
-  const valueGetter = useCallback((field: keyof GridEmployee | "number") => (params: { data?: EmployeeTableRow }) => {
+  const valueGetter = useCallback((field: keyof GridEmployee | "number" | "bitrixCheckLabel") => (params: { data?: EmployeeTableRow }) => {
     const row = params.data;
     if (!row) return "";
     if (field === "number") return row.number;
+    if (field === "bitrixCheckLabel") {
+      if (row.kind !== "entry" || !row.employee?.bitrixCheckStatus) return "Нет предупреждений";
+      if (row.employee.bitrixCheckAcknowledged) return "Предупреждение подтверждено";
+      if (row.employee.bitrixCheckStatus === "dismissed_in_bitrix") return "Уволен в Битрикс24";
+      return row.employee.bitrixCheckStatus === "missing_in_bitrix" ? "Отсутствует в Битрикс24" : "Не совпадает с Битрикс24";
+    }
     if (row.kind === "entry") return field === "siteName" ? row.employee?.siteName ?? "Без объекта" : row.employee?.[field] ?? "";
     const draft = propsRef.current.drafts.find((candidate) => candidate.key === row.draft?.key) ?? row.draft;
     if (field === "siteName") return propsRef.current.sites.find((site) => site.id === Number(draft?.projectSiteId))?.name ?? "Без объекта";
     return draft?.[field as keyof GridEmployeeDraft] ?? "";
   }, [propsRef]);
+
+  const bitrixCheckRenderer = useCallback((params: CustomCellRendererProps<EmployeeTableRow>) => {
+    const employee = params.data?.employee;
+    const label = String(params.value ?? "");
+    if (!employee?.bitrixCheckStatus) return <span className="bitrix-grid-status neutral">{label}</span>;
+    const acknowledged = Boolean(employee.bitrixCheckAcknowledged);
+    const className = acknowledged ? "acknowledged" : employee.bitrixCheckStatus === "dismissed_in_bitrix" ? "dismissed" : employee.bitrixCheckStatus === "missing_in_bitrix" ? "missing" : "mismatch";
+    const details = employee.bitrixCheckDetails?.trim();
+    return <div className="bitrix-grid-check" title={details ?? label}><span className={`bitrix-grid-status ${className}`}>{label}</span>{details && <span className="bitrix-grid-details">{details}</span>}</div>;
+  }, []);
 
   const columns = useMemo<ColDef<EmployeeTableRow>[]>(() => [
     { colId: "number", headerName: "№", width: 66, minWidth: 54, pinned: "left", lockPinned: true, lockPosition: "left", suppressMovable: true, suppressSizeToFit: true, sortable: false, filter: false, valueGetter: valueGetter("number") },
@@ -1736,8 +1802,9 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     { field: "department", headerName: "Отдел", minWidth: 150, flex: .7, headerComponentParams: pinnableHeader, valueGetter: valueGetter("department"), cellRenderer: editableRenderer },
     { field: "position", headerName: "Должность", minWidth: 220, flex: 1.4, headerComponentParams: pinnableHeader, valueGetter: valueGetter("position"), cellRenderer: editableRenderer },
     { field: "siteName", headerName: "Проект", minWidth: 190, flex: 1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("siteName"), cellRenderer: editableRenderer },
+    { colId: "bitrixCheckLabel", headerName: "Проверка Б24 / расхождение", minWidth: 380, flex: 1.8, headerComponentParams: pinnableHeader, valueGetter: valueGetter("bitrixCheckLabel"), cellRenderer: bitrixCheckRenderer },
     ...(showEmployeeRowCancelActions && props.drafts.length ? [{ colId: "actions", headerName: "", width: 52, minWidth: 52, maxWidth: 52, pinned: "right" as const, lockPinned: true, lockPosition: "right" as const, suppressMovable: true, suppressSizeToFit: true, sortable: false, filter: false, floatingFilter: false, cellClass: "actions-cell", cellRenderer: editActionRenderer }] : []),
-  ], [editActionRenderer, editableRenderer, props.drafts.length, valueGetter]);
+  ], [bitrixCheckRenderer, editActionRenderer, editableRenderer, props.drafts.length, valueGetter]);
 
   const reportVisibleRows = useCallback((api: GridApi<EmployeeTableRow>) => {
     const ids: number[] = [];
@@ -1757,7 +1824,12 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
         rowHeight={TABLE_ROW_HEIGHT}
         headerHeight={TABLE_HEADER_HEIGHT}
         animateRows
-        rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }}
+        rowClassRules={{
+          "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))),
+          "bitrix-mismatch-row": (params) => params.data?.kind === "entry" && params.data.employee?.bitrixCheckStatus === "mismatch" && !params.data.employee.bitrixCheckAcknowledged,
+          "bitrix-missing-row": (params) => params.data?.kind === "entry" && params.data.employee?.bitrixCheckStatus === "missing_in_bitrix" && !params.data.employee.bitrixCheckAcknowledged,
+          "bitrix-dismissed-row": (params) => params.data?.kind === "entry" && params.data.employee?.bitrixCheckStatus === "dismissed_in_bitrix" && !params.data.employee.bitrixCheckAcknowledged,
+        }}
         rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }}
         selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }}
         onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }}

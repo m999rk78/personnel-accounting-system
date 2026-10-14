@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { openExcelExportPreview } from "./excelExportPreviewStore";
 import { TIMESHEET_ALL_OPTION, TimesheetFilterableHeading, type TimesheetFilterOption, type TimesheetSortOption } from "./TimesheetColumnFilter";
 import { TimesheetCellPopover } from "./TimesheetCellPopover";
+import { resetTimesheetHeaderScroll, syncTimesheetHeaderScroll } from "./timesheetHeaderScroll";
 import { useTimesheetClipboard, type TimesheetClipboardChange } from "./useTimesheetClipboard";
 
 type TimesheetEmployee = {
@@ -432,7 +433,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
       const value = markValue(marksByCell.get(cellKey(employee.id, workDate)), entriesByCell.get(cellKey(employee.id, workDate)));
       if (value) values.add(value);
     }
-    return [workDate, [...TIMESHEET_VALUE_FILTERS, ...Array.from(values).sort((left, right) => left.localeCompare(right, "ru", { numeric: true })).map((value) => ({ value: `value:${value}`, label: `Значение: ${value}` }))]] as const;
+    return [workDate, [...TIMESHEET_VALUE_FILTERS, ...Array.from(values).sort((left, right) => left.localeCompare(right, "ru", { numeric: true })).map((value) => ({ value: `value:${value}`, label: `Значение ${value}` }))]] as const;
   })), [days, entriesByCell, marksByCell, month, payload?.employees]);
   const visibleEmployees = useMemo(() => {
     return (payload?.employees ?? []).filter((employee) => {
@@ -518,6 +519,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     notify: notifyTimesheetClipboard,
     activeCell: clipboardActiveCell,
     focusCell: focusClipboardCell,
+    contextMenu: clipboardContextMenu,
   } = useTimesheetClipboard({
     rowCount: visibleEmployees.length,
     columnCount: days.length,
@@ -570,6 +572,12 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
       if (employee && day) openInlineEditor(employee.id, dateForDay(month, day), rowIndex, columnIndex, value);
     },
   });
+
+  useEffect(() => {
+    const workspace = clipboardShellRef.current?.closest<HTMLElement>(".timesheet-workspace-page") ?? null;
+    resetTimesheetHeaderScroll(workspace);
+    return () => resetTimesheetHeaderScroll(workspace);
+  }, [clipboardShellRef]);
 
   useEffect(() => {
     if (inlineEditor || !inlineGridFocusPending.current) return;
@@ -848,7 +856,8 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     </div>}
     {/* The spreadsheet shell must receive focus so native copy and paste events reach it. */}
     {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-    {!error && <div ref={clipboardShellRef} className={["timesheet-grid-shell", "timesheet-grid-shell-reconciled", "timesheet-clipboard-shell", clipboardActiveCell ? "timesheet-selection-active" : ""].filter(Boolean).join(" ")} role="application" tabIndex={0} aria-busy={loading} aria-label="Табель рабочих. Стрелки перемещают выбранную ячейку, Enter или F2 открывают редактирование." {...clipboardShellHandlers}>
+    {!error && <div ref={clipboardShellRef} className={["timesheet-grid-shell", "timesheet-grid-shell-reconciled", "timesheet-clipboard-shell", clipboardActiveCell ? "timesheet-selection-active" : ""].filter(Boolean).join(" ")} role="application" tabIndex={0} aria-busy={loading} aria-label="Табель рабочих. Стрелки перемещают выбранную ячейку, Enter или F2 открывают редактирование." {...clipboardShellHandlers} onScroll={(event) => syncTimesheetHeaderScroll(event.currentTarget)}>
+      {clipboardContextMenu}
       {clipboardStatus && <div className="timesheet-clipboard-status" role="status">{clipboardStatus}</div>}
       {loading && <div className="timesheet-loading">Формируем табель…</div>}
       {!loading && visibleEmployees.length === 0 && <div className="timesheet-empty"><strong>Нет сотрудников для отображения</strong><span>Измените фильтр или выберите другой месяц.</span></div>}

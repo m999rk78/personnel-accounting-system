@@ -89,9 +89,11 @@ export function AuditLogView({ onBack }: { onBack: () => void }) {
   return <section className="audit-log-page">
     <div className="settings-toolbar audit-log-toolbar">
       <button type="button" className="back-button" onClick={onBack}>← К общим настройкам</button>
-      <button type="button" className="back-button" onClick={() => void loadEvents()} disabled={loading}>{loading ? "Обновляем…" : "Обновить"}</button>
+      <div className="audit-log-toolbar-actions">
+        <span className="audit-log-count" aria-live="polite">{visibleEvents.length} событий</span>
+        <button type="button" className="back-button" onClick={() => void loadEvents()} disabled={loading}>{loading ? "Обновляем…" : "Обновить"}</button>
+      </div>
     </div>
-    <div className="audit-log-intro"><div><strong>Неизменяемая история действий</strong><span>Записи создаются сервером после успешного сохранения. Пользователи не могут редактировать или удалять события журнала.</span></div><span className="audit-log-count">{visibleEvents.length} событий</span></div>
     <div className="audit-log-filters">
       <label className="audit-log-filter-field"><span>Поиск</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Сотрудник, действие или проект" /></label>
       <div className="audit-log-filter-field"><span>Раздел</span><CustomSelect className="audit-log-category-select" value={category} ariaLabel="Раздел журнала" onChange={setCategory} options={[{ value: "all", label: "Все разделы" }, ...categories.map((value) => ({ value, label: CATEGORY_LABELS[value] ?? value }))]} /></div>

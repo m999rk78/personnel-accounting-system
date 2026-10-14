@@ -59,6 +59,7 @@ test("stores permissions, exposes a separate settings page, and enforces them in
   assert.match(app, /title: "Права доступа"/);
   assert.match(view, /Быстрые настройки/);
   assert.match(view, /Права проверяются сервером для каждого действия/);
+  assert.doesNotMatch(view, /Гибкие права поверх ролей|access-rights-intro|access-matrix-heading/);
 });
 
 test("keeps create, update, and delete independent across every editable table", async () => {
@@ -76,6 +77,9 @@ test("keeps create, update, and delete independent across every editable table",
   assert.match(grids, /row\.kind === "draft" \? !current\.canCreate : !current\.canUpdate/);
   assert.match(dataApi, /const creates = rows\.some\(\(row\) => !asPositiveInteger\(row\.directoryId\)\)/);
   assert.match(dataApi, /const updates = rows\.some\(\(row\) => Boolean\(asPositiveInteger\(row\.directoryId\)\)\)/);
+  assert.match(dataApi, /action === "create-employee" \|\| action === "create-bitrix24-employee"/);
+  assert.match(dataApi, /action === "delete-bitrix24-employee"\) return hasPermission\(user\.permissions, "employees", "delete"\)/);
+  assert.match(dataApi, /action === "update-bitrix24-employee"/);
   assert.match(timesheetApi, /if \(!existingMark\) return Response\.json\(\{ deleted: false, employeeId, workDate: payload\.workDate \}\)/);
   assert.match(equipmentApi, /if \(!existingMark\) return Response\.json\(\{ deleted: false, equipmentId, workDate: payload\.workDate \}\)/);
 });

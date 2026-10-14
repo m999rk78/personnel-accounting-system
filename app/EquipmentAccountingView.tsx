@@ -9,6 +9,7 @@ import { openExcelExportPreview } from "./excelExportPreviewStore";
 import { createTableXlsx, parseEquipmentEntriesXlsx, parseEquipmentRegistryXlsx, type EquipmentPlacementExportRow } from "./placementXlsx";
 import { TIMESHEET_ALL_OPTION, TimesheetFilterableHeading, type TimesheetFilterOption } from "./TimesheetColumnFilter";
 import { TimesheetCellPopover } from "./TimesheetCellPopover";
+import { resetTimesheetHeaderScroll, syncTimesheetHeaderScroll } from "./timesheetHeaderScroll";
 import { useTimesheetClipboard, type TimesheetClipboardChange } from "./useTimesheetClipboard";
 import { equipmentUnavailableReason, isEquipmentUnavailable } from "./equipmentAvailability";
 import { buildEquipmentCarryoverDrafts } from "./equipmentCarryover";
@@ -84,6 +85,7 @@ type EquipmentCarryoverPayload = { sourceDate: string | null; entries: Equipment
 type EntryDraft = GridEquipmentDraft;
 type UnitDraft = GridEquipmentRegistryDraft;
 type ProjectUnitDraft = GridProjectEquipmentDraft;
+type EquipmentDeleteTarget = "daily" | "registry" | "project";
 export type EquipmentSection = "daily" | "month" | "registry" | "project";
 
 const MONTH_FORMATTER = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric", timeZone: "UTC" });
@@ -417,6 +419,19 @@ function emptyEntry(payload: EquipmentPayload | null): EntryDraft {
 
 const emptyUnit = (): UnitDraft => ({ key: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `equipment-unit-${Date.now()}-${Math.random()}`, organization: "", equipmentType: "", brand: "", model: "", registrationNumber: "", note: "", projectSiteId: "" });
 
+function EquipmentDeleteConfirmation({ title, description, saving, onCancel, onConfirm }: { title: string; description: string; saving: boolean; onCancel: () => void; onConfirm: () => void }) {
+  return <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onCancel(); }}>
+    <section className="confirmation-dialog" role="dialog" aria-modal="true" aria-label={title}>
+      <h2>{title}</h2>
+      <p>{description}</p>
+      <div>
+        <button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>Отмена</button>
+        <button type="button" className="delete-rows-button" onClick={onConfirm} disabled={saving}>{saving ? "Удаляем…" : "Удалить"}</button>
+      </div>
+    </section>
+  </div>;
+}
+
 export function EquipmentAccountingView({ siteId, initialDate, initialMonth, today, mode, onDateChange, onMonthChange }: { siteId: number; initialDate: string; initialMonth?: string; today: string; mode: EquipmentSection; onDateChange?: (date: string) => void; onMonthChange?: (month: string) => void }) {
   const section = mode;
   const [workDate, setWorkDate] = useState(initialDate);
@@ -437,6 +452,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   const [visibleUnitIds, setVisibleUnitIds] = useState<number[] | null>(null);
   const [projectUnitDrafts, setProjectUnitDrafts] = useState<ProjectUnitDraft[]>([]);
   const [selectedProjectUnitIds, setSelectedProjectUnitIds] = useState<number[]>([]);
+  const [deleteConfirmationTarget, setDeleteConfirmationTarget] = useState<EquipmentDeleteTarget | null>(null);
   const [saving, setSaving] = useState(false);
   const [equipmentNameFilter, setEquipmentNameFilter] = useState<string[]>([]);
   const [organizationFilter, setOrganizationFilter] = useState<string[]>([]);
@@ -691,12 +707,13 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
 
   async function deleteSelectedEntries() {
     if (!payload?.canDeleteDaily) return;
-    if (!selectedEntryIds.length || !window.confirm(`Удалить выбранные строки (${selectedEntryIds.length}) из ежедневного отчёта?`)) return;
+    if (!selectedEntryIds.length) return;
     setSaving(true);
     setError("");
     try {
       await Promise.all(selectedEntryIds.map((id) => post({ action: "delete-entry", id })));
       setSelectedEntryIds([]);
+      setDeleteConfirmationTarget(null);
       setNotice("Выбранные строки удалены.");
       reload();
     } catch (deleteError) {
@@ -771,12 +788,13 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
 
   async function deleteSelectedUnits() {
     if (!payload?.canDeleteRegistry) return;
-    if (!selectedUnitIds.length || !window.confirm(`Удалить выбранные единицы техники (${selectedUnitIds.length}) из активного реестра? История отчётов сохранится.`)) return;
+    if (!selectedUnitIds.length) return;
     setSaving(true);
     setError("");
     try {
       for (const id of selectedUnitIds) await post({ action: "delete-unit", id });
       setSelectedUnitIds([]);
+      setDeleteConfirmationTarget(null);
       setVisibleUnitIds(null);
       setNotice("Выбранная техника удалена из активного реестра.");
       reload();
@@ -823,7 +841,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
 
   async function removeSelectedProjectUnits() {
     if (!payload?.canDeleteAssignments) return;
-    if (!selectedProjectUnitIds.length || !window.confirm(`Убрать выбранную технику (${selectedProjectUnitIds.length}) из проекта? Общие карточки и история отчётов сохранятся.`)) return;
+    if (!selectedProjectUnitIds.length) return;
     setSaving(true);
     setError("");
     setNotice("");
@@ -831,6 +849,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
       for (const equipmentId of selectedProjectUnitIds) await post({ action: "remove-unit-project", equipmentId });
       const count = selectedProjectUnitIds.length;
       setSelectedProjectUnitIds([]);
+      setDeleteConfirmationTarget(null);
       setNotice(`Убрано техники из проекта: ${count}.`);
       reload();
     } catch (assignmentError) {
@@ -1017,6 +1036,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     rememberUndo: rememberEquipmentTimesheetUndo,
     activeCell: timesheetClipboardActiveCell,
     focusCell: focusEquipmentTimesheetCell,
+    contextMenu: timesheetClipboardContextMenu,
   } = useTimesheetClipboard({
     rowCount: monthRows.length,
     columnCount: monthDays.length,
@@ -1072,6 +1092,12 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
       if (row && day) openTimesheetInlineEditor(row.unit.id, `${month}-${String(day).padStart(2, "0")}`, rowIndex, columnIndex, value);
     },
   });
+
+  useEffect(() => {
+    const workspace = timesheetClipboardShellRef.current?.closest<HTMLElement>(".timesheet-workspace-page") ?? null;
+    resetTimesheetHeaderScroll(workspace);
+    return () => resetTimesheetHeaderScroll(workspace);
+  }, [timesheetClipboardShellRef]);
 
   useEffect(() => {
     if (!timesheetInlineEditor) return;
@@ -1424,7 +1450,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         {showEquipmentCarryover && <div className="foreman-report-progress equipment-carryover-status" role="status"><strong>Подставлена техника из отчёта за {shortDate(previousDayReport!.date)}</strong><span>Если всё как вчера, сразу сохраните свою часть. Измените только отличия и удалите технику, которая сегодня не работала.</span></div>}
         <EquipmentDailyAgGrid entries={dailyEntries} drafts={entryDrafts} units={payload?.units ?? []} dailyTimesheetMarks={payload?.dailyTimesheetMarks ?? []} shifts={payload?.shifts ?? []} zones={payload?.zones ?? []} mainWorkTypes={payload?.mainWorkTypes ?? []} subworkTypes={payload?.subworkTypes ?? []} loading={loading || previousDayLoading} canCreate={Boolean(payload?.canCreateDaily)} canUpdate={Boolean(payload?.canUpdateDaily)} canDelete={Boolean(payload?.canDeleteDaily)} showResponsibleUser={payload?.currentUserRole !== "foreman"} currentUserName={payload?.currentUserName} selectedIds={selectedEntryIds} selectedDraftKeys={selectedEntryDraftKeys} onEdit={openEntry} onPatchDraft={patchEntryDraft} onSelectionChange={(ids) => { setSelectedEntryIds(ids); if (ids.length) setSelectedEntryDraftKeys([]); }} onDraftSelectionChange={(keys) => { setSelectedEntryDraftKeys(keys); if (keys.length) setSelectedEntryIds([]); }} />
         <div className="table-edit-footer employee-table-footer uniform-footer-actions report-table-footer equipment-report-footer">
-          {selectedEntryIds.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedEntryIds.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-primary" onClick={() => { const selected = dailyEntries.filter((entry) => selectedEntryIds.includes(entry.id)); selected.forEach((entry) => openEntry(entry)); }} disabled={saving || !payload?.canUpdateDaily} title={payload?.canUpdateDaily ? undefined : "Нет права редактирования"}>Редактировать</button><button type="button" className="employee-action-button employee-action-danger" onClick={() => void deleteSelectedEntries()} disabled={saving || !payload?.canDeleteDaily} title={payload?.canDeleteDaily ? undefined : "Нет права удаления"}>Удалить строки</button><button type="button" className="employee-action-button clear-selection-button" onClick={() => setSelectedEntryIds([])} disabled={saving}>Снять выделение</button></div></div>}
+          {selectedEntryIds.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedEntryIds.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-primary" onClick={() => { const selected = dailyEntries.filter((entry) => selectedEntryIds.includes(entry.id)); selected.forEach((entry) => openEntry(entry)); }} disabled={saving || !payload?.canUpdateDaily} title={payload?.canUpdateDaily ? undefined : "Нет права редактирования"}>Редактировать</button><button type="button" className="employee-action-button employee-action-danger" onClick={() => setDeleteConfirmationTarget("daily")} disabled={saving || !payload?.canDeleteDaily} title={payload?.canDeleteDaily ? undefined : "Нет права удаления"}>Удалить строки</button><button type="button" className="employee-action-button clear-selection-button" onClick={() => setSelectedEntryIds([])} disabled={saving}>Снять выделение</button></div></div>}
           {selectedEntryDraftKeys.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано строк: <strong>{selectedEntryDraftKeys.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-danger" onClick={removeSelectedEntryDrafts} disabled={saving}>Убрать из отчёта</button><button type="button" className="employee-action-button clear-selection-button" onClick={() => setSelectedEntryDraftKeys([])} disabled={saving}>Снять выделение</button></div></div>}
           {entryDrafts.length > 0 && selectedEntryDraftKeys.length === 0 && <div className="employee-editing-bar"><div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>{showEquipmentCarryover ? "Подготовлено строк" : "Редактируется"}: <strong>{entryDrafts.length}</strong></span></div><div className="employee-selection-actions">{payload?.canCreateDaily && <button type="button" className="employee-action-button employee-action-primary" onClick={() => openEntry()} disabled={!referencesReady || saving}>Добавить запись</button>}<button type="button" className="employee-action-button cancel-editing-button" onClick={resetEntryDrafts} disabled={saving}>{hasEquipmentCarryoverSource ? "Вернуть исходный список" : "Отменить редактирование"}</button><button type="button" className="employee-action-button employee-save-button" onClick={() => void saveEntries()} disabled={saving}>{saving ? "Сохраняем…" : payload?.currentUserRole === "foreman" ? "Сохранить мою часть" : "Сохранить изменения"}</button></div></div>}
           {entryDrafts.length === 0 && selectedEntryIds.length === 0 && selectedEntryDraftKeys.length === 0 && payload?.canUpdateDaily && !payload.reportSubmitted && <div className="employee-editing-bar roster-save-bar"><div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>{payload.currentUserRole === "foreman" ? "После заполнения сохраните свою часть отчёта" : "Проверьте строки всех прорабов перед принятием отчёта"}</span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-save-button" onClick={() => void submitDailyReport()} disabled={saving}>{saving ? "Сохраняем…" : payload.currentUserRole === "foreman" ? "Сохранить мою часть" : "Принять отчёт за день"}</button></div></div>}
@@ -1447,7 +1473,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
       </div>
       {/* The spreadsheet shell must receive focus so native copy and paste events reach it. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-      <div ref={timesheetClipboardShellRef} className={["timesheet-grid-shell", "equipment-timesheet-shell", "timesheet-clipboard-shell", timesheetClipboardActiveCell ? "timesheet-selection-active" : ""].filter(Boolean).join(" ")} role="application" tabIndex={0} aria-label="Табель техники. Стрелки перемещают выбранную ячейку, Enter или F2 открывают редактирование." {...timesheetClipboardShellHandlers}>{timesheetClipboardStatus && <div className="timesheet-clipboard-status" role="status">{timesheetClipboardStatus}</div>}<table className="timesheet-table equipment-month-table"><thead><tr><th className="timesheet-sticky equipment-number-column" rowSpan={2}>№</th><th className="timesheet-sticky equipment-machine-column" rowSpan={2}><TimesheetFilterableHeading label="Техника" value={selectedEquipmentName} options={[TIMESHEET_ALL_OPTION, ...equipmentNames.map((value) => ({ value, label: value }))]} onChange={setEquipmentNameFilter}>Техника</TimesheetFilterableHeading></th><th className="timesheet-sticky equipment-organization-column" rowSpan={2}><TimesheetFilterableHeading label="Организация" value={selectedOrganization} options={[TIMESHEET_ALL_OPTION, ...equipmentOrganizations.map((value) => ({ value, label: value }))]} onChange={setOrganizationFilter}>Организация</TimesheetFilterableHeading></th><th colSpan={monthDays.length}>Дни месяца</th><th className="timesheet-total-column equipment-work-total" rowSpan={2}><TimesheetFilterableHeading label="Работа" value={productiveTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setProductiveTotalFilter}>Работа</TimesheetFilterableHeading></th><th className="timesheet-total-column equipment-idle-total" rowSpan={2}><TimesheetFilterableHeading label="Простой" value={downtimeTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setDowntimeTotalFilter}>Простой</TimesheetFilterableHeading></th><th className="timesheet-total-column equipment-all-total" rowSpan={2}><TimesheetFilterableHeading label="Всего" value={equipmentTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setEquipmentTotalFilter}>Всего</TimesheetFilterableHeading></th></tr><tr>{monthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; const dateObject = new Date(`${date}T00:00:00Z`); const weekend = [0, 6].includes(dateObject.getUTCDay()); const weekday = WEEKDAY_FORMATTER.format(dateObject).replace(".", ""); return <th key={day} className={[weekend ? "weekend" : "", date === today ? "today" : "", date > today ? "future" : ""].filter(Boolean).join(" ")}><TimesheetFilterableHeading compact label={`${day} ${weekday}`} value={monthDayFilters[date] ?? []} options={EQUIPMENT_DAY_FILTERS} onChange={(value) => setMonthDayFilters((current) => ({ ...current, [date]: value }))}><span>{day}</span><small>{weekday}</small></TimesheetFilterableHeading></th>; })}</tr></thead>
+      <div ref={timesheetClipboardShellRef} className={["timesheet-grid-shell", "equipment-timesheet-shell", "timesheet-clipboard-shell", timesheetClipboardActiveCell ? "timesheet-selection-active" : ""].filter(Boolean).join(" ")} role="application" tabIndex={0} aria-label="Табель техники. Стрелки перемещают выбранную ячейку, Enter или F2 открывают редактирование." {...timesheetClipboardShellHandlers} onScroll={(event) => syncTimesheetHeaderScroll(event.currentTarget)}>{timesheetClipboardContextMenu}{timesheetClipboardStatus && <div className="timesheet-clipboard-status" role="status">{timesheetClipboardStatus}</div>}<table className="timesheet-table equipment-month-table"><thead><tr><th className="timesheet-sticky equipment-number-column" rowSpan={2}>№</th><th className="timesheet-sticky equipment-machine-column" rowSpan={2}><TimesheetFilterableHeading label="Техника" value={selectedEquipmentName} options={[TIMESHEET_ALL_OPTION, ...equipmentNames.map((value) => ({ value, label: value }))]} onChange={setEquipmentNameFilter}>Техника</TimesheetFilterableHeading></th><th className="timesheet-sticky equipment-organization-column" rowSpan={2}><TimesheetFilterableHeading label="Организация" value={selectedOrganization} options={[TIMESHEET_ALL_OPTION, ...equipmentOrganizations.map((value) => ({ value, label: value }))]} onChange={setOrganizationFilter}>Организация</TimesheetFilterableHeading></th><th colSpan={monthDays.length}>Дни месяца</th><th className="timesheet-total-column equipment-work-total" rowSpan={2}><TimesheetFilterableHeading label="Работа" value={productiveTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setProductiveTotalFilter}>Работа</TimesheetFilterableHeading></th><th className="timesheet-total-column equipment-idle-total" rowSpan={2}><TimesheetFilterableHeading label="Простой" value={downtimeTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setDowntimeTotalFilter}>Простой</TimesheetFilterableHeading></th><th className="timesheet-total-column equipment-all-total" rowSpan={2}><TimesheetFilterableHeading label="Всего" value={equipmentTotalFilter} options={EQUIPMENT_TOTAL_FILTERS} onChange={setEquipmentTotalFilter}>Всего</TimesheetFilterableHeading></th></tr><tr>{monthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; const dateObject = new Date(`${date}T00:00:00Z`); const weekend = [0, 6].includes(dateObject.getUTCDay()); const weekday = WEEKDAY_FORMATTER.format(dateObject).replace(".", ""); return <th key={day} className={[weekend ? "weekend" : "", date === today ? "today" : "", date > today ? "future" : ""].filter(Boolean).join(" ")}><TimesheetFilterableHeading compact label={`${day} ${weekday}`} value={monthDayFilters[date] ?? []} options={EQUIPMENT_DAY_FILTERS} onChange={(value) => setMonthDayFilters((current) => ({ ...current, [date]: value }))}><span>{day}</span><small>{weekday}</small></TimesheetFilterableHeading></th>; })}</tr></thead>
         <tbody>{monthRows.length ? monthRows.map((row, index) => <tr key={row.unit.id}><td className="timesheet-sticky equipment-number-column">{index + 1}</td><th scope="row" className="timesheet-sticky equipment-machine-column" title={unitTitle(row.unit)}><span>{unitTitle(row.unit)}</span><small>{row.unit.registrationNumber || "Номер не указан"}</small></th><td className="timesheet-sticky equipment-organization-column">{row.unit.organization}</td>{monthDays.map((day) => {
           const date = `${month}-${String(day).padStart(2, "0")}`;
           const value = row.byDate.get(date);
@@ -1581,7 +1607,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         onValidationError={(message) => { setError(message); setNotice(""); }}
       />
       {payload?.canManageRegistry && <div className="table-edit-footer employee-table-footer uniform-footer-actions equipment-registry-footer">
-        {selectedUnitIds.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedUnitIds.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-primary" onClick={editSelectedUnits} disabled={saving || !payload.canUpdateRegistry} title={payload.canUpdateRegistry ? undefined : "Нет права редактирования"}>Редактировать</button><button type="button" className="employee-action-button employee-action-danger" onClick={() => void deleteSelectedUnits()} disabled={saving || !payload.canDeleteRegistry} title={payload.canDeleteRegistry ? undefined : "Нет права удаления"}>Удалить технику</button><button type="button" className="employee-action-button clear-selection-button" onClick={() => { setSelectedUnitIds([]); setNotice(""); setError(""); }} disabled={saving}>Снять выделение</button></div></div>}
+        {selectedUnitIds.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedUnitIds.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-primary" onClick={editSelectedUnits} disabled={saving || !payload.canUpdateRegistry} title={payload.canUpdateRegistry ? undefined : "Нет права редактирования"}>Редактировать</button><button type="button" className="employee-action-button employee-action-danger" onClick={() => setDeleteConfirmationTarget("registry")} disabled={saving || !payload.canDeleteRegistry} title={payload.canDeleteRegistry ? undefined : "Нет права удаления"}>Удалить технику</button><button type="button" className="employee-action-button clear-selection-button" onClick={() => { setSelectedUnitIds([]); setNotice(""); setError(""); }} disabled={saving}>Снять выделение</button></div></div>}
         {unitDrafts.length > 0 && <div className="employee-editing-bar"><div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>Редактируется: <strong>{unitDrafts.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button cancel-editing-button" onClick={cancelUnitEditing} disabled={saving}>Отменить редактирование</button><button type="button" className="employee-action-button employee-save-button" onClick={() => void saveUnits()} disabled={saving}>{saving ? "Сохраняем…" : "Сохранить изменения"}</button></div></div>}
         {unitDrafts.length === 0 && selectedUnitIds.length === 0 && <div className="employee-footer-base">{payload.canCreateRegistry && <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={() => { setUnitDrafts((current) => [...current, emptyUnit()]); setNotice(""); setError(""); }}>Добавить технику</button>}<span className="employee-total-count">Всего техники: <strong>{visibleUnitIds?.length ?? registryUnits.length}</strong></span></div>}
       </div>}
@@ -1600,11 +1626,15 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         onSelectionChange={(ids) => { setSelectedProjectUnitIds(ids); setError(""); setNotice(""); }}
       />
       {payload?.canManageAssignments && <div className="table-edit-footer employee-table-footer uniform-footer-actions equipment-project-footer">
-        {selectedProjectUnitIds.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedProjectUnitIds.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-danger" onClick={() => void removeSelectedProjectUnits()} disabled={saving || !payload.canDeleteAssignments} title={payload.canDeleteAssignments ? undefined : "Нет права удаления"}>Убрать из проекта</button><button type="button" className="employee-action-button clear-selection-button" onClick={() => { setSelectedProjectUnitIds([]); setError(""); setNotice(""); }} disabled={saving}>Снять выделение</button></div></div>}
+        {selectedProjectUnitIds.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedProjectUnitIds.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button employee-action-danger" onClick={() => setDeleteConfirmationTarget("project")} disabled={saving || !payload.canDeleteAssignments} title={payload.canDeleteAssignments ? undefined : "Нет права удаления"}>Убрать из проекта</button><button type="button" className="employee-action-button clear-selection-button" onClick={() => { setSelectedProjectUnitIds([]); setError(""); setNotice(""); }} disabled={saving}>Снять выделение</button></div></div>}
         {projectUnitDrafts.length > 0 && <div className="employee-editing-bar"><div className="employee-editing-summary"><span aria-hidden="true">＋</span><span>Добавляется: <strong>{projectUnitDrafts.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button cancel-editing-button" onClick={() => { setProjectUnitDrafts([]); setError(""); setNotice(""); }} disabled={saving}>Отменить добавление</button><button type="button" className="employee-action-button employee-save-button" onClick={() => void assignProjectUnits()} disabled={saving}>{saving ? "Сохраняем…" : "Добавить в проект"}</button></div></div>}
         {projectUnitDrafts.length === 0 && selectedProjectUnitIds.length === 0 && <div className="employee-footer-base">{payload.canCreateAssignments && <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={() => { setProjectUnitDrafts((current) => [...current, { key: typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `project-equipment-${Date.now()}-${Math.random()}`, equipmentId: "" }]); setError(""); setNotice(""); }}>Добавить технику в проект</button>}<span className="employee-total-count">Всего в проекте: <strong>{payload?.units.length ?? 0}</strong></span></div>}
       </div>}
     </>}
+
+    {deleteConfirmationTarget === "daily" && <EquipmentDeleteConfirmation title="Удалить выбранные строки?" description={`Строки (${selectedEntryIds.length}) будут удалены из ежедневного отчёта техники. Это действие нельзя отменить.`} saving={saving} onCancel={() => setDeleteConfirmationTarget(null)} onConfirm={() => void deleteSelectedEntries()} />}
+    {deleteConfirmationTarget === "registry" && <EquipmentDeleteConfirmation title="Удалить выбранную технику?" description={`Выбранная техника (${selectedUnitIds.length}) исчезнет из активного реестра и проектов. История ранее созданных отчётов сохранится.`} saving={saving} onCancel={() => setDeleteConfirmationTarget(null)} onConfirm={() => void deleteSelectedUnits()} />}
+    {deleteConfirmationTarget === "project" && <EquipmentDeleteConfirmation title="Убрать выбранную технику из проекта?" description={`Выбранная техника (${selectedProjectUnitIds.length}) исчезнет только из текущего проекта. Общие карточки и история отчётов сохранятся.`} saving={saving} onCancel={() => setDeleteConfirmationTarget(null)} onConfirm={() => void removeSelectedProjectUnits()} />}
 
   </section>;
 }

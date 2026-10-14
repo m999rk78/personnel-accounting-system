@@ -31,10 +31,16 @@ test("server-renders the protected personnel accounting workspace", async () => 
     new URL("../app/PersonnelApp.tsx", import.meta.url),
     "utf8",
   );
+  const authGate = await readFile(
+    new URL("../app/AuthGate.tsx", import.meta.url),
+    "utf8",
+  );
   assert.match(app, /Отчёт персонала/);
   assert.match(app, /PlacementAgGrid/);
   assert.match(app, /Общее количество часов ОПР/);
   assert.match(app, /aria-label="Дата отчёта"/);
+  assert.match(authGate, /useSyncExternalStore\(subscribeToHydration, hydratedInBrowser, hydratingOnServer\)/);
+  assert.match(authGate, /if \(!hydrated \|\| checking \|\| !user\)/);
 
   const grid = await readFile(
     new URL("../app/AgDataGrids.tsx", import.meta.url),
@@ -242,7 +248,7 @@ test("keeps the employee grid compact without duplicated filter controls", async
   assert.match(grid, /const \[searchQuery, setSearchQuery\] = useState\(""\)/);
   assert.match(grid, /onFocus=\{\(event\) => \{[\s\S]*const input = event\.currentTarget[\s\S]*requestAnimationFrame\(\(\) => input\.select\(\)\)/);
   assert.match(grid, /event\.key === "ArrowDown"[\s\S]*event\.stopPropagation\(\)/);
-  assert.match(grid, /onClick=\{\(\) => setOpen\(true\)\}/);
+  assert.match(grid, /onClick=\{openMenu\}/);
   assert.match(grid, /field: "employmentType", headerName: "Тип"/);
   assert.match(grid, /field: "department", headerName: "Отдел"/);
   assert.match(grid, /field: "position", headerName: "Должность"/);
@@ -356,7 +362,7 @@ test("edits rows on double click and provides spreadsheet-style copy and paste",
   assert.match(filters, /lastSelectionRef/);
   assert.match(filters, /selectionToRestore/);
   assert.match(filters, /body\.current\?\.focus\(\{ preventScroll: true \}\)/);
-  assert.match(filters, /target\.closest\("\.custom-select-menu,\.ag-employee-menu"\)/);
+  assert.match(filters, /target\.closest\("\.custom-select-menu,\.ag-employee-menu,\.table-context-menu"\)/);
   assert.match(filters, /clearSelectionOutsideGrid/);
   assert.match(filters, /clearSelectionOnEmptySpace/);
   assert.match(filters, /onPointerDown=\{clearSelectionOnEmptySpace\}/);
@@ -469,6 +475,33 @@ test("uses checkbox selection and footer actions in reports and project settings
   assert.match(grid, /api\.refreshClientSideRowModel\("everything"\)/);
   assert.match(app, /Снять выделение/);
   assert.match(app, /Отменить редактирование/);
+});
+
+test("offers permission-aware right-click actions throughout system tables", async () => {
+  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const filters = await readFile(new URL("../app/GridFilters.tsx", import.meta.url), "utf8");
+  const clipboard = await readFile(new URL("../app/useTimesheetClipboard.ts", import.meta.url), "utf8");
+  const timesheet = await readFile(new URL("../app/TimesheetView.tsx", import.meta.url), "utf8");
+  const equipment = await readFile(new URL("../app/EquipmentAccountingView.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const placementGrid = grid.slice(grid.indexOf("export function PlacementAgGrid"), grid.indexOf("type EmployeeTableRow"));
+
+  assert.match(filters, /onContextMenu=\{openContextMenu\}/);
+  assert.match(filters, /Копировать ячейку/);
+  assert.match(filters, /Вставить в ячейку/);
+  assert.match(filters, /Редактировать ячейку/);
+  assert.match(filters, /Выбрать строку для действий/);
+  assert.match(placementGrid, /getSpreadsheetContextActions=\{placementContextActions\}/);
+  assert.match(placementGrid, /Редактировать строку/);
+  assert.match(placementGrid, /Убрать из отчёта/);
+  assert.match(placementGrid, /canDeleteEntry[\s\S]*current\.canDelete/);
+  assert.match(app, /onRequestDeleteEntry=\{requestDeleteReportEntry\}/);
+  assert.match(clipboard, /onContextMenu: \(event: MouseEvent<HTMLTableCellElement>\)/);
+  assert.match(clipboard, /Удалить ручное значение/);
+  assert.match(timesheet, /contextMenu: clipboardContextMenu/);
+  assert.match(equipment, /contextMenu: timesheetClipboardContextMenu/);
+  assert.match(styles, /\.table-context-menu/);
 });
 
 test("keeps creation, selection, and editing as exclusive table modes", async () => {
@@ -609,12 +642,46 @@ test("checks Bitrix24 read-only and links only explicitly confirmed employee mat
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
   const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
   assert.match(app, /Проверить с Битрикс24/);
-  assert.match(app, /ПРОВЕРКА БЕЗ ИЗМЕНЕНИЯ ДАННЫХ/);
+  assert.match(app, /ДАННЫЕ НЕ ИЗМЕНЕНЫ/);
+  assert.match(app, /Нужно проверить сотрудников/);
+  assert.match(app, /Требуют внимания/);
+  assert.match(app, /bitrix-review-layout/);
+  assert.match(app, /selectedBitrixDifferenceIndex/);
+  assert.match(app, /Выбранный сотрудник/);
+  assert.match(app, /Что обнаружено/);
   assert.match(app, /Сопоставить автоматически/);
   assert.match(app, /link-bitrix24-employees/);
+  assert.match(app, /create-bitrix24-employee/);
+  assert.match(app, /Добавить из Битрикс24/);
+  assert.match(app, /Без объекта/);
+  assert.match(app, /ariaLabel="Объект нового сотрудника"/);
+  assert.doesNotMatch(app, /label: `\$\{site\.name\} · \$\{site\.code\}`/);
+  assert.match(app, /Изменить/);
+  assert.match(app, /Подтвердить предупреждение/);
+  assert.match(app, /Актуализировать с Битрикс24/);
+  assert.match(app, /update-selected-bitrix24-employees/);
+  assert.match(app, /acknowledge-selected-bitrix24-differences/);
+  assert.match(app, /selectedBitrixUpdatableEmployees/);
+  assert.match(app, /selectedBitrixWarningEmployees/);
+  assert.match(app, /differenceCounts/);
+  assert.match(app, /Отличаются данные/);
+  assert.match(app, /Уволены/);
+  assert.match(app, /delete-bitrix24-employee/);
+  assert.match(grid, /Не совпадает с Битрикс24/);
+  assert.match(grid, /Отсутствует в Битрикс24/);
+  assert.match(grid, /Уволен в Битрикс24/);
+  assert.match(grid, /Проверка Б24 \/ расхождение/);
+  assert.match(grid, /bitrix-grid-details/);
+  assert.match(grid, /bitrix-mismatch-row/);
+  assert.match(grid, /bitrix-missing-row/);
+  assert.match(grid, /bitrix-dismissed-row/);
   assert.match(app, /bitrixManualLinks/);
-  assert.match(app, /Кадровые данные, проекты, отчёты и табели не изменялись/);
-  assert.doesNotMatch(app, /Актуализировать из Битрикс24/);
+  assert.match(app, /Изменения применяются только после выбора действия/);
+  assert.match(app, /Добавить сотрудника/);
+  assert.match(app, /Обновить из Битрикс24/);
+  assert.match(app, /Оставить как есть/);
+  assert.doesNotMatch(app, />Прочитано</);
+  assert.doesNotMatch(app, />Сравнено</);
   assert.doesNotMatch(app, /"Стадия в Битрикс24"/);
   assert.doesNotMatch(grid, /headerName: "Стадия в Битрикс24"/);
   assert.doesNotMatch(grid, /employee\.bitrix24Stage/);
@@ -623,6 +690,22 @@ test("checks Bitrix24 read-only and links only explicitly confirmed employee mat
   assert.match(app, /allEmployees=\{data\?\.employees \?\? \[\]\}/);
   assert.match(api, /suggestBitrixEmployeeLinks/);
   assert.match(api, /payload\.action === "link-bitrix24-employees"/);
+  assert.match(api, /payload\.action === "create-bitrix24-employee"/);
+  assert.match(api, /payload\.action === "update-bitrix24-employee"/);
+  assert.match(api, /payload\.action === "update-selected-bitrix24-employees"/);
+  assert.match(api, /payload\.action === "acknowledge-selected-bitrix24-differences"/);
+  assert.match(api, /updateBitrixEmployeeRecord\(sourceSnapshot, row\.id, row\.bitrix24Id\)/);
+  assert.match(api, /check_state\.status AS "checkStatus"/);
+  assert.match(api, /acknowledgedCount/);
+  assert.match(api, /payload\.action === "delete-bitrix24-employee"/);
+  assert.match(api, /payload\.action === "acknowledge-bitrix24-difference"/);
+  assert.match(api, /bitrix24_employee_check_states/);
+  assert.match(api, /differenceCounts/);
+  assert.match(api, /RETURNING employee_id/);
+  assert.match(api, /JSON\.stringify\(\[state\.status, details\]\)/);
+  assert.match(api, /Используйте сопоставление, чтобы не создавать дубль/);
+  assert.match(api, /INSERT INTO employee_profile_versions/);
+  assert.match(api, /INSERT INTO employee_availability_periods/);
   assert.match(api, /WHERE id = \? AND active = 1 AND bitrix24_id IS NULL/);
   assert.match(api, /bitrix24_stage = \?/);
   assert.match(api, /sourceById\.get\(link\.bitrix24Id\)/);

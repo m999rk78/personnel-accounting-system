@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { isGeneralSettingsView, isTimesheetView, parseWorkspaceLocation, validDate, validMonth, workspacePath, workspaceUrl } from "../app/appRoutes.ts";
+import { isGeneralSettingsView, isTimesheetView, parseWorkspaceLocation, validDate, validMonth, workspacePath, workspaceTitle, workspaceUrl } from "../app/appRoutes.ts";
 
 test("maps every workspace section to a stable address", () => {
   assert.equal(workspaceUrl("placement", "all", "2026-10-01", "2026-10"), "/reports/workers?date=2026-10-01");
@@ -47,6 +47,8 @@ test("marks protected route families and serves direct workspace links", async (
   assert.equal(isGeneralSettingsView("projectEmployees"), false);
   assert.equal(isTimesheetView("timesheet"), true);
   assert.equal(isTimesheetView("placement"), false);
+  assert.equal(workspaceTitle("placement"), "Отчёт персонала");
+  assert.equal(workspaceTitle("directories", "zone"), "Зоны");
 
   const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
   const catchAll = await readFile(new URL("../app/[...route]/page.tsx", import.meta.url), "utf8");

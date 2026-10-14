@@ -55,13 +55,22 @@ test("Bitrix check reports differences without treating manual employees as miss
     bitrix24Id: "101", fullName: "Иванов Иван", employmentType: "ОПР", department: "УСР", position: "Монтажник",
     stageId: "ON_SITE", stageName: "На объекте", availabilityStatus: "on_site", projectKeys: ["Усть-Луга"], sourceUpdatedAt: null,
   }];
-  const local = [{ bitrix24Id: "101", fullName: "Иванов  Иван", employmentType: "ОПР", department: "УСР", position: "Монтажник", bitrix24Stage: "На объекте" }];
+  const local = [{ bitrix24Id: "101", fullName: "Иванов  Иван", employmentType: "ОПР", department: "УСР", position: "Монтажник", bitrix24Stage: "На объекте", projectKeys: ["Усть-Луга"] }];
   assert.deepEqual(compareBitrixEmployees(source, local), { compared: 1, matched: 1, differences: [] });
 
   const changed = compareBitrixEmployees(source, [{ ...local[0], position: "Сварщик" }, { ...local[0], bitrix24Id: "999", fullName: "Старая карточка" }]);
   assert.equal(changed.matched, 0);
   assert.deepEqual(changed.differences.map((difference) => difference.kind), ["changed", "missing_in_bitrix"]);
-  assert.match(changed.differences[0].details, /должность/);
+  assert.match(changed.differences[0].details, /Должность/);
+
+  const changedProject = compareBitrixEmployees(source, [{ ...local[0], projectKeys: ["Другой объект"] }]);
+  assert.equal(changedProject.matched, 0);
+  assert.match(changedProject.differences[0].details, /Объект: «Другой объект» → «Усть-Луга»/);
+
+  const dismissedSource = [{ ...source[0], availabilityStatus: "dismissed", stageName: "Увольнение" }];
+  const dismissed = compareBitrixEmployees([], local, dismissedSource);
+  assert.deepEqual(dismissed.differences.map((difference) => difference.kind), ["dismissed_in_bitrix"]);
+  assert.match(dismissed.differences[0].details, /уволен/i);
 });
 
 test("suggests only unique exact employee matches for automatic Bitrix linking", () => {

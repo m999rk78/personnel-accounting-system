@@ -113,6 +113,7 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   const api = await readFile(new URL("../app/api/timesheet/route.ts", import.meta.url), "utf8");
   const view = await readFile(new URL("../app/TimesheetView.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const headerScroll = await readFile(new URL("../app/timesheetHeaderScroll.ts", import.meta.url), "utf8");
   const clipboard = await readFile(new URL("../app/useTimesheetClipboard.ts", import.meta.url), "utf8");
   const columnFilter = await readFile(new URL("../app/TimesheetColumnFilter.tsx", import.meta.url), "utf8");
   const xlsx = await readFile(new URL("../app/placementXlsx.ts", import.meta.url), "utf8");
@@ -171,6 +172,12 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(view, /Табель учёта рабочего времени/);
   assert.match(view, /Выбрать месяц, сейчас/);
   assert.match(view, /personnel-timesheet-summary timesheet-top-summary/);
+  assert.match(view, /onScroll=\{\(event\) => syncTimesheetHeaderScroll\(event\.currentTarget\)\}/);
+  assert.match(headerScroll, /HEADER_SCROLL_START = 48/);
+  assert.match(headerScroll, /HEADER_COLLAPSE_DISTANCE = 104/);
+  assert.match(headerScroll, /\(scrollContainer\.scrollTop - HEADER_SCROLL_START\) \/ HEADER_COLLAPSE_DISTANCE/);
+  assert.match(styles, /height:var\(--timesheet-heading-height,52px\)/);
+  assert.match(styles, /height:var\(--timesheet-summary-height,42px\)/);
   assert.match(view, /Итого по дням/);
   assert.match(view, /timesheet-fill-row[\s\S]*colSpan=\{days\.length \+ 8\}/);
   assert.match(styles, /timesheet-grid-shell-reconciled \.timesheet-table[^{]*\{ height:100%/);
@@ -181,6 +188,8 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(view, /label="Сотрудник"/);
   assert.match(view, /label="Должность"/);
   assert.match(view, /dayFilterOptions/);
+  assert.match(view, /label: `Значение \$\{value\}`/);
+  assert.doesNotMatch(view, /label: `Значение: \$\{value\}`/);
   assert.match(view, /Есть расхождение/);
   assert.match(view, /timesheet-header-filter-reset/);
   assert.match(view, /const mismatch = isMismatch\(employee, entry, mark\)/);
@@ -262,6 +271,9 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(columnFilter, /"Фильтр и сортировка" : "Фильтр"/);
   assert.match(columnFilter, /timesheet-filter-popover/);
   assert.match(columnFilter, /createPortal/);
+  assert.match(columnFilter, /useState<\{ top: number; left: number \} \| null>\(null\)/);
+  assert.match(columnFilter, /const popup = open && position/);
+  assert.match(columnFilter, /setPosition\(\{ top, left \}\);[^]*setOpen/);
   assert.match(columnFilter, /Найти значение/);
   assert.match(columnFilter, /Выбрать все/);
   assert.match(columnFilter, /Применить/);

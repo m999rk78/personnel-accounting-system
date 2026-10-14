@@ -86,10 +86,12 @@ export type LocalBitrixEmployeeSnapshot = {
   department: string;
   position: string;
   bitrix24Stage: string;
+  projectKeys?: string[];
+  projectAliases?: string[];
 };
 
 export type BitrixEmployeeDifference = {
-  kind: "missing_locally" | "changed" | "outside_scope" | "missing_in_bitrix" | "incomplete" | "unknown_stage";
+  kind: "missing_locally" | "changed" | "outside_scope" | "missing_in_bitrix" | "dismissed_in_bitrix" | "incomplete" | "unknown_stage";
   employeeName: string;
   details: string;
   bitrix24Id?: string;
@@ -113,16 +115,24 @@ export type BitrixEmployeeLinkSuggestion = {
 
 const comparableFields = [
   ["fullName", "ФИО"],
-  ["employmentType", "тип"],
-  ["department", "отдел"],
-  ["position", "должность"],
-  ["bitrix24Stage", "стадия"],
+  ["employmentType", "Тип"],
+  ["department", "Отдел"],
+  ["position", "Должность"],
+  ["bitrix24Stage", "Стадия"],
 ] as const;
+
+function projectsMatch(sourceKeys: string[], localKeys: string[]) {
+  const source = new Set(sourceKeys.map(normalizeBitrixText).filter(Boolean));
+  const local = new Set(localKeys.map(normalizeBitrixText).filter(Boolean));
+  if (!source.size && !local.size) return true;
+  return [...source].some((key) => local.has(key));
+}
 
 export function compareBitrixEmployees(source: BitrixEmployeeSnapshot[], local: LocalBitrixEmployeeSnapshot[], fullSource = source) {
   const localById = new Map(local.map((employee) => [employee.bitrix24Id, employee]));
   const selectedIds = new Set(source.map((employee) => employee.bitrix24Id).filter(Boolean));
   const sourceIds = new Set(fullSource.map((employee) => employee.bitrix24Id).filter(Boolean));
+  const fullSourceById = new Map(fullSource.map((employee) => [employee.bitrix24Id, employee]));
   const differences: BitrixEmployeeDifference[] = [];
   let matched = 0;
 
@@ -154,6 +164,12 @@ export function compareBitrixEmployees(source: BitrixEmployeeSnapshot[], local: 
       const after = sourceComparable[field];
       return normalizeBitrixText(before) === normalizeBitrixText(after) ? [] : [`${label}: «${before || "—"}» → «${after || "—"}»`];
     });
+    const sourceProjects = employee.projectKeys.filter(Boolean);
+    const localProjects = existing.projectKeys?.filter(Boolean) ?? [];
+    const localProjectAliases = existing.projectAliases?.filter(Boolean) ?? localProjects;
+    if (employee.availabilityStatus === "on_site" && !projectsMatch(sourceProjects, localProjectAliases)) {
+      changedFields.push(`Объект: «${localProjects.join(", ") || "Без объекта"}» → «${sourceProjects.join(", ") || "Не указан"}»`);
+    }
     if (changedFields.length) {
       differences.push({ kind: "changed", employeeName: name, details: changedFields.join("; "), bitrix24Id: employee.bitrix24Id });
       hasDifference = true;
@@ -163,9 +179,12 @@ export function compareBitrixEmployees(source: BitrixEmployeeSnapshot[], local: 
 
   for (const employee of local) {
     if (selectedIds.has(employee.bitrix24Id)) continue;
-    differences.push(sourceIds.has(employee.bitrix24Id)
-      ? { kind: "outside_scope", employeeName: employee.fullName || `ID ${employee.bitrix24Id}`, details: "Карточка есть в Битрикс24, но больше не входит в выбранные стадии или проекты.", bitrix24Id: employee.bitrix24Id }
-      : { kind: "missing_in_bitrix", employeeName: employee.fullName || `ID ${employee.bitrix24Id}`, details: "Связанная карточка больше не найдена в Битрикс24.", bitrix24Id: employee.bitrix24Id });
+    const sourceEmployee = fullSourceById.get(employee.bitrix24Id);
+    differences.push(sourceEmployee?.availabilityStatus === "dismissed" || sourceEmployee?.availabilityStatus === "deleted"
+      ? { kind: "dismissed_in_bitrix", employeeName: employee.fullName || `ID ${employee.bitrix24Id}`, details: `В Битрикс24 сотрудник отмечен как уволенный${sourceEmployee.stageName ? ` — стадия «${sourceEmployee.stageName}»` : ""}.`, bitrix24Id: employee.bitrix24Id }
+      : sourceIds.has(employee.bitrix24Id)
+        ? { kind: "outside_scope", employeeName: employee.fullName || `ID ${employee.bitrix24Id}`, details: "Карточка есть в Битрикс24, но больше не входит в выбранные стадии или проекты.", bitrix24Id: employee.bitrix24Id }
+        : { kind: "missing_in_bitrix", employeeName: employee.fullName || `ID ${employee.bitrix24Id}`, details: "Связанная карточка больше не найдена в Битрикс24.", bitrix24Id: employee.bitrix24Id });
   }
 
   return { compared: source.length, matched, differences };
@@ -225,12 +244,23 @@ function webhookUrl() {
 async function callBitrix(method: string, params: Record<string, unknown>) {
   if (!bitrix24ReadOnlyMethods.has(method)) throw new Error(`Метод Битрикс24 «${method}» заблокирован политикой интеграции только для чтения.`);
   const endpoint = new URL(`${method}.json`, webhookUrl());
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify(params),
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(params),
+      cache: "no-store",
+      signal: AbortSignal.timeout(25_000),
+    });
+  } catch (error) {
+    const cause = error instanceof Error && "cause" in error ? error.cause as { code?: string } | undefined : undefined;
+    if (cause?.code === "ENOTFOUND") throw new Error("Не удалось найти сервер Битрикс24. Проверьте интернет, DNS и адрес webhook.");
+    if (cause?.code === "UND_ERR_CONNECT_TIMEOUT" || (error instanceof Error && /timeout/i.test(`${error.name} ${error.message}`))) {
+      throw new Error("Сервер Битрикс24 не ответил вовремя. Проверьте доступность портала и повторите попытку.");
+    }
+    throw new Error("Не удалось подключиться к Битрикс24. Проверьте интернет и доступность портала.");
+  }
   const payload = await response.json() as BitrixPayload;
   if (!response.ok || payload.error) throw new Error(`Битрикс24: ${payload.error_description ?? payload.error ?? `HTTP ${response.status}`}`);
   return payload;
