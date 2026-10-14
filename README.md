@@ -64,6 +64,10 @@ docker compose up --build
 - `MAIL_FROM` — подтверждённый адрес отправителя, например `no-reply@uchet-personala.ru`.
 - `PUBLIC_APP_ORIGIN` — публичный адрес приложения без завершающего `/`; используется в ссылках-приглашениях.
 - `RESEND_API_KEY` — нужен только при `MAIL_PROVIDER=resend`.
+- `YANDEX_POSTBOX_API_KEY_ID` и `YANDEX_POSTBOX_API_KEY_SECRET` — ограниченный
+  ключ `yc.postbox.send` для Postbox, когда приложение работает вне Yandex Cloud.
+  На виртуальных машинах Яндекса без этих переменных сохраняется авторизация
+  через IAM-токен метаданных.
 
 ### Интеграция с Битрикс24
 

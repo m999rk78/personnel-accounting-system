@@ -32,8 +32,8 @@ GitHub → Coolify (Mark's Team) → отдельный сервер Selectel
 NODE_ENV=production
 HOST=0.0.0.0
 PORT=8080
-PGHOST=<приватный FQDN Selectel PostgreSQL>
-PGPORT=<порт из строки подключения Selectel>
+PGHOST=master.d9725049-e1dd-492c-9a1e-81b4f96aa767.c.dbaas.selcloud.ru
+PGPORT=5432
 PGUSER=personnel
 PGPASSWORD=<secret>
 PGDATABASE=personnel
@@ -43,6 +43,10 @@ DATABASE_POOL_SIZE=5
 APP_ORIGIN=https://uchet-personala.ru
 PUBLIC_APP_ORIGIN=https://uchet-personala.ru
 BITRIX24_SYNC_ENABLED=false
+MAIL_PROVIDER=yandex-postbox
+MAIL_FROM=no-reply@uchet-personala.ru
+YANDEX_POSTBOX_API_KEY_ID=<secret>
+YANDEX_POSTBOX_API_KEY_SECRET=<secret>
 ```
 
 Проверка состояния контейнера: `GET /api/health`. Она возвращает `200`, только

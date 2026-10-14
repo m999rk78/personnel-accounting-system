@@ -1,4 +1,5 @@
 import { getDatabase } from "../db/client";
+import nodemailer from "nodemailer";
 import { loadEffectivePermissions } from "./permissions";
 import type { PermissionSet } from "./permissionModel";
 import type { UserRole } from "./roles";
@@ -231,6 +232,18 @@ export async function sendInvitationEmail(input: { to: string; fullName: string;
   try {
     let response: Response;
     if (provider === "yandex-postbox") {
+      const apiKeyId = process.env.YANDEX_POSTBOX_API_KEY_ID ?? "";
+      const apiKeySecret = process.env.YANDEX_POSTBOX_API_KEY_SECRET ?? "";
+      if (apiKeyId && apiKeySecret) {
+        const transport = nodemailer.createTransport({
+          host: "postbox.cloud.yandex.net",
+          port: 465,
+          secure: true,
+          auth: { user: apiKeyId, pass: apiKeySecret },
+        });
+        await transport.sendMail({ from, to: input.to, subject, text, html });
+        return { sent: true as const };
+      }
       const tokenResponse = await fetch("http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token", {
         headers: { "Metadata-Flavor": "Google" },
         signal: AbortSignal.timeout(3_000),

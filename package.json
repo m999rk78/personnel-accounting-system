@@ -23,6 +23,7 @@
   "dependencies": {
     "ag-grid-react": "^36.2.0",
     "drizzle-orm": "0.45.2",
+    "nodemailer": "^7.0.13",
     "pg": "^8.23.0",
     "react": "19.2.6",
     "react-dom": "19.2.6"
@@ -32,6 +33,7 @@
     "@next/eslint-plugin-next": "16.2.6",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
+    "@types/nodemailer": "^7.0.12",
     "@types/pg": "^8.23.1",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",

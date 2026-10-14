@@ -74,6 +74,8 @@ test("protects access with invitations, password hashing, and server sessions", 
   assert.match(auth, /CREATE TABLE IF NOT EXISTS user_sessions/);
   assert.match(auth, /https:\/\/api\.resend\.com\/emails/);
   assert.match(auth, /https:\/\/postbox\.cloud\.yandex\.net\/v2\/email\/outbound-emails/);
+  assert.match(auth, /process\.env\.YANDEX_POSTBOX_API_KEY_ID/);
+  assert.match(auth, /nodemailer\.createTransport/);
   assert.match(auth, /computeMetadata\/v1\/instance\/service-accounts\/default\/token/);
   assert.match(auth, /process\.env\.PUBLIC_APP_ORIGIN/);
   assert.match(api, /getAuthUser\(request\)/);
