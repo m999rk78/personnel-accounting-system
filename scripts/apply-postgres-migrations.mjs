@@ -25,7 +25,7 @@ function sslConfiguration() {
   const certificate = process.env.DATABASE_CA_CERT?.replaceAll("\\n", "\n")
     ?? (process.env.DATABASE_CA_CERT_FILE ? readFileSync(process.env.DATABASE_CA_CERT_FILE, "utf8") : undefined);
   if (mode === "verify-full" && !certificate) {
-    throw new Error("Для DATABASE_SSL=verify-full требуется сертификат Яндекс Облака.");
+    throw new Error("Для DATABASE_SSL=verify-full требуется корневой сертификат PostgreSQL-провайдера.");
   }
   return certificate ? { ca: certificate, rejectUnauthorized: true } : { rejectUnauthorized: false };
 }
