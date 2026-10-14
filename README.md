@@ -8,7 +8,7 @@
 - React 19 и vinext
 - AG Grid
 - Node.js 22
-- PostgreSQL 17
+- PostgreSQL 18
 - Drizzle Kit для миграций
 - Docker
 
@@ -55,12 +55,12 @@ docker compose up --build
   несколько адресов можно перечислить через запятую или точку с запятой.
 - `DATABASE_SSL` — `disable`, `require` или `verify-full`.
 - `DATABASE_CA_CERT` — CA-сертификат с `\n` вместо переносов строк; обязателен для `verify-full`.
-- `DATABASE_POOL_SIZE` — размер пула, для Serverless Containers рекомендуется `5`.
+- `DATABASE_POOL_SIZE` — размер пула; для текущего приложения рекомендуется `5`.
 - `DATABASE_RUNTIME_BOOTSTRAP` — включите `true` только для локального запуска без
   заранее применённых миграций. В production схема изменяется командой миграции,
   поэтому тяжёлая проверка и восстановление таблиц не выполняются при каждом
   холодном старте контейнера.
-- `MAIL_PROVIDER` — почтовый адаптер: `yandex-postbox` (рекомендуется в Yandex Cloud) или `resend`.
+- `MAIL_PROVIDER` — почтовый адаптер: `resend` или устаревший `yandex-postbox`.
 - `MAIL_FROM` — подтверждённый адрес отправителя, например `no-reply@uchet-personala.ru`.
 - `PUBLIC_APP_ORIGIN` — публичный адрес приложения без завершающего `/`; используется в ссылках-приглашениях.
 - `RESEND_API_KEY` — нужен только при `MAIL_PROVIDER=resend`.
@@ -120,7 +120,8 @@ BITRIX24_PROJECT_MAP={"123":"GPZ-U2","Объект 1":"GPZ-U2"}
 `crm.item.list` и `crm.status.list`. Любой другой метод блокируется до отправки
 запроса.
 
-Секреты нельзя добавлять в Git. Для production храните их в Yandex Lockbox.
+Секреты нельзя добавлять в Git. Для production храните их в защищённых
+переменных окружения Coolify.
 
 ## Авторизация
 
@@ -148,7 +149,8 @@ BITRIX24_PROJECT_MAP={"123":"GPZ-U2","Объект 1":"GPZ-U2"}
 - `npm run db:migrate-postgres` — применить миграции PostgreSQL после проверки
   имени базы и пользователя. Production-контейнер выполняет эту команду
   автоматически перед запуском сервера.
-- `npm run db:yandex -- <FQDN> migrate` — вручную применить только миграции к
+- `npm run db:yandex -- <FQDN> migrate` — устаревшая команда для обслуживания
+  прежнего Yandex Managed PostgreSQL: вручную применить только миграции к
   Yandex Managed PostgreSQL из среды с сетевым доступом к приватному кластеру.
   Пароль можно получить из Lockbox через `YC_POSTGRES_PASSWORD_SECRET_ID`;
   локальные данные эта команда не импортирует.
@@ -160,4 +162,9 @@ BITRIX24_PROJECT_MAP={"123":"GPZ-U2","Объект 1":"GPZ-U2"}
 
 ## Развёртывание
 
-Пошаговая инструкция находится в [DEPLOY_YANDEX_CLOUD.md](./DEPLOY_YANDEX_CLOUD.md).
+Пошаговая инструкция находится в
+[DEPLOY_SELECTEL_COOLIFY.md](./DEPLOY_SELECTEL_COOLIFY.md).
+
+GitHub Actions выполняет только линтер, сборку и тесты. Развёртывание запускает
+Coolify в `Mark's Team`; workflow для автоматического деплоя в Yandex Cloud
+удалён, поэтому отправка изменений в `main` не меняет старую инфраструктуру.
