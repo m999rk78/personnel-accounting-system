@@ -240,6 +240,11 @@ export async function sendInvitationEmail(input: { to: string; fullName: string;
           port: 465,
           secure: true,
           auth: { user: apiKeyId, pass: apiKeySecret },
+          connectionTimeout: 10_000,
+          greetingTimeout: 10_000,
+          socketTimeout: 20_000,
+          disableFileAccess: true,
+          disableUrlAccess: true,
         });
         await transport.sendMail({ from, to: input.to, subject, text, html });
         return { sent: true as const };
@@ -253,6 +258,7 @@ export async function sendInvitationEmail(input: { to: string; fullName: string;
       if (!tokenPayload.access_token) throw new Error("Cloud metadata did not return an IAM token");
       response = await fetch("https://postbox.cloud.yandex.net/v2/email/outbound-emails", {
         method: "POST",
+        signal: AbortSignal.timeout(20_000),
         headers: { "Content-Type": "application/json", "X-YaCloud-SubjectToken": tokenPayload.access_token },
         body: JSON.stringify({
           FromEmailAddress: from,
@@ -273,6 +279,7 @@ export async function sendInvitationEmail(input: { to: string; fullName: string;
       if (!apiKey) return { sent: false, reason: "email-not-configured" as const };
       response = await fetch("https://api.resend.com/emails", {
         method: "POST",
+        signal: AbortSignal.timeout(20_000),
         headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "Idempotency-Key": `personnel-invite-${input.userId}` },
         body: JSON.stringify({ from, to: [input.to], subject, html, text }),
       });
