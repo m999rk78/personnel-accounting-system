@@ -1,6 +1,6 @@
 "use client";
 
-import { createElement, useCallback, useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { createElement, useCallback, useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent, type RefObject } from "react";
 import { TableContextMenu } from "./TableContextMenu";
 
 export type TimesheetClipboardChange = {
@@ -22,7 +22,7 @@ function scrollCellIntoVisibleArea(shell: HTMLDivElement, point: ClipboardPoint)
   const cellRect = cell.getBoundingClientRect();
   const lastHeaderCell = shell.querySelector<HTMLElement>(".timesheet-table thead tr:last-child th");
   const footerCell = shell.querySelector<HTMLElement>(".timesheet-table tfoot th, .timesheet-table tfoot td");
-  const stickyCells = Array.from(shell.querySelectorAll<HTMLElement>(".timesheet-table tbody tr:first-child .timesheet-sticky"))
+  const stickyCells = Array.from(cell.closest("tr")?.querySelectorAll<HTMLElement>(".timesheet-sticky") ?? [])
     .map((stickyCell) => stickyCell.getBoundingClientRect())
     .filter((rect) => rect.width > 0 && rect.height > 0);
   const visibleTop = Math.max(shellRect.top, lastHeaderCell?.getBoundingClientRect().bottom ?? shellRect.top);
@@ -45,6 +45,8 @@ function scrollCellIntoVisibleArea(shell: HTMLDivElement, point: ClipboardPoint)
 }
 
 type TimesheetClipboardOptions = {
+  shellRef?: RefObject<HTMLDivElement | null>;
+  ensureRowVisible?: (rowIndex: number) => void;
   rowCount: number;
   columnCount: number;
   resetKey: string;
@@ -69,8 +71,9 @@ function selectionBounds(selection: ClipboardSelection | null) {
   };
 }
 
-export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValue, canPaste, onPaste, getUndoValue = getValue, getUndoNote, canDelete, onDelete, onActivate, onType }: TimesheetClipboardOptions) {
-  const shellRef = useRef<HTMLDivElement>(null);
+export function useTimesheetClipboard({ shellRef: suppliedShellRef, ensureRowVisible, rowCount, columnCount, resetKey, getValue, canPaste, onPaste, getUndoValue = getValue, getUndoNote, canDelete, onDelete, onActivate, onType }: TimesheetClipboardOptions) {
+  const defaultShellRef = useRef<HTMLDivElement>(null);
+  const shellRef = suppliedShellRef ?? defaultShellRef;
   const [selection, setSelection] = useState<ClipboardSelection | null>(null);
   const [status, setStatus] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; rowIndex: number; columnIndex: number; error: string } | null>(null);
@@ -120,7 +123,7 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
     };
     document.addEventListener("pointerdown", clearOutside);
     return () => document.removeEventListener("pointerdown", clearOutside);
-  }, [clearSelection]);
+  }, [clearSelection, shellRef]);
 
   useEffect(() => {
     undoStack.current = [];
@@ -145,7 +148,7 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
     setSelection(next);
     setContextMenu(null);
     shellRef.current?.focus({ preventScroll: true });
-  }, []);
+  }, [shellRef]);
 
   const extendSelection = useCallback((rowIndex: number, columnIndex: number) => {
     if (!dragging.current || !selectionRef.current) return;
@@ -167,10 +170,11 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
     dragging.current = false;
     selectionRef.current = next;
     setSelection(next);
+    ensureRowVisible?.(nextPoint.rowIndex);
     requestAnimationFrame(() => {
       if (shellRef.current) scrollCellIntoVisibleArea(shellRef.current, nextPoint);
     });
-  }, [columnCount, rowCount]);
+  }, [columnCount, ensureRowVisible, rowCount, shellRef]);
 
   const selectedText = useCallback(() => {
     const bounds = selectionBounds(selectionRef.current);
@@ -291,7 +295,7 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
       columnIndex,
       error: "",
     });
-  }, []);
+  }, [shellRef]);
 
   const undoLastChange = useCallback(async () => {
     if (undoing.current) return;
@@ -324,7 +328,7 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
     };
     document.addEventListener("keydown", undoOutsideTable);
     return () => document.removeEventListener("keydown", undoOutsideTable);
-  }, [undoLastChange]);
+  }, [shellRef, undoLastChange]);
 
   const onKeyDown = useCallback(async (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
@@ -370,7 +374,7 @@ export function useTimesheetClipboard({ rowCount, columnCount, resetKey, getValu
     if (event.key !== "Delete" && event.key !== "Backspace") return;
     event.preventDefault();
     await deleteSelection();
-  }, [clearSelection, deleteSelection, focusSelection, onActivate, onType, undoLastChange]);
+  }, [clearSelection, deleteSelection, focusSelection, onActivate, onType, shellRef, undoLastChange]);
 
   const cellClass = useCallback((rowIndex: number, columnIndex: number) => {
     const bounds = selectionBounds(selection);

@@ -257,6 +257,10 @@ button,input,select { font:inherit; } button { cursor:pointer; }
 .timesheet-grid-shell.timesheet-grid-shell-reconciled { height:calc(100vh - 160px); min-height:500px; max-height:none; }
 .timesheet-grid-shell-reconciled .timesheet-table,.equipment-timesheet-shell .timesheet-table { height:100%; }
 .timesheet-table tbody .timesheet-fill-row { height:100%; pointer-events:none; }
+/* Spacers preserve scroll height without mounting thousands of off-screen cells. */
+.timesheet-grid-shell .timesheet-table tbody .timesheet-virtual-spacer { pointer-events:none; }
+.timesheet-grid-shell .timesheet-table tbody .timesheet-virtual-spacer > td { padding:0; border:0; min-width:0; max-width:none; background:#fff; }
+.timesheet-grid-shell { overflow-anchor:none; }
 .timesheet-table tbody .timesheet-fill-row:hover td { background:#fff; }
 .timesheet-table tbody .timesheet-fill-row td { height:0; padding:0; border-bottom:0; background:#fff; }
 .timesheet-table td.editable { position:relative; cursor:cell; }.timesheet-table td.editable:hover { z-index:2; outline:2px solid #e4a11b; outline-offset:-2px; }.timesheet-selection-active .timesheet-table td.editable:hover { outline:none; }

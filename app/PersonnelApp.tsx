@@ -3,7 +3,7 @@
 
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccessRightsView } from "./AccessRightsView";
-import { DirectoryAgGrid, EmployeeAgGrid, PlacementAgGrid, PositionAgGrid, ProjectAgGrid, ProjectEmployeeAgGrid, UserAgGrid, type GridEmployeeUsage, type GridEntry, type GridTimesheetMark } from "./AgDataGrids";
+import { DirectoryAgGrid, EmployeeAgGrid, PlacementAgGrid, PositionAgGrid, ProjectAgGrid, ProjectEmployeeAgGrid, UserAgGrid, type GridEmployeeUsage, type GridEntry, type GridTimesheetMark } from "./LazyDataGrids";
 import { AuditLogView } from "./AuditLogView";
 import { formatBitrix24Cooldown, remainingBitrix24Cooldown, type Bitrix24Cooldowns } from "./bitrix24Cooldown";
 import { CustomSelect } from "./CustomSelect";
@@ -16,6 +16,7 @@ import { TimesheetView } from "./TimesheetView";
 import { UserAccessCards } from "./UserAccessCards";
 import { parseWorkspaceLocation, workspaceTitle, workspaceUrl, type WorkspaceDirectoryFocus, type WorkspaceView } from "./appRoutes";
 import { ROLE_LABELS, canViewAllProjects, type UserRole } from "./roles";
+import { createLatestRequest } from "./latestRequest";
 
 type Option = { id: number; name: string };
 type Site = Option & { code: string; timezone: string };
@@ -581,6 +582,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const initializedRosterSession = useRef<string | null>(null);
   const reportDraftSessions = useRef(new Map<string, ReportDraftSession>());
   const adminDataLoaded = useRef(false);
+  const dataRequest = useMemo(() => createLatestRequest(), []);
+  useEffect(() => () => dataRequest.cancel(), [dataRequest]);
   const recentDates = useMemo(() => recentDateKeys(reportRangeEnd), [reportRangeEnd]);
   const reportRangeQuery = `rangeStart=${recentDates[0]}&rangeEnd=${reportRangeEnd}`;
   const filledDates = useMemo(() => new Set(data?.filledDates ?? []), [data?.filledDates]);
@@ -647,12 +650,15 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     document.title = `${workspaceTitle(view, directoryFocus)} | Учёт персонала`;
   }, [directoryFocus, view]);
   const loadData = useCallback(async () => {
+    const signal = dataRequest.start();
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=settings&${reportRangeQuery}`, { cache: "no-store" });
+      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=settings&${reportRangeQuery}`, { cache: "no-store", signal });
+      if (signal.aborted) return;
       if (response.status === 401) { window.location.replace("/login"); return; }
       const payload = await response.json() as DataSet & { error?: string };
+      if (signal.aborted) return;
       if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить данные.");
       setData(payload);
       loadedSiteId.current = siteId;
@@ -661,17 +667,21 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       adminDataLoaded.current = true;
       workspaceDataLoaded.current = false;
     } catch (loadError) {
+      if (signal.aborted) return;
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить данные.");
-    } finally { setLoading(false); }
-  }, [siteId, workDate, reportRangeQuery]);
+    } finally { if (!signal.aborted) setLoading(false); }
+  }, [dataRequest, siteId, workDate, reportRangeQuery]);
 
   const loadWorkspace = useCallback(async () => {
+    const signal = dataRequest.start();
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=workspace&${reportRangeQuery}`, { cache: "no-store" });
+      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=workspace&${reportRangeQuery}`, { cache: "no-store", signal });
+      if (signal.aborted) return;
       if (response.status === 401) { window.location.replace("/login"); return; }
       const payload = await response.json() as DataSet & { error?: string };
+      if (signal.aborted) return;
       if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить рабочее пространство.");
       setData(payload);
       loadedSiteId.current = siteId;
@@ -680,17 +690,21 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       adminDataLoaded.current = false;
       workspaceDataLoaded.current = true;
     } catch (loadError) {
+      if (signal.aborted) return;
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить рабочее пространство.");
-    } finally { setLoading(false); }
-  }, [siteId, workDate, reportRangeQuery]);
+    } finally { if (!signal.aborted) setLoading(false); }
+  }, [dataRequest, siteId, workDate, reportRangeQuery]);
 
   const loadNavigation = useCallback(async () => {
+    const signal = dataRequest.start();
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=navigation`, { cache: "no-store" });
+      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=navigation`, { cache: "no-store", signal });
+      if (signal.aborted) return;
       if (response.status === 401) { window.location.replace("/login"); return; }
       const payload = await response.json() as Pick<DataSet, "sites"> & { error?: string };
+      if (signal.aborted) return;
       if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить список проектов.");
       setData(emptyDataSet(payload.sites));
       loadedSiteId.current = siteId;
@@ -699,25 +713,30 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       adminDataLoaded.current = false;
       workspaceDataLoaded.current = false;
     } catch (loadError) {
+      if (signal.aborted) return;
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить список проектов.");
-    } finally { setLoading(false); }
-  }, [siteId, workDate, reportRangeQuery]);
+    } finally { if (!signal.aborted) setLoading(false); }
+  }, [dataRequest, siteId, workDate, reportRangeQuery]);
 
   const loadEntries = useCallback(async () => {
+    const signal = dataRequest.start();
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=entries&${reportRangeQuery}`, { cache: "no-store" });
+      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=entries&${reportRangeQuery}`, { cache: "no-store", signal });
+      if (signal.aborted) return;
       if (response.status === 401) { window.location.replace("/login"); return; }
       const payload = await response.json() as Pick<DataSet, "entries" | "filledDates" | "reportSubmitted" | "employeeUsage" | "foremanProgress" | "timesheetMarks"> & { error?: string };
+      if (signal.aborted) return;
       if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить отчёт.");
       setData((current) => current ? { ...current, entries: payload.entries, filledDates: payload.filledDates, reportSubmitted: payload.reportSubmitted, employeeUsage: payload.employeeUsage ?? [], foremanProgress: payload.foremanProgress ?? [], timesheetMarks: payload.timesheetMarks ?? [] } : current);
       loadedWorkDate.current = workDate;
       loadedReportRange.current = reportRangeQuery;
     } catch (loadError) {
+      if (signal.aborted) return;
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить отчёт.");
-    } finally { setLoading(false); }
-  }, [siteId, workDate, reportRangeQuery]);
+    } finally { if (!signal.aborted) setLoading(false); }
+  }, [dataRequest, siteId, workDate, reportRangeQuery]);
 
   useEffect(() => {
     const settingsDataView = view === "employees" || view === "positions" || view === "users" || view === "projects" || view === "projectEmployees" || view === "directories";
@@ -730,10 +749,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
           : view === "placement" && (loadedWorkDate.current !== workDate || loadedReportRange.current !== reportRangeQuery)
             ? loadEntries
             : null;
-    if (!loader) return;
-    const task = window.setTimeout(() => void loader(), 0);
-    return () => window.clearTimeout(task);
-  }, [siteId, workDate, view, reportRangeQuery, loadData, loadEntries, loadNavigation, loadWorkspace]);
+    const task = window.setTimeout(() => { if (loader) void loader(); else setLoading(false); }, 0);
+    return () => { window.clearTimeout(task); dataRequest.cancel(); };
+  }, [dataRequest, siteId, workDate, view, reportRangeQuery, loadData, loadEntries, loadNavigation, loadWorkspace]);
 
   const filteredEntries = data?.entries ?? [];
   const exportEntries = visibleEntryIds === null

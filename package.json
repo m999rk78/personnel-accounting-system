@@ -11,6 +11,7 @@
     "start": "node dist/standalone/server.js",
     "test": "npm run build && node --experimental-strip-types --test tests/*.test.mjs",
     "test:stress": "node --env-file=.env.local scripts/stress-test.mjs",
+    "test:tables": "node scripts/table-smoke.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

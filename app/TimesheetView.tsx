@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTableViewport } from "./useTableViewport";
 import { createPortal } from "react-dom";
 import { openExcelExportPreview } from "./excelExportPreviewStore";
 import { TIMESHEET_ALL_OPTION, TimesheetFilterableHeading, type TimesheetFilterOption, type TimesheetSortOption } from "./TimesheetColumnFilter";
@@ -371,7 +372,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
           if (!response.ok) throw new Error(result.error ?? "Не удалось сформировать табель.");
           return result;
         })
-        .then((result) => { if (result) setPayload(result); })
+        .then((result) => { if (result && !controller.signal.aborted) setPayload(result); })
         .catch((loadError: unknown) => {
           if (loadError instanceof DOMException && loadError.name === "AbortError") return;
           setError(loadError instanceof Error ? loadError.message : "Не удалось сформировать табель.");
@@ -422,10 +423,10 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     }
     return [employee.id, { timesheet, reports, difference: isReportTracked(employee) ? timesheet - reports : 0 }] as const;
   })), [days, entriesByCell, marksByCell, month, payload?.employees]);
-  const selectedEmploymentType = employmentType.filter((value) => employmentTypes.includes(value));
-  const selectedDepartment = department.filter((value) => departments.includes(value));
-  const selectedEmployee = employeeFilter.filter((value) => employeeNames.includes(value));
-  const selectedPosition = positionFilter.filter((value) => positions.includes(value));
+  const selectedEmploymentType = useMemo(() => employmentType.filter((value) => employmentTypes.includes(value)), [employmentType, employmentTypes]);
+  const selectedDepartment = useMemo(() => department.filter((value) => departments.includes(value)), [department, departments]);
+  const selectedEmployee = useMemo(() => employeeFilter.filter((value) => employeeNames.includes(value)), [employeeFilter, employeeNames]);
+  const selectedPosition = useMemo(() => positionFilter.filter((value) => positions.includes(value)), [positionFilter, positions]);
   const dayFilterOptions = useMemo(() => new Map(days.map((day) => {
     const workDate = dateForDay(month, day);
     const values = new Set<string>();
@@ -445,14 +446,13 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
       if (!matchesTotalFilter(timesheetTotalFilter, metrics.timesheet)) return false;
       if (!matchesTotalFilter(reportTotalFilter, metrics.reports)) return false;
       if (!matchesTotalFilter(differenceFilter, metrics.difference)) return false;
-      for (const day of days) {
-        const workDate = dateForDay(month, day);
-        const filter = dayFilters[workDate] ?? [];
+      for (const [workDate, filter] of Object.entries(dayFilters)) {
+        if (!workDate.startsWith(`${month}-`) || !filter.length) continue;
         if (!matchesDayFilter(filter, employee, entriesByCell.get(cellKey(employee.id, workDate)), marksByCell.get(cellKey(employee.id, workDate)))) return false;
       }
       return true;
     }).sort((left, right) => compareEmployees(left, right, employeeSort));
-  }, [dayFilters, days, differenceFilter, employeeSort, entriesByCell, marksByCell, month, payload?.employees, reportTotalFilter, rowMetricsByEmployee, selectedDepartment, selectedEmployee, selectedEmploymentType, selectedPosition, timesheetTotalFilter]);
+  }, [dayFilters, differenceFilter, employeeSort, entriesByCell, marksByCell, month, payload?.employees, reportTotalFilter, rowMetricsByEmployee, selectedDepartment, selectedEmployee, selectedEmploymentType, selectedPosition, timesheetTotalFilter]);
   const visibleEmployeeIds = useMemo(() => new Set(visibleEmployees.map((employee) => employee.id)), [visibleEmployees]);
   const visibleEntries = useMemo(() => (payload?.entries ?? []).filter((entry) => visibleEmployeeIds.has(entry.employeeId)), [payload?.entries, visibleEmployeeIds]);
 
@@ -463,20 +463,8 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     difference: reconciliationDifference,
   } = useMemo(() => {
     const rows = new Map<number, { timesheet: number; reports: number; difference: number }>();
-    const daysWithValues = new Set<string>();
     for (const employee of visibleEmployees) {
-      let timesheet = 0;
-      let reports = 0;
-      for (const day of days) {
-        const workDate = dateForDay(month, day);
-        const entry = entriesByCell.get(cellKey(employee.id, workDate));
-        const mark = marksByCell.get(cellKey(employee.id, workDate));
-        const cellTimesheet = effectiveHours(entry, mark);
-        timesheet += cellTimesheet;
-        reports += Number(entry?.hours ?? 0);
-        if (entry || mark) daysWithValues.add(workDate);
-      }
-      rows.set(employee.id, { timesheet, reports, difference: isReportTracked(employee) ? timesheet - reports : 0 });
+      rows.set(employee.id, rowMetricsByEmployee.get(employee.id) ?? { timesheet: 0, reports: 0, difference: 0 });
     }
     const timesheet = Array.from(rows.values()).reduce((sum, row) => sum + row.timesheet, 0);
     const reports = Array.from(rows.values()).reduce((sum, row) => sum + row.reports, 0);
@@ -485,9 +473,8 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
       timesheet,
       reports,
       difference: Array.from(rows.values()).reduce((sum, row) => sum + row.difference, 0),
-      completedDays: daysWithValues.size,
     };
-  }, [days, entriesByCell, marksByCell, month, visibleEmployees]);
+  }, [rowMetricsByEmployee, visibleEmployees]);
 
   const dayTotals = useMemo(() => new Map(days.map((day) => {
     const workDate = dateForDay(month, day);
@@ -504,11 +491,15 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     return [workDate, { timesheet, reports, difference }];
   })), [days, entriesByCell, marksByCell, month, visibleEmployees]);
 
-  const employeesWithReports = new Set(visibleEntries.map((entry) => entry.employeeId)).size;
+  const employeesWithReports = useMemo(() => new Set(visibleEntries.map((entry) => entry.employeeId)).size, [visibleEntries]);
   const activeFilterCount = Number(selectedEmploymentType.length > 0) + Number(selectedDepartment.length > 0) + Number(selectedEmployee.length > 0) + Number(selectedPosition.length > 0) + Number(timesheetTotalFilter.length > 0) + Number(reportTotalFilter.length > 0) + Number(differenceFilter.length > 0) + days.reduce((count, day) => count + Number((dayFilters[dateForDay(month, day)] ?? []).length > 0), 0);
 
   const editingEmployee = editor ? employeeById.get(editor.employeeId) : undefined;
   const editingMark = editor ? marksByCell.get(cellKey(editor.employeeId, editor.workDate)) : undefined;
+  const rowOrderKey = useMemo(() => `${siteId}:${month}:${visibleEmployees.map((employee) => employee.id).join("|")}`, [siteId, month, visibleEmployees]);
+  const pinnedEmployeeId = inlineEditor?.employeeId ?? editor?.employeeId;
+  const viewport = useTableViewport(visibleEmployees.length, rowOrderKey, !loading && !error,
+    pinnedEmployeeId === undefined ? undefined : visibleEmployees.findIndex((employee) => employee.id === pinnedEmployeeId));
   const {
     shellRef: clipboardShellRef,
     status: clipboardStatus,
@@ -521,9 +512,11 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     focusCell: focusClipboardCell,
     contextMenu: clipboardContextMenu,
   } = useTimesheetClipboard({
+    shellRef: viewport.shellRef,
+    ensureRowVisible: viewport.ensureRowVisible,
     rowCount: visibleEmployees.length,
     columnCount: days.length,
-    resetKey: `${month}:${visibleEmployees.map((employee) => employee.id).join("|")}`,
+    resetKey: rowOrderKey,
     getValue: (rowIndex, columnIndex) => {
       const employee = visibleEmployees[rowIndex];
       const day = days[columnIndex];
@@ -861,7 +854,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
       {clipboardStatus && <div className="timesheet-clipboard-status" role="status">{clipboardStatus}</div>}
       {loading && <div className="timesheet-loading">Формируем табель…</div>}
       {!loading && visibleEmployees.length === 0 && <div className="timesheet-empty"><strong>Нет сотрудников для отображения</strong><span>Измените фильтр или выберите другой месяц.</span></div>}
-      {!loading && visibleEmployees.length > 0 && <table className="timesheet-table personnel-timesheet-table">
+      {!loading && visibleEmployees.length > 0 && <table className="timesheet-table personnel-timesheet-table" aria-rowcount={visibleEmployees.length + 3}>
         <thead>
           <tr>
             <th className="timesheet-sticky timesheet-number-column" rowSpan={2}>№</th>
@@ -884,10 +877,12 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
           </tr>
         </thead>
         <tbody>
-          {visibleEmployees.map((employee, employeeIndex) => {
+          {viewport.top > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={days.length + 8} style={{ height: viewport.top }} /></tr>}
+          {visibleEmployees.slice(viewport.start, viewport.end).map((employee, offset) => {
+            const employeeIndex = viewport.start + offset;
             const totals = reconciliationRows.get(employee.id) ?? { timesheet: 0, reports: 0, difference: 0 };
             const difference = totals.difference;
-            return <tr key={employee.id}>
+            return <tr key={employee.id} data-virtual-row={employeeIndex} aria-rowindex={employeeIndex + 3}>
               <td className="timesheet-sticky timesheet-number-column">{employeeIndex + 1}</td>
               <td className="timesheet-sticky timesheet-type-column"><span className="timesheet-type-badge">{employee.employmentType || "—"}</span></td>
               <td className="timesheet-sticky timesheet-department-column">{employee.department || "—"}</td>
@@ -985,6 +980,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
               <td className={`timesheet-total-column timesheet-difference-total ${difference ? "has-difference" : ""}`}>{difference > 0 ? "+" : ""}{difference || "—"}</td>
             </tr>;
           })}
+          {viewport.bottom > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={days.length + 8} style={{ height: viewport.bottom }} /></tr>}
           <tr className="timesheet-fill-row" aria-hidden="true"><td colSpan={days.length + 8} /></tr>
         </tbody>
         <tfoot>

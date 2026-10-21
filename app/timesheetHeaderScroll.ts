@@ -1,5 +1,6 @@
 const HEADER_SCROLL_START = 48;
 const HEADER_COLLAPSE_DISTANCE = 104;
+const lastProgress = new WeakMap<HTMLElement, number>();
 const HEADER_STYLE_PROPERTIES = [
   "--timesheet-heading-height",
   "--timesheet-summary-height",
@@ -21,6 +22,7 @@ function workspaceFor(element: HTMLElement | null) {
 export function resetTimesheetHeaderScroll(element: HTMLElement | null) {
   const workspace = workspaceFor(element);
   if (!workspace) return;
+  lastProgress.delete(workspace);
   for (const property of HEADER_STYLE_PROPERTIES) workspace.style.removeProperty(property);
 }
 
@@ -33,6 +35,8 @@ export function syncTimesheetHeaderScroll(scrollContainer: HTMLElement) {
   }
 
   const progress = Math.min(1, Math.max(0, (scrollContainer.scrollTop - HEADER_SCROLL_START) / HEADER_COLLAPSE_DISTANCE));
+  if (lastProgress.get(workspace) === progress) return;
+  lastProgress.set(workspace, progress);
   const remaining = 1 - progress;
   const px = (value: number) => `${Math.max(0, value).toFixed(3)}px`;
   const signedPx = (value: number) => `${value.toFixed(3)}px`;
