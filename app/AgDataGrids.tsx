@@ -1,23 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { equipmentUnavailableReason, isEquipmentUnavailable } from "./equipmentAvailability";
 import {
-  CellStyleModule,
-  CellApiModule,
-  ClientSideRowModelApiModule,
-  ClientSideRowModelModule,
-  ColumnApiModule,
-  ColumnAutoSizeModule,
-  EventApiModule,
-  LocaleModule,
-  CustomFilterModule,
-  RenderApiModule,
-  RowApiModule,
-  RowSelectionModule,
-  RowStyleModule,
-  ScrollApiModule,
   themeQuartz,
   type ColDef,
   type ColumnResizedEvent,
@@ -26,11 +12,11 @@ import {
   type GridReadyEvent,
 } from "ag-grid-community";
 import {
-  AgGridProvider,
   type CustomCellRendererProps,
   type CustomInnerHeaderProps,
 } from "ag-grid-react";
 import { CustomSelect } from "./CustomSelect";
+import { GridTextEditor } from "./GridTextEditor";
 import type { UserRole } from "./roles";
 
 // LocalizedGrid wraps AgGridReact with shared Russian filters and their summary.
@@ -40,6 +26,7 @@ import type { TableContextMenuAction } from "./TableContextMenu";
 export type GridOption = { id: number; name: string };
 export type GridEmployee = {
   id: number;
+  sortOrder?: number;
   fullName: string;
   employmentType: string;
   department: string;
@@ -144,23 +131,6 @@ const gridTheme = themeQuartz.withParams({
   spacing: 6,
 });
 
-const modules = [
-  CellApiModule,
-  ClientSideRowModelModule,
-  ClientSideRowModelApiModule,
-  ColumnApiModule,
-  ColumnAutoSizeModule,
-  EventApiModule,
-  LocaleModule,
-  CustomFilterModule,
-  RenderApiModule,
-  RowApiModule,
-  RowSelectionModule,
-  RowStyleModule,
-  CellStyleModule,
-  ScrollApiModule,
-];
-
 const TABLE_ROW_HEIGHT = 54;
 const TABLE_HEADER_HEIGHT = 52;
 
@@ -168,6 +138,20 @@ function useLatestRef<T>(value: T) {
   const ref = useRef(value);
   useEffect(() => { ref.current = value; }, [value]);
   return ref;
+}
+
+function useRefreshGrid<T>(gridApi: RefObject<GridApi<T> | null>, revision: string) {
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      const api = gridApi.current;
+      if (!api || api.isDestroyed()) return;
+      api.refreshClientSideRowModel("everything");
+      // Redrawing rows destroys live editors and selects their text again.
+      // Refresh values in place after a committed edit instead.
+      api.refreshCells({ force: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [gridApi, revision]);
 }
 
 function keepGridFilled<TData>(event: ColumnResizedEvent<TData>) {
@@ -305,6 +289,7 @@ type PlacementGridProps = {
   onRemoveDraft: (key: string) => void;
   onRequestDeleteEntry: (id: number) => void;
   onVisibleEntryIdsChange: (ids: number[]) => void;
+  onValidationError: (message: string) => void;
 };
 
 const placementEditableFields = ["employeeName", "shift", "zone", "mainWork", "subwork", "master", "hours", "note"] as const;
@@ -332,22 +317,6 @@ function EditableCellDisplay({ value, menuLabel, onOpen }: { value: string | num
     <span>{value}</span>
     {onOpen && <button type="button" className="ag-editable-cell-menu" title={`Открыть список: ${menuLabel ?? "значение"}`} aria-label={`Открыть список: ${menuLabel ?? "значение"}`} onClick={(event) => { event.stopPropagation(); onOpen(); }}><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" /></svg></button>}
   </span>;
-}
-
-function EmployeeTextEditor({ value, onChange, onBlur, onEnter, deferChangeUntilBlur = false, focusOnMount = true, placeholder = "ФИО сотрудника" }: { value: string; onChange: (value: string) => void; onBlur?: () => void; onEnter?: () => void; deferChangeUntilBlur?: boolean; focusOnMount?: boolean; placeholder?: string }) {
-  const input = useRef<HTMLInputElement>(null);
-  useEffect(() => { if (focusOnMount) { input.current?.focus(); input.current?.select(); } }, [focusOnMount]);
-  const commit = () => {
-    const nextValue = input.current?.value ?? value;
-    if (deferChangeUntilBlur && nextValue !== value) onChange(nextValue);
-  };
-  return <input ref={input} className="ag-inline-control" defaultValue={value} placeholder={placeholder} onBlur={() => { commit(); onBlur?.(); }} onChange={(event) => { if (!deferChangeUntilBlur) onChange(event.target.value); }} onKeyDown={(event) => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    event.stopPropagation();
-    commit();
-    onEnter?.();
-  }} />;
 }
 
 function normalizeSearch(value: string) {
@@ -578,15 +547,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     });
   }, [manualDraftCount, props.rosterMode, rowData]);
 
-  useEffect(() => {
-    requestAnimationFrame(() => {
-      const api = gridApi.current;
-      if (!api || api.isDestroyed()) return;
-      api.refreshClientSideRowModel("everything");
-      api.refreshCells({ force: true });
-      api.redrawRows();
-    });
-  }, [editingStructureKey, props.draftRows.length]);
+  useRefreshGrid(gridApi, JSON.stringify([editingStructureKey, props.draftRows.length]));
 
   useEffect(() => {
     const selected = new Set(props.pendingDeletes);
@@ -670,11 +631,11 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     if (field === "subwork") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.subworkTypeId} options={props.subworkTypes} placeholder="Вид подработ" onChange={(subworkTypeId) => patchAndClose({ subworkTypeId })} /></div>;
     if (field === "master") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.masterId} options={props.masters} placeholder="Мастер" onChange={(masterId) => patchAndClose({ masterId })} /></div>;
     if (field === "hours") return <div className="ag-cell-editor-host"><CustomSelect className="ag-custom-select" value={draft.hours} ariaLabel="Часы" autoOpen onChange={(hours) => patchAndClose({ hours })} options={[{ value: "", label: "—" }, ...Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1), label: String(index + 1) }))]} /></div>;
-    if (field === "note") return <div className="ag-cell-editor-host"><EmployeeTextEditor deferChangeUntilBlur value={draft.note} placeholder="Необязательно" onBlur={() => setActiveEditor(null)} onEnter={() => { setActiveEditor(null); setSpreadsheetFocusRequestKey((key) => key + 1); }} onChange={(note) => patchRow(row, { note })} /></div>;
+    if (field === "note") return <div className="ag-cell-editor-host"><GridTextEditor value={draft.note} placeholder="Необязательно" onBlur={() => setActiveEditor(null)} onEnter={() => { setActiveEditor(null); setSpreadsheetFocusRequestKey((key) => key + 1); }} onChange={(note) => patchRow(row, { note })} /></div>;
     return <span className="ag-autofill-value">{params.value}</span>;
   }, [activeEditor, openCellEditor, patchRow, props]);
 
-  const { employees, shifts, zones, mainWorkTypes, subworkTypes, masters, onEdit } = props;
+  const { onEdit } = props;
   const pasteIntoRow = useCallback(({ row, values }: SpreadsheetPastePayload<PlacementRow>) => {
     const current = propsRef.current;
     if (row.kind === "draft" ? !current.canCreate : !current.canUpdate) return false;
@@ -682,22 +643,34 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     if (row.kind === "entry" && current.draftRows.length) return false;
     const changes: Partial<GridDraftRow> = {};
     if (values.employeeName !== undefined && !row.draft?.lockedEmployee) {
-      const employee = employees.find((item) => normalizeSearch(item.fullName) === normalizeSearch(values.employeeName));
-      changes.employeeQuery = values.employeeName;
+      const pasted = values.employeeName.trim();
+      const employee = current.employees.find((item) => normalizeSearch(item.fullName) === normalizeSearch(pasted));
+      if (pasted && !employee) { current.onValidationError(`Сотрудник «${pasted}» не найден в доступном справочнике.`); return false; }
+      changes.employeeQuery = pasted;
       changes.employeeId = employee ? String(employee.id) : "";
     }
-    if (values.shift !== undefined) changes.shiftId = pastedOptionId(shifts, values.shift);
-    if (values.zone !== undefined) changes.zoneId = pastedOptionId(zones, values.zone);
-    if (values.mainWork !== undefined) changes.mainWorkTypeId = pastedOptionId(mainWorkTypes, values.mainWork);
-    if (values.subwork !== undefined) changes.subworkTypeId = pastedOptionId(subworkTypes, values.subwork);
-    if (values.master !== undefined) changes.masterId = pastedOptionId(masters, values.master);
-    if (values.hours !== undefined) changes.hours = values.hours.trim();
+    const pasteOption = (raw: string, options: GridOption[], label: string) => {
+      const pasted = raw.trim();
+      const id = pastedOptionId(options, pasted);
+      if (pasted && !id) current.onValidationError(`Значение «${pasted}» нельзя вставить в столбец «${label}». Выберите значение из справочника.`);
+      return pasted && !id ? null : id;
+    };
+    if (values.shift !== undefined) { const id = pasteOption(values.shift, current.shifts, "Смена"); if (id === null) return false; changes.shiftId = id; }
+    if (values.zone !== undefined) { const id = pasteOption(values.zone, current.zones, "Зона"); if (id === null) return false; changes.zoneId = id; }
+    if (values.mainWork !== undefined) { const id = pasteOption(values.mainWork, current.mainWorkTypes, "Работа"); if (id === null) return false; changes.mainWorkTypeId = id; }
+    if (values.subwork !== undefined) { const id = pasteOption(values.subwork, current.subworkTypes, "Вид подработ"); if (id === null) return false; changes.subworkTypeId = id; }
+    if (values.master !== undefined) { const id = pasteOption(values.master, current.masters, "Мастер"); if (id === null) return false; changes.masterId = id; }
+    if (values.hours !== undefined) {
+      const hours = values.hours.trim();
+      if (hours && (!/^\d+$/.test(hours) || Number(hours) < 1 || Number(hours) > 10)) { current.onValidationError(`Значение «${hours}» нельзя вставить в столбец «Часы». Допустимы целые числа от 1 до 10.`); return false; }
+      changes.hours = hours;
+    }
     if (values.note !== undefined) changes.note = values.note;
     if (!Object.keys(changes).length) return false;
     if (row.kind === "entry" && row.entry) onEdit(row.entry, changes);
     else patchRow(row, changes);
     return true;
-  }, [employees, mainWorkTypes, masters, onEdit, patchRow, propsRef, shifts, subworkTypes, zones]);
+  }, [onEdit, patchRow, propsRef]);
 
   const valueGetter = useCallback((field: string) => (params: { data?: PlacementRow }) => params.data ? placementValue(params.data, field, props) : "", [props]);
   const columns = useMemo<ColDef<PlacementRow>[]>(() => {
@@ -770,7 +743,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     return actions;
   }, [propsRef]);
 
-  return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-placement-grid"><LocalizedGrid<PlacementRow>
+  return <div className="ag-grid-shell ag-placement-grid"><LocalizedGrid<PlacementRow>
     theme={gridTheme}
     rowData={rowData}
     columnDefs={columns}
@@ -816,7 +789,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     spreadsheetFocusRequestKey={spreadsheetFocusRequestKey}
     spreadsheetSelectionResetKey={rowStructureKey}
     suppressCellFocus
-  /></div></AgGridProvider>;
+  /></div>;
 }
 
 export type GridEquipmentUnit = {
@@ -922,6 +895,7 @@ type EquipmentGridProps = {
   onPatchDraft: (key: string, changes: Partial<GridEquipmentDraft>) => void;
   onSelectionChange: (ids: number[]) => void;
   onDraftSelectionChange: (keys: string[]) => void;
+  onValidationError: (message: string) => void;
 };
 
 function equipmentGridTitle(unit: GridEquipmentUnit | undefined) {
@@ -1090,15 +1064,7 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
     ...props.drafts.filter((draft) => !draft.id).map((draft, index) => ({ rowKey: `equipment-new-${draft.key}`, kind: "draft" as const, number: props.entries.length + index + 1, draft, timesheetConflict: timesheetConflict(Number(draft.equipmentId)) })),
   ], [editingById, props.drafts, props.entries, timesheetConflict]);
 
-  useEffect(() => {
-    requestAnimationFrame(() => {
-      const api = gridApi.current;
-      if (!api || api.isDestroyed()) return;
-      api.refreshClientSideRowModel("everything");
-      api.refreshCells({ force: true });
-      api.redrawRows();
-    });
-  }, [draftStructureKey, draftValuesKey]);
+  useRefreshGrid(gridApi, JSON.stringify([draftStructureKey, draftValuesKey]));
 
   useEffect(() => {
     const selected = new Set(props.selectedIds);
@@ -1181,7 +1147,7 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
     if (field === "mainWork") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.mainWorkTypeId} options={propsRef.current.mainWorkTypes} placeholder="Работа" onChange={(mainWorkTypeId) => patchAndClose({ mainWorkTypeId })} /></div>;
     if (field === "subwork") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.subworkTypeId} options={propsRef.current.subworkTypes} placeholder="Вид подработ" onChange={(subworkTypeId) => patchAndClose({ subworkTypeId })} /></div>;
     if (field === "hours") return <div className="ag-cell-editor-host"><CustomSelect className="ag-custom-select" value={draft.hours} ariaLabel="Часы" autoOpen onChange={(hours) => patchAndClose({ hours })} options={Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1), label: String(index + 1) }))} /></div>;
-    if (field === "note") return <div className="ag-cell-editor-host"><EmployeeTextEditor deferChangeUntilBlur value={draft.note} placeholder="Необязательно" onBlur={() => setActiveEditor(null)} onEnter={() => { setActiveEditor(null); setSpreadsheetFocusRequestKey((key) => key + 1); }} onChange={(note) => patchRow(row, { note })} /></div>;
+    if (field === "note") return <div className="ag-cell-editor-host"><GridTextEditor value={draft.note} placeholder="Необязательно" onBlur={() => setActiveEditor(null)} onEnter={() => { setActiveEditor(null); setSpreadsheetFocusRequestKey((key) => key + 1); }} onChange={(note) => patchRow(row, { note })} /></div>;
     return <span className="ag-autofill-value" title={String(params.value ?? "")}>{params.value || "—"}</span>;
   }, [activeEditor, blockedEquipment, openCellEditor, patchRow, propsRef]);
 
@@ -1189,18 +1155,35 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
     const current = propsRef.current;
     if (row.kind === "draft" ? !current.canCreate : !current.canUpdate) return false;
     const changes: Partial<GridEquipmentDraft> = {};
-    if (values.equipment !== undefined) changes.equipmentId = pastedOptionId(unitOptions, values.equipment);
-    if (values.shift !== undefined) changes.shiftId = pastedOptionId(propsRef.current.shifts, values.shift);
-    if (values.zone !== undefined) changes.zoneId = pastedOptionId(propsRef.current.zones, values.zone);
-    if (values.mainWork !== undefined) changes.mainWorkTypeId = pastedOptionId(propsRef.current.mainWorkTypes, values.mainWork);
-    if (values.subwork !== undefined) changes.subworkTypeId = pastedOptionId(propsRef.current.subworkTypes, values.subwork);
+    const pasteOption = (raw: string, options: GridOption[], label: string) => {
+      const pasted = raw.trim();
+      const id = pastedOptionId(options, pasted);
+      if (pasted && !id) current.onValidationError(`Значение «${pasted}» нельзя вставить в столбец «${label}». Выберите значение из справочника.`);
+      return pasted && !id ? null : id;
+    };
+    if (values.equipment !== undefined) {
+      const pasted = values.equipment.trim();
+      const equipmentId = pastedOptionId(unitOptions, pasted);
+      if (pasted && !equipmentId) { current.onValidationError(`Техника «${pasted}» не найдена в доступном реестре.`); return false; }
+      const blockedReason = equipmentId ? blockedEquipment.get(Number(equipmentId)) : undefined;
+      if (blockedReason) { current.onValidationError(`Эту технику нельзя добавить: ${blockedReason}.`); return false; }
+      changes.equipmentId = equipmentId;
+    }
+    if (values.shift !== undefined) { const id = pasteOption(values.shift, current.shifts, "Смена"); if (id === null) return false; changes.shiftId = id; }
+    if (values.zone !== undefined) { const id = pasteOption(values.zone, current.zones, "Зона"); if (id === null) return false; changes.zoneId = id; }
+    if (values.mainWork !== undefined) { const id = pasteOption(values.mainWork, current.mainWorkTypes, "Работа"); if (id === null) return false; changes.mainWorkTypeId = id; }
+    if (values.subwork !== undefined) { const id = pasteOption(values.subwork, current.subworkTypes, "Вид подработ"); if (id === null) return false; changes.subworkTypeId = id; }
     if (values.note !== undefined) changes.note = values.note;
-    if (values.hours !== undefined) changes.hours = values.hours.trim();
+    if (values.hours !== undefined) {
+      const hours = values.hours.trim();
+      if (hours && (!/^\d+$/.test(hours) || Number(hours) < 1 || Number(hours) > 10)) { current.onValidationError(`Значение «${hours}» нельзя вставить в столбец «Часы». Допустимы целые числа от 1 до 10.`); return false; }
+      changes.hours = hours;
+    }
     if (!Object.keys(changes).length) return false;
     if (row.kind === "entry" && row.entry) propsRef.current.onEdit(row.entry, changes);
     else patchRow(row, changes);
     return true;
-  }, [patchRow, propsRef, unitOptions]);
+  }, [blockedEquipment, patchRow, propsRef, unitOptions]);
 
   const columns = useMemo<ColDef<EquipmentTableRow>[]>(() => {
     return [
@@ -1227,7 +1210,7 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
     suppressMovable: true,
   }), []);
 
-  return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-placement-grid ag-equipment-grid"><LocalizedGrid<EquipmentTableRow>
+  return <div className="ag-grid-shell ag-placement-grid ag-equipment-grid"><LocalizedGrid<EquipmentTableRow>
     theme={gridTheme}
     rowData={rowData}
     columnDefs={columns}
@@ -1276,7 +1259,7 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
     onSpreadsheetCancelEdit={() => setActiveEditor(null)}
     spreadsheetFocusRequestKey={spreadsheetFocusRequestKey}
     suppressCellFocus
-  /></div></AgGridProvider>;
+  /></div>;
 }
 
 type EquipmentRegistryTableRow = {
@@ -1328,15 +1311,7 @@ export function EquipmentRegistryAgGrid(props: EquipmentRegistryGridProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ], [draftStructureKey, props.rows]);
 
-  useEffect(() => {
-    requestAnimationFrame(() => {
-      const api = gridApi.current;
-      if (!api || api.isDestroyed()) return;
-      api.refreshClientSideRowModel("everything");
-      api.refreshCells({ force: true });
-      api.redrawRows();
-    });
-  }, [draftStructureKey, draftValuesKey]);
+  useRefreshGrid(gridApi, JSON.stringify([draftStructureKey, draftValuesKey]));
   useEffect(() => {
     if (!newDraftCount) return;
     requestAnimationFrame(() => {
@@ -1401,7 +1376,7 @@ export function EquipmentRegistryAgGrid(props: EquipmentRegistryGridProps) {
       registrationNumber: "ГРЗ / инв. №",
       note: "Примечание",
     };
-    return <div className="ag-cell-editor-host"><EmployeeTextEditor value={draft[field]} placeholder={placeholders[field]} onBlur={() => setActiveEditor(null)} onChange={(value) => currentProps.onPatchDraft(draft.key, { [field]: value })} /></div>;
+    return <div className="ag-cell-editor-host"><GridTextEditor value={draft[field]} placeholder={placeholders[field]} onBlur={() => setActiveEditor(null)} onChange={(value) => currentProps.onPatchDraft(draft.key, { [field]: value })} /></div>;
   }, [activeEditor, openCellEditor, propsRef]);
 
   const pasteIntoRow = useCallback(({ row, values }: SpreadsheetPastePayload<EquipmentRegistryTableRow>) => {
@@ -1453,7 +1428,7 @@ export function EquipmentRegistryAgGrid(props: EquipmentRegistryGridProps) {
   }, [propsRef]);
   const defaultColDef = useMemo<ColDef<EquipmentRegistryTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
 
-  return <AgGridProvider modules={modules}><div className="employee-performance-frame">
+  return <div className="employee-performance-frame">
     <div className="employee-performance-main">
       <div className="ag-grid-shell ag-admin-grid ag-employee-grid ag-equipment-registry-grid"><LocalizedGrid<EquipmentRegistryTableRow>
         theme={gridTheme}
@@ -1495,7 +1470,7 @@ export function EquipmentRegistryAgGrid(props: EquipmentRegistryGridProps) {
         suppressCellFocus
       /></div>
     </div>
-  </div></AgGridProvider>;
+  </div>;
 }
 
 type ProjectEquipmentTableRow = {
@@ -1530,13 +1505,7 @@ export function ProjectEquipmentAgGrid(props: ProjectEquipmentGridProps) {
     ...props.drafts.map((draft, index) => ({ rowKey: `project-equipment-new-${draft.key}`, kind: "draft" as const, number: props.rows.length + index + 1, draft })),
   ], [props.drafts, props.rows]);
 
-  useEffect(() => { requestAnimationFrame(() => {
-    const api = gridApi.current;
-    if (!api || api.isDestroyed()) return;
-    api.refreshClientSideRowModel("everything");
-    api.refreshCells({ force: true });
-    api.redrawRows();
-  }); }, [draftEquipmentIds, draftStructureKey]);
+  useRefreshGrid(gridApi, JSON.stringify([draftEquipmentIds, draftStructureKey]));
   useEffect(() => {
     if (!props.drafts.length) return;
     requestAnimationFrame(() => { const api = gridApi.current; if (api && !api.isDestroyed() && api.getDisplayedRowCount()) api.ensureIndexVisible(api.getDisplayedRowCount() - 1, "bottom"); });
@@ -1590,7 +1559,7 @@ export function ProjectEquipmentAgGrid(props: ProjectEquipmentGridProps) {
   ], [cellRenderer, valueGetter]);
   const defaultColDef = useMemo<ColDef<ProjectEquipmentTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
 
-  return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-admin-grid ag-reference-grid ag-project-equipment-grid"><LocalizedGrid<ProjectEquipmentTableRow>
+  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid ag-project-equipment-grid"><LocalizedGrid<ProjectEquipmentTableRow>
     theme={gridTheme}
     rowData={rowData}
     columnDefs={columns}
@@ -1613,7 +1582,7 @@ export function ProjectEquipmentAgGrid(props: ProjectEquipmentGridProps) {
     onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)}
     onSpreadsheetCancelEdit={() => setActiveEditor(null)}
     suppressCellFocus
-  /></div></AgGridProvider>;
+  /></div>;
 }
 
 type EmployeeTableRow = {
@@ -1641,6 +1610,7 @@ type EmployeeGridProps = {
   onCancelDraft: (key: string) => void;
   onVisibleIdsChange: (ids: number[]) => void;
   onValidationError: (message: string) => void;
+  onReorder: (employeeIds: number[]) => Promise<void>;
 };
 
 // Kept as a reversible switch in case per-row cancellation is needed again.
@@ -1651,16 +1621,10 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
   const gridApi = useRef<GridApi<EmployeeTableRow> | null>(null);
   const [activeEditor, setActiveEditor] = useState<{ rowKey: string; field: string } | null>(null);
   const draftStructureKey = props.drafts.map((draft) => draft.id ? `edit-${draft.id}` : draft.key).join("|");
-  const draftValuesKey = props.drafts.map((draft) => `${draft.key}:${draft.employmentType}:${draft.department}:${draft.position}:${draft.projectSiteId}`).join("|");
+  const draftValuesKey = JSON.stringify(props.drafts);
   const selectedIdsKey = props.selectedIds.join("|");
   const newDraftCount = props.drafts.filter((draft) => !draft.id).length;
-  useEffect(() => { requestAnimationFrame(() => {
-    const api = gridApi.current;
-    if (!api || api.isDestroyed()) return;
-    api.refreshClientSideRowModel("everything");
-    api.refreshCells({ force: true });
-    api.redrawRows();
-  }); }, [draftStructureKey, draftValuesKey]);
+  useRefreshGrid(gridApi, JSON.stringify([draftStructureKey, draftValuesKey]));
   const rowData = useMemo<EmployeeTableRow[]>(() => [
     ...props.rows.map((employee, index) => {
       const draft = props.drafts.find((candidate) => candidate.id === employee.id);
@@ -1714,7 +1678,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
         : <span title={String(value ?? "")}>{value}</span>;
     }
     const draft = currentProps.drafts.find((candidate) => candidate.key === row.draft?.key) ?? row.draft!;
-    if (field === "fullName") return <div className="ag-cell-editor-host"><EmployeeTextEditor value={draft.fullName} onBlur={() => setActiveEditor(null)} onChange={(fullName) => currentProps.onPatchDraft(draft.key, { fullName })} /></div>;
+    if (field === "fullName") return <div className="ag-cell-editor-host"><GridTextEditor value={draft.fullName} onBlur={() => setActiveEditor(null)} onChange={(fullName) => currentProps.onPatchDraft(draft.key, { fullName })} /></div>;
     if (field === "employmentType") return <div className="ag-cell-editor-host"><DraftNameSelect autoOpen value={draft.employmentType} options={currentProps.employmentTypes} placeholder="Тип" onChange={(employmentType) => { currentProps.onPatchDraft(draft.key, { employmentType }); setActiveEditor(null); }} /></div>;
     if (field === "department") return <div className="ag-cell-editor-host"><DraftNameSelect autoOpen value={draft.department} options={currentProps.departments} placeholder="Отдел" onChange={(department) => { currentProps.onPatchDraft(draft.key, { department }); setActiveEditor(null); }} /></div>;
     if (field === "position") return <div className="ag-cell-editor-host"><DraftNameSelect autoOpen value={draft.position} options={currentProps.positions} placeholder="Должность" onChange={(position) => { currentProps.onPatchDraft(draft.key, { position }); setActiveEditor(null); }} /></div>;
@@ -1728,30 +1692,30 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     return <div className="row-actions"><button type="button" onClick={() => propsRef.current.onCancelDraft(row.draft!.key)} title={row.draft?.id ? "Отменить изменения строки" : "Удалить несохранённую строку"} aria-label={row.draft?.id ? `Отменить изменения ${row.employee?.fullName ?? row.draft.fullName}` : "Удалить несохранённую строку"}><GridIcon name={row.draft?.id ? "back" : "trash"} /></button></div>;
   }, [propsRef]);
 
-  const pasteIntoRow = useCallback(({ row, values }: SpreadsheetPastePayload<EmployeeTableRow>) => {
+  const pasteIntoRow = useCallback(({ row, values, source }: SpreadsheetPastePayload<EmployeeTableRow>) => {
     const currentProps = propsRef.current;
     if (currentProps.readOnly && row.kind !== "draft") return false;
     if (row.kind === "entry" && currentProps.drafts.some((draft) => !draft.id)) return false;
     const changes: Partial<GridEmployeeDraft> = {};
     if (values.fullName !== undefined) {
       const fullName = values.fullName.trim();
-      if (!fullName) { currentProps.onValidationError("ФИО сотрудника не может быть пустым."); return false; }
+      if (!fullName && !(source === "undo" && row.kind === "draft")) { currentProps.onValidationError("ФИО сотрудника не может быть пустым."); return false; }
       changes.fullName = fullName;
     }
     if (values.employmentType !== undefined) {
       const employmentType = pastedOptionName(currentProps.employmentTypes, values.employmentType);
-      if (!employmentType) { currentProps.onValidationError(`Значение «${values.employmentType}» нельзя вставить в столбец «Тип». Выберите существующий тип.`); return false; }
-      changes.employmentType = employmentType;
+      if (!employmentType && !(source === "undo" && row.kind === "draft" && !values.employmentType.trim())) { currentProps.onValidationError(`Значение «${values.employmentType}» нельзя вставить в столбец «Тип». Выберите существующий тип.`); return false; }
+      changes.employmentType = employmentType ?? "";
     }
     if (values.department !== undefined) {
       const department = pastedOptionName(currentProps.departments, values.department);
-      if (!department) { currentProps.onValidationError(`Значение «${values.department}» нельзя вставить в столбец «Отдел». Выберите существующий отдел.`); return false; }
-      changes.department = department;
+      if (!department && !(source === "undo" && row.kind === "draft" && !values.department.trim())) { currentProps.onValidationError(`Значение «${values.department}» нельзя вставить в столбец «Отдел». Выберите существующий отдел.`); return false; }
+      changes.department = department ?? "";
     }
     if (values.position !== undefined) {
       const position = pastedOptionName(currentProps.positions, values.position);
-      if (!position) { currentProps.onValidationError(`Значение «${values.position}» нельзя вставить в столбец «Должность». Выберите существующую должность.`); return false; }
-      changes.position = position;
+      if (!position && !(source === "undo" && row.kind === "draft" && !values.position.trim())) { currentProps.onValidationError(`Значение «${values.position}» нельзя вставить в столбец «Должность». Выберите существующую должность.`); return false; }
+      changes.position = position ?? "";
     }
     if (values.siteName !== undefined) {
       const pasted = values.siteName.trim();
@@ -1795,8 +1759,15 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     return <div className="bitrix-grid-check" title={details ?? label}><span className={`bitrix-grid-status ${className}`}>{label}</span>{details && <span className="bitrix-grid-details">{details}</span>}</div>;
   }, []);
 
+  const canReorderRows = useCallback((api: GridApi<EmployeeTableRow>) => !propsRef.current.readOnly
+    && propsRef.current.drafts.length === 0
+    && Object.keys(api.getFilterModel()).length === 0
+    && api.getColumnState().every((state) => !state.sort)
+    && api.getDisplayedRowCount() === propsRef.current.rows.length, [propsRef]);
+
   const columns = useMemo<ColDef<EmployeeTableRow>[]>(() => [
-    { colId: "number", headerName: "№", width: 66, minWidth: 54, pinned: "left", lockPinned: true, lockPosition: "left", suppressMovable: true, suppressSizeToFit: true, sortable: false, filter: false, valueGetter: valueGetter("number") },
+    { colId: "rowOrder", headerName: "↕", headerTooltip: "Перетащите строку, чтобы изменить постоянный порядок сотрудников", width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", suppressMovable: true, suppressSizeToFit: true, sortable: false, filter: false, cellClass: "employee-row-drag-column", rowDrag: (params) => Boolean(params.data?.kind === "entry" && canReorderRows(params.api)), tooltipValueGetter: (params) => canReorderRows(params.api) ? "Перетащите сотрудника в нужное место" : "Для переноса строк завершите редактирование и сбросьте фильтры и сортировку" },
+    { colId: "number", headerName: "№", width: 66, minWidth: 54, pinned: "left", lockPinned: true, lockPosition: "left", suppressMovable: true, suppressSizeToFit: true, sortable: false, filter: false, valueGetter: (params) => typeof params.node?.rowIndex === "number" ? params.node.rowIndex + 1 : "" },
     { field: "fullName", headerName: "ФИО", minWidth: 230, flex: 1.4, headerComponentParams: pinnableHeader, valueGetter: valueGetter("fullName"), cellRenderer: editableRenderer },
     { field: "employmentType", headerName: "Тип", minWidth: 120, flex: .55, headerComponentParams: pinnableHeader, valueGetter: valueGetter("employmentType"), cellRenderer: editableRenderer },
     { field: "department", headerName: "Отдел", minWidth: 150, flex: .7, headerComponentParams: pinnableHeader, valueGetter: valueGetter("department"), cellRenderer: editableRenderer },
@@ -1804,7 +1775,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     { field: "siteName", headerName: "Проект", minWidth: 190, flex: 1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("siteName"), cellRenderer: editableRenderer },
     { colId: "bitrixCheckLabel", headerName: "Проверка Б24 / расхождение", minWidth: 380, flex: 1.8, headerComponentParams: pinnableHeader, valueGetter: valueGetter("bitrixCheckLabel"), cellRenderer: bitrixCheckRenderer },
     ...(showEmployeeRowCancelActions && props.drafts.length ? [{ colId: "actions", headerName: "", width: 52, minWidth: 52, maxWidth: 52, pinned: "right" as const, lockPinned: true, lockPosition: "right" as const, suppressMovable: true, suppressSizeToFit: true, sortable: false, filter: false, floatingFilter: false, cellClass: "actions-cell", cellRenderer: editActionRenderer }] : []),
-  ], [bitrixCheckRenderer, editActionRenderer, editableRenderer, props.drafts.length, valueGetter]);
+  ], [bitrixCheckRenderer, canReorderRows, editActionRenderer, editableRenderer, props.drafts.length, valueGetter]);
 
   const reportVisibleRows = useCallback((api: GridApi<EmployeeTableRow>) => {
     const ids: number[] = [];
@@ -1813,7 +1784,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
   }, [propsRef]);
 
   const defaultColDef = useMemo<ColDef<EmployeeTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
-  return <AgGridProvider modules={modules}><div className="employee-performance-frame">
+  return <div className="employee-performance-frame">
     <div className="employee-performance-main">
       <div className="ag-grid-shell ag-admin-grid ag-employee-grid"><LocalizedGrid<EmployeeTableRow>
         theme={gridTheme}
@@ -1824,6 +1795,20 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
         rowHeight={TABLE_ROW_HEIGHT}
         headerHeight={TABLE_HEADER_HEIGHT}
         animateRows
+        rowDragManaged
+        onRowDragEnd={(event) => {
+          if (!canReorderRows(event.api)) return;
+          const employeeIds: number[] = [];
+          event.api.forEachNode((node) => { if (node.data?.kind === "entry" && node.data.employee) employeeIds.push(node.data.employee.id); });
+          if (employeeIds.length !== propsRef.current.rows.length) {
+            propsRef.current.onValidationError("Не удалось определить полный порядок строк. Обновите таблицу и повторите перенос.");
+            return;
+          }
+          event.api.refreshCells({ columns: ["number"], force: true });
+          const currentIds = propsRef.current.rows.map((employee) => employee.id);
+          if (employeeIds.every((id, index) => id === currentIds[index])) return;
+          void propsRef.current.onReorder(employeeIds);
+        }}
         rowClassRules={{
           "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))),
           "bitrix-mismatch-row": (params) => params.data?.kind === "entry" && params.data.employee?.bitrixCheckStatus === "mismatch" && !params.data.employee.bitrixCheckAcknowledged,
@@ -1857,7 +1842,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
         suppressCellFocus
       /></div>
     </div>
-  </div></AgGridProvider>;
+  </div>;
 }
 
 type ProjectEmployeeTableRow = { rowKey: string; kind: "entry" | "draft"; number: number; employee?: GridEmployee; draft?: GridProjectEmployeeDraft; pending?: boolean } & GridDisplayFields<"fullName" | "employmentType" | "department" | "position">;
@@ -1884,13 +1869,7 @@ export function ProjectEmployeeAgGrid(props: ProjectEmployeeGridProps) {
     ...props.drafts.map((draft, index) => ({ rowKey: `project-employee-new-${draft.key}`, kind: "draft" as const, number: props.rows.length + index + 1, draft })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ], [draftStructureKey, props.pendingDeletes, props.rows]);
-  useEffect(() => { requestAnimationFrame(() => {
-    const api = gridApi.current;
-    if (!api || api.isDestroyed()) return;
-    api.refreshClientSideRowModel("everything");
-    api.refreshCells({ force: true });
-    api.redrawRows();
-  }); }, [draftEmployeeIds, draftStructureKey]);
+  useRefreshGrid(gridApi, JSON.stringify([draftEmployeeIds, draftStructureKey]));
   useEffect(() => {
     if (!props.drafts.length) return;
     requestAnimationFrame(() => { const api = gridApi.current; if (api && !api.isDestroyed() && api.getDisplayedRowCount()) api.ensureIndexVisible(api.getDisplayedRowCount() - 1, "bottom"); });
@@ -1951,7 +1930,7 @@ export function ProjectEmployeeAgGrid(props: ProjectEmployeeGridProps) {
     { field: "position", headerName: "Должность", minWidth: 220, flex: 1.35, headerComponentParams: pinnableHeader, valueGetter: valueGetter("position"), cellRenderer },
   ], [cellRenderer, valueGetter]);
   const defaultColDef = useMemo<ColDef<ProjectEmployeeTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
-  return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<ProjectEmployeeTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => params.data?.kind === "draft" }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.employee?.id ? [row.employee.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || isInteractiveGridTarget(event.event)) return; if (event.data?.rowKey !== activeEditor || event.column.getColId() !== "fullName") setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} suppressCellFocus /></div></AgGridProvider>;
+  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<ProjectEmployeeTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => params.data?.kind === "draft" }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.employee?.id ? [row.employee.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || isInteractiveGridTarget(event.event)) return; if (event.data?.rowKey !== activeEditor || event.column.getColId() !== "fullName") setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} suppressCellFocus /></div>;
 }
 
 type DirectoryTableRow = { rowKey: string; kind: "entry" | "edit" | "draft"; number: number; item?: GridOption; draft?: GridDirectoryDraft; pending?: boolean } & GridDisplayFields<"name" | "employmentType" | "department" | "position">;
@@ -1974,16 +1953,10 @@ export function DirectoryAgGrid(props: DirectoryGridProps) {
   const gridApi = useRef<GridApi<DirectoryTableRow> | null>(null);
   const [activeEditor, setActiveEditor] = useState<string | null>(null);
   const draftStructureKey = props.drafts.map((draft) => draft.id ? `edit-${draft.id}` : draft.key).join("|");
-  const draftEmployeeIds = props.drafts.map((draft) => `${draft.key}:${draft.employeeId ?? ""}`).join("|");
+  const draftValuesKey = JSON.stringify(props.drafts);
   const newDraftCount = props.drafts.filter((draft) => !draft.id).length;
   const selectedIdsKey = props.pendingDeletes.join("|");
-  useEffect(() => { requestAnimationFrame(() => {
-    const api = gridApi.current;
-    if (!api || api.isDestroyed()) return;
-    api.refreshClientSideRowModel("everything");
-    api.refreshCells({ force: true });
-    api.redrawRows();
-  }); }, [draftEmployeeIds, draftStructureKey]);
+  useRefreshGrid(gridApi, JSON.stringify([draftValuesKey, draftStructureKey]));
   const rowData = useMemo<DirectoryTableRow[]>(() => [
     ...props.rows.map((item, index) => {
       const draft = props.drafts.find((candidate) => candidate.id === item.id);
@@ -2012,7 +1985,11 @@ export function DirectoryAgGrid(props: DirectoryGridProps) {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIdsKey]);
-  useEffect(() => { if (!props.drafts.length) requestAnimationFrame(() => setActiveEditor(null)); }, [props.drafts.length]);
+  useEffect(() => {
+    if (props.drafts.length) return;
+    const frame = requestAnimationFrame(() => setActiveEditor(null));
+    return () => cancelAnimationFrame(frame);
+  }, [props.drafts.length]);
   const valueGetter = useCallback((field: "number" | "name" | "employmentType" | "department" | "position") => (params: { data?: DirectoryTableRow }) => {
     const row = params.data;
     if (!row) return "";
@@ -2043,7 +2020,7 @@ export function DirectoryAgGrid(props: DirectoryGridProps) {
     if (params.colDef?.field === "name") {
       if (activeEditor !== row.rowKey) return <EditableCellDisplay value={params.value ?? ""} menuLabel={propsRef.current.selectEmployee ? "сотрудник" : undefined} onOpen={propsRef.current.selectEmployee ? () => openCellEditor(row, "name") : undefined} />;
       if (propsRef.current.selectEmployee) return <EmployeeCombobox autoOpen value={draft.name} employees={propsRef.current.employees ?? []} onChange={(name, employeeId) => { propsRef.current.onPatchDraft(draft.key, { name, employeeId }); setActiveEditor(null); }} />;
-      return <EmployeeTextEditor value={draft.name} placeholder={`Название: ${propsRef.current.title.toLocaleLowerCase("ru-RU")}`} onBlur={() => setActiveEditor(null)} onChange={(name) => propsRef.current.onPatchDraft(draft.key, { name })} />;
+      return <GridTextEditor value={draft.name} placeholder={`Название: ${propsRef.current.title.toLocaleLowerCase("ru-RU")}`} onBlur={() => setActiveEditor(null)} onChange={(name) => propsRef.current.onPatchDraft(draft.key, { name })} />;
     }
     if (propsRef.current.selectEmployee) return <span className="ag-autofill-value" title={String(params.value ?? "")}>{params.value}</span>;
     return <span title={String(params.value ?? "")}>{params.value}</span>;
@@ -2070,7 +2047,7 @@ export function DirectoryAgGrid(props: DirectoryGridProps) {
     return [numberColumn, { field: "name", headerName: props.title, minWidth: 260, flex: 1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("name"), cellRenderer: editableRenderer }];
   }, [editableRenderer, props.selectEmployee, props.title, valueGetter]);
   const defaultColDef = useMemo<ColDef<DirectoryTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
-  return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<DirectoryTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => params.data?.kind !== "entry" }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.item?.id ? [row.item.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || isInteractiveGridTarget(event.event)) return; if (event.data?.rowKey !== activeEditor || event.column.getColId() !== "name") setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} suppressCellFocus /></div></AgGridProvider>;
+  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<DirectoryTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => params.data?.kind !== "entry" }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.item?.id ? [row.item.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || isInteractiveGridTarget(event.event)) return; if (event.data?.rowKey !== activeEditor || event.column.getColId() !== "name") setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} suppressCellFocus /></div>;
 }
 
 type PositionGridProps = {
@@ -2095,16 +2072,10 @@ export function PositionAgGrid(props: PositionGridProps) {
   const gridApi = useRef<GridApi<PositionTableRow> | null>(null);
   const [activeEditor, setActiveEditor] = useState<{ rowKey: string; field: string } | null>(null);
   const draftStructureKey = props.drafts.map((draft) => draft.id ? `edit-${draft.id}` : draft.key).join("|");
-  const draftValuesKey = props.drafts.map((draft) => `${draft.key}:${draft.employmentType}:${draft.department}`).join("|");
+  const draftValuesKey = JSON.stringify(props.drafts);
   const selectedIdsKey = props.pendingDeletes.join("|");
   const newDraftCount = props.drafts.filter((draft) => !draft.id).length;
-  useEffect(() => { requestAnimationFrame(() => {
-    const api = gridApi.current;
-    if (!api || api.isDestroyed()) return;
-    api.refreshClientSideRowModel("everything");
-    api.refreshCells({ force: true });
-    api.redrawRows();
-  }); }, [draftStructureKey, draftValuesKey]);
+  useRefreshGrid(gridApi, JSON.stringify([draftStructureKey, draftValuesKey]));
   const rowData = useMemo<PositionTableRow[]>(() => [
     ...props.rows.map((record, index) => { const draft = props.drafts.find((candidate) => candidate.id === record.id); return draft ? { rowKey: `position-${record.id}`, kind: "edit" as const, number: index + 1, record, draft, pending: false } : { rowKey: `position-${record.id}`, kind: "entry" as const, number: index + 1, record, pending: props.pendingDeletes.includes(record.id) }; }),
     ...props.drafts.filter((draft) => !draft.id).map((draft, index) => ({ rowKey: `position-new-${draft.key}`, kind: "draft" as const, number: props.rows.length + index + 1, draft })),
@@ -2120,7 +2091,11 @@ export function PositionAgGrid(props: PositionGridProps) {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIdsKey]);
-  useEffect(() => { if (!props.drafts.length) requestAnimationFrame(() => setActiveEditor(null)); }, [props.drafts.length]);
+  useEffect(() => {
+    if (props.drafts.length) return;
+    const frame = requestAnimationFrame(() => setActiveEditor(null));
+    return () => cancelAnimationFrame(frame);
+  }, [props.drafts.length]);
   const valueGetter = useCallback((field: keyof GridPosition | "number") => (params: { data?: PositionTableRow }) => {
     if (!params.data) return "";
     if (field === "number") return params.data.number;
@@ -2148,7 +2123,7 @@ export function PositionAgGrid(props: PositionGridProps) {
     if (!activeCellEditor) return <EditableCellDisplay value={params.value ?? ""} menuLabel={field === "employmentType" ? "тип" : field === "department" ? "отдел" : undefined} onOpen={field === "employmentType" || field === "department" ? () => openCellEditor(row, field) : undefined} />;
     if (field === "employmentType") return <DraftNameSelect autoOpen value={draft.employmentType} options={currentProps.employmentTypes} placeholder="Тип" onChange={(employmentType) => { currentProps.onPatchDraft(draft.key, { employmentType }); setActiveEditor(null); }} />;
     if (field === "department") return <DraftNameSelect autoOpen value={draft.department} options={currentProps.departments} placeholder="Отдел" onChange={(department) => { currentProps.onPatchDraft(draft.key, { department }); setActiveEditor(null); }} />;
-    return <EmployeeTextEditor value={draft.position} placeholder="Должность" onBlur={() => setActiveEditor(null)} onChange={(position) => currentProps.onPatchDraft(draft.key, { position })} />;
+    return <GridTextEditor value={draft.position} placeholder="Должность" onBlur={() => setActiveEditor(null)} onChange={(position) => currentProps.onPatchDraft(draft.key, { position })} />;
   }, [activeEditor, openCellEditor, propsRef]);
   const pasteIntoRow = useCallback(({ row, values }: SpreadsheetPastePayload<PositionTableRow>) => {
     if (propsRef.current.readOnly && row.kind !== "draft") return false;
@@ -2171,7 +2146,7 @@ export function PositionAgGrid(props: PositionGridProps) {
   ], [editableRenderer, valueGetter]);
   const reportVisibleRows = useCallback((api: GridApi<PositionTableRow>) => { const ids: number[] = []; api.forEachNodeAfterFilterAndSort((node) => { if (node.data?.record?.id) ids.push(node.data.record.id); }); props.onVisibleIdsChange(ids); }, [props]);
   const defaultColDef = useMemo<ColDef<PositionTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
-  return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<PositionTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onModelUpdated={(event) => reportVisibleRows(event.api)} onFilterChanged={(event) => reportVisibleRows(event.api)} onSortChanged={(event) => reportVisibleRows(event.api)} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.record?.id ? [row.record.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return; const rowKey = event.data?.rowKey; const field = event.column.getColDef().field; if (rowKey !== activeEditor.rowKey || field !== activeEditor.field) setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} spreadsheetSelectionResetKey={`${draftStructureKey}:${props.fullRowEditIds.join("|")}`} suppressCellFocus /></div></AgGridProvider>;
+  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<PositionTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onModelUpdated={(event) => reportVisibleRows(event.api)} onFilterChanged={(event) => reportVisibleRows(event.api)} onSortChanged={(event) => reportVisibleRows(event.api)} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.record?.id ? [row.record.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return; const rowKey = event.data?.rowKey; const field = event.column.getColDef().field; if (rowKey !== activeEditor.rowKey || field !== activeEditor.field) setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} spreadsheetSelectionResetKey={`${draftStructureKey}:${props.fullRowEditIds.join("|")}`} suppressCellFocus /></div>;
 }
 
 type UserTableRow = { rowKey: string; kind: "entry" | "edit" | "draft"; number: number; user?: GridUser; draft?: GridUserDraft } & GridDisplayFields<"fullName" | "email" | "status" | "role" | "site">;
@@ -2182,16 +2157,10 @@ export function UserAgGrid(props: UserGridProps) {
   const gridApi = useRef<GridApi<UserTableRow> | null>(null);
   const [activeEditor, setActiveEditor] = useState<{ rowKey: string; field: string } | null>(null);
   const draftStructureKey = props.drafts.map((draft) => draft.id ? `edit-${draft.id}` : draft.key).join("|");
-  const draftValuesKey = props.drafts.map((draft) => `${draft.key}:${draft.role}:${draft.assignedSiteId}`).join("|");
+  const draftValuesKey = JSON.stringify(props.drafts);
   const selectedIdsKey = props.pendingDeletes.join("|");
   const newDraftCount = props.drafts.filter((draft) => !draft.id).length;
-  useEffect(() => { requestAnimationFrame(() => {
-    const api = gridApi.current;
-    if (!api || api.isDestroyed()) return;
-    api.refreshClientSideRowModel("everything");
-    api.refreshCells({ force: true });
-    api.redrawRows();
-  }); }, [draftStructureKey, draftValuesKey]);
+  useRefreshGrid(gridApi, JSON.stringify([draftStructureKey, draftValuesKey]));
   const rowData = useMemo<UserTableRow[]>(() => [
     ...props.rows.map((user, index) => { const draft = props.drafts.find((candidate) => candidate.id === user.id); return draft ? { rowKey: `user-${user.id}`, kind: "edit" as const, number: index + 1, user, draft } : { rowKey: `user-${user.id}`, kind: "entry" as const, number: index + 1, user }; }),
     ...props.drafts.filter((draft) => !draft.id).map((draft, index) => ({ rowKey: `user-new-${draft.key}`, kind: "draft" as const, number: props.rows.length + index + 1, draft })),
@@ -2207,7 +2176,11 @@ export function UserAgGrid(props: UserGridProps) {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIdsKey]);
-  useEffect(() => { if (!props.drafts.length) requestAnimationFrame(() => setActiveEditor(null)); }, [props.drafts.length]);
+  useEffect(() => {
+    if (props.drafts.length) return;
+    const frame = requestAnimationFrame(() => setActiveEditor(null));
+    return () => cancelAnimationFrame(frame);
+  }, [props.drafts.length]);
   const valueGetter = useCallback((field: "number" | "fullName" | "email" | "role" | "site" | "status") => (params: { data?: UserTableRow }) => {
     const row = params.data; if (!row) return ""; if (field === "number") return row.number;
     if (field === "status") return row.kind === "entry" ? row.user?.status === "active" ? "Активен" : "Приглашён" : "После сохранения";
@@ -2238,8 +2211,8 @@ export function UserAgGrid(props: UserGridProps) {
     const draft = currentProps.drafts.find((candidate) => candidate.key === row.draft?.key) ?? row.draft!;
     if (field === "status") return <span className="ag-autofill-value">{draft.id ? "Без изменений" : "Приглашение"}</span>;
     if (!activeCellEditor) return <EditableCellDisplay value={params.value ?? ""} menuLabel={field === "role" ? "роль" : field === "site" && draft.role === "foreman" ? "проект" : undefined} onOpen={field === "role" || (field === "site" && draft.role === "foreman") ? () => openCellEditor(row, field!) : undefined} />;
-    if (field === "fullName") return <EmployeeTextEditor value={draft.fullName} placeholder="ФИО" onBlur={() => setActiveEditor(null)} onChange={(fullName) => currentProps.onPatchDraft(draft.key, { fullName })} />;
-    if (field === "email") return <EmployeeTextEditor value={draft.email} placeholder="email@company.ru" onBlur={() => setActiveEditor(null)} onChange={(email) => currentProps.onPatchDraft(draft.key, { email })} />;
+    if (field === "fullName") return <GridTextEditor value={draft.fullName} placeholder="ФИО" onBlur={() => setActiveEditor(null)} onChange={(fullName) => currentProps.onPatchDraft(draft.key, { fullName })} />;
+    if (field === "email") return <GridTextEditor value={draft.email} placeholder="email@company.ru" onBlur={() => setActiveEditor(null)} onChange={(email) => currentProps.onPatchDraft(draft.key, { email })} />;
     if (field === "role") return <CustomSelect className="ag-custom-select" value={draft.role} ariaLabel="Роль" autoOpen onChange={(role) => { currentProps.onPatchDraft(draft.key, { role: role as UserRole, assignedSiteId: role !== "foreman" ? "" : draft.assignedSiteId }); setActiveEditor(null); }} options={[{ value: "foreman", label: "Прораб" }, { value: "engineer", label: "Инженер" }, { value: "superadmin", label: "Супер-админ" }]} />;
     if (draft.role !== "foreman") return <span className="ag-autofill-value">Все проекты</span>;
     return <DraftSelect autoOpen value={draft.assignedSiteId} options={currentProps.sites} placeholder="Проект" onChange={(assignedSiteId) => { currentProps.onPatchDraft(draft.key, { assignedSiteId }); setActiveEditor(null); }} />;
@@ -2275,7 +2248,7 @@ export function UserAgGrid(props: UserGridProps) {
     { field: "site", headerName: "Доступ к проекту", minWidth: 220, flex: 1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("site"), cellRenderer: editableRenderer },
   ], [editableRenderer, valueGetter]);
   const defaultColDef = useMemo<ColDef<UserTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
-  return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<UserTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }} rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.user?.id ? [row.user.id] : []))} onCellMouseDown={(event) => { if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return; const rowKey = event.data?.rowKey; const field = event.column.getColDef().field; if (rowKey !== activeEditor.rowKey || field !== activeEditor.field) setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} spreadsheetSelectionResetKey={`${draftStructureKey}:${props.fullRowEditIds.join("|")}`} suppressCellFocus /></div></AgGridProvider>;
+  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<UserTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }} rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.user?.id ? [row.user.id] : []))} onCellMouseDown={(event) => { if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return; const rowKey = event.data?.rowKey; const field = event.column.getColDef().field; if (rowKey !== activeEditor.rowKey || field !== activeEditor.field) setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} spreadsheetSelectionResetKey={`${draftStructureKey}:${props.fullRowEditIds.join("|")}`} suppressCellFocus /></div>;
 }
 
 type SiteTableRow = { rowKey: string; kind: "entry" | "edit" | "draft"; number: number; site?: GridSite; draft?: GridSiteDraft } & GridDisplayFields<"name">;
@@ -2286,15 +2259,10 @@ export function ProjectAgGrid(props: ProjectGridProps) {
   const gridApi = useRef<GridApi<SiteTableRow> | null>(null);
   const [activeEditor, setActiveEditor] = useState<{ rowKey: string; field: string } | null>(null);
   const draftStructureKey = props.drafts.map((draft) => draft.id ? `edit-${draft.id}` : draft.key).join("|");
+  const draftValuesKey = JSON.stringify(props.drafts);
   const selectedIdsKey = props.pendingDeletes.join("|");
   const newDraftCount = props.drafts.filter((draft) => !draft.id).length;
-  useEffect(() => { requestAnimationFrame(() => {
-    const api = gridApi.current;
-    if (!api || api.isDestroyed()) return;
-    api.refreshClientSideRowModel("everything");
-    api.refreshCells({ force: true });
-    api.redrawRows();
-  }); }, [draftStructureKey]);
+  useRefreshGrid(gridApi, JSON.stringify([draftStructureKey, draftValuesKey]));
   const rowData = useMemo<SiteTableRow[]>(() => [
     ...props.rows.map((site, index) => { const draft = props.drafts.find((candidate) => candidate.id === site.id); return draft ? { rowKey: `site-${site.id}`, kind: "edit" as const, number: index + 1, site, draft } : { rowKey: `site-${site.id}`, kind: "entry" as const, number: index + 1, site }; }),
     ...props.drafts.filter((draft) => !draft.id).map((draft, index) => ({ rowKey: `site-new-${draft.key}`, kind: "draft" as const, number: props.rows.length + index + 1, draft })),
@@ -2310,7 +2278,11 @@ export function ProjectAgGrid(props: ProjectGridProps) {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIdsKey]);
-  useEffect(() => { if (!props.drafts.length) requestAnimationFrame(() => setActiveEditor(null)); }, [props.drafts.length]);
+  useEffect(() => {
+    if (props.drafts.length) return;
+    const frame = requestAnimationFrame(() => setActiveEditor(null));
+    return () => cancelAnimationFrame(frame);
+  }, [props.drafts.length]);
   const valueGetter = useCallback((field: "number" | "name") => (params: { data?: SiteTableRow }) => { const row = params.data; if (!row) return ""; if (field === "number") return row.number; const draft = propsRef.current.drafts.find((candidate) => candidate.key === row.draft?.key) ?? row.draft; return row.kind === "entry" ? row.site?.name ?? "" : draft?.name ?? ""; }, [propsRef]);
   const openCellEditor = useCallback((row: SiteTableRow, columnId: string) => {
     const currentProps = propsRef.current;
@@ -2330,7 +2302,7 @@ export function ProjectAgGrid(props: ProjectGridProps) {
     if (!row.draft) return <span title={String(params.value ?? "")}>{params.value}</span>;
     const draft = currentProps.drafts.find((candidate) => candidate.key === row.draft?.key) ?? row.draft!;
     if (!activeCellEditor) return <EditableCellDisplay value={params.value ?? ""} />;
-    return <EmployeeTextEditor value={draft.name} placeholder="Название проекта" onBlur={() => setActiveEditor(null)} onChange={(name) => currentProps.onPatchDraft(draft.key, { name })} />;
+    return <GridTextEditor value={draft.name} placeholder="Название проекта" onBlur={() => setActiveEditor(null)} onChange={(name) => currentProps.onPatchDraft(draft.key, { name })} />;
   }, [activeEditor, propsRef]);
   const pasteIntoRow = useCallback(({ row, values }: SpreadsheetPastePayload<SiteTableRow>) => {
     if (row.kind === "entry" && propsRef.current.drafts.some((draft) => !draft.id)) return false;
@@ -2345,5 +2317,5 @@ export function ProjectAgGrid(props: ProjectGridProps) {
     { field: "name", headerName: "Проект", minWidth: 300, flex: 1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("name"), cellRenderer: editableRenderer },
   ], [editableRenderer, valueGetter]);
   const defaultColDef = useMemo<ColDef<SiteTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
-  return <AgGridProvider modules={modules}><div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<SiteTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }} rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.site?.id ? [row.site.id] : []))} onCellMouseDown={(event) => { if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return; const rowKey = event.data?.rowKey; const field = event.column.getColDef().field; if (rowKey !== activeEditor.rowKey || field !== activeEditor.field) setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} spreadsheetSelectionResetKey={`${draftStructureKey}:${props.fullRowEditIds.join("|")}`} suppressCellFocus /></div></AgGridProvider>;
+  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<SiteTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }} rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.site?.id ? [row.site.id] : []))} onCellMouseDown={(event) => { if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return; const rowKey = event.data?.rowKey; const field = event.column.getColDef().field; if (rowKey !== activeEditor.rowKey || field !== activeEditor.field) setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} spreadsheetSelectionResetKey={`${draftStructureKey}:${props.fullRowEditIds.join("|")}`} suppressCellFocus /></div>;
 }

@@ -19,8 +19,8 @@ test("server-renders the protected personnel accounting workspace", async () => 
 
   const html = await response.text();
   assert.match(html, /<html lang="ru">/i);
-  assert.match(html, /<title>Расстановка \| Учёт персонала<\/title>/i);
-  assert.match(html, /Учёт персонала/);
+  assert.match(html, /<title>Ресурсный отчёт \| Отчёт персонала<\/title>/i);
+  assert.match(html, /Ресурсный отчёт/);
   assert.match(html, /Проверяем доступ/);
   assert.match(html, /class="auth-loading"/i);
   assert.doesNotMatch(html, /type="date"/);
@@ -46,12 +46,22 @@ test("server-renders the protected personnel accounting workspace", async () => 
     new URL("../app/AgDataGrids.tsx", import.meta.url),
     "utf8",
   );
+  const gridProvider = await readFile(
+    new URL("../app/AgGridEnterpriseProvider.tsx", import.meta.url),
+    "utf8",
+  );
+  const layout = await readFile(new URL("../app/layout.tsx", import.meta.url), "utf8");
   assert.match(grid, /AgGridReact/);
   assert.match(grid, /headerName: "Вид подработ"/);
   assert.match(grid, /headerName: "Должность"/);
   assert.match(grid, /pinned: "right"/);
   assert.doesNotMatch(grid, /AllCommunityModule/);
-  assert.match(grid, /ClientSideRowModelModule/);
+  assert.doesNotMatch(grid, /AgGridProvider/);
+  assert.match(gridProvider, /AllCommunityModule/);
+  assert.match(gridProvider, /AllEnterpriseModule/);
+  assert.match(gridProvider, /configuredLicenseKey \? enterpriseModules : communityModules/);
+  assert.match(layout, /process\.env\.AG_GRID_LICENSE_KEY/);
+  assert.doesNotMatch(layout, /Using_this_/);
   assert.match(grid, /export function DirectoryAgGrid/);
   assert.match(grid, /selectEmployee/);
   assert.match(grid, /headerName: "ФИО"/);
@@ -270,7 +280,8 @@ test("keeps the employee grid compact without duplicated filter controls", async
   assert.doesNotMatch(styles, /\.employee-tool-panel-tabs/);
   assert.doesNotMatch(styles, /\.employee-quick-filter/);
   assert.doesNotMatch(styles, /\.employee-performance-toolbar/);
-  assert.doesNotMatch(manifest, /ag-grid-enterprise/);
+  assert.match(manifest, /"ag-grid-enterprise": "36\.2\.0"/);
+  assert.match(manifest, /"ag-grid-react": "36\.2\.0"/);
 });
 
 test("selects employees with checkboxes and deletes them in one validated request", async () => {
@@ -376,15 +387,51 @@ test("edits rows on double click and provides spreadsheet-style copy and paste",
   assert.match(grid, /onSpreadsheetPaste=\{pasteIntoRow\}/);
   assert.match(grid, /spreadsheetFocusRequestKey=\{spreadsheetFocusRequestKey\}/);
   assert.match(grid, /setSpreadsheetFocusRequestKey\(\(key\) => key \+ 1\)/);
-  assert.match(grid, /deferChangeUntilBlur/);
-  assert.match(grid, /if \(!deferChangeUntilBlur\) onChange\(event\.target\.value\)/);
-  assert.match(grid, /event\.key !== "Enter"/);
+  const textEditor = await readFile(new URL("../app/GridTextEditor.tsx", import.meta.url), "utf8");
+  assert.match(grid, /GridTextEditor/);
+  assert.doesNotMatch(grid, /api\.redrawRows\(/);
+  assert.match(textEditor, /createCellTextEditSession/);
+  assert.match(textEditor, /onBlur=\{\(\) => \{ commit\(\); onBlur\?\.\(\); \}\}/);
+  assert.doesNotMatch(textEditor, /onChange=\{/);
+  assert.match(filters, /suppressKeyboardEvent:.*isInteractiveTarget/);
+  assert.match(textEditor, /event\.key !== "Enter"/);
   assert.match(grid, /spreadsheetSelectionResetKey=\{rowStructureKey\}/);
   assert.match(grid, /rowData\.map\(\(row\) => row\.rowKey\)\.sort\(\)\.join\("\|"\)/);
   assert.match(styles, /ag-excel-selected/);
   assert.match(globalStyles, /ag-cell-editor-host/);
   assert.match(globalStyles, /\.ag-employee-grid \.editable-row \.ag-cell \{ background:#fafafa; \}/);
   assert.match(globalStyles, /box-shadow:none/);
+});
+
+test("adds richer filters, multi-column sorting, and persistent employee row ordering", async () => {
+  const filters = await readFile(new URL("../app/GridFilters.tsx", import.meta.url), "utf8");
+  const filterModel = await readFile(new URL("../app/gridFilterModel.ts", import.meta.url), "utf8");
+  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+  const migration = await readFile(new URL("../drizzle-postgres/0018_employee_manual_order.sql", import.meta.url), "utf8");
+
+  assert.match(filterModel, /containsAllWords/);
+  assert.match(filterModel, /containsAnyWord/);
+  assert.match(filterModel, /notStartsWith/);
+  assert.match(filterModel, /notEndsWith/);
+  assert.match(filterModel, /Intl\.Collator\("ru-RU", \{ numeric: true/);
+  assert.match(filters, /Добавить ↑/);
+  assert.match(filters, /Добавить ↓/);
+  assert.match(filters, /sortIndex/);
+  assert.match(filters, /grid-sort-chip/);
+  assert.match(filters, /columnId !== "rowOrder"/);
+  assert.match(filters, /source\?: "paste" \| "undo"/);
+  assert.match(filters, /refreshCells\(\{ force: true \}\)/);
+  assert.match(grid, /colId: "rowOrder"/);
+  assert.match(grid, /rowDragManaged/);
+  assert.match(grid, /onRowDragEnd/);
+  assert.match(grid, /onReorder: \(employeeIds: number\[\]\) => Promise<void>/);
+  assert.match(app, /action: "reorder-employees"/);
+  assert.match(api, /payload\.action === "reorder-employees"/);
+  assert.match(api, /Список сотрудников изменился\. Обновите таблицу и повторите перенос строки/);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS "sort_order"/);
+  assert.match(migration, /idx_employees_active_sort_order/);
 });
 
 test("validates employee cells before saving directory changes", async () => {

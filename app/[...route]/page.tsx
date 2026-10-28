@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import AuthGate from "../AuthGate";
-import { parseWorkspaceLocation, workspaceTitle } from "../appRoutes";
+import { parseWorkspaceLocation, WORKSPACE_PRODUCT_TITLE, workspaceDocumentTitle } from "../appRoutes";
 import { getAuthUser } from "../auth";
 
 const description = "Ежедневный учёт работ, сотрудников и техники на строительных объектах.";
@@ -10,7 +10,7 @@ type WorkspaceRouteProps = { params: Promise<{ route?: string[] }> };
 export async function generateMetadata({ params }: WorkspaceRouteProps): Promise<Metadata> {
   const route = (await params).route ?? [];
   const location = parseWorkspaceLocation(`/${route.join("/")}`, "", "2026-01-01");
-  const title = location.recognized ? `${workspaceTitle(location.view, location.directoryFocus)} | Учёт персонала` : "Учёт персонала";
+  const title = location.recognized ? workspaceDocumentTitle(location.view, location.directoryFocus) : WORKSPACE_PRODUCT_TITLE;
   return { title, description };
 }
 

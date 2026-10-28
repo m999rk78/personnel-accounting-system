@@ -311,8 +311,10 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(app, /view === "projectEquipment"/);
   assert.match(app, /Техника проекта/);
   assert.match(app, /<EquipmentAccountingView/);
-  assert.match(app, /aria-label="Техника"/);
-  assert.match(app, />Табели</);
+  assert.match(app, /equipment-navigation/);
+  assert.match(app, />Техника</);
+  assert.match(app, /aria-label="Отчёт техники"/);
+  assert.match(app, /aria-label="Табель техники"/);
 });
 
 test("separates the daily equipment report into foreman contributions", async () => {

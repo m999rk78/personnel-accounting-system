@@ -4,7 +4,7 @@ import AuthGate from "./AuthGate";
 import { getAuthUser } from "./auth";
 
 export const metadata: Metadata = {
-  title: "Расстановка | Учёт персонала",
+  title: "Ресурсный отчёт | Отчёт персонала",
   description: "Ежедневный учёт работ и часов сотрудников на строительных объектах.",
 };
 

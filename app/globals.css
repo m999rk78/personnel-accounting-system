@@ -115,6 +115,7 @@ button,input,select { font:inherit; } button { cursor:pointer; }
 .employee-performance-frame { height:calc(100vh - 250px); min-height:500px; display:flex; flex-direction:column; overflow:hidden; border:1px solid #d4d4d8; border-radius:12px 12px 0 0; background:#fff; box-shadow:0 5px 18px rgba(24,24,27,.04); }
 .employee-performance-main { min-height:0; flex:1; display:flex; }.employee-performance-main > .ag-employee-grid { min-width:0; height:100%; min-height:0; flex:1; border:0; border-radius:0; }
 .ag-employee-grid .ag-header-cell { background:#fafafa; }.ag-grid-shell .ag-selection-checkbox { margin:0 auto; }.ag-grid-shell .ag-row-selected:not(.delete-pending) .ag-cell { background:#fff7df; }
+.ag-employee-grid .employee-row-drag-column { padding:0; color:#a1a1aa; text-align:center; }.ag-employee-grid .employee-row-drag-column .ag-row-drag { margin:0 auto; opacity:.7; }.ag-employee-grid .ag-row:hover .employee-row-drag-column .ag-row-drag { opacity:1; color:#b7790a; }
 .ag-employee-grid .ag-row.bitrix-mismatch-row .ag-cell { background:#fff8e8; }
 .ag-employee-grid .ag-row.bitrix-mismatch-row:hover .ag-cell { background:#fff1cf; }
 .ag-employee-grid .ag-row.bitrix-missing-row .ag-cell { background:#fff0f0; }

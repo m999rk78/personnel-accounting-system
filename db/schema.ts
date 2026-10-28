@@ -64,9 +64,11 @@ export const employees = pgTable("employees", {
   position: text("position").notNull(),
   source: text("source").notNull().default("excel"),
   siteId: integer("site_id").references(() => sites.id),
+  sortOrder: integer("sort_order").notNull().default(0),
   active: integer("active").notNull().default(1),
 }, (table) => [
   index("idx_employees_active_name").on(table.fullName, table.id).where(sql`${table.active} = 1`),
+  index("idx_employees_active_sort_order").on(table.sortOrder, table.id).where(sql`${table.active} = 1`),
 ]);
 
 export const employeeProfileVersions = pgTable("employee_profile_versions", {

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import { AgGridEnterpriseProvider } from "./AgGridEnterpriseProvider";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -7,7 +8,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "localhost:3000";
   const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.includes("localhost") ? "http" : "https");
   const origin = `${protocol}://${host}`;
-  const title = "Учёт персонала";
+  const title = "Ресурсный отчёт";
   const description = "Расстановка и учёт отработанных часов на строительных объектах.";
   return {
     metadataBase: new URL(origin),
@@ -19,10 +20,11 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const agGridLicenseKey = process.env.AG_GRID_LICENSE_KEY ?? "";
   return <html lang="ru"><head>
     <link rel="shortcut icon" href="/tps-favicon-v4.ico" />
     <link rel="icon" href="/tps-favicon-v4.ico" sizes="any" />
     <link rel="icon" type="image/png" href="/tps-favicon-v4-32.png" sizes="32x32" />
     <link rel="apple-touch-icon" href="/tps-favicon-v4-64.png" sizes="64x64" />
-  </head><body>{children}</body></html>;
+  </head><body><AgGridEnterpriseProvider licenseKey={agGridLicenseKey}>{children}</AgGridEnterpriseProvider></body></html>;
 }

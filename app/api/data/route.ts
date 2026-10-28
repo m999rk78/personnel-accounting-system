@@ -60,7 +60,7 @@ type ExistingPlacementEntry = {
 };
 
 type UserPayload = {
-  action?: "create-user" | "update-user" | "create-employee" | "create-bitrix24-employee" | "update-bitrix24-employee" | "update-selected-bitrix24-employees" | "delete-bitrix24-employee" | "acknowledge-bitrix24-difference" | "acknowledge-selected-bitrix24-differences" | "update-employee" | "import-employees" | "inspect-bitrix24" | "link-bitrix24-employees" | "sync-bitrix24" | "create-position" | "update-position" | "import-positions" | "create-site" | "update-site" | "create-directory" | "update-directory" | "save-directory-items" | "assign-employee-project" | "assign-site";
+  action?: "create-user" | "update-user" | "create-employee" | "reorder-employees" | "create-bitrix24-employee" | "update-bitrix24-employee" | "update-selected-bitrix24-employees" | "delete-bitrix24-employee" | "acknowledge-bitrix24-difference" | "acknowledge-selected-bitrix24-differences" | "update-employee" | "import-employees" | "inspect-bitrix24" | "link-bitrix24-employees" | "sync-bitrix24" | "create-position" | "update-position" | "import-positions" | "create-site" | "update-site" | "create-directory" | "update-directory" | "save-directory-items" | "assign-employee-project" | "assign-site";
   userId?: number;
   employeeId?: number;
   employeeIds?: number[];
@@ -127,6 +127,7 @@ const TABLE_STATEMENTS = [
     department TEXT NOT NULL DEFAULT 'УСР',
     position TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'excel',
+    sort_order INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1
   )`,
   `CREATE TABLE IF NOT EXISTS employee_profile_versions (
@@ -356,6 +357,17 @@ async function initializeDatabase() {
   if (!employeeColumnNames.has("sync_miss_count")) {
     await db.prepare("ALTER TABLE employees ADD COLUMN sync_miss_count INTEGER NOT NULL DEFAULT 0").run();
   }
+  if (!employeeColumnNames.has("sort_order")) {
+    await db.prepare("ALTER TABLE employees ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0").run();
+  }
+  await db.prepare(`WITH maximum AS (
+      SELECT COALESCE(MAX(sort_order), 0) AS value FROM employees WHERE sort_order > 0
+    ), unranked AS (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY full_name, id) AS position FROM employees WHERE sort_order <= 0
+    )
+    UPDATE employees SET sort_order = maximum.value + unranked.position
+    FROM maximum, unranked WHERE employees.id = unranked.id`).run();
+  await db.prepare("CREATE INDEX IF NOT EXISTS idx_employees_active_sort_order ON employees(sort_order, id) WHERE active = 1").run();
   const placementColumns = await db.prepare("PRAGMA table_info(placement_entries)").all<{ name: string }>();
   const placementColumnNames = new Set(placementColumns.results.map((column) => column.name));
   for (const column of ["employee_name_snapshot", "employment_type_snapshot", "department_snapshot", "master_name_snapshot"]) {
@@ -440,8 +452,9 @@ async function initializeDatabase() {
   const syncPositionCatalog = () => db.prepare("INSERT OR IGNORE INTO position_catalog (employment_type, department, position) SELECT DISTINCT employment_type, department, position FROM employees WHERE active = 1 AND employment_type <> '' AND department <> '' AND position <> ''").run();
   const syncEmployeeAssignments = () => db.prepare("INSERT OR IGNORE INTO employee_project_assignments (employee_id, site_id, source) SELECT id, site_id, source FROM employees WHERE active = 1 AND site_id IS NOT NULL").run();
   const syncMasterEmployees = async () => {
-    await db.prepare(`INSERT INTO employees (full_name, employment_type, department, position, source, site_id)
-      SELECT m.name, 'ОПР', 'УСР', 'Мастер строительно-монтажных работ', 'master-directory', m.site_id
+    await db.prepare(`INSERT INTO employees (full_name, employment_type, department, position, source, site_id, sort_order)
+      SELECT m.name, 'ОПР', 'УСР', 'Мастер строительно-монтажных работ', 'master-directory', m.site_id,
+        (SELECT COALESCE(MAX(sort_order), 0) FROM employees) + ROW_NUMBER() OVER (ORDER BY m.name)
       FROM masters m
       WHERE m.active = 1 AND NOT EXISTS (
         SELECT 1 FROM employees e WHERE e.full_name = m.name AND e.active = 1
@@ -497,12 +510,12 @@ async function initializeDatabase() {
     db.prepare("INSERT INTO sites (id, name, code, timezone) VALUES (1, ?, ?, 'Europe/Moscow')").bind("ГПЗ — Установка 2", "GPZ-U2"),
     db.prepare("INSERT INTO sites (id, name, code, timezone) VALUES (2, ?, ?, 'Europe/Moscow')").bind("Площадка Северная", "NORTH"),
     db.prepare("INSERT INTO app_users (id, full_name, email, role, assigned_site_id) VALUES (1, ?, 'mark@yums.ru', 'foreman', 1)").bind("Марк Аванесов"),
-    db.prepare("INSERT INTO employees (id, full_name, employment_type, department, position) VALUES (1, ?, 'ОПР', 'УСР', ?)").bind("Иванов Сергей Петрович", "Монтажник технологических трубопроводов"),
-    db.prepare("INSERT INTO employees (id, full_name, employment_type, department, position) VALUES (2, ?, 'ОПР', 'УСР', ?)").bind("Абдуллаев Рустам Каримович", "Электрогазосварщик"),
-    db.prepare("INSERT INTO employees (id, full_name, employment_type, department, position) VALUES (3, ?, 'ОПР', 'МУВСП', ?)").bind("Петров Алексей Николаевич", "Стропальщик"),
-    db.prepare("INSERT INTO employees (id, full_name, employment_type, department, position) VALUES (4, ?, 'ОПР', 'МУТТ', ?)").bind("Саидов Джамшед Махмудович", "Монтажник металлоконструкций"),
-    db.prepare("INSERT INTO employees (id, full_name, employment_type, department, position) VALUES (5, ?, 'ИТР', 'УСР', ?)").bind("Ким Андрей Викторович", "Мастер строительно-монтажных работ"),
-    db.prepare("INSERT INTO employees (id, full_name, employment_type, department, position) VALUES (6, ?, 'ОПР', 'УОВ', ?)").bind("Смирнов Николай Олегович", "Подсобный рабочий"),
+    db.prepare("INSERT INTO employees (id, full_name, employment_type, department, position, sort_order) VALUES (1, ?, 'ОПР', 'УСР', ?, 1)").bind("Иванов Сергей Петрович", "Монтажник технологических трубопроводов"),
+    db.prepare("INSERT INTO employees (id, full_name, employment_type, department, position, sort_order) VALUES (2, ?, 'ОПР', 'УСР', ?, 2)").bind("Абдуллаев Рустам Каримович", "Электрогазосварщик"),
+    db.prepare("INSERT INTO employees (id, full_name, employment_type, department, position, sort_order) VALUES (3, ?, 'ОПР', 'МУВСП', ?, 3)").bind("Петров Алексей Николаевич", "Стропальщик"),
+    db.prepare("INSERT INTO employees (id, full_name, employment_type, department, position, sort_order) VALUES (4, ?, 'ОПР', 'МУТТ', ?, 4)").bind("Саидов Джамшед Махмудович", "Монтажник металлоконструкций"),
+    db.prepare("INSERT INTO employees (id, full_name, employment_type, department, position, sort_order) VALUES (5, ?, 'ИТР', 'УСР', ?, 5)").bind("Ким Андрей Викторович", "Мастер строительно-монтажных работ"),
+    db.prepare("INSERT INTO employees (id, full_name, employment_type, department, position, sort_order) VALUES (6, ?, 'ОПР', 'УОВ', ?, 6)").bind("Смирнов Николай Олегович", "Подсобный рабочий"),
     db.prepare("INSERT INTO shifts (id, site_id, name) VALUES (1, 1, 'день'), (2, 1, 'ночь'), (4, 2, 'день'), (5, 2, 'ночь')"),
     db.prepare("INSERT INTO zones (id, site_id, name) VALUES (1, 1, 'G4-C1810BX0'), (2, 1, 'G3-B1110BX0'), (3, 1, 'G1-B6710RX0'), (4, 1, 'отсутствует'), (5, 2, 'Секция A'), (6, 2, 'Секция B')"),
     db.prepare("INSERT INTO main_work_types (id, site_id, name) VALUES (1, 1, 'Трубопроводы /// Монтаж'), (2, 1, 'Трубопроводы /// Сварка'), (3, 1, 'Металлоконструкции /// Эстакады'), (4, 1, 'Вспомогательные и прочие работы'), (5, 2, 'Монтаж оборудования'), (6, 2, 'Подготовительные работы')"),
@@ -621,7 +634,7 @@ function canRunAction(user: AuthUser, payload: UserPayload) {
   const action = payload.action;
   if (!action) return true;
   if (action === "inspect-bitrix24") return hasPermission(user.permissions, "employees", "view");
-  if (action === "sync-bitrix24" || action === "link-bitrix24-employees" || action === "update-bitrix24-employee" || action === "update-selected-bitrix24-employees" || action === "acknowledge-bitrix24-difference" || action === "acknowledge-selected-bitrix24-differences" || action === "update-employee") return hasPermission(user.permissions, "employees", "update");
+  if (action === "sync-bitrix24" || action === "link-bitrix24-employees" || action === "update-bitrix24-employee" || action === "update-selected-bitrix24-employees" || action === "acknowledge-bitrix24-difference" || action === "acknowledge-selected-bitrix24-differences" || action === "update-employee" || action === "reorder-employees") return hasPermission(user.permissions, "employees", "update");
   if (action === "delete-bitrix24-employee") return hasPermission(user.permissions, "employees", "delete");
   if (action === "create-employee" || action === "create-bitrix24-employee") return hasPermission(user.permissions, "employees", "create");
   if (action === "import-employees") return hasPermission(user.permissions, "employees", "create") || hasPermission(user.permissions, "employees", "update");
@@ -697,7 +710,7 @@ function placementEntriesStatement(siteId: number, workDate: string, responsible
     WHERE pe.site_id = ? AND pe.work_date = ? AND pe.deleted_at IS NULL
       AND UPPER(TRIM(COALESCE(NULLIF(pe.employment_type_snapshot, ''), e.employment_type))) = 'ОПР'
       ${ownershipFilter}
-    ORDER BY e.full_name, pe.created_at, pe.id`).bind(...(responsibleUserId ? [siteId, workDate, responsibleUserId] : [siteId, workDate]));
+    ORDER BY e.sort_order, e.full_name, pe.created_at, pe.id`).bind(...(responsibleUserId ? [siteId, workDate, responsibleUserId] : [siteId, workDate]));
 }
 
 function placementEntriesForRangeStatement(siteId: number, rangeStart: string, rangeEnd: string, responsibleUserId?: number) {
@@ -723,7 +736,7 @@ function placementEntriesForRangeStatement(siteId: number, rangeStart: string, r
     WHERE pe.site_id = ? AND pe.work_date >= ? AND pe.work_date <= ? AND pe.deleted_at IS NULL
       AND UPPER(TRIM(COALESCE(NULLIF(pe.employment_type_snapshot, ''), e.employment_type))) = 'ОПР'
       ${ownershipFilter}
-    ORDER BY pe.work_date, e.full_name, pe.created_at, pe.id`)
+    ORDER BY pe.work_date, e.sort_order, e.full_name, pe.created_at, pe.id`)
     .bind(...(responsibleUserId ? [siteId, rangeStart, rangeEnd, responsibleUserId] : [siteId, rangeStart, rangeEnd]));
 }
 
@@ -796,7 +809,7 @@ function foremanProgressStatement(siteId: number, workDate: string) {
 }
 
 function reportEmployeesStatement(siteId: number) {
-  return env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
+  return env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
     e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
     epa.site_id AS siteId, s.name AS siteName
     FROM employees e
@@ -804,7 +817,7 @@ function reportEmployeesStatement(siteId: number) {
     JOIN sites s ON s.id = epa.site_id AND s.active = 1
     WHERE e.active = 1 AND epa.site_id = ? AND e.full_name <> '' AND e.position <> ''
       AND UPPER(TRIM(e.employment_type)) = 'ОПР'
-    ORDER BY e.full_name`).bind(siteId);
+    ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId);
 }
 
 async function validatePayload(db: DatabaseExecutor, payload: EntryPayload, excludedId?: number) {
@@ -1205,8 +1218,8 @@ async function synchronizeBitrixEmployees() {
       const primarySiteId = employee.availabilityStatus === "on_site" ? employee.siteIds[0] ?? null : null;
       return db.prepare(`INSERT INTO employees
         (bitrix24_id, bitrix24_stage, availability_status, bitrix24_updated_at, last_synced_at, sync_error, sync_miss_count,
-         full_name, employment_type, department, position, source, site_id, active)
-        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'bitrix24', ?, ?)
+         full_name, employment_type, department, position, source, site_id, sort_order, active)
+        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'bitrix24', ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM employees), ?)
         ON CONFLICT (bitrix24_id) DO UPDATE SET
           bitrix24_stage = EXCLUDED.bitrix24_stage,
           availability_status = EXCLUDED.availability_status,
@@ -1508,8 +1521,8 @@ async function createBitrixEmployee(sourceSnapshot: BitrixEmployeeSnapshot[], pa
   const employeeId = await env.DB.transaction(async (db) => {
     const result = await db.prepare(`INSERT INTO employees
       (bitrix24_id, bitrix24_stage, availability_status, bitrix24_updated_at, last_synced_at, sync_error, sync_miss_count,
-       full_name, employment_type, department, position, source, site_id, active)
-      VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, 'bitrix24', ?, 1)`)
+       full_name, employment_type, department, position, source, site_id, sort_order, active)
+      VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, 'bitrix24', ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM employees), 1)`)
       .bind(bitrix24Id, source.stageName, availabilityStatus, source.sourceUpdatedAt, createdAt, source.fullName,
         position.employmentType, position.department, position.position, projectSiteId).run();
     const id = Number(result.meta.last_row_id);
@@ -1795,11 +1808,11 @@ export async function GET(request: Request) {
       const [sites, reportEmployees, placementEmployees, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, reportSubmission, employeeUsage, foremanProgress, timesheetMarks] = await env.DB.readBatch([
         env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
         reportEmployeesStatement(siteId),
-        env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
+        env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
           e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
           epa.site_id AS siteId, s.name AS siteName
           FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
-          WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.full_name`).bind(siteId),
+          WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId),
         env.DB.prepare("SELECT id, name FROM shifts WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
         env.DB.prepare("SELECT id, name FROM zones WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
         env.DB.prepare("SELECT id, name FROM main_work_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
@@ -1843,7 +1856,7 @@ export async function GET(request: Request) {
       if (!settingsResources.some((resource) => hasPermission(authUser.permissions, resource, "view"))) return forbidden();
       const [sites, employees, projectEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, users, syncStatus, bitrix24ActionLimits] = await env.DB.readBatch([
         env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
-        env.DB.prepare(`SELECT e.id, e.bitrix24_id AS bitrix24Id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
+        env.DB.prepare(`SELECT e.id, e.bitrix24_id AS bitrix24Id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
           e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError, e.last_synced_at AS lastSyncedAt,
           check_state.status AS bitrixCheckStatus, check_state.details AS bitrixCheckDetails,
           CASE WHEN check_state.acknowledged_at IS NOT NULL THEN 1 ELSE 0 END AS bitrixCheckAcknowledged,
@@ -1853,14 +1866,14 @@ export async function GET(request: Request) {
           LEFT JOIN sites assigned_site ON assigned_site.id = epa.site_id AND assigned_site.active = 1
           LEFT JOIN bitrix24_employee_check_states check_state ON check_state.employee_id = e.id
           WHERE e.active = 1
-          GROUP BY e.id, e.bitrix24_id, e.full_name, e.employment_type, e.department, e.position, e.source, e.bitrix24_stage, e.availability_status, e.sync_error, e.last_synced_at,
+          GROUP BY e.id, e.bitrix24_id, e.full_name, e.employment_type, e.department, e.position, e.source, e.sort_order, e.bitrix24_stage, e.availability_status, e.sync_error, e.last_synced_at,
             check_state.status, check_state.details, check_state.acknowledged_at
-          ORDER BY e.full_name`),
-        env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
+          ORDER BY e.sort_order, e.full_name, e.id`),
+        env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
           e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
           epa.site_id AS siteId, s.name AS siteName
           FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
-          WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.full_name`).bind(siteId),
+          WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId),
         env.DB.prepare("SELECT id, employment_type AS employmentType, department, position FROM position_catalog WHERE active = 1 ORDER BY employment_type, department, position"),
         env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'employmentType' ORDER BY name"),
         env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'department' ORDER BY name"),
@@ -1912,7 +1925,7 @@ export async function GET(request: Request) {
     }
     const [sites, employees, reportEmployees, placementEmployees, projectEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, reportSubmission, users, syncStatus, bitrix24ActionLimits, employeeUsage, foremanProgress, timesheetMarks] = await env.DB.readBatch([
       env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
-      env.DB.prepare(`SELECT e.id, e.bitrix24_id AS bitrix24Id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
+      env.DB.prepare(`SELECT e.id, e.bitrix24_id AS bitrix24Id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
         e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError, e.last_synced_at AS lastSyncedAt,
         check_state.status AS bitrixCheckStatus, check_state.details AS bitrixCheckDetails,
         CASE WHEN check_state.acknowledged_at IS NOT NULL THEN 1 ELSE 0 END AS bitrixCheckAcknowledged,
@@ -1922,20 +1935,20 @@ export async function GET(request: Request) {
         LEFT JOIN sites assigned_site ON assigned_site.id = epa.site_id AND assigned_site.active = 1
         LEFT JOIN bitrix24_employee_check_states check_state ON check_state.employee_id = e.id
         WHERE e.active = 1
-        GROUP BY e.id, e.bitrix24_id, e.full_name, e.employment_type, e.department, e.position, e.source, e.bitrix24_stage, e.availability_status, e.sync_error, e.last_synced_at,
+        GROUP BY e.id, e.bitrix24_id, e.full_name, e.employment_type, e.department, e.position, e.source, e.sort_order, e.bitrix24_stage, e.availability_status, e.sync_error, e.last_synced_at,
           check_state.status, check_state.details, check_state.acknowledged_at
-        ORDER BY e.full_name`),
+        ORDER BY e.sort_order, e.full_name, e.id`),
       reportEmployeesStatement(siteId),
-      env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
+      env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
         e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
         epa.site_id AS siteId, s.name AS siteName
         FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
-        WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.full_name`).bind(siteId),
-      env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source,
+        WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId),
+      env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
         e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
         epa.site_id AS siteId, s.name AS siteName
         FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
-        WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.full_name`).bind(siteId),
+        WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId),
       env.DB.prepare("SELECT id, employment_type AS employmentType, department, position FROM position_catalog WHERE active = 1 ORDER BY employment_type, department, position"),
       env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'employmentType' ORDER BY name"),
       env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'department' ORDER BY name"),
@@ -2087,13 +2100,31 @@ async function handlePOST(request: Request) {
       await validateEmployeeDirectoryValues(employmentType, department, position, projectSiteId);
       const duplicate = await env.DB.prepare("SELECT id FROM employees WHERE full_name = ? AND active = 1").bind(fullName).first();
       if (duplicate) throw new Error("Рабочий с таким ФИО уже существует.");
-      const result = await env.DB.prepare("INSERT INTO employees (full_name, employment_type, department, position, source, site_id, availability_status) VALUES (?, ?, ?, ?, 'manual', ?, ?)")
+      const result = await env.DB.prepare("INSERT INTO employees (full_name, employment_type, department, position, source, site_id, availability_status, sort_order) VALUES (?, ?, ?, ?, 'manual', ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM employees))")
         .bind(fullName, employmentType, department, position, projectSiteId, projectSiteId ? "on_site" : "unassigned").run();
       if (projectSiteId) {
         await env.DB.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source, start_date) VALUES (?, ?, 'manual', CURRENT_DATE)")
           .bind(Number(result.meta.last_row_id), projectSiteId).run();
       }
       return Response.json({ id: result.meta.last_row_id }, { status: 201 });
+    }
+    if (payload.action === "reorder-employees") {
+      const rawIds = Array.isArray(payload.employeeIds) ? payload.employeeIds : [];
+      const employeeIds = rawIds.map(asPositiveInteger);
+      if (!employeeIds.length) throw new Error("Передайте новый порядок сотрудников.");
+      if (employeeIds.length > 5000) throw new Error("За один раз можно упорядочить не более 5000 сотрудников.");
+      if (employeeIds.some((id) => !id) || new Set(employeeIds).size !== employeeIds.length) throw new Error("Список порядка содержит некорректные или повторяющиеся строки.");
+      const orderedIds = employeeIds as number[];
+      await env.DB.transaction(async (db) => {
+        const activeEmployees = await db.prepare("SELECT id FROM employees WHERE active = 1").all<{ id: number }>();
+        const activeIds = new Set(activeEmployees.results.map((employee) => employee.id));
+        if (activeIds.size !== orderedIds.length || orderedIds.some((id) => !activeIds.has(id))) {
+          throw new Error("Список сотрудников изменился. Обновите таблицу и повторите перенос строки.");
+        }
+        const updates = orderedIds.map((employeeId, index) => db.prepare("UPDATE employees SET sort_order = ? WHERE id = ? AND active = 1").bind(index + 1, employeeId));
+        for (let offset = 0; offset < updates.length; offset += 100) await db.batch(updates.slice(offset, offset + 100));
+      });
+      return Response.json({ ok: true, count: orderedIds.length });
     }
     if (payload.action === "assign-employee-project") {
       const employeeId = asPositiveInteger(payload.employeeId);
@@ -2180,7 +2211,7 @@ async function handlePOST(request: Request) {
           ? env.DB.prepare(`UPDATE employees SET employment_type = ?, department = ?, position = ?, site_id = ?,
               availability_status = CASE WHEN source = 'bitrix24' THEN availability_status ELSE ? END
             WHERE id = ?`).bind(row.employmentType, row.department, row.position, row.siteIds[0] ?? null, row.siteIds.length ? "on_site" : "unassigned", existingId)
-          : env.DB.prepare("INSERT INTO employees (full_name, employment_type, department, position, source, site_id, availability_status) VALUES (?, ?, ?, ?, 'excel', ?, ?)")
+          : env.DB.prepare("INSERT INTO employees (full_name, employment_type, department, position, source, site_id, availability_status, sort_order) VALUES (?, ?, ?, ?, 'excel', ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM employees))")
               .bind(row.fullName, row.employmentType, row.department, row.position, row.siteIds[0] ?? null, row.siteIds.length ? "on_site" : "unassigned");
       });
       for (let offset = 0; offset < employeeStatements.length; offset += 100) await env.DB.batch(employeeStatements.slice(offset, offset + 100));

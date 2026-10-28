@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { matchesPersonnelFilter as matches, isConditionValid, normalizeFilterText, filterValueKey } from "../app/gridFilterModel.ts";
+import { compareGridValues, matchesPersonnelFilter as matches, isConditionValid, normalizeFilterText, filterValueKey } from "../app/gridFilterModel.ts";
 
 const model = (overrides = {}) => ({ filterType: "personnel", kind: "text", values: null, conditions: [], operator: "AND", ...overrides });
 
@@ -26,6 +26,14 @@ test("И and ИЛИ combine conditions within a column", () => {
   assert.equal(matches("Сидоров Петр", model({ conditions })), false);
   assert.equal(matches("Сидоров Петр", model({ conditions, operator: "OR" })), true);
   assert.equal(matches("Сидоров Алексей", model({ conditions, operator: "OR" })), false);
+});
+
+test("extended text filters support exclusions and word searches", () => {
+  assert.equal(matches("Монтажник технологических трубопроводов", model({ conditions: [{ type: "containsAllWords", value: "монтажник трубопроводов" }] })), true);
+  assert.equal(matches("Монтажник металлоконструкций", model({ conditions: [{ type: "containsAllWords", value: "монтажник трубопроводов" }] })), false);
+  assert.equal(matches("Электрогазосварщик", model({ conditions: [{ type: "containsAnyWord", value: "сварщик электрогазосварщик" }] })), true);
+  assert.equal(matches("Иванов Пётр", model({ conditions: [{ type: "notStartsWith", value: "петров" }] })), true);
+  assert.equal(matches("Иванов Пётр", model({ conditions: [{ type: "notEndsWith", value: "петр" }] })), false);
 });
 
 test("empty values are explicit and zero is not empty", () => {
@@ -60,4 +68,11 @@ test("filters on separate columns intersect, and explicit values do not grow wit
   const hours = model({ kind: "number", conditions: [{ type: "greaterThanOrEqual", value: "5" }] });
   assert.deepEqual(rows.filter((row) => matches(row.name, names) && matches(row.hours, hours)), [{ name: "Петров", hours: 8 }]);
   assert.equal(matches("Новый сотрудник", names), false);
+});
+
+test("grid values use natural Russian sorting", () => {
+  const values = ["Кран 10", "кран 2", "Ёлка", "Ель", "Кран 1"];
+  assert.deepEqual(values.sort(compareGridValues), ["Ёлка", "Ель", "Кран 1", "кран 2", "Кран 10"]);
+  assert.equal(compareGridValues(2, 10) < 0, true);
+  assert.equal(compareGridValues("", "Значение") > 0, true);
 });

@@ -10,7 +10,9 @@ export type PersonnelFilterModel = {
 export const textOperations = [
   ["contains", "Содержит"], ["notContains", "Не содержит"],
   ["equals", "Равно"], ["notEqual", "Не равно"],
-  ["startsWith", "Начинается с"], ["endsWith", "Заканчивается на"],
+  ["startsWith", "Начинается с"], ["notStartsWith", "Не начинается с"],
+  ["endsWith", "Заканчивается на"], ["notEndsWith", "Не заканчивается на"],
+  ["containsAllWords", "Содержит все слова"], ["containsAnyWord", "Содержит любое слово"],
   ["blank", "Пусто"], ["notBlank", "Не пусто"],
 ] as const;
 export const numberOperations = [
@@ -54,7 +56,11 @@ function matchesCondition(value: unknown, condition: FilterCondition, kind: Pers
       case "equals": return text === needle;
       case "notEqual": return text !== needle;
       case "startsWith": return text.startsWith(needle);
+      case "notStartsWith": return !text.startsWith(needle);
       case "endsWith": return text.endsWith(needle);
+      case "notEndsWith": return !text.endsWith(needle);
+      case "containsAllWords": return needle.split(" ").filter(Boolean).every((word) => text.includes(word));
+      case "containsAnyWord": return needle.split(" ").filter(Boolean).some((word) => text.includes(word));
       default: return false;
     }
   }
@@ -71,6 +77,17 @@ function matchesCondition(value: unknown, condition: FilterCondition, kind: Pers
     case "inRange": return number >= target && number <= asNumber(condition.to ?? "");
     default: return false;
   }
+}
+
+const gridValueCollator = new Intl.Collator("ru-RU", { numeric: true, sensitivity: "base" });
+
+/** Consistent natural sorting for names, identifiers and numbers in every grid. */
+export function compareGridValues(left: unknown, right: unknown): number {
+  const leftEmpty = left === null || left === undefined || String(left).trim() === "";
+  const rightEmpty = right === null || right === undefined || String(right).trim() === "";
+  if (leftEmpty || rightEmpty) return leftEmpty === rightEmpty ? 0 : leftEmpty ? 1 : -1;
+  if (typeof left === "number" && typeof right === "number") return left - right;
+  return gridValueCollator.compare(String(left).replaceAll("ё", "е"), String(right).replaceAll("ё", "е"));
 }
 
 export function matchesPersonnelFilter(value: unknown, model: PersonnelFilterModel | null): boolean {

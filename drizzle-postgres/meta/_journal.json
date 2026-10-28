@@ -127,6 +127,13 @@
       "when": 1791302400000,
       "tag": "0017_bitrix24_employee_check_states",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793030400000,
+      "tag": "0018_employee_manual_order",
+      "breakpoints": true
     }
   ]
 }

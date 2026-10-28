@@ -295,12 +295,13 @@ test("builds the monthly timesheet from saved daily reports", async () => {
 
   assert.match(app, /view === "timesheet"/);
   assert.match(app, /<TimesheetView/);
-  assert.match(app, /mayAccessTimesheets && <div className="nav-group">/);
+  assert.match(app, /mayViewWorkersReport \|\| mayViewWorkersTimesheet/);
   assert.match(app, /mayViewWorkersTimesheet && view === "timesheet"/);
   assert.match(app, /mayViewEquipmentTimesheet && view === "equipmentTimesheet"/);
-  assert.match(app, /timesheet-navigation/);
-  assert.match(app, />Табели</);
-  assert.match(app, /aria-label="Табель рабочих"/);
+  assert.match(app, /personnel-navigation/);
+  assert.match(app, />Персонал</);
+  assert.match(app, /aria-label="Отчёт персонала"/);
+  assert.match(app, /aria-label="Табель персонала"/);
   assert.match(app, /aria-label="Табель техники"/);
   assert.match(roles, /canAccessTimesheets/);
   assert.match(roles, /role === "engineer" \|\| role === "superadmin"/);

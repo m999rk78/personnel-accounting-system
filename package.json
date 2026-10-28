@@ -12,6 +12,7 @@
     "test": "npm run build && node --experimental-strip-types --test tests/*.test.mjs",
     "test:stress": "node --env-file=.env.local scripts/stress-test.mjs",
     "test:tables": "node scripts/table-smoke.mjs",
+    "test:editing": "node scripts/grid-editing-smoke.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
@@ -22,7 +23,8 @@
     "db:sync-positions": "node scripts/sync-position-catalog.mjs"
   },
   "dependencies": {
-    "ag-grid-react": "^36.2.0",
+    "ag-grid-enterprise": "36.2.0",
+    "ag-grid-react": "36.2.0",
     "drizzle-orm": "0.45.2",
     "nodemailer": "10.1.7",
     "pg": "^8.23.0",

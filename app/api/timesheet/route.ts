@@ -132,7 +132,7 @@ export async function GET(request: Request) {
           SELECT 1 FROM timesheet_marks tm
           WHERE tm.employee_id = e.id AND tm.site_id = ? AND tm.work_date >= ? AND tm.work_date < ?
         )
-        ORDER BY e.full_name`).bind(siteId, siteId, startDate, endDate, siteId, startDate, endDate),
+        ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId, siteId, startDate, endDate, siteId, startDate, endDate),
       db.prepare(`SELECT pe.employee_id AS employeeId, pe.work_date AS workDate,
           SUM(pe.hours)::int AS hours,
           COALESCE(STRING_AGG(DISTINCT COALESCE(NULLIF(pe.master_name_snapshot, ''), m.name), ', '), '') AS masters,

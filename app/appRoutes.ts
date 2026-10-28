@@ -10,6 +10,8 @@ export type WorkspaceLocation = {
   recognized: boolean;
 };
 
+export const WORKSPACE_PRODUCT_TITLE = "Ресурсный отчёт";
+
 const ROUTES: Array<{ path: string; view: WorkspaceView; directoryFocus?: WorkspaceDirectoryFocus }> = [
   { path: "/reports/workers", view: "placement" },
   { path: "/reports/equipment", view: "equipment" },
@@ -99,6 +101,10 @@ export function workspaceTitle(view: WorkspaceView, directoryFocus: WorkspaceDir
   if (directoryFocus === "mainWorkType") return "Виды работ";
   if (directoryFocus === "subworkType") return "Виды подработ";
   return "Мастера";
+}
+
+export function workspaceDocumentTitle(view: WorkspaceView, directoryFocus: WorkspaceDirectoryFocus = "all") {
+  return `${WORKSPACE_PRODUCT_TITLE} | ${workspaceTitle(view, directoryFocus)}`;
 }
 
 export function isGeneralSettingsView(view: WorkspaceView) {

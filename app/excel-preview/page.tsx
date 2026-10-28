@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { ExcelExportPreviewPage } from "../ExcelExportPreview";
 
 export const metadata: Metadata = {
-  title: "Предпросмотр Excel | Учёт персонала",
+  title: "Ресурсный отчёт | Предпросмотр Excel",
   description: "Предпросмотр данных перед экспортом в Excel.",
 };
 

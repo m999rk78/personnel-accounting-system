@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact, useGridFilterDisplay, type AgGridReactProps, type CustomFilterDisplayProps, type CustomFloatingFilterDisplayProps } from "ag-grid-react";
-import type { CellMouseDownEvent, CellMouseOverEvent, ColumnFilter, GridApi, IRowNode } from "ag-grid-community";
-import { describePersonnelFilter, filterValueKey, isConditionValid, matchesPersonnelFilter, normalizeFilterText, numberOperations, textOperations, type FilterCondition, type PersonnelFilterModel } from "./gridFilterModel";
+import type { CellMouseDownEvent, CellMouseOverEvent, ColDef, ColumnFilter, GridApi, IRowNode } from "ag-grid-community";
+import { compareGridValues, describePersonnelFilter, filterValueKey, isConditionValid, matchesPersonnelFilter, normalizeFilterText, numberOperations, textOperations, type FilterCondition, type PersonnelFilterModel } from "./gridFilterModel";
 import { gridLocaleRu } from "./gridLocaleRu";
 import { CustomSelect } from "./CustomSelect";
 import { TableContextMenu, type TableContextMenuAction } from "./TableContextMenu";
@@ -37,7 +37,8 @@ function PersonnelFilter(props: FilterProps) {
     const refresh = () => setRevision((value) => value + 1);
     api.addEventListener("rowDataUpdated", refresh);
     api.addEventListener("filterChanged", refresh);
-    return () => { if (!api.isDestroyed()) { api.removeEventListener("rowDataUpdated", refresh); api.removeEventListener("filterChanged", refresh); } };
+    api.addEventListener("sortChanged", refresh);
+    return () => { if (!api.isDestroyed()) { api.removeEventListener("rowDataUpdated", refresh); api.removeEventListener("filterChanged", refresh); api.removeEventListener("sortChanged", refresh); } };
   }, [api]);
   const values = useMemo(() => {
     const counts = new Map<string, number>();
@@ -67,6 +68,19 @@ function PersonnelFilter(props: FilterProps) {
     conditions: model.conditions.map((condition, current) => current === index ? { ...condition, ...patch } : condition),
   });
   const valid = model.conditions.every((condition) => isConditionValid(condition, kind));
+  const columnId = column.getColId();
+  const sortedColumns = api.getColumnState().filter((state) => state.sort).sort((left, right) => (left.sortIndex ?? 0) - (right.sortIndex ?? 0));
+  const currentSort = sortedColumns.find((state) => state.colId === columnId);
+  const sortColumn = (sort: "asc" | "desc", additive: boolean) => {
+    if (!additive) {
+      api.applyColumnState({ state: [{ colId: columnId, sort, sortIndex: 0 }], defaultState: { sort: null, sortIndex: null } });
+      return;
+    }
+    const nextIndex = currentSort?.sortIndex ?? (sortedColumns.reduce((maximum, state) => Math.max(maximum, state.sortIndex ?? 0), -1) + 1);
+    api.applyColumnState({ state: [{ colId: columnId, sort, sortIndex: nextIndex }] });
+  };
+  const clearColumnSort = () => api.applyColumnState({ state: [{ colId: columnId, sort: null, sortIndex: null }] });
+  const clearAllSorts = () => api.applyColumnState({ state: [], defaultState: { sort: null, sortIndex: null } });
   // Keep the checklist responsive for large employee directories; render only visible rows.
   const start = Math.max(0, Math.floor(scrollTop / 34) - 3);
   const visibleValues = matching.slice(start, start + 14);
@@ -80,7 +94,16 @@ function PersonnelFilter(props: FilterProps) {
   }, [api, getValue, doesRowPassOtherFilter, state.model, revision]);
   return <div className="personnel-filter" aria-label={`Настройка фильтра: ${colDef.headerName}`}>
     <div className="grid-filter-heading"><strong>{colDef.headerName}</strong><span>{kind === "number" ? "Числовой фильтр" : "Фильтр по значениям"}</span></div>
-    <div className="grid-filter-sort"><button type="button" onClick={() => api.applyColumnState({ state: [{ colId: column.getColId(), sort: "asc" }], defaultState: { sort: null } })}>{kind === "number" ? "По возрастанию ↑" : "От А до Я ↑"}</button><button type="button" onClick={() => api.applyColumnState({ state: [{ colId: column.getColId(), sort: "desc" }], defaultState: { sort: null } })}>{kind === "number" ? "По убыванию ↓" : "От Я до А ↓"}</button></div>
+    <div className="grid-filter-sort">
+      <button type="button" onClick={() => sortColumn("asc", false)}>{kind === "number" ? "По возрастанию ↑" : "От А до Я ↑"}</button>
+      <button type="button" onClick={() => sortColumn("desc", false)}>{kind === "number" ? "По убыванию ↓" : "От Я до А ↓"}</button>
+      <button type="button" title="Добавить этот столбец после уже выбранных правил сортировки" onClick={() => sortColumn("asc", true)}>Добавить ↑</button>
+      <button type="button" title="Добавить этот столбец после уже выбранных правил сортировки" onClick={() => sortColumn("desc", true)}>Добавить ↓</button>
+      {(currentSort || sortedColumns.length > 0) && <div className="grid-filter-sort-reset">
+        {currentSort && <button type="button" onClick={clearColumnSort}>Сбросить столбец{sortedColumns.length > 1 ? ` · приоритет ${(currentSort.sortIndex ?? 0) + 1}` : ""}</button>}
+        {sortedColumns.length > 0 && <button type="button" onClick={clearAllSorts}>Сбросить всю сортировку</button>}
+      </div>}
+    </div>
     <label className="grid-filter-search"><span className="sr-only">Поиск значений</span><input ref={searchInput} placeholder="Найти значение…" value={search} onChange={(event) => { setSearch(event.target.value); setScrollTop(0); if (valuesList.current) valuesList.current.scrollTop = 0; }} /></label>
     <div className="grid-filter-selection"><ValueCheckbox checked={matching.length > 0 && checkedCount === matching.length} mixed={checkedCount > 0 && checkedCount < matching.length} onChange={(checked) => {
       const next = new Set(selected);
@@ -132,6 +155,7 @@ export type SpreadsheetPastePayload<TData> = {
   row: TData;
   rowIndex: number;
   values: Record<string, string>;
+  source?: "paste" | "undo";
 };
 
 export type SpreadsheetEditPayload<TData> = {
@@ -161,7 +185,7 @@ function isInteractiveTarget(event?: Event | null) {
 function spreadsheetColumns<TData>(grid: GridApi<TData>) {
   return grid.getAllDisplayedColumns().filter((column) => {
     const columnId = column.getColId();
-    return columnId !== "actions" && columnId !== "ag-Grid-SelectionColumn";
+    return columnId !== "actions" && columnId !== "rowOrder" && columnId !== "ag-Grid-SelectionColumn";
   });
 }
 
@@ -188,7 +212,12 @@ function spreadsheetBounds<TData>(grid: GridApi<TData>, current: SpreadsheetSele
 
 export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste, onSpreadsheetEdit, onSpreadsheetCancelEdit, spreadsheetFocusRequestKey = 0, spreadsheetSelectionResetKey = "", getSpreadsheetContextActions, ...props }: LocalizedGridProps<TData>) {
   const [api, setApi] = useState<GridApi<TData> | null>(null);
-  const [summary, setSummary] = useState<{ count: number; total: number; filters: { id: string; name: string; description: string }[] }>({ count: 0, total: 0, filters: [] });
+  const [summary, setSummary] = useState<{
+    count: number;
+    total: number;
+    filters: { id: string; name: string; description: string }[];
+    sorts: { id: string; name: string; direction: "asc" | "desc"; priority: number }[];
+  }>({ count: 0, total: 0, filters: [], sorts: [] });
   const [selection, setSelection] = useState<SpreadsheetSelection | null>(null);
   const [spreadsheetStatus, setSpreadsheetStatus] = useState("");
   const [contextMenu, setContextMenu] = useState<(SpreadsheetContextPayload<TData> & { x: number; y: number; error: string }) | null>(null);
@@ -208,8 +237,17 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste, onS
     grid.forEachNode((node: IRowNode<TData>) => { if (node.data?.kind === "entry") total++; });
     grid.forEachNodeAfterFilter((node: IRowNode<TData>) => { if (node.data?.kind === "entry") count++; });
     const filters = Object.entries(grid.getFilterModel()).map(([id, model]) => ({ id, name: grid.getColumnDef(id)?.headerName ?? id, description: describePersonnelFilter(model) }));
-    setSummary({ count, total, filters });
+    const sorts = grid.getColumnState().filter((state): state is typeof state & { sort: "asc" | "desc" } => state.sort === "asc" || state.sort === "desc")
+      .sort((left, right) => (left.sortIndex ?? 0) - (right.sortIndex ?? 0))
+      .map((state, index) => ({ id: state.colId, name: grid.getColumnDef(state.colId)?.headerName ?? state.colId, direction: state.sort, priority: index + 1 }));
+    setSummary({ count, total, filters, sorts });
   }, []);
+  const enhancedDefaultColDef = useMemo<ColDef<TData>>(() => ({
+    ...props.defaultColDef,
+    comparator: props.defaultColDef?.comparator ?? compareGridValues,
+    // AG Grid receives native keydown before React: leave editing keys to inputs.
+    suppressKeyboardEvent: (params) => isInteractiveTarget(params.event) || Boolean(props.defaultColDef?.suppressKeyboardEvent?.(params)),
+  }), [props.defaultColDef]);
   const paintSelection = useCallback((grid: GridApi<TData>) => {
     requestAnimationFrame(() => {
       const root = body.current;
@@ -256,7 +294,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste, onS
     return () => window.clearTimeout(timeout);
   }, [spreadsheetStatus]);
   const selectCell = useCallback((event: CellMouseDownEvent<TData>) => {
-    if (event.rowIndex === null || event.column.getColId() === "actions" || isInteractiveTarget(event.event)) return;
+    if (event.rowIndex === null || ["actions", "rowOrder", "ag-Grid-SelectionColumn"].includes(event.column.getColId()) || isInteractiveTarget(event.event)) return;
     const point = { rowIndex: event.rowIndex, columnId: event.column.getColId(), rowId: event.node.id };
     const mouseEvent = event.event as MouseEvent | undefined;
     const start = mouseEvent?.shiftKey && selectionRef.current ? selectionRef.current.start : point;
@@ -268,7 +306,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste, onS
     body.current?.focus({ preventScroll: true });
   }, []);
   const extendSelection = useCallback((event: CellMouseOverEvent<TData>) => {
-    if (!dragging.current || event.rowIndex === null || event.column.getColId() === "actions" || !selectionRef.current) return;
+    if (!dragging.current || event.rowIndex === null || ["actions", "rowOrder", "ag-Grid-SelectionColumn"].includes(event.column.getColId()) || !selectionRef.current) return;
     const next = { start: selectionRef.current.start, end: { rowIndex: event.rowIndex, columnId: event.column.getColId(), rowId: event.node.id } };
     selectionRef.current = next;
     lastSelectionRef.current = next;
@@ -360,11 +398,11 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste, onS
   }, [api, selectedText]);
   const previousCellValues = useCallback((rowNode: IRowNode<TData>, columns: { getColId: () => string }[]) => Object.fromEntries(columns.flatMap((column) => {
     const columnId = column.getColId();
-    if (columnId === "number" || columnId === "actions") return [];
+    if (columnId === "number" || columnId === "actions" || columnId === "rowOrder") return [];
     return [[columnId, String(api?.getCellValue({ rowNode, colKey: columnId, useFormatter: true }) ?? "")]];
   })), [api]);
   const rememberCellUndo = useCallback((rowIndex: number, columnId: string) => {
-    if (!api || !onSpreadsheetPaste || columnId === "number" || columnId === "actions") return;
+    if (!api || !onSpreadsheetPaste || columnId === "number" || columnId === "actions" || columnId === "rowOrder") return;
     const rowNode = api.getDisplayedRowAtIndex(rowIndex);
     const column = api.getColumn(columnId);
     if (!rowNode?.data || !column) return;
@@ -394,12 +432,13 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste, onS
       for (let index = 0; index < targetColumns; index++) {
         const column = bounds.columns[bounds.columnStart + index];
         const columnId = column?.getColId();
-        if (columnId && columnId !== "number" && columnId !== "actions") values[columnId] = matrix[offset % sourceRows]?.[index % sourceColumns] ?? "";
+        if (columnId && columnId !== "number" && columnId !== "actions" && columnId !== "rowOrder") values[columnId] = matrix[offset % sourceRows]?.[index % sourceColumns] ?? "";
       }
+      const columns = bounds.columns.filter((column) => Object.hasOwn(values, column.getColId()));
+      const previousValues = previousCellValues(rowNode, columns);
       if (Object.keys(values).length && onSpreadsheetPaste({ row: rowNode.data, rowIndex, values })) {
         changed++;
-        const columns = bounds.columns.filter((column) => Object.hasOwn(values, column.getColId()));
-        undoChanges.push({ row: rowNode.data, rowIndex, values: previousCellValues(rowNode, columns) });
+        undoChanges.push({ row: rowNode.data, rowIndex, values: previousValues });
       }
     }
     if (!changed) {
@@ -407,6 +446,15 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste, onS
       return false;
     }
     rememberUndo(undoChanges);
+    // Draft rows intentionally keep stable objects while a person types so AG Grid
+    // does not recreate an active editor. A paste updates React state outside the
+    // grid, therefore explicitly repaint after that state has been committed.
+    requestAnimationFrame(() => {
+      if (api.isDestroyed()) return;
+      api.refreshClientSideRowModel("everything");
+      api.refreshCells({ force: true });
+      api.redrawRows();
+    });
     setSpreadsheetStatus(`Вставлено строк: ${changed}`);
     return true;
   }, [api, onSpreadsheetPaste, previousCellValues, rememberUndo]);
@@ -424,7 +472,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste, onS
     const columnId = cell?.getAttribute("col-id");
     const rowIndex = Number(rowElement?.getAttribute("row-index"));
     const rowNode = Number.isInteger(rowIndex) ? api.getDisplayedRowAtIndex(rowIndex) : null;
-    if (!cell || !columnId || columnId === "actions" || columnId === "ag-Grid-SelectionColumn" || !rowNode?.data) return;
+    if (!cell || !columnId || columnId === "actions" || columnId === "rowOrder" || columnId === "ag-Grid-SelectionColumn" || !rowNode?.data) return;
     event.preventDefault();
     const point = { rowIndex, columnId, rowId: rowNode.id };
     const next = { start: point, end: point };
@@ -463,7 +511,13 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste, onS
     undoing.current = true;
     let changed = 0;
     try {
-      for (const change of changes) if (onSpreadsheetPaste(change)) changed++;
+      for (const change of changes) if (onSpreadsheetPaste({ ...change, source: "undo" })) changed++;
+      if (changed && api) requestAnimationFrame(() => {
+        if (api.isDestroyed()) return;
+        api.refreshClientSideRowModel("everything");
+        api.refreshCells({ force: true });
+        api.redrawRows();
+      });
       setSpreadsheetStatus(changed ? `Отменено изменений: ${changed}` : "Не удалось отменить изменение");
     } catch {
       undoStack.current.push(changes);
@@ -472,7 +526,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste, onS
       undoing.current = false;
     }
     return true;
-  }, [onSpreadsheetPaste]);
+  }, [api, onSpreadsheetPaste]);
   useEffect(() => {
     const undoOutsideGrid = (event: KeyboardEvent) => {
       const target = event.target;
@@ -485,10 +539,13 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste, onS
     return () => document.removeEventListener("keydown", undoOutsideGrid);
   }, [undoSpreadsheetChange]);
   return <div className="localized-grid">
-    {summary.filters.length > 0 && <div className="grid-filter-summary" aria-label="Активные фильтры">
+    {(summary.filters.length > 0 || summary.sorts.length > 0) && <div className="grid-filter-summary" aria-label="Активные фильтры и сортировка">
       <span aria-live="polite">Строк: <b>{summary.count}</b> из {summary.total}</span>
-      <div className="grid-filter-chips">{summary.filters.map((filter) => <button key={filter.id} type="button" title={`${filter.name}: ${filter.description}. Нажмите для сброса.`} aria-label={`Сбросить фильтр: ${filter.name}`} onClick={async () => { if (api) { await api.setColumnFilterModel(filter.id, null); api.onFilterChanged(); } }}><span>{filter.name}: {filter.description}</span><span aria-hidden="true">×</span></button>)}</div>
-      <button className="grid-filter-clear" type="button" onClick={() => api?.setFilterModel(null)}>Сбросить все</button>
+      <div className="grid-filter-chips">
+        {summary.filters.map((filter) => <button key={`filter-${filter.id}`} type="button" title={`${filter.name}: ${filter.description}. Нажмите для сброса.`} aria-label={`Сбросить фильтр: ${filter.name}`} onClick={async () => { if (api) { await api.setColumnFilterModel(filter.id, null); api.onFilterChanged(); } }}><span>{filter.name}: {filter.description}</span><span aria-hidden="true">×</span></button>)}
+        {summary.sorts.map((sort) => <button className="grid-sort-chip" key={`sort-${sort.id}`} type="button" title={`Сортировка по столбцу «${sort.name}». Нажмите для сброса.`} aria-label={`Сбросить сортировку: ${sort.name}`} onClick={() => api?.applyColumnState({ state: [{ colId: sort.id, sort: null, sortIndex: null }] })}><span>{summary.sorts.length > 1 ? `${sort.priority}. ` : ""}{sort.name} {sort.direction === "asc" ? "↑" : "↓"}</span><span aria-hidden="true">×</span></button>)}
+      </div>
+      <button className="grid-filter-clear" type="button" onClick={() => { api?.setFilterModel(null); api?.applyColumnState({ state: [], defaultState: { sort: null, sortIndex: null } }); }}>Сбросить всё</button>
     </div>}
     <div className="localized-grid-body" ref={body} role="grid" tabIndex={0} onContextMenu={openContextMenu} onPointerDownCapture={(event) => {
       const target = event.target;
@@ -506,7 +563,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste, onS
       if (event.key === "Enter" || event.key === "F2") editSelectedCell(event);
     }} aria-label="Таблица. Стрелки перемещают выбранную ячейку, Shift со стрелками расширяет выделение. Двойной клик, Enter или F2 открывает редактирование. Доступны копирование, вставка и отмена через Ctrl+Z как в Excel.">
       {spreadsheetStatus && <span className="sr-only" aria-live="polite">{spreadsheetStatus}</span>}
-      <AgGridReact<TData> {...props} suppressMovableColumns enableFilterHandlers localeText={gridLocaleRu}
+      <AgGridReact<TData> {...props} defaultColDef={enhancedDefaultColDef} suppressMovableColumns enableFilterHandlers localeText={gridLocaleRu}
       onGridReady={(event) => { setApi(event.api); updateSummary(event.api); props.onGridReady?.(event); }}
       onCellMouseDown={(event) => { selectCell(event); props.onCellMouseDown?.(event); }}
       onCellMouseOver={(event) => { extendSelection(event); props.onCellMouseOver?.(event); }}
@@ -514,6 +571,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste, onS
       onBodyScroll={(event) => { paintSelection(event.api); props.onBodyScroll?.(event); }}
       onModelUpdated={(event) => { updateSummary(event.api); paintSelection(event.api); props.onModelUpdated?.(event); }}
       onFilterChanged={(event) => { updateSummary(event.api); props.onFilterChanged?.(event); }}
+      onSortChanged={(event) => { updateSummary(event.api); props.onSortChanged?.(event); }}
     />{contextMenu && <TableContextMenu
       x={contextMenu.x}
       y={contextMenu.y}

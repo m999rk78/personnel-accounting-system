@@ -14,13 +14,13 @@ import { hasPermission, type PermissionAction, type PermissionResource, type Per
 import { ProjectCards } from "./ProjectCards";
 import { TimesheetView } from "./TimesheetView";
 import { UserAccessCards } from "./UserAccessCards";
-import { parseWorkspaceLocation, workspaceTitle, workspaceUrl, type WorkspaceDirectoryFocus, type WorkspaceView } from "./appRoutes";
+import { parseWorkspaceLocation, workspaceDocumentTitle, workspaceUrl, type WorkspaceDirectoryFocus, type WorkspaceView } from "./appRoutes";
 import { ROLE_LABELS, canViewAllProjects, type UserRole } from "./roles";
 import { createLatestRequest } from "./latestRequest";
 
 type Option = { id: number; name: string };
 type Site = Option & { code: string; timezone: string };
-type Employee = { id: number; bitrix24Id?: string | null; fullName: string; employmentType: string; department: string; position: string; source: string; bitrix24Stage: string; availabilityStatus: string; syncError: string | null; lastSyncedAt?: string | null; siteId: number | null; siteName: string | null; bitrixCheckStatus?: "mismatch" | "missing_in_bitrix" | "dismissed_in_bitrix" | null; bitrixCheckDetails?: string | null; bitrixCheckAcknowledged?: number | boolean };
+type Employee = { id: number; sortOrder?: number; bitrix24Id?: string | null; fullName: string; employmentType: string; department: string; position: string; source: string; bitrix24Stage: string; availabilityStatus: string; syncError: string | null; lastSyncedAt?: string | null; siteId: number | null; siteName: string | null; bitrixCheckStatus?: "mismatch" | "missing_in_bitrix" | "dismissed_in_bitrix" | null; bitrixCheckDetails?: string | null; bitrixCheckAcknowledged?: number | boolean };
 type PositionRecord = { id: number; employmentType: string; department: string; position: string };
 type AppUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; status?: "active" | "invited" };
 type CurrentUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; permissions: PermissionSet; permissionsCustomized: boolean };
@@ -476,7 +476,6 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const mayAccessProjectSettings = (["project_employees", "project_equipment", "project_directories"] as PermissionResource[]).some((resource) => may(resource));
   const mayInspectBitrix24 = may("employees");
   const mayViewAllProjects = canViewAllProjects(role);
-  const mayAccessTimesheets = mayViewWorkersTimesheet || mayViewEquipmentTimesheet;
   const [initialLocation] = useState(() => parseWorkspaceLocation(
     typeof window === "undefined" ? "/reports/workers" : window.location.pathname,
     typeof window === "undefined" ? "" : window.location.search,
@@ -502,8 +501,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const fallbackView = useMemo(() => (["placement", "equipment", "timesheet", "equipmentTimesheet", "projectSettings", "settings"] as View[]).find(viewAllowed) ?? "placement", [viewAllowed]);
   const initialView = viewAllowed(initialLocation.view) ? initialLocation.view : fallbackView;
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [reportsOpen, setReportsOpen] = useState(true);
-  const [timesheetOpen, setTimesheetOpen] = useState(true);
+  const [equipmentOpen, setEquipmentOpen] = useState(true);
+  const [personnelOpen, setPersonnelOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [view, setView] = useState<View>(initialView);
   const [siteId, setSiteId] = useState(currentUser.assignedSiteId ?? 1);
@@ -647,7 +646,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }, [fallbackView, initialLocation, initialToday, initialView, viewAllowed]);
 
   useEffect(() => {
-    document.title = `${workspaceTitle(view, directoryFocus)} | Учёт персонала`;
+    document.title = workspaceDocumentTitle(view, directoryFocus);
   }, [directoryFocus, view]);
   const loadData = useCallback(async () => {
     const signal = dataRequest.start();
@@ -1298,6 +1297,20 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       await loadData();
     } catch (employeeError) { await loadData(); setError(employeeError instanceof Error ? employeeError.message : "Не удалось сохранить сотрудников."); }
     finally { setSaving(false); }
+  }
+  async function reorderEmployees(employeeIds: number[]) {
+    if (!mayUpdateEmployees || saving) return;
+    setSaving(true); setError(""); setNotice("");
+    try {
+      const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "reorder-employees", employeeIds }) });
+      const result = await response.json() as { error?: string; count?: number };
+      if (!response.ok) throw new Error(result.error ?? "Не удалось сохранить порядок сотрудников.");
+      await loadData();
+      setNotice(`Порядок сотрудников сохранён${result.count ? ` · строк: ${result.count}` : ""}.`);
+    } catch (reorderError) {
+      await loadData();
+      setError(reorderError instanceof Error ? reorderError.message : "Не удалось сохранить порядок сотрудников.");
+    } finally { setSaving(false); }
   }
   async function deletePendingEmployees() {
     if (!mayDeleteEmployees || !employeePendingDeletes.length) return;
@@ -2056,16 +2069,16 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={sidebarOpen ? "m14 7-5 5 5 5" : "m10 7 5 5-5 5"}/></svg>
     </button>
     <aside className="sidebar" id="primary-sidebar">
-      <div className="brand-project-row"><button type="button" className="brand" onClick={() => { setReportsOpen(true); navigateTo(fallbackView); }} aria-label="Открыть доступный раздел" title="Открыть доступный раздел"><img src="/tps-logo.svg" alt="" /></button>{mayViewAllProjects ? <ProjectSwitcher sites={data?.sites ?? []} value={siteId} onChange={changeSite} /> : <div className="project-fixed-card top-project-select" title={activeSite?.name ?? "Объект"}>{activeSite?.name ?? "Объект"}</div>}</div>
+      <div className="brand-project-row"><button type="button" className="brand" onClick={() => { setEquipmentOpen(true); setPersonnelOpen(true); navigateTo(fallbackView); }} aria-label="Открыть доступный раздел" title="Открыть доступный раздел"><img src="/tps-logo.svg" alt="" /></button>{mayViewAllProjects ? <ProjectSwitcher sites={data?.sites ?? []} value={siteId} onChange={changeSite} /> : <div className="project-fixed-card top-project-select" title={activeSite?.name ?? "Объект"}>{activeSite?.name ?? "Объект"}</div>}</div>
       <div className="sidebar-product-title">Ресурсный отчёт</div>
       <nav aria-label="Основная навигация">
-        {(mayViewWorkersReport || mayViewEquipmentReport) && <div className="nav-group">
-          <button type="button" className="nav-heading" onClick={() => setReportsOpen((open) => !open)} aria-expanded={reportsOpen} aria-controls="reports-navigation" aria-label={reportsOpen ? "Свернуть раздел «Отчеты»" : "Развернуть раздел «Отчеты»"}><span className="nav-heading-icon"><AppIcon name="report" /></span><span>Отчеты</span><SidebarChevron open={reportsOpen} /></button>
-          {(reportsOpen || !sidebarOpen) && <div className="nav-sub" id="reports-navigation">{mayViewWorkersReport && <button className={view === "placement" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("placement")} aria-label="Рабочие" title="Рабочие"><span className="nav-item-icon"><AppIcon name="workersReport" /></span>Рабочие</button>}{mayViewEquipmentReport && <button className={view === "equipment" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("equipment")} aria-label="Техника" title="Техника"><span className="nav-item-icon"><AppIcon name="equipmentReport" /></span>Техника</button>}</div>}
+        {(mayViewEquipmentReport || mayViewEquipmentTimesheet) && <div className="nav-group">
+          <button type="button" className="nav-heading" onClick={() => setEquipmentOpen((open) => !open)} aria-expanded={equipmentOpen} aria-controls="equipment-navigation" aria-label={equipmentOpen ? "Свернуть раздел «Техника»" : "Развернуть раздел «Техника»"}><span className="nav-heading-icon"><AppIcon name="equipmentReport" /></span><span>Техника</span><SidebarChevron open={equipmentOpen} /></button>
+          {(equipmentOpen || !sidebarOpen) && <div className="nav-sub" id="equipment-navigation">{mayViewEquipmentReport && <button className={view === "equipment" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("equipment")} aria-label="Отчёт техники" title="Отчёт техники"><span className="nav-item-icon"><AppIcon name="equipmentReport" /></span>Отчёт техники</button>}{mayViewEquipmentTimesheet && <button className={view === "equipmentTimesheet" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("equipmentTimesheet")} aria-label="Табель техники" title="Табель техники"><span className="nav-item-icon"><AppIcon name="equipmentTimesheet" /></span>Табель техники</button>}</div>}
         </div>}
-        {mayAccessTimesheets && <div className="nav-group">
-          <button type="button" className="nav-heading" onClick={() => setTimesheetOpen((open) => !open)} aria-expanded={timesheetOpen} aria-controls="timesheet-navigation" aria-label={timesheetOpen ? "Свернуть раздел «Табели»" : "Развернуть раздел «Табели»"}><span className="nav-heading-icon"><AppIcon name="calendar" /></span><span>Табели</span><SidebarChevron open={timesheetOpen} /></button>
-          {(timesheetOpen || !sidebarOpen) && <div className="nav-sub" id="timesheet-navigation">{mayViewWorkersTimesheet && <button className={view === "timesheet" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("timesheet")} aria-label="Табель рабочих" title="Табель рабочих"><span className="nav-item-icon"><AppIcon name="workersTimesheet" /></span>Рабочие</button>}{mayViewEquipmentTimesheet && <button className={view === "equipmentTimesheet" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("equipmentTimesheet")} aria-label="Табель техники" title="Табель техники"><span className="nav-item-icon"><AppIcon name="equipmentTimesheet" /></span>Техника</button>}</div>}
+        {(mayViewWorkersReport || mayViewWorkersTimesheet) && <div className="nav-group">
+          <button type="button" className="nav-heading" onClick={() => setPersonnelOpen((open) => !open)} aria-expanded={personnelOpen} aria-controls="personnel-navigation" aria-label={personnelOpen ? "Свернуть раздел «Персонал»" : "Развернуть раздел «Персонал»"}><span className="nav-heading-icon"><AppIcon name="workersReport" /></span><span>Персонал</span><SidebarChevron open={personnelOpen} /></button>
+          {(personnelOpen || !sidebarOpen) && <div className="nav-sub" id="personnel-navigation">{mayViewWorkersReport && <button className={view === "placement" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("placement")} aria-label="Отчёт персонала" title="Отчёт персонала"><span className="nav-item-icon"><AppIcon name="workersReport" /></span>Отчёт персонала</button>}{mayViewWorkersTimesheet && <button className={view === "timesheet" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("timesheet")} aria-label="Табель персонала" title="Табель персонала"><span className="nav-item-icon"><AppIcon name="workersTimesheet" /></span>Табель персонала</button>}</div>}
         </div>}
       </nav>
       <div className="sidebar-bottom"><div className="nav-group settings-group">
@@ -2131,6 +2144,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
             onRemoveDraft={removeReportDraftRow}
             onRequestDeleteEntry={requestDeleteReportEntry}
             onVisibleEntryIdsChange={(ids) => setVisibleEntryIds((current) => current?.length === ids.length && current.every((id, index) => id === ids[index]) ? current : ids)}
+            onValidationError={(message) => { setError(message); setNotice(""); }}
           />
           {rosterMode
             ? <RosterReportFooter mode={role === "foreman" ? "foreman" : "engineer"} completed={rosterCompleted} total={rosterTotal} selectedEntryCount={pendingDeletes.length} selectedDraftCount={selectedRosterDraftKeys.length} totalHours={totalOprHours} saving={saving} editorOpen={rosterEditorOpen} showReviewActions={editingRows.length > 0 || draftRows.length > 0 || (canUpdateReportDate && !data?.reportSubmitted)} showCarryoverProgress={showCarryoverProgress} canCreate={canCreateReportDate} canUpdate={canUpdateReportDate} canDelete={canDeleteReportDate} onAdd={() => addRow({ hours: "" })} onEditSelection={editSelectedReportRows} onRemoveDraftSelection={removeSelectedRosterDraftRows} onDeleteSelection={() => setDeleteConfirmationOpen(true)} onClearSelection={() => { setPendingDeletes([]); setSelectedRosterDraftKeys([]); }} onReset={cancelReportEditing} onSave={() => void saveRosterReport()} />
@@ -2191,6 +2205,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
           onCancelDraft={cancelEmployeeDraft}
           onVisibleIdsChange={(ids) => setEmployeeVisibleIds((current) => current?.length === ids.length && current.every((id, index) => id === ids[index]) ? current : ids)}
           onValidationError={(message) => { setError(message); setNotice(""); }}
+          onReorder={reorderEmployees}
         />
         {mayEditGlobalEmployees && <AdminGridFooter addLabel="Добавить сотрудника" countLabel="Всего сотрудников" count={visibleEmployees.length} deletingCount={employeePendingDeletes.length} deletingLabel="Удалить сотрудников" editSelectionLabel="Редактировать" bulkEditSelectionLabel="Массовое редактирование" uniformActions editorOpen={Boolean(employeeDrafts.length)} editingExisting={employeeDrafts.some((draft) => Boolean(draft.id))} pendingCount={employeeDrafts.length} saving={saving || processingBitrixEmployee} allowMultiple canCreate={mayCreateEmployees} canUpdate={mayUpdateEmployees} canDelete={mayDeleteEmployees} selectionActions={[
           { key: "bitrix-update", label: `Актуализировать с Битрикс24 (${selectedBitrixUpdatableEmployees.length})`, className: "bitrix-selection-update-button", disabled: !mayUpdateEmployees || selectedBitrixUpdatableEmployees.length === 0, title: selectedBitrixUpdatableEmployees.length ? "Каждый выбранный сотрудник будет обновлён по своей связанной карточке Битрикс24." : "Среди выбранных строк нет неподтверждённых расхождений, которые можно актуализировать.", onClick: () => void updateSelectedEmployeesFromBitrix() },
