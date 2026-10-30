@@ -116,6 +116,8 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   const headerScroll = await readFile(new URL("../app/timesheetHeaderScroll.ts", import.meta.url), "utf8");
   const clipboard = await readFile(new URL("../app/useTimesheetClipboard.ts", import.meta.url), "utf8");
   const columnFilter = await readFile(new URL("../app/TimesheetColumnFilter.tsx", import.meta.url), "utf8");
+  const filterController = await readFile(new URL("../app/useTimesheetFilters.tsx", import.meta.url), "utf8");
+  const nativeFilters = await readFile(new URL("../app/GridEnterpriseFilters.tsx", import.meta.url), "utf8");
   const xlsx = await readFile(new URL("../app/placementXlsx.ts", import.meta.url), "utf8");
   const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
   const roles = await readFile(new URL("../app/roles.ts", import.meta.url), "utf8");
@@ -170,7 +172,7 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(yandexPostgres, /cloud-system-yums-personnel/);
 
   assert.match(view, /Табель учёта рабочего времени/);
-  assert.match(view, /Выбрать месяц, сейчас/);
+  assert.match(view, /import \{ TimesheetMonthPicker \}/);
   assert.match(view, /personnel-timesheet-summary timesheet-top-summary/);
   assert.match(view, /onScroll=\{\(event\) => syncTimesheetHeaderScroll\(event\.currentTarget\)\}/);
   assert.match(headerScroll, /HEADER_SCROLL_START = 48/);
@@ -187,10 +189,14 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(view, /label="Тип"/);
   assert.match(view, /label="Сотрудник"/);
   assert.match(view, /label="Должность"/);
-  assert.match(view, /dayFilterOptions/);
-  assert.match(view, /label: `Значение \$\{value\}`/);
-  assert.doesNotMatch(view, /label: `Значение: \$\{value\}`/);
-  assert.match(view, /Есть расхождение/);
+  assert.match(view, /useTimesheetFilters\(/);
+  assert.match(view, /const visibleEmployees = filters\.rows/);
+  assert.match(view, /TimesheetFiltersProvider value=\{filters\.context\}/);
+  assert.match(view, /\{filters\.controller\}/);
+  assert.match(view, /columnId=\{workDate\}/);
+  assert.match(view, /value: "manual"/);
+  assert.match(view, /value: "mismatch"/);
+  assert.match(view, /resetKey: `\$\{siteId\}:\$\{month\}`/);
   assert.match(view, /timesheet-header-filter-reset/);
   assert.match(view, /const mismatch = isMismatch\(employee, entry, mark\)/);
   assert.match(view, /const expectedManualMark = isExpectedManualMark\(employee, mark\)/);
@@ -234,11 +240,14 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(view, /openTimesheetExportPreview/);
   assert.match(view, /openExcelExportPreview/);
   assert.match(view, /kind: "personnel-timesheet"/);
-  assert.match(view, /Табель_рабочих_/);
-  assert.match(view, /timesheet-export-button/);
+  assert.match(view, /excelFileName\("Табель персонала", \[payload\?\.siteName, month\]\)/);
+  assert.match(view, /<ExcelActionsMenu actions=\{\[\s*\{ label: "Экспорт в Excel", onSelect: openTimesheetExportPreview, disabled: loading \|\| visibleEmployees\.length === 0 \}/);
   assert.match(view, /TimesheetMonthPicker/);
-  assert.match(view, /timesheet-month-popover/);
-  assert.match(view, /Выбор месяца табеля/);
+  const monthPicker = await readFile(new URL("../app/TimesheetMonthPicker.tsx", import.meta.url), "utf8");
+  assert.match(monthPicker, /Выбрать месяц, сейчас/);
+  assert.match(monthPicker, /TimesheetCellPopover/);
+  assert.match(monthPicker, /timesheet-month-popover/);
+  assert.match(monthPicker, /Выбор месяца табеля/);
   assert.doesNotMatch(view, /type="month"/);
   assert.match(view, /canDelete:/);
   assert.match(view, /marksByCell\.has/);
@@ -268,16 +277,22 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(view, /getUndoNote/);
 
   assert.match(columnFilter, /timesheet-header-filter/);
-  assert.match(columnFilter, /"Фильтр и сортировка" : "Фильтр"/);
-  assert.match(columnFilter, /timesheet-filter-popover/);
-  assert.match(columnFilter, /createPortal/);
-  assert.match(columnFilter, /useState<\{ top: number; left: number \} \| null>\(null\)/);
-  assert.match(columnFilter, /const popup = open && position/);
-  assert.match(columnFilter, /setPosition\(\{ top, left \}\);[^]*setOpen/);
-  assert.match(columnFilter, /Найти значение/);
-  assert.match(columnFilter, /Выбрать все/);
-  assert.match(columnFilter, /Применить/);
+  assert.match(columnFilter, /TimesheetFiltersContext/);
+  assert.match(columnFilter, /Фильтр и сортировка/);
+  assert.match(columnFilter, /filters\?\.open\(columnId, event\.currentTarget\)/);
+  assert.match(columnFilter, /timesheet-sort-indicator/);
+  assert.doesNotMatch(columnFilter, /timesheet-filter-popover|createPortal/);
   assert.doesNotMatch(columnFilter, /<select/);
+  assert.match(filterController, /AgGridReact/);
+  assert.match(filterController, /enterpriseFilterParams/);
+  assert.match(filterController, /forEachNodeAfterFilterAndSort/);
+  assert.match(filterController, /getFilterModel\(\)/);
+  assert.match(filterController, /applyColumnState/);
+  assert.match(filterController, /enableFilterHandlers/);
+  assert.match(filterController, /showColumnFilter\(columnId\)/);
+  assert.match(nativeFilters, /agSetColumnFilter/);
+  assert.match(nativeFilters, /agNumberColumnFilter/);
+  assert.match(nativeFilters, /agTextColumnFilter/);
 
   assert.match(xlsx, /export function createPersonnelTimesheetXlsx/);
   assert.match(xlsx, /Фамилия, имя, отчество/);
@@ -285,7 +300,7 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(xlsx, /"РАСТ"/);
   assert.match(xlsx, /"Проверка"/);
   assert.match(xlsx, /Часы по табелю/);
-  assert.match(xlsx, /autoFilter ref="B3:\$\{masterLetter\}\$\{lastDataRow\}"/);
+  assert.match(xlsx, /autoFilter ref="B3:\$\{masterLetter\}\$\{Math\.max\(3, lastDataRow\)\}"/);
   assert.doesNotMatch(xlsx, /formulaStringCell/);
   assert.match(xlsx, /dayColumnCount = Math\.max\(31, dates\.length\)/);
   assert.match(xlsx, /SUM\(\$\{firstDayLetter\}\$\{rowNumber\}:\$\{lastDayLetter\}\$\{rowNumber\}\)/);

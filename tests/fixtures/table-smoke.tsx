@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
+import { AgGridProvider } from "ag-grid-react";
+import { AllCommunityModule } from "ag-grid-community";
 import { TimesheetView } from "../../app/TimesheetView";
 import { EquipmentAccountingView } from "../../app/EquipmentAccountingView";
 import "../../app/globals.css";
@@ -22,4 +24,4 @@ function TableSmoke() {
   </main>;
 }
 
-createRoot(document.getElementById("root")!).render(<TableSmoke />);
+createRoot(document.getElementById("root")!).render(<AgGridProvider modules={[AllCommunityModule]}><TableSmoke /></AgGridProvider>);

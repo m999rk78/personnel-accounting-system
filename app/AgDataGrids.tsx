@@ -4,7 +4,6 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, type RefObjec
 import { createPortal } from "react-dom";
 import { equipmentUnavailableReason, isEquipmentUnavailable } from "./equipmentAvailability";
 import {
-  themeQuartz,
   type ColDef,
   type ColumnResizedEvent,
   type GetRowIdParams,
@@ -15,15 +14,21 @@ import {
   type CustomCellRendererProps,
   type CustomInnerHeaderProps,
 } from "ag-grid-react";
+import { subworkOptions } from "./workTypeHierarchy";
 import { CustomSelect } from "./CustomSelect";
+import { choiceMenuPosition, choiceMenuWidth, type ChoiceMenuPosition } from "./choiceMenuLayout";
 import { GridTextEditor } from "./GridTextEditor";
 import type { UserRole } from "./roles";
 
 // LocalizedGrid wraps AgGridReact with shared Russian filters and their summary.
 import { LocalizedGrid, personnelColumnFilter, personnelFilterParams, type SpreadsheetContextPayload, type SpreadsheetPastePayload } from "./GridFilters";
 import type { TableContextMenuAction } from "./TableContextMenu";
+import { useWorkspaceAccess } from "./TableAccessContext";
+import { gridTheme } from "./gridTheme";
 
-export type GridOption = { id: number; name: string };
+export { gridTheme } from "./gridTheme";
+
+export type GridOption = { id: number; name: string; mainWorkTypeId?: number | null };
 export type GridEmployee = {
   id: number;
   sortOrder?: number;
@@ -112,25 +117,6 @@ type PlacementRow = {
   timesheetConflict?: { summary: string; details: string };
 } & GridDisplayFields<"employeeName" | "responsibleUserName" | "employmentType" | "department" | "position" | "shift" | "zone" | "mainWork" | "subwork" | "master" | "hours" | "note">;
 
-const gridTheme = themeQuartz.withParams({
-  accentColor: "#f2aa00",
-  backgroundColor: "#ffffff",
-  borderColor: "#dedede",
-  browserColorScheme: "light",
-  cellHorizontalPadding: 12,
-  fontFamily: "Inter, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
-  fontSize: 13,
-  foregroundColor: "#27272a",
-  headerBackgroundColor: "#fafafa",
-  headerFontSize: 13,
-  headerFontWeight: 650,
-  headerTextColor: "#27272a",
-  rowBorder: { color: "#dedede", width: 1 },
-  rowHoverColor: "#f8fbff",
-  selectedRowBackgroundColor: "#fff7df",
-  spacing: 6,
-});
-
 const TABLE_ROW_HEIGHT = 54;
 const TABLE_HEADER_HEIGHT = 52;
 
@@ -199,7 +185,7 @@ function PinnableInnerHeader(props: CustomInnerHeaderProps) {
   return <span className="ag-pinnable-header"><span>{props.displayName}</span><span className="ag-header-tools"><button type="button" className={pinned ? "ag-column-pin active" : "ag-column-pin"} onClick={(event) => { event.stopPropagation(); props.api.setColumnsPinned([props.column], pinned ? null : "left"); }} title={pinned ? `Открепить ${props.displayName}` : `Закрепить ${props.displayName}`} aria-label={pinned ? `Открепить ${props.displayName}` : `Закрепить ${props.displayName}`}><GridIcon name="pin" /></button><button type="button" className={filterActive ? "ag-column-filter active" : "ag-column-filter"} onClick={(event) => { event.stopPropagation(); props.api.showColumnFilter(props.column); }} title={`Фильтр: ${props.displayName}`} aria-label={`Фильтр: ${props.displayName}`}><GridIcon name="filter" /></button></span></span>;
 }
 
-const pinnableHeader = { innerHeaderComponent: PinnableInnerHeader };
+export const pinnableHeader = { innerHeaderComponent: PinnableInnerHeader };
 
 function optionName(options: GridOption[], id: string) {
   return options.find((option) => option.id === Number(id))?.name ?? "";
@@ -250,8 +236,8 @@ function placementValue(row: PlacementRow, field: string, options: PlacementGrid
     position: employee?.position ?? entry?.positionSnapshot ?? "Заполнится автоматически",
     shift: optionName(options.shifts, draft?.shiftId ?? "") || entry?.shiftName || "",
     zone: optionName(options.zones, draft?.zoneId ?? "") || entry?.zoneName || "",
-    mainWork: optionName(options.mainWorkTypes, draft?.mainWorkTypeId ?? "") || entry?.mainWorkTypeName || "",
-    subwork: optionName(options.subworkTypes, draft?.subworkTypeId ?? "") || entry?.subworkTypeName || "",
+    mainWork: optionName(options.mainWorkTypes, draft?.mainWorkTypeId ?? "") || (Number(draft?.mainWorkTypeId) === entry?.mainWorkTypeId ? entry?.mainWorkTypeName : "") || "",
+    subwork: optionName(options.subworkTypes, draft?.subworkTypeId ?? "") || (Number(draft?.subworkTypeId) === entry?.subworkTypeId ? entry?.subworkTypeName : "") || "",
     master: optionName(options.masters, draft?.masterId ?? "") || entry?.masterName || "",
     hours: Number(draft?.hours) || entry?.hours || "",
     note: draft?.note ?? entry?.note ?? "",
@@ -304,8 +290,8 @@ const TIMESHEET_CODE_LABELS: Record<string, string> = {
   "ПР": "Прогул",
 };
 
-function DraftSelect({ value, options, placeholder, onChange, autoOpen = false }: { value: string; options: GridOption[]; placeholder: string; onChange: (value: string) => void; autoOpen?: boolean }) {
-  return <CustomSelect className="ag-custom-select" value={value} ariaLabel={placeholder} onChange={onChange} autoOpen={autoOpen} searchable options={[{ value: "", label: placeholder }, ...options.map((option) => ({ value: String(option.id), label: option.name }))]} />;
+function DraftSelect({ value, options, placeholder, onChange, autoOpen = false, disabled = false }: { value: string; options: GridOption[]; placeholder: string; onChange: (value: string) => void; autoOpen?: boolean; disabled?: boolean }) {
+  return <CustomSelect disabled={disabled} className="ag-custom-select" value={value} ariaLabel={placeholder} onChange={onChange} autoOpen={autoOpen} searchable options={[{ value: "", label: placeholder }, ...options.map((option) => ({ value: String(option.id), label: option.name }))]} />;
 }
 
 function DraftNameSelect({ value, options, placeholder, onChange, autoOpen = false }: { value: string; options: GridOption[]; placeholder: string; onChange: (value: string) => void; autoOpen?: boolean }) {
@@ -313,9 +299,10 @@ function DraftNameSelect({ value, options, placeholder, onChange, autoOpen = fal
 }
 
 function EditableCellDisplay({ value, menuLabel, onOpen }: { value: string | number; menuLabel?: string; onOpen?: () => void }) {
+  const access = useWorkspaceAccess();
   return <span className="ag-editable-cell-display" title={String(value)}>
     <span>{value}</span>
-    {onOpen && <button type="button" className="ag-editable-cell-menu" title={`Открыть список: ${menuLabel ?? "значение"}`} aria-label={`Открыть список: ${menuLabel ?? "значение"}`} onClick={(event) => { event.stopPropagation(); onOpen(); }}><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" /></svg></button>}
+    {access?.edit !== false && onOpen && <button type="button" className="ag-editable-cell-menu" title={`Открыть список: ${menuLabel ?? "значение"}`} aria-label={`Открыть список: ${menuLabel ?? "значение"}`} onClick={(event) => { event.stopPropagation(); onOpen(); }}><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" /></svg></button>}
   </span>;
 }
 
@@ -331,7 +318,7 @@ function EmployeeCombobox({ value, employees, usage = EMPTY_EMPLOYEE_USAGE, onCh
   const [searchQuery, setSearchQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [position, setPosition] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [position, setPosition] = useState<ChoiceMenuPosition | null>(null);
   const query = normalizeSearch(searchQuery);
   const filtered = useMemo(() => employees.filter((employee) => normalizeSearch(`${employee.fullName} ${employee.employmentType} ${employee.department} ${employee.position}`).includes(query)).slice(0, 50), [employees, query]);
   const usageByEmployee = useMemo(() => {
@@ -344,11 +331,9 @@ function EmployeeCombobox({ value, employees, usage = EMPTY_EMPLOYEE_USAGE, onCh
     const input = root.current;
     if (!input) return;
     const rect = input.getBoundingClientRect();
-    const menuHeight = Math.min(292, 46 + filtered.length * 52);
-    const spaceBelow = window.innerHeight - rect.bottom;
-    const top = spaceBelow >= Math.min(menuHeight, 190) ? rect.bottom + 5 : Math.max(8, rect.top - menuHeight - 5);
-    setPosition({ top, left: Math.max(8, Math.min(rect.left, window.innerWidth - Math.max(360, rect.width) - 8)), width: Math.max(360, rect.width) });
-  }, [filtered.length]);
+    const labels = filtered.map((employee) => `${employee.fullName} · ${employee.department} · ${employee.position}`);
+    setPosition(choiceMenuPosition(rect, { width: window.innerWidth, height: window.innerHeight }, choiceMenuWidth(input, labels, 360)));
+  }, [filtered]);
 
   function openMenu() {
     if (open) return;
@@ -363,12 +348,13 @@ function EmployeeCombobox({ value, employees, usage = EMPTY_EMPLOYEE_USAGE, onCh
       const target = event.target as Node;
       if (!root.current?.contains(target) && !menu.current?.contains(target)) setOpen(false);
     };
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
+    const reposition = (event: Event) => { if (!(event.target instanceof Node) || !menu.current?.contains(event.target)) updatePosition(); };
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
     document.addEventListener("pointerdown", close);
     return () => {
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
       document.removeEventListener("pointerdown", close);
     };
   }, [open, updatePosition]);
@@ -432,7 +418,7 @@ function EmployeeCombobox({ value, employees, usage = EMPTY_EMPLOYEE_USAGE, onCh
       }}
     />
     <span className="ag-combobox-chevron" aria-hidden="true">⌄</span>
-    {open && position && typeof document !== "undefined" && createPortal(<div id="employee-search-options" ref={menu} className="ag-employee-menu" role="listbox" style={position}>
+    {open && position && typeof document !== "undefined" && createPortal(<div id="employee-search-options" ref={menu} className="ag-employee-menu" role="listbox" data-placement={position.placement} style={{ top: position.top, bottom: position.bottom, left: position.left, width: position.width, maxHeight: position.maxHeight }}>
       <div className="ag-employee-menu-caption">{query ? `Найдено: ${filtered.length}` : "Начните вводить имя или выберите сотрудника"}</div>
       <div className="ag-employee-options">
         {filtered.map((employee, index) => {
@@ -627,8 +613,8 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     }
     if (field === "shift") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.shiftId} options={props.shifts} placeholder="Смена" onChange={(shiftId) => patchAndClose({ shiftId })} /></div>;
     if (field === "zone") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.zoneId} options={props.zones} placeholder="Зона" onChange={(zoneId) => patchAndClose({ zoneId })} /></div>;
-    if (field === "mainWork") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.mainWorkTypeId} options={props.mainWorkTypes} placeholder="Работа" onChange={(mainWorkTypeId) => patchAndClose({ mainWorkTypeId })} /></div>;
-    if (field === "subwork") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.subworkTypeId} options={props.subworkTypes} placeholder="Вид подработ" onChange={(subworkTypeId) => patchAndClose({ subworkTypeId })} /></div>;
+    if (field === "mainWork") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.mainWorkTypeId} options={props.mainWorkTypes} placeholder="Вид работы" onChange={(mainWorkTypeId) => patchAndClose({ mainWorkTypeId })} /></div>;
+    if (field === "subwork") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.subworkTypeId} disabled={!draft.mainWorkTypeId} options={subworkOptions(props.subworkTypes, draft.mainWorkTypeId)} placeholder={draft.mainWorkTypeId ? "Подвид работы" : "Сначала выберите вид работы"} onChange={(subworkTypeId) => patchAndClose({ subworkTypeId })} /></div>;
     if (field === "master") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.masterId} options={props.masters} placeholder="Мастер" onChange={(masterId) => patchAndClose({ masterId })} /></div>;
     if (field === "hours") return <div className="ag-cell-editor-host"><CustomSelect className="ag-custom-select" value={draft.hours} ariaLabel="Часы" autoOpen onChange={(hours) => patchAndClose({ hours })} options={[{ value: "", label: "—" }, ...Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1), label: String(index + 1) }))]} /></div>;
     if (field === "note") return <div className="ag-cell-editor-host"><GridTextEditor value={draft.note} placeholder="Необязательно" onBlur={() => setActiveEditor(null)} onEnter={() => { setActiveEditor(null); setSpreadsheetFocusRequestKey((key) => key + 1); }} onChange={(note) => patchRow(row, { note })} /></div>;
@@ -658,7 +644,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     if (values.shift !== undefined) { const id = pasteOption(values.shift, current.shifts, "Смена"); if (id === null) return false; changes.shiftId = id; }
     if (values.zone !== undefined) { const id = pasteOption(values.zone, current.zones, "Зона"); if (id === null) return false; changes.zoneId = id; }
     if (values.mainWork !== undefined) { const id = pasteOption(values.mainWork, current.mainWorkTypes, "Работа"); if (id === null) return false; changes.mainWorkTypeId = id; }
-    if (values.subwork !== undefined) { const id = pasteOption(values.subwork, current.subworkTypes, "Вид подработ"); if (id === null) return false; changes.subworkTypeId = id; }
+    if (values.subwork !== undefined) { const id = pasteOption(values.subwork, subworkOptions(current.subworkTypes, changes.mainWorkTypeId ?? row.draft?.mainWorkTypeId ?? row.entry?.mainWorkTypeId), "Подвид работы"); if (id === null) return false; changes.subworkTypeId = id; }
     if (values.master !== undefined) { const id = pasteOption(values.master, current.masters, "Мастер"); if (id === null) return false; changes.masterId = id; }
     if (values.hours !== undefined) {
       const hours = values.hours.trim();
@@ -685,8 +671,8 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     { field: "position", headerName: "Должность", minWidth: 162, flex: 1.8, headerComponentParams: pinnableHeader, valueGetter: valueGetter("position"), cellRenderer: editableRenderer },
     { field: "shift", headerName: "Смена", minWidth: 129, flex: .8, headerComponentParams: pinnableHeader, valueGetter: valueGetter("shift"), cellRenderer: editableRenderer },
     { field: "zone", headerName: "Зона", minWidth: 121, flex: 1.1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("zone"), cellRenderer: editableRenderer },
-    { field: "mainWork", headerName: "Работа", minWidth: 137, flex: 1.8, headerComponentParams: pinnableHeader, valueGetter: valueGetter("mainWork"), cellRenderer: editableRenderer },
-    { field: "subwork", headerName: "Вид подработ", minWidth: 193, flex: 1.7, headerComponentParams: pinnableHeader, valueGetter: valueGetter("subwork"), cellRenderer: editableRenderer },
+    { field: "mainWork", headerName: "Вид работы", minWidth: 137, flex: 1.8, headerComponentParams: pinnableHeader, valueGetter: valueGetter("mainWork"), cellRenderer: editableRenderer },
+    { field: "subwork", headerName: "Подвид работы", minWidth: 193, flex: 1.7, headerComponentParams: pinnableHeader, valueGetter: valueGetter("subwork"), cellRenderer: editableRenderer },
     { field: "master", headerName: "Мастер", minWidth: 137, flex: 1.5, headerComponentParams: pinnableHeader, valueGetter: valueGetter("master"), cellRenderer: editableRenderer },
     { field: "hours", headerName: "Часы", minWidth: 121, flex: .7, headerComponentParams: pinnableHeader, filter: personnelColumnFilter, filterParams: { ...personnelFilterParams, kind: "number" }, valueGetter: valueGetter("hours"), cellRenderer: editableRenderer },
     { field: "note", headerName: "Примечание", minWidth: 169, flex: 1.3, headerComponentParams: pinnableHeader, valueGetter: valueGetter("note"), cellRenderer: editableRenderer },
@@ -718,13 +704,13 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     const canEditRow = entryCanOpen && current.canUpdate;
     const canRemoveDraft = Boolean(row.kind === "draft" && row.draft && current.canCreate);
     const canDeleteEntry = Boolean(row.kind === "entry" && row.entry && current.canDelete && (current.rosterMode || current.draftRows.length === 0 && current.editing.length === 0));
-    const actions: TableContextMenuAction[] = [{
+    const actions: TableContextMenuAction[] = current.canUpdate ? [{
       label: "Редактировать строку",
       disabled: !canEditRow,
       title: canEditRow ? undefined : "Нет права редактирования или строка уже открыта",
       onSelect: () => { if (row.entry) current.onEdit(row.entry); },
-    }];
-    if (row.kind === "draft") actions.push({
+    }] : [];
+    if (row.kind === "draft" && current.canCreate) actions.push({
       label: "Убрать новую строку",
       danger: true,
       separatorBefore: true,
@@ -732,7 +718,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
       title: canRemoveDraft ? undefined : "Нет права удаления новой строки",
       onSelect: () => { if (row.draft) current.onRemoveDraft(row.draft.key); },
     });
-    else actions.push({
+    else if (row.kind === "entry" && current.canDelete) actions.push({
       label: "Убрать из отчёта",
       danger: true,
       separatorBefore: true,
@@ -743,7 +729,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
     return actions;
   }, [propsRef]);
 
-  return <div className="ag-grid-shell ag-placement-grid"><LocalizedGrid<PlacementRow>
+  return <div className="ag-grid-shell ag-placement-grid"><LocalizedGrid<PlacementRow> rowOrderBlocked={Boolean(activeEditor)}
     theme={gridTheme}
     rowData={rowData}
     columnDefs={columns}
@@ -759,7 +745,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
       "carried-row": (params) => Boolean(params.data?.draft?.carriedFromPreviousDay),
       "timesheet-conflict-row": (params) => Boolean(params.data?.timesheetConflict),
     }}
-    rowSelection={{ mode: "multiRow", checkboxes: (params) => {
+    rowSelection={!(props.canCreate || props.canUpdate || props.canDelete) ? undefined : { mode: "multiRow", checkboxes: (params) => {
       const current = propsRef.current;
       const allowed = params.data?.kind === "draft" ? current.canCreate : Boolean(params.data?.entry) && (current.canUpdate || current.canDelete);
       return Boolean(allowed && (current.rosterMode || current.draftRows.length === 0 && current.editing.length === 0 && params.data?.kind === "entry"));
@@ -894,6 +880,7 @@ type EquipmentGridProps = {
   onEdit: (entry: GridEquipmentEntry, changes?: Partial<GridEquipmentDraft>) => void;
   onPatchDraft: (key: string, changes: Partial<GridEquipmentDraft>) => void;
   onSelectionChange: (ids: number[]) => void;
+  onVisibleIdsChange?: (ids: number[]) => void;
   onDraftSelectionChange: (keys: string[]) => void;
   onValidationError: (message: string) => void;
 };
@@ -915,7 +902,7 @@ function EquipmentCombobox({ value, units, blockedEquipment = EMPTY_BLOCKED_EQUI
   const [inputValue, setInputValue] = useState(selectedTitle);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [position, setPosition] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [position, setPosition] = useState<ChoiceMenuPosition | null>(null);
   const query = normalizeSearch(inputValue);
   const filtered = useMemo(() => units.filter((unit) => normalizeSearch([
     equipmentGridTitle(unit),
@@ -941,12 +928,9 @@ function EquipmentCombobox({ value, units, blockedEquipment = EMPTY_BLOCKED_EQUI
     const input = root.current;
     if (!input) return;
     const rect = input.getBoundingClientRect();
-    const menuHeight = Math.min(292, 46 + filtered.length * 52);
-    const spaceBelow = window.innerHeight - rect.bottom;
-    const width = Math.min(Math.max(420, rect.width), window.innerWidth - 16);
-    const top = spaceBelow >= Math.min(menuHeight, 190) ? rect.bottom + 5 : Math.max(8, rect.top - menuHeight - 5);
-    setPosition({ top, left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)), width });
-  }, [filtered.length]);
+    const labels = filtered.map((unit) => `${equipmentGridTitle(unit)} · ${unit.organization} · ${unit.note}`);
+    setPosition(choiceMenuPosition(rect, { width: window.innerWidth, height: window.innerHeight }, choiceMenuWidth(input, labels, 420)));
+  }, [filtered]);
 
   function openMenu() {
     if (open) return;
@@ -961,12 +945,13 @@ function EquipmentCombobox({ value, units, blockedEquipment = EMPTY_BLOCKED_EQUI
       const target = event.target as Node;
       if (!root.current?.contains(target) && !menu.current?.contains(target)) setOpen(false);
     };
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
+    const reposition = (event: Event) => { if (!(event.target instanceof Node) || !menu.current?.contains(event.target)) updatePosition(); };
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
     document.addEventListener("pointerdown", close);
     return () => {
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
       document.removeEventListener("pointerdown", close);
     };
   }, [open, updatePosition]);
@@ -1018,7 +1003,7 @@ function EquipmentCombobox({ value, units, blockedEquipment = EMPTY_BLOCKED_EQUI
       }}
     />
     <span className="ag-combobox-chevron" aria-hidden="true">⌄</span>
-    {open && position && typeof document !== "undefined" && createPortal(<div id={listboxId} ref={menu} className="ag-employee-menu ag-equipment-menu" role="listbox" style={position}>
+    {open && position && typeof document !== "undefined" && createPortal(<div id={listboxId} ref={menu} className="ag-employee-menu ag-equipment-menu" role="listbox" data-placement={position.placement} style={{ top: position.top, bottom: position.bottom, left: position.left, width: position.width, maxHeight: position.maxHeight }}>
       <div className="ag-employee-menu-caption">{query ? `Найдено: ${filtered.length}` : "Начните вводить название или выберите технику"}</div>
       <div className="ag-employee-options">
         {filtered.map((unit, index) => {
@@ -1144,8 +1129,8 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
     if (field === "equipment") return <div className="ag-cell-editor-host"><EquipmentCombobox key={draft.equipmentId || "new"} autoOpen value={draft.equipmentId} units={propsRef.current.units} blockedEquipment={blockedEquipment} onChange={(equipmentId) => patchAndClose({ equipmentId })} /></div>;
     if (field === "shift") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.shiftId} options={propsRef.current.shifts} placeholder="Смена" onChange={(shiftId) => patchAndClose({ shiftId })} /></div>;
     if (field === "zone") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.zoneId} options={propsRef.current.zones} placeholder="Зона" onChange={(zoneId) => patchAndClose({ zoneId })} /></div>;
-    if (field === "mainWork") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.mainWorkTypeId} options={propsRef.current.mainWorkTypes} placeholder="Работа" onChange={(mainWorkTypeId) => patchAndClose({ mainWorkTypeId })} /></div>;
-    if (field === "subwork") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.subworkTypeId} options={propsRef.current.subworkTypes} placeholder="Вид подработ" onChange={(subworkTypeId) => patchAndClose({ subworkTypeId })} /></div>;
+    if (field === "mainWork") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.mainWorkTypeId} options={propsRef.current.mainWorkTypes} placeholder="Вид работы" onChange={(mainWorkTypeId) => patchAndClose({ mainWorkTypeId })} /></div>;
+    if (field === "subwork") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.subworkTypeId} disabled={!draft.mainWorkTypeId} options={subworkOptions(propsRef.current.subworkTypes, draft.mainWorkTypeId)} placeholder={draft.mainWorkTypeId ? "Подвид работы" : "Сначала выберите вид работы"} onChange={(subworkTypeId) => patchAndClose({ subworkTypeId })} /></div>;
     if (field === "hours") return <div className="ag-cell-editor-host"><CustomSelect className="ag-custom-select" value={draft.hours} ariaLabel="Часы" autoOpen onChange={(hours) => patchAndClose({ hours })} options={Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1), label: String(index + 1) }))} /></div>;
     if (field === "note") return <div className="ag-cell-editor-host"><GridTextEditor value={draft.note} placeholder="Необязательно" onBlur={() => setActiveEditor(null)} onEnter={() => { setActiveEditor(null); setSpreadsheetFocusRequestKey((key) => key + 1); }} onChange={(note) => patchRow(row, { note })} /></div>;
     return <span className="ag-autofill-value" title={String(params.value ?? "")}>{params.value || "—"}</span>;
@@ -1172,7 +1157,7 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
     if (values.shift !== undefined) { const id = pasteOption(values.shift, current.shifts, "Смена"); if (id === null) return false; changes.shiftId = id; }
     if (values.zone !== undefined) { const id = pasteOption(values.zone, current.zones, "Зона"); if (id === null) return false; changes.zoneId = id; }
     if (values.mainWork !== undefined) { const id = pasteOption(values.mainWork, current.mainWorkTypes, "Работа"); if (id === null) return false; changes.mainWorkTypeId = id; }
-    if (values.subwork !== undefined) { const id = pasteOption(values.subwork, current.subworkTypes, "Вид подработ"); if (id === null) return false; changes.subworkTypeId = id; }
+    if (values.subwork !== undefined) { const id = pasteOption(values.subwork, subworkOptions(current.subworkTypes, changes.mainWorkTypeId ?? row.draft?.mainWorkTypeId ?? row.entry?.mainWorkTypeId), "Подвид работы"); if (id === null) return false; changes.subworkTypeId = id; }
     if (values.note !== undefined) changes.note = values.note;
     if (values.hours !== undefined) {
       const hours = values.hours.trim();
@@ -1193,12 +1178,17 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
       ...(props.showResponsibleUser ? [{ field: "responsibleUserName", headerName: "Ответственный прораб", minWidth: 180, flex: 1.2, headerComponentParams: pinnableHeader, valueGetter: valueGetter("responsibleUserName"), cellRenderer: editableRenderer } satisfies ColDef<EquipmentTableRow>] : []),
       { field: "shift", headerName: "Смена", minWidth: 115, flex: .75, headerComponentParams: pinnableHeader, valueGetter: valueGetter("shift"), cellRenderer: editableRenderer },
       { field: "zone", headerName: "Зона", minWidth: 140, flex: 1.1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("zone"), cellRenderer: editableRenderer },
-      { field: "mainWork", headerName: "Работа", minWidth: 180, flex: 1.5, headerComponentParams: pinnableHeader, valueGetter: valueGetter("mainWork"), cellRenderer: editableRenderer },
-      { field: "subwork", headerName: "Вид подработ", minWidth: 190, flex: 1.5, headerComponentParams: pinnableHeader, valueGetter: valueGetter("subwork"), cellRenderer: editableRenderer },
+      { field: "mainWork", headerName: "Вид работы", minWidth: 180, flex: 1.5, headerComponentParams: pinnableHeader, valueGetter: valueGetter("mainWork"), cellRenderer: editableRenderer },
+      { field: "subwork", headerName: "Подвид работы", minWidth: 190, flex: 1.5, headerComponentParams: pinnableHeader, valueGetter: valueGetter("subwork"), cellRenderer: editableRenderer },
       { field: "note", headerName: "Примечание", minWidth: 170, flex: 1.25, headerComponentParams: pinnableHeader, valueGetter: valueGetter("note"), cellRenderer: editableRenderer },
       { field: "hours", headerName: "Часы", minWidth: 105, flex: .65, headerComponentParams: pinnableHeader, filter: personnelColumnFilter, filterParams: { ...personnelFilterParams, kind: "number" }, valueGetter: valueGetter("hours"), cellRenderer: editableRenderer },
     ];
   }, [editableRenderer, props.showResponsibleUser, valueGetter]);
+  const reportVisibleRows = useCallback((api: GridApi<EquipmentTableRow>) => {
+    const ids: number[] = [];
+    api.forEachNodeAfterFilterAndSort((node) => { if (node.data?.entry?.id) ids.push(node.data.entry.id); });
+    propsRef.current.onVisibleIdsChange?.(ids);
+  }, [propsRef]);
   const defaultColDef = useMemo<ColDef<EquipmentTableRow>>(() => ({
     filter: personnelColumnFilter,
     filterParams: personnelFilterParams,
@@ -1210,7 +1200,7 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
     suppressMovable: true,
   }), []);
 
-  return <div className="ag-grid-shell ag-placement-grid ag-equipment-grid"><LocalizedGrid<EquipmentTableRow>
+  return <div className="ag-grid-shell ag-placement-grid ag-equipment-grid"><LocalizedGrid<EquipmentTableRow> rowOrderBlocked={Boolean(activeEditor)}
     theme={gridTheme}
     rowData={rowData}
     columnDefs={columns}
@@ -1222,7 +1212,7 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
     loadingOverlayComponent={() => <span className="ag-overlay-message">Загружаем отчёт техники…</span>}
     noRowsOverlayComponent={() => <span className="ag-overlay-message">За выбранный день записей нет</span>}
     rowClassRules={{ "editable-row": (params) => params.data?.kind === "edit" || params.data?.kind === "draft", "carried-row": (params) => Boolean(params.data?.draft?.carriedFromPreviousDay), "equipment-downtime-row": (params) => normalizeSearch(String(valueGetter("subwork")(params))).includes("простой"), "timesheet-conflict-row": (params) => Boolean(params.data?.timesheetConflict) }}
-    rowSelection={{ mode: "multiRow", checkboxes: (params) => {
+    rowSelection={!(props.canCreate || props.canUpdate || props.canDelete) ? undefined : { mode: "multiRow", checkboxes: (params) => {
       const current = propsRef.current;
       return Boolean(current.drafts.length
         ? current.canCreate && params.data?.kind === "draft"
@@ -1234,9 +1224,12 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
         : (current.canUpdate || current.canDelete) && node.data?.kind === "entry");
     } }}
     selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }}
-    onGridReady={(event: GridReadyEvent<EquipmentTableRow>) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }}
+    onGridReady={(event: GridReadyEvent<EquipmentTableRow>) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }}
     onGridSizeChanged={(event) => event.api.sizeColumnsToFit()}
     onColumnResized={keepGridFilled}
+    onModelUpdated={(event) => reportVisibleRows(event.api)}
+    onFilterChanged={(event) => reportVisibleRows(event.api)}
+    onSortChanged={(event) => reportVisibleRows(event.api)}
     onSelectionChanged={(event) => {
       const selected = event.api.getSelectedRows();
       propsRef.current.onSelectionChange(selected.flatMap((row) => row.entry?.id ? [row.entry.id] : []));
@@ -1430,7 +1423,7 @@ export function EquipmentRegistryAgGrid(props: EquipmentRegistryGridProps) {
 
   return <div className="employee-performance-frame">
     <div className="employee-performance-main">
-      <div className="ag-grid-shell ag-admin-grid ag-employee-grid ag-equipment-registry-grid"><LocalizedGrid<EquipmentRegistryTableRow>
+      <div className="ag-grid-shell ag-admin-grid ag-employee-grid ag-equipment-registry-grid"><LocalizedGrid<EquipmentRegistryTableRow> rowOrderBlocked={Boolean(activeEditor)}
         theme={gridTheme}
         rowData={rowData}
         columnDefs={columns}
@@ -1443,7 +1436,7 @@ export function EquipmentRegistryAgGrid(props: EquipmentRegistryGridProps) {
         loadingOverlayComponent={() => <span className="ag-overlay-message">Загружаем реестр техники…</span>}
         noRowsOverlayComponent={() => <span className="ag-overlay-message">Реестр техники пока пуст</span>}
         rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }}
-        rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.canSelect && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.canSelect && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.canSelect && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }}
+        rowSelection={!props.canSelect ? undefined : { mode: "multiRow", checkboxes: (params) => propsRef.current.canSelect && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.canSelect && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.canSelect && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }}
         selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }}
         onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }}
         onGridSizeChanged={(event) => event.api.sizeColumnsToFit()}
@@ -1491,6 +1484,7 @@ type ProjectEquipmentGridProps = {
   canSelect: boolean;
   onPatchDraft: (key: string, changes: Partial<GridProjectEquipmentDraft>) => void;
   onSelectionChange: (ids: number[]) => void;
+  onVisibleIdsChange?: (ids: number[]) => void;
 };
 
 export function ProjectEquipmentAgGrid(props: ProjectEquipmentGridProps) {
@@ -1557,9 +1551,14 @@ export function ProjectEquipmentAgGrid(props: ProjectEquipmentGridProps) {
     { field: "organization", headerName: "Организация", minWidth: 180, flex: 1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("organization"), cellRenderer },
     { field: "note", headerName: "Примечание", minWidth: 210, flex: 1.2, headerComponentParams: pinnableHeader, valueGetter: valueGetter("note"), cellRenderer },
   ], [cellRenderer, valueGetter]);
+  const reportVisibleRows = useCallback((api: GridApi<ProjectEquipmentTableRow>) => {
+    const ids: number[] = [];
+    api.forEachNodeAfterFilterAndSort((node) => { if (node.data?.unit?.id) ids.push(node.data.unit.id); });
+    propsRef.current.onVisibleIdsChange?.(ids);
+  }, [propsRef]);
   const defaultColDef = useMemo<ColDef<ProjectEquipmentTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
 
-  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid ag-project-equipment-grid"><LocalizedGrid<ProjectEquipmentTableRow>
+  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid ag-project-equipment-grid"><LocalizedGrid<ProjectEquipmentTableRow> rowOrderBlocked={Boolean(activeEditor)}
     theme={gridTheme}
     rowData={rowData}
     columnDefs={columns}
@@ -1571,11 +1570,14 @@ export function ProjectEquipmentAgGrid(props: ProjectEquipmentGridProps) {
     loadingOverlayComponent={() => <span className="ag-overlay-message">Загружаем технику проекта…</span>}
     noRowsOverlayComponent={() => <span className="ag-overlay-message">В проекте пока нет техники</span>}
     rowClassRules={{ "editable-row": (params) => params.data?.kind === "draft" }}
-    rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.canSelect && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.canSelect && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.canSelect && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }}
+    rowSelection={!props.canSelect ? undefined : { mode: "multiRow", checkboxes: (params) => propsRef.current.canSelect && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.canSelect && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.canSelect && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }}
     selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }}
-    onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }}
+    onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }}
     onGridSizeChanged={(event) => event.api.sizeColumnsToFit()}
     onColumnResized={keepGridFilled}
+    onModelUpdated={(event) => reportVisibleRows(event.api)}
+    onFilterChanged={(event) => reportVisibleRows(event.api)}
+    onSortChanged={(event) => reportVisibleRows(event.api)}
     onSelectionChanged={(event) => { if (propsRef.current.canSelect) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.unit?.id ? [row.unit.id] : [])); }}
     onCellMouseDown={(event) => { if (!activeEditor || isInteractiveGridTarget(event.event)) return; if (event.data?.rowKey !== activeEditor || event.column.getColId() !== "equipmentType") setActiveEditor(null); }}
     onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }}
@@ -1759,14 +1761,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     return <div className="bitrix-grid-check" title={details ?? label}><span className={`bitrix-grid-status ${className}`}>{label}</span>{details && <span className="bitrix-grid-details">{details}</span>}</div>;
   }, []);
 
-  const canReorderRows = useCallback((api: GridApi<EmployeeTableRow>) => !propsRef.current.readOnly
-    && propsRef.current.drafts.length === 0
-    && Object.keys(api.getFilterModel()).length === 0
-    && api.getColumnState().every((state) => !state.sort)
-    && api.getDisplayedRowCount() === propsRef.current.rows.length, [propsRef]);
-
   const columns = useMemo<ColDef<EmployeeTableRow>[]>(() => [
-    { colId: "rowOrder", headerName: "↕", headerTooltip: "Перетащите строку, чтобы изменить постоянный порядок сотрудников", width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", suppressMovable: true, suppressSizeToFit: true, sortable: false, filter: false, cellClass: "employee-row-drag-column", rowDrag: (params) => Boolean(params.data?.kind === "entry" && canReorderRows(params.api)), tooltipValueGetter: (params) => canReorderRows(params.api) ? "Перетащите сотрудника в нужное место" : "Для переноса строк завершите редактирование и сбросьте фильтры и сортировку" },
     { colId: "number", headerName: "№", width: 66, minWidth: 54, pinned: "left", lockPinned: true, lockPosition: "left", suppressMovable: true, suppressSizeToFit: true, sortable: false, filter: false, valueGetter: (params) => typeof params.node?.rowIndex === "number" ? params.node.rowIndex + 1 : "" },
     { field: "fullName", headerName: "ФИО", minWidth: 230, flex: 1.4, headerComponentParams: pinnableHeader, valueGetter: valueGetter("fullName"), cellRenderer: editableRenderer },
     { field: "employmentType", headerName: "Тип", minWidth: 120, flex: .55, headerComponentParams: pinnableHeader, valueGetter: valueGetter("employmentType"), cellRenderer: editableRenderer },
@@ -1775,7 +1770,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     { field: "siteName", headerName: "Проект", minWidth: 190, flex: 1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("siteName"), cellRenderer: editableRenderer },
     { colId: "bitrixCheckLabel", headerName: "Проверка Б24 / расхождение", minWidth: 380, flex: 1.8, headerComponentParams: pinnableHeader, valueGetter: valueGetter("bitrixCheckLabel"), cellRenderer: bitrixCheckRenderer },
     ...(showEmployeeRowCancelActions && props.drafts.length ? [{ colId: "actions", headerName: "", width: 52, minWidth: 52, maxWidth: 52, pinned: "right" as const, lockPinned: true, lockPosition: "right" as const, suppressMovable: true, suppressSizeToFit: true, sortable: false, filter: false, floatingFilter: false, cellClass: "actions-cell", cellRenderer: editActionRenderer }] : []),
-  ], [bitrixCheckRenderer, canReorderRows, editActionRenderer, editableRenderer, props.drafts.length, valueGetter]);
+  ], [bitrixCheckRenderer, editActionRenderer, editableRenderer, props.drafts.length, valueGetter]);
 
   const reportVisibleRows = useCallback((api: GridApi<EmployeeTableRow>) => {
     const ids: number[] = [];
@@ -1786,7 +1781,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
   const defaultColDef = useMemo<ColDef<EmployeeTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
   return <div className="employee-performance-frame">
     <div className="employee-performance-main">
-      <div className="ag-grid-shell ag-admin-grid ag-employee-grid"><LocalizedGrid<EmployeeTableRow>
+      <div className="ag-grid-shell ag-admin-grid ag-employee-grid"><LocalizedGrid<EmployeeTableRow> rowOrderBlocked={Boolean(activeEditor)}
         theme={gridTheme}
         rowData={rowData}
         columnDefs={columns}
@@ -1795,27 +1790,13 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
         rowHeight={TABLE_ROW_HEIGHT}
         headerHeight={TABLE_HEADER_HEIGHT}
         animateRows
-        rowDragManaged
-        onRowDragEnd={(event) => {
-          if (!canReorderRows(event.api)) return;
-          const employeeIds: number[] = [];
-          event.api.forEachNode((node) => { if (node.data?.kind === "entry" && node.data.employee) employeeIds.push(node.data.employee.id); });
-          if (employeeIds.length !== propsRef.current.rows.length) {
-            propsRef.current.onValidationError("Не удалось определить полный порядок строк. Обновите таблицу и повторите перенос.");
-            return;
-          }
-          event.api.refreshCells({ columns: ["number"], force: true });
-          const currentIds = propsRef.current.rows.map((employee) => employee.id);
-          if (employeeIds.every((id, index) => id === currentIds[index])) return;
-          void propsRef.current.onReorder(employeeIds);
-        }}
         rowClassRules={{
           "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))),
           "bitrix-mismatch-row": (params) => params.data?.kind === "entry" && params.data.employee?.bitrixCheckStatus === "mismatch" && !params.data.employee.bitrixCheckAcknowledged,
           "bitrix-missing-row": (params) => params.data?.kind === "entry" && params.data.employee?.bitrixCheckStatus === "missing_in_bitrix" && !params.data.employee.bitrixCheckAcknowledged,
           "bitrix-dismissed-row": (params) => params.data?.kind === "entry" && params.data.employee?.bitrixCheckStatus === "dismissed_in_bitrix" && !params.data.employee.bitrixCheckAcknowledged,
         }}
-        rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }}
+        rowSelection={props.selectionDisabled ? undefined : { mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }}
         selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }}
         onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }}
         onGridSizeChanged={(event) => event.api.sizeColumnsToFit()}
@@ -1855,6 +1836,7 @@ type ProjectEmployeeGridProps = {
   selectionDisabled?: boolean;
   onPatchDraft: (key: string, changes: Partial<GridProjectEmployeeDraft>) => void;
   onSelectionChange: (ids: number[]) => void;
+  onVisibleIdsChange?: (ids: number[]) => void;
 };
 
 export function ProjectEmployeeAgGrid(props: ProjectEmployeeGridProps) {
@@ -1929,8 +1911,16 @@ export function ProjectEmployeeAgGrid(props: ProjectEmployeeGridProps) {
     { field: "department", headerName: "Отдел", minWidth: 129, flex: .75, headerComponentParams: pinnableHeader, valueGetter: valueGetter("department"), cellRenderer },
     { field: "position", headerName: "Должность", minWidth: 220, flex: 1.35, headerComponentParams: pinnableHeader, valueGetter: valueGetter("position"), cellRenderer },
   ], [cellRenderer, valueGetter]);
+  const reportVisibleRows = useCallback((api: GridApi<ProjectEmployeeTableRow>) => {
+    const ids: number[] = [];
+    api.forEachNodeAfterFilterAndSort((node) => { if (node.data?.employee?.id) ids.push(node.data.employee.id); });
+    propsRef.current.onVisibleIdsChange?.(ids);
+  }, [propsRef]);
   const defaultColDef = useMemo<ColDef<ProjectEmployeeTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
-  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<ProjectEmployeeTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => params.data?.kind === "draft" }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.employee?.id ? [row.employee.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || isInteractiveGridTarget(event.event)) return; if (event.data?.rowKey !== activeEditor || event.column.getColId() !== "fullName") setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} suppressCellFocus /></div>;
+  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<ProjectEmployeeTableRow> rowOrderBlocked={Boolean(activeEditor)} theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => params.data?.kind === "draft" }} rowSelection={props.selectionDisabled ? undefined : { mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled}
+    onModelUpdated={(event) => reportVisibleRows(event.api)}
+    onFilterChanged={(event) => reportVisibleRows(event.api)}
+    onSortChanged={(event) => reportVisibleRows(event.api)} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.employee?.id ? [row.employee.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || isInteractiveGridTarget(event.event)) return; if (event.data?.rowKey !== activeEditor || event.column.getColId() !== "fullName") setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} suppressCellFocus /></div>;
 }
 
 type DirectoryTableRow = { rowKey: string; kind: "entry" | "edit" | "draft"; number: number; item?: GridOption; draft?: GridDirectoryDraft; pending?: boolean } & GridDisplayFields<"name" | "employmentType" | "department" | "position">;
@@ -1945,6 +1935,7 @@ type DirectoryGridProps = {
   selectionDisabled?: boolean;
   onEdit: (item: GridOption) => void;
   onSelectionChange: (ids: number[]) => void;
+  onVisibleIdsChange?: (ids: number[]) => void;
   onPatchDraft: (key: string, changes: Partial<GridDirectoryDraft>) => void;
 };
 
@@ -2046,8 +2037,16 @@ export function DirectoryAgGrid(props: DirectoryGridProps) {
     ];
     return [numberColumn, { field: "name", headerName: props.title, minWidth: 260, flex: 1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("name"), cellRenderer: editableRenderer }];
   }, [editableRenderer, props.selectEmployee, props.title, valueGetter]);
+  const reportVisibleRows = useCallback((api: GridApi<DirectoryTableRow>) => {
+    const ids: number[] = [];
+    api.forEachNodeAfterFilterAndSort((node) => { if (node.data?.item?.id) ids.push(node.data.item.id); });
+    propsRef.current.onVisibleIdsChange?.(ids);
+  }, [propsRef]);
   const defaultColDef = useMemo<ColDef<DirectoryTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
-  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<DirectoryTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => params.data?.kind !== "entry" }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.item?.id ? [row.item.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || isInteractiveGridTarget(event.event)) return; if (event.data?.rowKey !== activeEditor || event.column.getColId() !== "name") setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} suppressCellFocus /></div>;
+  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<DirectoryTableRow> rowOrderBlocked={Boolean(activeEditor)} theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => params.data?.kind !== "entry" }} rowSelection={props.selectionDisabled ? undefined : { mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled}
+    onModelUpdated={(event) => reportVisibleRows(event.api)}
+    onFilterChanged={(event) => reportVisibleRows(event.api)}
+    onSortChanged={(event) => reportVisibleRows(event.api)} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.item?.id ? [row.item.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || isInteractiveGridTarget(event.event)) return; if (event.data?.rowKey !== activeEditor || event.column.getColId() !== "name") setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} suppressCellFocus /></div>;
 }
 
 type PositionGridProps = {
@@ -2146,11 +2145,12 @@ export function PositionAgGrid(props: PositionGridProps) {
   ], [editableRenderer, valueGetter]);
   const reportVisibleRows = useCallback((api: GridApi<PositionTableRow>) => { const ids: number[] = []; api.forEachNodeAfterFilterAndSort((node) => { if (node.data?.record?.id) ids.push(node.data.record.id); }); props.onVisibleIdsChange(ids); }, [props]);
   const defaultColDef = useMemo<ColDef<PositionTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
-  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<PositionTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }} rowSelection={{ mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onModelUpdated={(event) => reportVisibleRows(event.api)} onFilterChanged={(event) => reportVisibleRows(event.api)} onSortChanged={(event) => reportVisibleRows(event.api)} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.record?.id ? [row.record.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return; const rowKey = event.data?.rowKey; const field = event.column.getColDef().field; if (rowKey !== activeEditor.rowKey || field !== activeEditor.field) setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} spreadsheetSelectionResetKey={`${draftStructureKey}:${props.fullRowEditIds.join("|")}`} suppressCellFocus /></div>;
+  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<PositionTableRow> rowOrderBlocked={Boolean(activeEditor)} theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }} rowSelection={props.selectionDisabled ? undefined : { mode: "multiRow", checkboxes: (params) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: !props.selectionDisabled && props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => !propsRef.current.selectionDisabled && propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onModelUpdated={(event) => reportVisibleRows(event.api)} onFilterChanged={(event) => reportVisibleRows(event.api)} onSortChanged={(event) => reportVisibleRows(event.api)} onSelectionChanged={(event) => { if (!propsRef.current.selectionDisabled) propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.record?.id ? [row.record.id] : [])); }} onCellMouseDown={(event) => { if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return; const rowKey = event.data?.rowKey; const field = event.column.getColDef().field; if (rowKey !== activeEditor.rowKey || field !== activeEditor.field) setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} spreadsheetSelectionResetKey={`${draftStructureKey}:${props.fullRowEditIds.join("|")}`} suppressCellFocus /></div>;
 }
 
 type UserTableRow = { rowKey: string; kind: "entry" | "edit" | "draft"; number: number; user?: GridUser; draft?: GridUserDraft } & GridDisplayFields<"fullName" | "email" | "status" | "role" | "site">;
-type UserGridProps = { rows: GridUser[]; drafts: GridUserDraft[]; sites: GridOption[]; pendingDeletes: number[]; fullRowEditIds: number[]; onEdit: (user: GridUser, changes?: Partial<GridUserDraft>) => void; onSelectionChange: (ids: number[]) => void; onPatchDraft: (key: string, changes: Partial<GridUserDraft>) => void };
+type UserGridProps = { rows: GridUser[]; drafts: GridUserDraft[]; sites: GridOption[]; pendingDeletes: number[]; fullRowEditIds: number[]; onEdit: (user: GridUser, changes?: Partial<GridUserDraft>) => void; onSelectionChange: (ids: number[]) => void;
+  onVisibleIdsChange?: (ids: number[]) => void; onPatchDraft: (key: string, changes: Partial<GridUserDraft>) => void };
 
 export function UserAgGrid(props: UserGridProps) {
   const propsRef = useLatestRef(props);
@@ -2247,12 +2247,21 @@ export function UserAgGrid(props: UserGridProps) {
     { field: "role", headerName: "Роль", minWidth: 121, flex: .65, headerComponentParams: pinnableHeader, valueGetter: valueGetter("role"), cellRenderer: editableRenderer },
     { field: "site", headerName: "Доступ к проекту", minWidth: 220, flex: 1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("site"), cellRenderer: editableRenderer },
   ], [editableRenderer, valueGetter]);
+  const reportVisibleRows = useCallback((api: GridApi<UserTableRow>) => {
+    const ids: number[] = [];
+    api.forEachNodeAfterFilterAndSort((node) => { if (node.data?.user?.id) ids.push(node.data.user.id); });
+    propsRef.current.onVisibleIdsChange?.(ids);
+  }, [propsRef]);
   const defaultColDef = useMemo<ColDef<UserTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
-  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<UserTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }} rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.user?.id ? [row.user.id] : []))} onCellMouseDown={(event) => { if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return; const rowKey = event.data?.rowKey; const field = event.column.getColDef().field; if (rowKey !== activeEditor.rowKey || field !== activeEditor.field) setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} spreadsheetSelectionResetKey={`${draftStructureKey}:${props.fullRowEditIds.join("|")}`} suppressCellFocus /></div>;
+  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<UserTableRow> rowOrderBlocked={Boolean(activeEditor)} theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }} rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled}
+    onModelUpdated={(event) => reportVisibleRows(event.api)}
+    onFilterChanged={(event) => reportVisibleRows(event.api)}
+    onSortChanged={(event) => reportVisibleRows(event.api)} onSelectionChanged={(event) => propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.user?.id ? [row.user.id] : []))} onCellMouseDown={(event) => { if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return; const rowKey = event.data?.rowKey; const field = event.column.getColDef().field; if (rowKey !== activeEditor.rowKey || field !== activeEditor.field) setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} spreadsheetSelectionResetKey={`${draftStructureKey}:${props.fullRowEditIds.join("|")}`} suppressCellFocus /></div>;
 }
 
 type SiteTableRow = { rowKey: string; kind: "entry" | "edit" | "draft"; number: number; site?: GridSite; draft?: GridSiteDraft } & GridDisplayFields<"name">;
-type ProjectGridProps = { rows: GridSite[]; drafts: GridSiteDraft[]; pendingDeletes: number[]; fullRowEditIds: number[]; onEdit: (site: GridSite, changes?: Partial<GridSiteDraft>) => void; onSelectionChange: (ids: number[]) => void; onPatchDraft: (key: string, changes: Partial<GridSiteDraft>) => void };
+type ProjectGridProps = { rows: GridSite[]; drafts: GridSiteDraft[]; pendingDeletes: number[]; fullRowEditIds: number[]; onEdit: (site: GridSite, changes?: Partial<GridSiteDraft>) => void; onSelectionChange: (ids: number[]) => void;
+  onVisibleIdsChange?: (ids: number[]) => void; onPatchDraft: (key: string, changes: Partial<GridSiteDraft>) => void };
 
 export function ProjectAgGrid(props: ProjectGridProps) {
   const propsRef = useLatestRef(props);
@@ -2316,6 +2325,14 @@ export function ProjectAgGrid(props: ProjectGridProps) {
     { colId: "number", headerName: "№", width: 66, minWidth: 54, pinned: "left", lockPinned: true, suppressMovable: true, suppressSizeToFit: true, sortable: false, filter: false, valueGetter: valueGetter("number") },
     { field: "name", headerName: "Проект", minWidth: 300, flex: 1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("name"), cellRenderer: editableRenderer },
   ], [editableRenderer, valueGetter]);
+  const reportVisibleRows = useCallback((api: GridApi<SiteTableRow>) => {
+    const ids: number[] = [];
+    api.forEachNodeAfterFilterAndSort((node) => { if (node.data?.site?.id) ids.push(node.data.site.id); });
+    propsRef.current.onVisibleIdsChange?.(ids);
+  }, [propsRef]);
   const defaultColDef = useMemo<ColDef<SiteTableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, floatingFilter: false, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), []);
-  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<SiteTableRow> theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }} rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled} onSelectionChanged={(event) => propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.site?.id ? [row.site.id] : []))} onCellMouseDown={(event) => { if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return; const rowKey = event.data?.rowKey; const field = event.column.getColDef().field; if (rowKey !== activeEditor.rowKey || field !== activeEditor.field) setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} spreadsheetSelectionResetKey={`${draftStructureKey}:${props.fullRowEditIds.join("|")}`} suppressCellFocus /></div>;
+  return <div className="ag-grid-shell ag-admin-grid ag-reference-grid"><LocalizedGrid<SiteTableRow> rowOrderBlocked={Boolean(activeEditor)} theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={(params) => params.data.rowKey} rowHeight={TABLE_ROW_HEIGHT} headerHeight={TABLE_HEADER_HEIGHT} rowClassRules={{ "editable-row": (params) => Boolean(params.data?.draft && (params.data.kind === "draft" || (params.data.draft.id && propsRef.current.fullRowEditIds.includes(params.data.draft.id)))) }} rowSelection={{ mode: "multiRow", checkboxes: (params) => propsRef.current.drafts.length === 0 && params.data?.kind === "entry", headerCheckbox: props.drafts.length === 0, selectAll: "filtered", enableClickSelection: false, isRowSelectable: (node) => propsRef.current.drafts.length === 0 && node.data?.kind === "entry" }} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true, suppressSizeToFit: true }} onGridReady={(event) => { gridApi.current = event.api; event.api.sizeColumnsToFit(); reportVisibleRows(event.api); }} onGridSizeChanged={(event) => event.api.sizeColumnsToFit()} onColumnResized={keepGridFilled}
+    onModelUpdated={(event) => reportVisibleRows(event.api)}
+    onFilterChanged={(event) => reportVisibleRows(event.api)}
+    onSortChanged={(event) => reportVisibleRows(event.api)} onSelectionChanged={(event) => propsRef.current.onSelectionChange(event.api.getSelectedRows().flatMap((row) => row.site?.id ? [row.site.id] : []))} onCellMouseDown={(event) => { if (!activeEditor || event.rowIndex === null || isInteractiveGridTarget(event.event)) return; const rowKey = event.data?.rowKey; const field = event.column.getColDef().field; if (rowKey !== activeEditor.rowKey || field !== activeEditor.field) setActiveEditor(null); }} onCellDoubleClicked={(event) => { if (event.data && !isInteractiveGridTarget(event.event)) openCellEditor(event.data, event.column.getColId()); }} onSpreadsheetPaste={pasteIntoRow} onSpreadsheetEdit={({ row, columnId }) => openCellEditor(row, columnId)} onSpreadsheetCancelEdit={() => setActiveEditor(null)} spreadsheetSelectionResetKey={`${draftStructureKey}:${props.fullRowEditIds.join("|")}`} suppressCellFocus /></div>;
 }

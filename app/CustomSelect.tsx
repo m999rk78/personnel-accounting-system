@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { choiceMenuPosition, choiceMenuWidth, type ChoiceMenuPosition } from "./choiceMenuLayout";
 
 export type CustomSelectOption = {
   value: string;
@@ -23,14 +24,6 @@ type CustomSelectProps = {
   onInvalidQuery?: (query: string) => void;
 };
 
-type MenuPosition = {
-  top: number;
-  left: number;
-  width: number;
-  maxHeight: number;
-  placement: "top" | "bottom";
-};
-
 const normalizeSearch = (value: string) => value.trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/g, " ");
 
 export function CustomSelect({ value, options, onChange, ariaLabel, className = "", disabled = false, autoOpen = false, searchable = false, initialQuery = "", requireExactQueryOnEnter = false, onInvalidQuery }: CustomSelectProps) {
@@ -43,7 +36,8 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
   const autoOpened = useRef(false);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [position, setPosition] = useState<MenuPosition | null>(null);
+  const [position, setPosition] = useState<ChoiceMenuPosition | null>(null);
+  const [portalHost, setPortalHost] = useState<Element | null>(null);
   const [query, setQuery] = useState("");
   const selectedIndex = options.findIndex((option) => option.value === value);
   const selectedOption = selectedIndex >= 0 ? options[selectedIndex] : options[0];
@@ -56,17 +50,8 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
   const updatePosition = useCallback(() => {
     if (!trigger.current) return;
     const rect = trigger.current.getBoundingClientRect();
-    const viewportPadding = 8;
-    const width = Math.min(Math.max(rect.width, 220), window.innerWidth - viewportPadding * 2);
-    const left = Math.min(Math.max(viewportPadding, rect.left), window.innerWidth - width - viewportPadding);
-    const desiredHeight = Math.min(340, filteredOptions.length * 38 + (searchable ? 54 : 10));
-    const roomBelow = window.innerHeight - rect.bottom - viewportPadding;
-    const roomAbove = rect.top - viewportPadding;
-    const placement = roomBelow < Math.min(desiredHeight, 180) && roomAbove > roomBelow ? "top" : "bottom";
-    const maxHeight = Math.max(90, Math.min(desiredHeight, placement === "bottom" ? roomBelow - 6 : roomAbove - 6));
-    const top = placement === "bottom" ? rect.bottom + 6 : Math.max(viewportPadding, rect.top - maxHeight - 6);
-    setPosition({ top, left, width, maxHeight, placement });
-  }, [filteredOptions.length, searchable]);
+    setPosition(choiceMenuPosition(rect, { width: window.innerWidth, height: window.innerHeight }, choiceMenuWidth(trigger.current, options.map((option) => option.label))));
+  }, [options]);
 
   const close = useCallback((restoreFocus = false) => {
     setOpen(false);
@@ -77,6 +62,7 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
 
   const openMenu = useCallback((preferredIndex?: number, initialQuery = "") => {
     if (disabled || options.every((option) => option.disabled)) return;
+    setPortalHost(root.current?.closest("dialog[open]") ?? document.body);
     const normalizedInitialQuery = normalizeSearch(initialQuery);
     const initialEnabledIndexes = options.map((option, index) => option.disabled || (normalizedInitialQuery && !normalizeSearch(option.label).includes(normalizedInitialQuery)) ? -1 : index).filter((index) => index >= 0);
     const nextIndex = preferredIndex ?? (initialQuery ? initialEnabledIndexes[0] : selectedIndex >= 0 && !options[selectedIndex]?.disabled ? selectedIndex : initialEnabledIndexes[0]);
@@ -102,7 +88,10 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
       const target = event.target as Node;
       if (!root.current?.contains(target) && !menu.current?.contains(target)) close();
     };
-    const handleViewportChange = () => updatePosition();
+    const handleViewportChange = (event: Event) => {
+      if (event.target instanceof Node && menu.current?.contains(event.target)) return;
+      updatePosition();
+    };
     window.addEventListener("resize", handleViewportChange);
     window.addEventListener("scroll", handleViewportChange, true);
     document.addEventListener("pointerdown", handlePointerDown);
@@ -186,9 +175,9 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
   const popup = open && position ? createPortal(
     <div
       ref={menu}
-      className="custom-select-menu"
+      className="custom-select-menu ag-custom-component-popup"
       data-placement={position.placement}
-      style={{ top: position.top, left: position.left, width: position.width, maxHeight: position.maxHeight }}
+      style={{ top: position.top, bottom: position.bottom, left: position.left, width: position.width, maxHeight: position.maxHeight }}
     >
       {searchable && <label className="custom-select-search">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
@@ -221,7 +210,6 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
           aria-selected={selected}
           disabled={option.disabled}
           tabIndex={!searchable && activeIndex === index ? 0 : -1}
-          onMouseEnter={() => { if (!option.disabled) setActiveIndex(index); }}
           onKeyDown={handleOptionKeyDown}
           onClick={() => choose(option)}
         >
@@ -232,7 +220,7 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
       {!filteredOptions.length && <div className="custom-select-empty">Ничего не найдено</div>}
       </div>
     </div>,
-    document.body,
+    portalHost ?? document.body,
   ) : null;
 
   return <div className={["custom-select", className].filter(Boolean).join(" ")} ref={root}>
@@ -241,6 +229,7 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
       type="button"
       className="custom-select-toggle"
       aria-label={ariaLabel}
+      title={selectedOption?.label}
       aria-haspopup="listbox"
       aria-controls={listboxId}
       aria-expanded={open}

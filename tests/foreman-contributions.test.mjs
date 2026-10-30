@@ -54,7 +54,8 @@ test("returns ownership, revision, shared usage, and foreman progress with repor
 
   assert.match(api, /pe\.responsible_user_id AS responsibleUserId, responsible\.full_name AS responsibleUserName, pe\.revision/);
   assert.match(api, /const responsibleUserId = authUser\.role === "foreman" \? authUser\.id : undefined/);
-  assert.match(api, /function employeeUsageStatement\(workDate: string\)/);
+  assert.match(api, /function employeeUsageStatement\(workDate: string, siteId: number\)/);
+  assert.match(api, /assignment\.site_id = \? AND assignment\.active = 1[\s\S]*UNION[\s\S]*historical\.site_id = \?/);
   assert.match(api, /GROUP BY pe\.employee_id, pe\.responsible_user_id, responsible\.full_name/);
   assert.match(api, /function foremanProgressStatement\(siteId: number, workDate: string\)/);
   assert.match(api, /contribution\.status = 'submitted' THEN 'submitted'[\s\S]*contribution\.status = 'draft' THEN 'draft' ELSE 'not_started'/);

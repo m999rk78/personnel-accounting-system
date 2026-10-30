@@ -11,38 +11,153 @@
 .grid-filter-chips button.grid-sort-chip { border-color:#bfdbfe; background:#eff6ff; color:#1d4ed8; }
 .grid-filter-chips button > span:first-child { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 .grid-filter-clear { padding:5px 0; border:0; background:transparent; color:#714600; font-size:12px; text-decoration:underline; text-underline-offset:3px; }
-/* Keep AG Grid's action panel outside the scrolling filter contents. The popup
-   is also constrained by the grid, which can be shorter than the viewport. */
-.ag-filter-menu:has(.personnel-filter) { display:flex; flex-direction:column; max-height:min(680px,calc(100dvh - 24px),100%); overflow:hidden; }
+/* Custom headers already have one button which also shows the active state. */
+.localized-grid .ag-header-cell:has(.ag-column-filter) .ag-filter-icon { display:none!important; }
+/* Let the viewport constrain the popup; keep its heading and actions visible. */
+.ag-filter-menu:has(.personnel-filter) { position:fixed; display:flex; flex-direction:column; width:auto; max-width:calc(100vw - 24px); max-height:calc(100dvh - 24px); overflow:hidden; border:1px solid #dcdfe4; border-radius:12px; background:#fff; box-shadow:0 12px 40px #1f293726,0 2px 6px #1f293714; }
 .ag-filter-menu:has(.personnel-filter) > .ag-filter,
-.ag-filter-wrapper:has(.personnel-filter) { display:flex; flex-direction:column; flex:1 1 auto; min-height:0; overflow:hidden; }
-.ag-filter-wrapper:has(.personnel-filter) > .ag-react-container { flex:1 1 auto; min-height:0; overflow:auto; overscroll-behavior:contain; }
-.ag-filter-wrapper:has(.personnel-filter) > .ag-filter-apply-panel { flex:0 0 auto; flex-wrap:wrap; border-top:1px solid #e4e4e7; background:var(--ag-background-color,#fff); }
-.personnel-filter { width:min(348px,calc(100vw - 32px)); padding:14px; color:#27272a; font-size:12px; }
-.grid-filter-heading { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin-bottom:12px; }
-.grid-filter-heading strong { font-size:14px; }.grid-filter-heading > span { color:#71717a; font-size:10px; }
-.grid-filter-sort { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:12px; }
-.grid-filter-sort button { min-width:0; padding:7px; border:1px solid #e4e4e7; border-radius:5px; background:#fafafa; font-size:12px; }
-.grid-filter-sort-reset { display:flex; grid-column:1/-1; justify-content:flex-end; gap:10px; padding-top:2px; }
-.grid-filter-sort-reset button { padding:2px 0; border:0; background:transparent; color:#8a5700; font-size:10px; text-decoration:underline; text-underline-offset:2px; }
-.personnel-filter input:not([type=checkbox]),.personnel-filter select { width:100%; min-width:0; height:34px; padding:0 9px; border:1px solid #d4d4d8; border-radius:5px; background:white; color:#27272a; font-size:12px; }
-.personnel-filter input:focus-visible,.personnel-filter select:focus-visible,.personnel-filter button:focus-visible,.grid-filter-summary button:focus-visible { outline:2px solid #e7ac3b; outline-offset:2px; }
-.grid-filter-search { display:block; margin-bottom:7px; }
-.grid-filter-selection { display:flex; align-items:center; justify-content:space-between; gap:8px; }
-.grid-filter-selection > button { border:0; background:none; color:#8a5700; font-size:11px; white-space:nowrap; }
-.grid-value-option { height:34px; display:flex; align-items:center; gap:8px; padding:0 6px; cursor:pointer; }
-.grid-value-option:hover { background:#fff7e5; border-radius:4px; }
-.grid-value-option input { flex:0 0 auto; width:15px; height:15px; margin:0; accent-color:#bd800e; }
-.grid-value-option > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.grid-value-option small { margin-left:auto; color:#71717a; font-variant-numeric:tabular-nums; }
-.grid-filter-values { max-height:204px; overflow:auto; border:1px solid #e4e4e7; border-radius:5px; margin-top:4px; }
-.grid-filter-values > p { margin:0; padding:18px 8px; text-align:center; color:#71717a; }
-.grid-filter-only { width:100%; padding:7px; border:1px solid #ecd39c; border-radius:5px; background:#fff7e5; color:#714600; font-size:12px; margin:4px 0; }
-.grid-filter-conditions { border-top:1px solid #e4e4e7; margin-top:12px; padding-top:10px; }
-.grid-filter-condition-heading { display:flex; gap:8px; align-items:baseline; justify-content:space-between; margin-bottom:8px; }.grid-filter-condition-heading span { color:#71717a; font-size:10px; }
-.grid-filter-join { display:flex; align-items:center; gap:10px; margin-bottom:8px; }.grid-filter-join > .custom-select { flex:1; }
-.grid-filter-condition { display:grid; gap:6px; padding:8px; border:1px solid #e4e4e7; border-radius:6px; background:#fafafa; margin:6px 0; }
-.grid-filter-condition > div { display:flex; gap:6px; }.grid-filter-condition button { flex:0 0 28px; border:0; border-radius:4px; background:transparent; color:#71717a; font-size:19px; }
-.grid-filter-add { padding:6px 0; border:0; background:transparent; color:#8a5700; font-size:12px; }
-.personnel-filter .custom-select-toggle { height:34px; padding:0 30px 0 9px; border-radius:5px; font-size:12px; }.personnel-filter .custom-select-chevron { right:8px; width:14px; height:14px; }
-.grid-filter-preview,.grid-filter-validation { margin:9px 0 0; font-size:11px; color:#71717a; }.grid-filter-validation { color:#b45309; }
+.ag-filter-wrapper:has(.personnel-filter),
+.ag-filter-wrapper:has(.personnel-filter) > .ag-react-container { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+.ag-filter-wrapper:has(.personnel-filter) > .ag-filter-apply-panel { display:none; }
+.personnel-filter { display:flex; flex-direction:column; width:min(400px,calc(100vw - 24px)); max-height:min(700px,calc(100dvh - 24px)); margin:0; color:#27272a; background:#fff; font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; font-size:13px; line-height:1.45; }
+.personnel-filter button,.personnel-filter input,.personnel-filter select { font:inherit; }
+.personnel-filter button { cursor:pointer; }
+.personnel-filter button:disabled { cursor:default; opacity:.5; }
+.personnel-filter svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+.grid-filter-heading { flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px 18px; border-bottom:1px solid #eceef1; }
+.grid-filter-heading > div { display:grid; gap:3px; min-width:0; }
+.grid-filter-heading strong { font-size:16px; font-weight:650; overflow-wrap:anywhere; }
+.grid-filter-heading span { font-size:12px; color:#71717a; }
+.personnel-filter .grid-filter-close { display:grid; flex:0 0 auto; place-items:center; width:32px; height:32px; padding:0; border:0; border-radius:6px; background:transparent; color:#71717a; }
+.personnel-filter .grid-filter-close:hover { background:#f4f4f5; color:#27272a; }
+.grid-filter-body { flex:1 1 auto; min-height:0; padding:16px 18px; overflow:auto; overscroll-behavior:contain; }
+.grid-filter-sort { display:grid; gap:10px; padding-bottom:16px; margin-bottom:16px; border-bottom:1px solid #eceef1; }
+.grid-filter-field { display:grid; gap:7px; font-weight:600; }
+.personnel-filter input:not([type=checkbox]),.personnel-filter select { box-sizing:border-box; width:100%; min-width:0; height:38px; padding:0 10px; border:1px solid #d4d4d8; border-radius:7px; background:#fff; color:#27272a; font-weight:400; }
+.personnel-filter select { padding-right:28px; cursor:pointer; }
+.personnel-filter input:focus-visible,.personnel-filter select:focus-visible,.personnel-filter button:focus-visible,.personnel-filter summary:focus-visible,.grid-filter-summary button:focus-visible { outline:2px solid #c38a18; outline-offset:2px; }
+.grid-filter-additive { display:flex; align-items:flex-start; gap:8px; font-size:12px; color:#52525b; }
+.personnel-filter input[type=checkbox] { flex:0 0 auto; width:16px; height:16px; margin:1px 0 0; accent-color:#b97809; cursor:pointer; }
+.grid-filter-section-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:4px 12px; margin-bottom:10px; }
+.grid-filter-section-heading strong { font-size:13px; font-weight:600; }
+.grid-filter-section-heading > span { font-size:12px; color:#71717a; }
+.grid-filter-search { position:relative; display:block; margin-bottom:7px; }
+.grid-filter-search > svg { position:absolute; top:11px; left:10px; width:16px; height:16px; color:#8b8b94; pointer-events:none; }
+.personnel-filter .grid-filter-search input { padding-left:34px; }
+.grid-filter-selection { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:4px 12px; margin-bottom:5px; }
+.grid-filter-selection .grid-value-option { padding-left:0; }
+.grid-filter-selection > button { padding:5px 0; border:0; background:transparent; color:#955c00; font-size:12px; }
+.grid-filter-selection > button:hover { text-decoration:underline; }
+.grid-value-option { display:flex; align-items:flex-start; gap:9px; min-height:36px; padding:9px 10px; cursor:pointer; line-height:18px; }
+.grid-value-option:hover { background:#faf7ef; }
+.grid-value-option:has(input:checked) { background:#fffcf4; }
+.grid-filter-selection .grid-value-option:has(input:checked) { background:transparent; }
+.grid-value-option > span { min-width:0; white-space:normal; overflow-wrap:anywhere; }
+.grid-value-option small { flex:0 0 auto; margin-left:auto; padding-left:6px; color:#8b8b94; font-size:11px; font-variant-numeric:tabular-nums; }
+.grid-filter-values { max-height:240px; overflow:auto; overflow-anchor:none; overscroll-behavior:contain; border:1px solid #e4e4e7; border-radius:7px; background:#fff; }
+.grid-filter-values > p { margin:0; padding:20px 12px; text-align:center; color:#71717a; }
+.grid-filter-conditions { margin-top:16px; border-top:1px solid #eceef1; }
+.grid-filter-conditions > summary { display:flex; align-items:center; gap:8px; padding-top:14px; font-weight:600; cursor:pointer; list-style:none; }
+.grid-filter-conditions > summary::-webkit-details-marker { display:none; }
+.grid-filter-conditions > summary > small { padding:0 6px; border-radius:9px; background:#fff1cb; color:#855000; font-size:11px; }
+.grid-filter-conditions > summary > svg { margin-left:auto; color:#8b8b94; transition:transform .15s; }
+.grid-filter-conditions[open] > summary > svg { transform:rotate(180deg); }
+.grid-filter-condition-body { padding-top:10px; }
+.grid-filter-hint { margin:0 0 8px; color:#71717a; font-size:12px; }
+.grid-filter-choices > .grid-filter-hint { margin:8px 0 0; }
+.grid-filter-join { display:grid; gap:6px; margin:12px 0; font-size:12px; color:#52525b; }
+.grid-filter-condition { display:grid; gap:8px; padding:10px; margin:8px 0; border:1px solid #e4e4e7; border-radius:8px; background:#fafafa; }
+.grid-filter-condition-operation { display:flex; align-items:center; gap:8px; }
+.grid-filter-condition-operation > .custom-select { flex:1; min-width:0; }
+.grid-filter-condition-operation > button { display:grid; place-items:center; flex:0 0 28px; width:28px; height:32px; padding:0; border:0; border-radius:5px; background:transparent; color:#8b8b94; }
+.grid-filter-condition-operation > button:hover { background:#f4e9e9; color:#b91c1c; }
+.grid-filter-condition-inputs { display:flex; flex-wrap:wrap; gap:8px; }
+.grid-filter-condition-inputs > label { display:grid; flex:1 1 135px; min-width:0; gap:5px; font-size:12px; color:#52525b; }
+.grid-filter-add { min-height:32px; padding:5px 0; border:0; background:transparent; color:#955c00; font-size:12px; }
+.grid-filter-add:hover { text-decoration:underline; }
+.grid-filter-footer { flex:0 0 auto; padding:12px 18px 16px; border-top:1px solid #eceef1; background:#fafafa; }
+.grid-filter-preview,.grid-filter-validation { margin:0 0 10px; font-size:12px; color:#71717a; }
+.grid-filter-preview strong { color:#27272a; font-weight:650; }
+.grid-filter-validation { color:#b45309; }
+.grid-filter-footer > div { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.grid-filter-footer button { min-height:36px; padding:7px 12px; border:1px solid #d4d4d8; border-radius:7px; background:#fff; color:#3f3f46; font-size:12px; font-weight:550; }
+.grid-filter-footer button:hover { background:#f4f4f5; }
+.grid-filter-footer .grid-filter-reset { margin-right:auto; padding-left:0; padding-right:0; border-color:transparent; background:transparent; color:#71717a; }
+.grid-filter-footer .grid-filter-reset:hover { color:#27272a; text-decoration:underline; }
+.grid-filter-footer .grid-filter-apply { border-color:#b77a00; background:#edab20; color:#382500; }
+.grid-filter-footer .grid-filter-apply:hover { background:#e5a015; }
+@media (max-height:700px) { .personnel-filter .grid-filter-values { max-height:170px; } .grid-filter-body { padding-top:12px; padding-bottom:12px; } }
+@media (max-width:440px) { .grid-filter-heading,.grid-filter-body,.grid-filter-footer { padding-left:14px; padding-right:14px; } .grid-filter-heading { padding-top:12px; padding-bottom:12px; } }
+.personnel-filter .custom-select-toggle { min-height:38px; height:auto; padding:9px 32px 9px 10px; border:1px solid #d4d4d8; border-radius:7px; color:#27272a; background:#fff; font-size:13px; font-weight:400; line-height:18px; text-align:left; }
+.personnel-filter .custom-select-chevron { right:10px; width:14px; height:14px; }
+
+/* Enterprise Multi Filter supplies the value list, conditions, keyboard handling
+   and deferred Apply/Cancel. Only the report-specific sort selector is custom. */
+.ag-filter-menu:has(.grid-enterprise-filter-intro) { position:fixed; display:flex; flex-direction:column; width:min(400px,calc(100vw - 24px)); max-height:min(700px,calc(100dvh - 24px)); overflow:hidden; border:1px solid #dcdfe4; border-radius:12px; background:#fff; box-shadow:0 12px 40px #1f293726,0 2px 6px #1f293714; }
+.ag-filter-menu:has(.grid-enterprise-filter-intro) > .ag-filter { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+.ag-filter-wrapper:has(> .ag-multi-filter) { display:flex; flex-direction:column; min-height:0; overflow:hidden; }
+.ag-multi-filter:has(.grid-enterprise-filter-intro) { flex:1 1 auto; min-height:0; overflow:auto; overscroll-behavior:contain; }
+.ag-multi-filter:has(.grid-enterprise-filter-intro) > .ag-filter-wrapper { flex:0 0 auto; }
+.grid-enterprise-filter-intro { width:100%; color:#27272a; font-size:13px; }
+.grid-enterprise-filter-intro .grid-filter-heading { padding:16px 18px; }
+.grid-enterprise-filter-intro .grid-filter-close { display:grid; place-items:center; flex:0 0 32px; width:32px; height:32px; padding:0; border:0; border-radius:6px; background:transparent; color:#71717a; cursor:pointer; }
+.grid-enterprise-filter-intro svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; }
+.grid-enterprise-filter-intro .grid-filter-sort { padding:14px 18px; margin:0; }
+.grid-enterprise-filter-intro .custom-select-toggle { min-height:38px; height:auto; padding:9px 32px 9px 10px; border:1px solid #d4d4d8; border-radius:7px; background:#fff; font-size:13px; font-weight:400; line-height:18px; }
+.grid-enterprise-filter-intro .custom-select-chevron { right:10px; width:14px; height:14px; }
+.grid-enterprise-values-heading { padding:14px 18px 0; font-size:13px; font-weight:600; }
+.ag-multi-filter:has(.grid-enterprise-filter-intro) .ag-set-filter { padding:10px 18px 14px; }
+.ag-multi-filter:has(.grid-enterprise-filter-intro) .ag-set-filter-list { height:auto; min-height:0; max-height:240px; overflow:hidden; }
+.ag-multi-filter:has(.grid-enterprise-filter-intro) .ag-filter-virtual-list-viewport { max-height:240px; }
+.ag-multi-filter:has(.grid-enterprise-filter-intro) .ag-set-filter-item { align-items:center; }
+.ag-multi-filter:has(.grid-enterprise-filter-intro) .ag-set-filter-item .ag-label,.ag-multi-filter:has(.grid-enterprise-filter-intro) .ag-set-filter-item .ag-checkbox-label { overflow:visible; white-space:normal; overflow-wrap:anywhere; line-height:19px; }
+.ag-multi-filter:has(.grid-enterprise-filter-intro) .ag-group-title-bar { padding:12px 18px; border-top:1px solid #eceef1; background:#fff; font-size:13px; }
+.ag-multi-filter:has(.grid-enterprise-filter-intro) .ag-filter-body-wrapper { padding:12px 18px; }
+.ag-filter-wrapper:has(> .ag-multi-filter) > .ag-filter-apply-panel { flex:0 0 auto; flex-wrap:wrap; gap:8px; padding:12px 18px; border-top:1px solid #eceef1; background:#fafafa; }
+.ag-filter-wrapper:has(> .ag-multi-filter) > .ag-filter-apply-panel .ag-button { min-height:36px; padding:7px 12px; border:1px solid #d4d4d8; border-radius:7px; background:#fff; color:#3f3f46; font-size:12px; font-weight:550; }
+.ag-filter-wrapper:has(> .ag-multi-filter) > .ag-filter-apply-panel .ag-button:last-child { border-color:#b77a00; background:#edab20; color:#382500; }
+.ag-filter-menu:has(.grid-enterprise-filter-intro) :focus-visible { outline-color:#b77a00; }
+
+.ag-multi-filter:has(.grid-enterprise-filter-intro) .ag-set-filter-body-wrapper { padding:0; }
+.ag-multi-filter:has(.grid-enterprise-filter-intro) .ag-mini-filter { margin:0 0 10px; }
+.ag-filter-menu:has(.grid-enterprise-filter-intro) { --ag-input-height:36px; }
+.ag-filter-wrapper:has(> .ag-multi-filter) > .ag-filter-apply-panel .ag-button:first-child { margin-right:auto; padding-left:0; padding-right:0; border-color:transparent; background:transparent; color:#71717a; }
+
+.work-type-prerequisite { color: #71717a; font-size: 12px; white-space: normal; line-height: 1.4; }
+
+/* The native filter controller does not render another visible timesheet. Its
+   popups live in document.body and share the same theme as every working grid. */
+.timesheet-filter-engine { position:fixed; top:-10000px; left:0; width:1px; height:1px; overflow:hidden; pointer-events:none; }
+.timesheet-header-filter .timesheet-sort-indicator { position:absolute; left:-8px; top:-2px; color:#8a5b00; font-size:9px; line-height:12px; }
+.ag-filter-menu:has(.grid-enterprise-filter-intro) { z-index:1200; min-width:0; }
+/* Native condition/select popups are siblings of the filter, so share its layer. */
+.ag-popup > .ag-popup-child { z-index:1200; }
+.grid-filter-sort-levels { display:grid; gap:8px; }
+.grid-filter-sort-level { display:grid; grid-template-columns:minmax(0,1fr) 90px auto; gap:6px; align-items:center; }
+.grid-filter-sort-level select { width:100%; min-width:0; min-height:34px; padding:5px 7px; border:1px solid #d4d4d8; border-radius:6px; background:#fff; color:#27272a; font:inherit; font-size:12px; }
+.grid-filter-sort-level-actions { display:flex; gap:2px; }
+.grid-filter-sort-level-actions button { width:25px; height:30px; padding:0; border:0; border-radius:5px; background:transparent; color:#71717a; cursor:pointer; }
+.grid-filter-sort-level-actions button:hover { background:#f4f4f5; color:#27272a; }
+.grid-filter-sort-level-actions button:disabled { opacity:.35; cursor:default; }
+.grid-filter-sort-add { padding:5px 0; border:0; background:transparent; text-align:left; color:#8a5b00; font:inherit; font-size:12px; cursor:pointer; }
+.grid-filter-sort-hint { margin:0; color:#71717a; font-size:11px; }
+.grid-enterprise-sort-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:13px; }
+.grid-enterprise-sort-heading > button { padding:3px 0; border:0; background:transparent; color:#71717a; font:inherit; font-size:11px; cursor:pointer; }
+.grid-enterprise-sort-heading > button:disabled { opacity:.45; cursor:default; }
+.grid-enterprise-sort-actions { display:flex; gap:5px; flex-wrap:wrap; }
+.grid-enterprise-sort-actions > button { min-height:31px; padding:5px 8px; border:1px solid #dedee2; border-radius:6px; background:#fff; color:#52525b; font:inherit; font-size:11px; cursor:pointer; }
+.grid-enterprise-sort-actions > button[aria-pressed=true] { border-color:#d99a1d; background:#fff5da; color:#805300; }
+.grid-enterprise-sort-actions > button:disabled { opacity:.45; cursor:default; }
+.grid-enterprise-sort-levels { display:grid; gap:8px; margin:0; padding:0; list-style:none; }
+.grid-enterprise-sort-level { display:grid; grid-template-columns:20px minmax(0,1fr) 78px; gap:6px; padding:8px; border:1px solid #e4e4e7; border-radius:7px; background:#fafafa; align-items:center; }
+.grid-enterprise-sort-priority { grid-column:1; grid-row:1/3; align-self:start; padding-top:8px; color:#71717a; font-size:11px; text-align:center; }
+.grid-enterprise-sort-level > .custom-select:first-of-type { grid-column:2/4; }
+.grid-enterprise-sort-level > .custom-select:nth-of-type(2) { grid-column:2; }
+.grid-enterprise-sort-level .custom-select-toggle { min-height:32px; padding:6px 26px 6px 8px; font-size:12px; }
+.grid-enterprise-sort-level-actions { grid-column:3; display:flex; gap:1px; }
+.grid-enterprise-sort-level-actions > button { width:25px; height:30px; padding:0; border:0; border-radius:5px; background:transparent; color:#71717a; font:inherit; cursor:pointer; }
+.grid-enterprise-sort-level-actions > button:hover { background:#eeeef1; color:#27272a; }
+.grid-enterprise-sort-level-actions > button:disabled { opacity:.3; cursor:default; }
+.grid-enterprise-sort-add { padding:5px 0; border:0; background:transparent; text-align:left; color:#8a5b00; font:inherit; font-size:12px; cursor:pointer; }
+.grid-enterprise-sort-add:disabled { opacity:.45; cursor:default; }
+.grid-enterprise-sort-help { margin:0; color:#71717a; font-size:11px; }

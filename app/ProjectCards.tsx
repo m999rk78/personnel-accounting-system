@@ -13,6 +13,7 @@ type ProjectCardsProps = {
   drafts: ProjectDraft[];
   employees: ProjectEmployee[];
   users: ProjectUser[];
+  projectStats?: { siteId: number; employeeCount: number; foremanCount: number }[];
   currentSiteId: number;
   selectedIds: number[];
   onEdit: (project: Project) => void;
@@ -73,7 +74,7 @@ function ProjectEditorDialog({ drafts, saving, onPatch, onCancel, onSave }: { dr
   </div>;
 }
 
-export function ProjectCards({ rows, drafts, employees, users, currentSiteId, selectedIds, onEdit, onSelectionChange, onPatchDraft, onCancelEditing, onSave, saving, readOnly = false, canCreate, canUpdate, canDelete }: ProjectCardsProps) {
+export function ProjectCards({ rows, drafts, employees, users, projectStats, currentSiteId, selectedIds, onEdit, onSelectionChange, onPatchDraft, onCancelEditing, onSave, saving, readOnly = false, canCreate, canUpdate, canDelete }: ProjectCardsProps) {
   const [query, setQuery] = useState("");
   const editorOpen = drafts.length > 0;
   const mayCreate = canCreate ?? !readOnly;
@@ -83,15 +84,17 @@ export function ProjectCards({ rows, drafts, employees, users, currentSiteId, se
   const mayShowEditor = drafts.some((draft) => Boolean(draft.id)) ? mayUpdate : mayCreate;
   const search = normalize(query);
   const employeeCounts = useMemo(() => {
+    if (projectStats) return new Map(projectStats.map(stats => [stats.siteId, stats.employeeCount]));
     const counts = new Map<number, number>();
     employees.forEach((employee) => { if (employee.siteId) counts.set(employee.siteId, (counts.get(employee.siteId) ?? 0) + 1); });
     return counts;
-  }, [employees]);
+  }, [employees, projectStats]);
   const foremanCounts = useMemo(() => {
+    if (projectStats) return new Map(projectStats.map(stats => [stats.siteId, stats.foremanCount]));
     const counts = new Map<number, number>();
     users.forEach((user) => { if (user.role === "foreman" && user.assignedSiteId) counts.set(user.assignedSiteId, (counts.get(user.assignedSiteId) ?? 0) + 1); });
     return counts;
-  }, [users]);
+  }, [users, projectStats]);
   const visibleRows = useMemo(() => rows.filter((project) => !search || normalize(project.name).includes(search)), [rows, search]);
   const assignedEmployees = employees.filter((employee) => employee.siteId && rows.some((project) => project.id === employee.siteId)).length;
   const assignedForemen = users.filter((user) => user.role === "foreman" && user.assignedSiteId && rows.some((project) => project.id === user.assignedSiteId)).length;

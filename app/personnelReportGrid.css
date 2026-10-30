@@ -1,0 +1,41 @@
+.personnel-history-table { min-width:0; min-height:0; flex:1; display:flex; flex-direction:column; }
+.personnel-history-table > .personnel-history-grid { min-height:0; height:auto; flex:1; border-radius:0; }
+.personnel-history-footer { flex:0 0 auto; min-width:0; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 16px; padding:8px 12px; border-top:1px solid #d4d4d8; background:#fafafa; }
+.personnel-history-summary { flex:1 1 280px; min-width:0; display:flex; align-items:center; flex-wrap:wrap; gap:4px 12px; color:#71717a; font-size:10px; }
+.personnel-history-summary > strong { color:#3f3f46; font-size:11px; font-weight:600; white-space:nowrap; }
+.personnel-history-summary > span { white-space:nowrap; }
+.personnel-history-footer-actions { flex:0 1 auto; min-width:0; display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:6px; }
+.personnel-history-footer-actions > .toolbar-actions { display:contents; }
+.personnel-history-footer-actions button { min-height:32px; padding:6px 10px; font-size:11px; white-space:nowrap; }
+.personnel-history-approved { color:#166534; }
+.personnel-report-status { display:inline-flex; align-items:center; max-width:100%; padding:5px 8px; border-radius:6px; font-size:11px; font-weight:600; background:#f4f4f5; color:#52525b; white-space:nowrap; }
+.personnel-report-status.approved { background:#e9f6ee; color:#166534; }
+.personnel-report-status.submitted { background:#fff3cf; color:#854d0e; }
+.personnel-report-status.rejected { background:#fee2e2; color:#991b1b; }
+.personnel-report-status.draft { background:#eaf2ff; color:#1e40af; }
+.personnel-history-grid .personnel-history-today:not(.editable-row) .ag-cell { background:#fcfdf8; }
+.personnel-history-grid .personnel-history-rejected .ag-cell { box-shadow:inset 0 -1px 0 #fecaca; }
+.personnel-history-grid .ag-cell.personnel-cell-invalid { background:#fff0ef!important; color:#b42318; box-shadow:inset 0 0 0 1px #f5b4ae; }
+.personnel-history-grid .ag-cell.personnel-cell-invalid .ag-editable-cell-display { color:#b42318; }
+.personnel-cell-error-icon { display:inline-grid; place-items:center; width:16px; height:16px; margin-right:6px; border-radius:50%; background:#fbd1cc; color:#a61b12; font-size:11px; font-weight:800; }
+.personnel-spreadsheet-tools { flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; padding:8px 12px; background:#fff; border-bottom:1px solid #e4e4e7; }
+.personnel-spreadsheet-tools > div { display:flex; flex-wrap:wrap; gap:5px; }
+.personnel-spreadsheet-tools button { border:1px solid #e4e4e7; border-radius:6px; background:#fafafa; padding:5px 8px; min-height:30px; color:#3f3f46; font-size:11px; }
+.personnel-spreadsheet-tools button:hover:not(:disabled) { background:#fff6df; border-color:#e6b64d; }
+.personnel-spreadsheet-tools button:disabled { opacity:.4; }
+.personnel-spreadsheet-tools > span { color:#71717a; font-size:10px; }
+@media (max-width:760px) { .personnel-history-footer { gap:6px; padding:7px 9px; }.personnel-history-summary { flex-basis:100%; }.personnel-history-footer-actions { width:100%; justify-content:flex-start; } }
+
+/* Approved reports reuse native AG Grid date groups and the existing row editors. */
+.personnel-date-controls { flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; padding:8px 12px; border-bottom:1px solid #dedede; background:#fff; color:#71717a; font-size:11px; }
+.personnel-date-controls > div { display:flex; flex-wrap:wrap; gap:6px; }
+.personnel-date-controls button { min-height:30px; padding:5px 10px; border:1px solid #dedede; border-radius:6px; background:#fafafa; color:#3f3f46; font-size:11px; }
+.personnel-date-controls button:hover:not(:disabled) { background:#fff6df; border-color:#e6b64d; }
+.personnel-date-controls button:disabled { opacity:.45; }
+.personnel-history-grid .personnel-date-group-row { background:#f8f8fa; font-size:13px; }
+.personnel-date-group-row .ag-cell-wrapper { align-items:center; }
+.personnel-date-group-row .ag-group-value { min-width:0; }
+.personnel-date-group-label { display:inline-flex; align-items:center; gap:18px; min-width:0; }
+.personnel-date-group-label > strong { color:#27272a; font-weight:650; }
+.personnel-date-group-label > span { color:#71717a; font-size:11px; }
+@media(max-width:560px) { .personnel-date-group-label { gap:10px; }.personnel-date-controls { padding:7px 9px; } }

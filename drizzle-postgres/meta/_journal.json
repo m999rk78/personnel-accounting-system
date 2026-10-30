@@ -134,6 +134,48 @@
       "when": 1793030400000,
       "tag": "0018_employee_manual_order",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1793116800000,
+      "tag": "0019_personnel_report_approval",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1793203200000,
+      "tag": "0020_table_row_orders",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1793289600000,
+      "tag": "0021_personnel_report_row_timestamps",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1793376000000,
+      "tag": "0022_work_type_hierarchy",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1793462400000,
+      "tag": "0023_project_masters_from_employees",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1793548800000,
+      "tag": "0024_equipment_report_approval",
+      "breakpoints": true
     }
   ]
 }

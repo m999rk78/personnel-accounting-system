@@ -1,14 +1,22 @@
 "use client";
 /* eslint-disable @next/next/no-img-element -- используется оригинальный SVG-логотип из TPS */
 
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { TableOrderProvider } from "./TableRowMoves";
+import { tableOrderScope } from "./tableRowOrder";
 import { AccessRightsView } from "./AccessRightsView";
+import { AdminGridFooter } from "./AdminGridFooter";
 import { DirectoryAgGrid, EmployeeAgGrid, PlacementAgGrid, PositionAgGrid, ProjectAgGrid, ProjectEmployeeAgGrid, UserAgGrid, type GridEmployeeUsage, type GridEntry, type GridTimesheetMark } from "./LazyDataGrids";
 import { AuditLogView } from "./AuditLogView";
 import { formatBitrix24Cooldown, remainingBitrix24Cooldown, type Bitrix24Cooldowns } from "./bitrix24Cooldown";
+import { compatibleSubworkId, subworkOptions, workTypeChanges } from "./workTypeHierarchy";
+import { WorkTypesDirectory } from "./WorkTypesDirectory";
 import { CustomSelect } from "./CustomSelect";
 import { EquipmentAccountingView } from "./EquipmentAccountingView";
 import { ExcelActionsMenu } from "./ExcelActionsMenu";
+import { downloadExcelFile, excelFileName, excelRowsInOrder } from "./excelFiles";
+import { SETTINGS_EXCEL_HEADERS, blankExcelRows, employeesFromExcelNames } from "./settingsExcel";
+import { WORK_TYPES_EXCEL_HEADERS, WORK_TYPES_EXCEL_SHEET, WORK_TYPES_EXCEL_WIDTHS, workTypesTemplateRows } from "./workTypesExcel";
 import { openExcelExportPreview } from "./excelExportPreviewStore";
 import { hasPermission, type PermissionAction, type PermissionResource, type PermissionSet } from "./permissionModel";
 import { ProjectCards } from "./ProjectCards";
@@ -17,10 +25,12 @@ import { UserAccessCards } from "./UserAccessCards";
 import { parseWorkspaceLocation, workspaceDocumentTitle, workspaceUrl, type WorkspaceDirectoryFocus, type WorkspaceView } from "./appRoutes";
 import { ROLE_LABELS, canViewAllProjects, type UserRole } from "./roles";
 import { createLatestRequest } from "./latestRequest";
+import { WorkspaceAccessProvider } from "./TableAccessContext";
+import { GENERAL_SETTINGS_RESOURCES, PROJECT_SETTINGS_RESOURCES, workspaceTableAccess, workspaceViewAllowed } from "./workspaceAccess";
 
-type Option = { id: number; name: string };
+type Option = { id: number; name: string; mainWorkTypeId?: number | null; employeeId?: number | null };
 type Site = Option & { code: string; timezone: string };
-type Employee = { id: number; sortOrder?: number; bitrix24Id?: string | null; fullName: string; employmentType: string; department: string; position: string; source: string; bitrix24Stage: string; availabilityStatus: string; syncError: string | null; lastSyncedAt?: string | null; siteId: number | null; siteName: string | null; bitrixCheckStatus?: "mismatch" | "missing_in_bitrix" | "dismissed_in_bitrix" | null; bitrixCheckDetails?: string | null; bitrixCheckAcknowledged?: number | boolean };
+type Employee = { id: number; sortOrder?: number; bitrix24Id?: string | null; fullName: string; employmentType: string; department: string; position: string; source: string; bitrix24Stage: string; availabilityStatus: string; syncError: string | null; lastSyncedAt?: string | null; siteId: number | null; siteName: string | null; projectCodes?: string | null; bitrixCheckStatus?: "mismatch" | "missing_in_bitrix" | "dismissed_in_bitrix" | null; bitrixCheckDetails?: string | null; bitrixCheckAcknowledged?: number | boolean };
 type PositionRecord = { id: number; employmentType: string; department: string; position: string };
 type AppUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; status?: "active" | "invited" };
 type CurrentUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; permissions: PermissionSet; permissionsCustomized: boolean };
@@ -33,6 +43,7 @@ type Entry = {
 };
 type ForemanProgress = { foremanId: number; foremanName: string; status: "not_started" | "draft" | "submitted"; submittedAt: string | null; employeeCount: number; rowCount: number; hours: number };
 type DataSet = {
+  projectStats?: { siteId: number; employeeCount: number; foremanCount: number }[];
   sites: Site[]; employees: Employee[]; reportEmployees: Employee[]; placementEmployees: Employee[]; projectEmployees: Employee[]; positionCatalog: PositionRecord[]; employmentTypes: Option[]; departments: Option[]; positions: Option[]; shifts: Option[]; zones: Option[]; mainWorkTypes: Option[];
   subworkTypes: Option[]; masters: Option[]; entries: Entry[]; filledDates: string[]; users: AppUser[];
   reportSubmitted: boolean;
@@ -103,7 +114,6 @@ type View = WorkspaceView;
 type UserDraft = { key: string; id?: number; fullName: string; email: string; role: UserRole; assignedSiteId: string };
 type EmployeeDraft = { key: string; id?: number; fullName: string; employmentType: string; department: string; position: string; projectSiteId: string };
 type EmployeeBulkChanges = { employmentType: string; department: string; position: string; projectSiteId: string };
-type AdminGridSelectionAction = { key: string; label: string; className?: string; disabled?: boolean; title?: string; onClick: () => void };
 type ProjectEmployeeDraft = { key: string; employeeId: string; employeeQuery: string };
 type PositionDraft = { key: string; id?: number; employmentType: string; department: string; position: string };
 type DirectoryEntity = "employmentType" | "department" | "position" | "shift" | "zone" | "mainWorkType" | "subworkType" | "master";
@@ -143,7 +153,7 @@ function makeCarriedDraft(employee: Employee, entry: Entry, data: DataSet, roste
     shiftId: available(data.shifts, entry.shiftId),
     zoneId: available(data.zones, entry.zoneId),
     mainWorkTypeId: available(data.mainWorkTypes, entry.mainWorkTypeId),
-    subworkTypeId: available(data.subworkTypes, entry.subworkTypeId),
+    subworkTypeId: compatibleSubworkId(data.subworkTypes, available(data.mainWorkTypes, entry.mainWorkTypeId), entry.subworkTypeId),
     masterId: available(data.masters, entry.masterId),
     hours: String(entry.hours),
     note: entry.note,
@@ -168,14 +178,7 @@ function draftRowComplete(row: DraftRow) {
 function draftRowHasWorkInput(row: DraftRow) {
   return Boolean(row.shiftId || row.zoneId || row.mainWorkTypeId || row.subworkTypeId || row.masterId || row.hours || row.note.trim());
 }
-function download(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = name;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
-}
+const download = downloadExcelFile;
 function safeFilePart(value: string) {
   return value.replace(/[\\/:*?"<>|]+/g, "_").replace(/\s+/g, "_");
 }
@@ -186,13 +189,15 @@ function directoryExcelHeader(entity: DirectoryEntity) {
   if (entity === "master") return "ФИО";
   return "Название";
 }
-const blankTemplateRows = Array.from({ length: 25 }, () => [""]);
 const loadPlacementXlsx = () => import("./placementXlsx");
 // Reversible presentation switch: the AG Grid implementation stays mounted in the fallback branch.
 const useUserAccessCardLayout = true;
 const useProjectCardLayout = true;
 // Keep this switch so the checkpoint layout can be restored without changing the report data model.
-const useDailyRosterReport = true;
+const useUnifiedPersonnelReport = true;
+const useDailyRosterReport = !useUnifiedPersonnelReport;
+const PersonnelReportWorkspace = lazy(() => import("./PersonnelReportWorkspace").then(module => ({ default: module.PersonnelReportWorkspace })));
+const EquipmentReportPage = lazy(() => import("./EquipmentReportPage").then(module => ({ default: module.EquipmentReportPage })));
 
 type AppIconName = "calendar" | "pencil" | "trash" | "redo" | "check" | "pin" | "filter" | "user" | "report" | "workersReport" | "equipmentReport" | "workersTimesheet" | "equipmentTimesheet" | "settings" | "generalSettings" | "projectSettings";
 
@@ -241,34 +246,6 @@ function ProjectSwitcher({ sites, value, onChange }: { sites: Site[]; value: num
   </div>;
 }
 
-function AdminGridFooter({ addLabel, countLabel, count, deletingCount, deletingLabel, editorOpen, editingExisting = false, pendingCount = 0, saving = false, allowMultiple = false, canCreate = true, canUpdate = true, canDelete = true, editSelectionLabel, bulkEditSelectionLabel, cancelEditingLabel = "Отменить редактирование", uniformActions = false, selectionActions = [], onAdd, onDelete, onEditSelection, onBulkEditSelection, onClearSelection, onCancelEditing, onSave }: { addLabel: string; countLabel: string; count: number; deletingCount: number; deletingLabel: string; editorOpen: boolean; editingExisting?: boolean; pendingCount?: number; saving?: boolean; allowMultiple?: boolean; canCreate?: boolean; canUpdate?: boolean; canDelete?: boolean; editSelectionLabel?: string; bulkEditSelectionLabel?: string; cancelEditingLabel?: string; uniformActions?: boolean; selectionActions?: AdminGridSelectionAction[]; onAdd: () => void; onDelete: () => void; onEditSelection?: () => void; onBulkEditSelection?: () => void; onClearSelection?: () => void; onCancelEditing?: () => void; onSave?: () => void }) {
-  const showAdd = canCreate && !editorOpen && !editingExisting && deletingCount === 0;
-  const canSave = editingExisting ? canUpdate : canCreate;
-  if (uniformActions) return <div className="table-edit-footer employee-table-footer uniform-footer-actions">
-    {deletingCount > 0 && <div className="employee-selection-bar">
-      <div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{deletingCount}</strong></span></div>
-      <div className="employee-selection-actions">
-        {onEditSelection && <button type="button" className="employee-action-button employee-action-primary" onClick={onEditSelection} disabled={saving || !canUpdate} title={canUpdate ? undefined : "Нет права редактирования"}>{editSelectionLabel ?? "Редактировать"}</button>}
-        {onBulkEditSelection && <button type="button" className="employee-action-button bulk-edit-selection-button" onClick={onBulkEditSelection} disabled={saving || !canUpdate} title={canUpdate ? undefined : "Нет права редактирования"}>{bulkEditSelectionLabel ?? "Массовое редактирование"}</button>}
-        {selectionActions.map((action) => <button type="button" key={action.key} className={`employee-action-button ${action.className ?? ""}`.trim()} onClick={action.onClick} disabled={saving || action.disabled} title={action.title}>{action.label}</button>)}
-        <button type="button" className="employee-action-button employee-action-danger" onClick={onDelete} disabled={saving || !canDelete} title={canDelete ? undefined : "Нет права удаления"}>{deletingLabel}</button>
-        {onClearSelection && <button type="button" className="employee-action-button clear-selection-button" onClick={onClearSelection} disabled={saving}>Снять выделение</button>}
-      </div>
-    </div>}
-    {pendingCount > 0 && <div className="employee-editing-bar">
-      <div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>Редактируется: <strong>{pendingCount}</strong></span></div>
-      <div className="employee-selection-actions">
-        {onCancelEditing && <button type="button" className="employee-action-button cancel-editing-button" onClick={onCancelEditing} disabled={saving}>{cancelEditingLabel}</button>}
-        {canSave && onSave && <button type="button" className="employee-action-button employee-save-button" onClick={onSave} disabled={saving}>{saving ? "Сохраняем…" : "Сохранить изменения"}</button>}
-      </div>
-    </div>}
-    {!editorOpen && deletingCount === 0 && <div className="employee-footer-base">
-      {showAdd && <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={onAdd} disabled={!allowMultiple && editorOpen}>{addLabel}</button>}
-      <span className="employee-total-count">{countLabel}: <strong>{count}</strong></span>
-    </div>}
-  </div>;
-  return <div className="table-edit-footer employee-table-footer">{showAdd && <button type="button" className="secondary-button footer-action-button" onClick={onAdd} disabled={!allowMultiple && editorOpen}>{addLabel}</button>}<div>{deletingCount > 0 && <div className="selection-actions">{onEditSelection && <button type="button" className="save-edits-button" onClick={onEditSelection} disabled={saving || !canUpdate} title={canUpdate ? undefined : "Нет права редактирования"}>{`${editSelectionLabel ?? "Редактировать"} (${deletingCount})`}</button>}{onBulkEditSelection && <button type="button" className="save-edits-button" onClick={onBulkEditSelection} disabled={saving || !canUpdate} title={canUpdate ? undefined : "Нет права редактирования"}>{`${bulkEditSelectionLabel ?? "Массовое редактирование"} (${deletingCount})`}</button>}{selectionActions.map((action) => <button type="button" key={action.key} className={action.className ?? "save-edits-button"} onClick={action.onClick} disabled={saving || action.disabled} title={action.title}>{action.label}</button>)}<button type="button" className="delete-rows-button" onClick={onDelete} disabled={saving || !canDelete} title={canDelete ? undefined : "Нет права удаления"}>{`${deletingLabel} (${deletingCount})`}</button>{onClearSelection && <button type="button" className="secondary-button footer-action-button clear-selection-button" onClick={onClearSelection} disabled={saving}>Отменить выделение</button>}</div>}{!editorOpen && deletingCount === 0 && <span>{countLabel}: <strong>{count}</strong></span>}{pendingCount > 0 && onCancelEditing && <button type="button" className="secondary-button footer-action-button" onClick={onCancelEditing} disabled={saving}>{cancelEditingLabel}</button>}{pendingCount > 0 && canSave && onSave && <button type="button" className="save-button" onClick={onSave} disabled={saving}>{saving ? "Сохраняем…" : `Сохранить (${pendingCount})`}</button>}</div></div>;
-}
 
 function ReportGridFooter({ selectedCount, editingCount, newCount, totalHours, canCreate, canUpdate, canDelete, saving, onAdd, onEditSelection, onDelete, onClearSelection, onCancelEditing, onSaveEditing, onSaveNew }: { selectedCount: number; editingCount: number; newCount: number; totalHours: number; canCreate: boolean; canUpdate: boolean; canDelete: boolean; saving: boolean; onAdd: () => void; onEditSelection: () => void; onDelete: () => void; onClearSelection: () => void; onCancelEditing: () => void; onSaveEditing: () => void; onSaveNew: () => void }) {
   const changedCount = editingCount + newCount;
@@ -276,8 +253,8 @@ function ReportGridFooter({ selectedCount, editingCount, newCount, totalHours, c
     {selectedCount > 0 && <div className="employee-selection-bar">
       <div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedCount}</strong></span></div>
       <div className="employee-selection-actions">
-        <button type="button" className="employee-action-button employee-action-primary" onClick={onEditSelection} disabled={saving || !canUpdate} title={canUpdate ? undefined : "Нет права редактирования"}>Редактировать</button>
-        <button type="button" className="employee-action-button employee-action-danger" onClick={onDelete} disabled={saving || !canDelete} title={canDelete ? undefined : "Нет права удаления"}>Удалить строки</button>
+        {canUpdate && <button type="button" className="employee-action-button employee-action-primary" onClick={onEditSelection} disabled={saving}>Редактировать</button>}
+        {canDelete && <button type="button" className="employee-action-button employee-action-danger" onClick={onDelete} disabled={saving}>Удалить строки</button>}
         <button type="button" className="employee-action-button clear-selection-button" onClick={onClearSelection} disabled={saving}>Снять выделение</button>
       </div>
     </div>}
@@ -308,8 +285,8 @@ function RosterReportFooter({ mode, completed, total, selectedEntryCount, select
     {selectedCount > 0 && <div className="employee-selection-bar">
       <div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedCount}</strong></span></div>
       <div className="employee-selection-actions">
-        {selectedSavedEntries && <button type="button" className="employee-action-button employee-action-primary" onClick={onEditSelection} disabled={saving || !canUpdate} title={canUpdate ? undefined : "Нет права редактирования"}>Редактировать</button>}
-        <button type="button" className="employee-action-button employee-action-danger" onClick={selectedSavedEntries ? onDeleteSelection : onRemoveDraftSelection} disabled={saving || !canRemoveSelection} title={canRemoveSelection ? undefined : selectedSavedEntries ? "Нет права удаления" : "Нет права добавления"}>Убрать из отчёта</button>
+        {selectedSavedEntries && canUpdate && <button type="button" className="employee-action-button employee-action-primary" onClick={onEditSelection} disabled={saving}>Редактировать</button>}
+        {canRemoveSelection && <button type="button" className="employee-action-button employee-action-danger" onClick={selectedSavedEntries ? onDeleteSelection : onRemoveDraftSelection} disabled={saving}>Убрать из отчёта</button>}
         <button type="button" className="employee-action-button clear-selection-button" onClick={onClearSelection} disabled={saving}>Снять выделение</button>
       </div>
     </div>}
@@ -472,8 +449,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const mayUpdateProjectDirectories = may("project_directories", "update");
   const mayDeleteProjectDirectories = may("project_directories", "delete");
   const mayManageProjectDirectories = anyAction("project_directories");
-  const mayAccessGeneralSettings = (["employees", "equipment_registry", "positions", "system_users", "projects", "audit_log", "access_rights"] as PermissionResource[]).some((resource) => may(resource));
-  const mayAccessProjectSettings = (["project_employees", "project_equipment", "project_directories"] as PermissionResource[]).some((resource) => may(resource));
+  const mayAccessGeneralSettings = GENERAL_SETTINGS_RESOURCES.some((resource) => may(resource));
+  const mayAccessProjectSettings = PROJECT_SETTINGS_RESOURCES.some((resource) => may(resource));
   const mayInspectBitrix24 = may("employees");
   const mayViewAllProjects = canViewAllProjects(role);
   const [initialLocation] = useState(() => parseWorkspaceLocation(
@@ -481,35 +458,30 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     typeof window === "undefined" ? "" : window.location.search,
     initialToday,
   ));
-  const viewAllowed = useCallback((candidate: View) => candidate === "placement" ? mayViewWorkersReport
-    : candidate === "equipment" ? mayViewEquipmentReport
-      : candidate === "timesheet" ? mayViewWorkersTimesheet
-        : candidate === "equipmentTimesheet" ? mayViewEquipmentTimesheet
-          : candidate === "settings" ? mayAccessGeneralSettings
-            : candidate === "employees" ? may("employees")
-              : candidate === "equipmentRegistry" ? may("equipment_registry")
-                : candidate === "positions" ? may("positions")
-                  : candidate === "users" ? may("system_users")
-                    : candidate === "projects" ? may("projects")
-                      : candidate === "auditLog" ? may("audit_log")
-                        : candidate === "accessRights" ? may("access_rights")
-                          : candidate === "projectSettings" ? mayAccessProjectSettings
-                            : candidate === "projectEmployees" ? may("project_employees")
-                              : candidate === "projectEquipment" ? may("project_equipment")
-                                : candidate === "directories" ? may("project_directories")
-                                  : false, [may, mayAccessGeneralSettings, mayAccessProjectSettings, mayViewEquipmentReport, mayViewEquipmentTimesheet, mayViewWorkersReport, mayViewWorkersTimesheet]);
+  const viewAllowed = useCallback((candidate: View) => workspaceViewAllowed(currentUser.permissions, candidate), [currentUser.permissions]);
   const fallbackView = useMemo(() => (["placement", "equipment", "timesheet", "equipmentTimesheet", "projectSettings", "settings"] as View[]).find(viewAllowed) ?? "placement", [viewAllowed]);
-  const initialView = viewAllowed(initialLocation.view) ? initialLocation.view : fallbackView;
+  const [initialView] = useState(() => viewAllowed(initialLocation.view) ? initialLocation.view : fallbackView);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [equipmentOpen, setEquipmentOpen] = useState(true);
   const [personnelOpen, setPersonnelOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [view, setView] = useState<View>(initialView);
+  const tableAccess = useMemo(() => workspaceTableAccess(currentUser.permissions, view), [currentUser.permissions, view]);
   const [siteId, setSiteId] = useState(currentUser.assignedSiteId ?? 1);
   const [workDate, setWorkDate] = useState(initialLocation.date);
   const [reportRangeEnd, setReportRangeEnd] = useState(initialLocation.date);
   const [selectedMonth, setSelectedMonth] = useState(initialLocation.month);
   const [data, setData] = useState<DataSet | null>(null);
+  const [personnelReportDirty, setPersonnelReportDirty] = useState(false);
+  const personnelReportDirtyRef = useRef(false);
+  const [equipmentReportDirty, setEquipmentReportDirty] = useState(false);
+  const equipmentReportDirtyRef = useRef(false);
+  const [workTypesDirty, setWorkTypesDirty] = useState(false);
+  const workTypesDirtyRef = useRef(false);
+  const personnelReportLocationRef = useRef("");
+  useEffect(() => { personnelReportDirtyRef.current = personnelReportDirty; }, [personnelReportDirty]);
+  useEffect(() => { equipmentReportDirtyRef.current = equipmentReportDirty; }, [equipmentReportDirty]);
+  useEffect(() => { workTypesDirtyRef.current = workTypesDirty; }, [workTypesDirty]);
   const [draftRows, setDraftRows] = useState<DraftRow[]>([]);
   const [editingRows, setEditingRows] = useState<{ id: number; row: DraftRow }[]>([]);
   const [previousDayReport, setPreviousDayReport] = useState<{ key: string; date: string; entries: Entry[] } | null>(null);
@@ -550,6 +522,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const [employeeBulkChanges, setEmployeeBulkChanges] = useState<EmployeeBulkChanges>({ employmentType: "", department: "", position: "", projectSiteId: "" });
   const [employeeBulkEditError, setEmployeeBulkEditError] = useState("");
   const [employeeVisibleIds, setEmployeeVisibleIds] = useState<number[] | null>(null);
+  const referenceExportOrder = useRef(new Map<string, number[]>());
   const [projectEmployeeDrafts, setProjectEmployeeDrafts] = useState<ProjectEmployeeDraft[]>([]);
   const [projectEmployeePendingDeletes, setProjectEmployeePendingDeletes] = useState<number[]>([]);
   const [projectEmployeeDeleteConfirmationOpen, setProjectEmployeeDeleteConfirmationOpen] = useState(false);
@@ -569,6 +542,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const [siteFullRowEditIds, setSiteFullRowEditIds] = useState<number[]>([]);
   const [siteDeleteConfirmationOpen, setSiteDeleteConfirmationOpen] = useState(false);
   const [directoryFocus, setDirectoryFocus] = useState<DirectoryFocus>(initialView === "directories" ? initialLocation.directoryFocus : "all");
+  useEffect(() => { personnelReportLocationRef.current = `${window.location.pathname}${window.location.search}`; }, [view, directoryFocus, workDate, selectedMonth]);
   const fileInput = useRef<HTMLInputElement>(null);
   const employeeFileInput = useRef<HTMLInputElement>(null);
   const positionFileInput = useRef<HTMLInputElement>(null);
@@ -580,7 +554,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const workspaceDataLoaded = useRef(false);
   const initializedRosterSession = useRef<string | null>(null);
   const reportDraftSessions = useRef(new Map<string, ReportDraftSession>());
-  const adminDataLoaded = useRef(false);
+  const adminDataLoaded = useRef<WorkspaceView | null>(null);
+  const loadedPermissions = useRef(currentUser.permissions);
+  const initialUrlNormalized = useRef(false);
   const dataRequest = useMemo(() => createLatestRequest(), []);
   useEffect(() => () => dataRequest.cancel(), [dataRequest]);
   const recentDates = useMemo(() => recentDateKeys(reportRangeEnd), [reportRangeEnd]);
@@ -623,15 +599,33 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
 
   useEffect(() => {
     const initialFocus = initialView === "directories" ? initialLocation.directoryFocus : "all";
-    const canonicalUrl = workspaceUrl(initialView, initialFocus, initialLocation.date, initialLocation.month);
-    if (!initialLocation.recognized || initialView !== initialLocation.view || `${window.location.pathname}${window.location.search}` !== canonicalUrl) {
+    const canonicalUrl = viewAllowed(initialView) ? workspaceUrl(initialView, initialFocus, initialLocation.date, initialLocation.month) : "/";
+    if (!initialUrlNormalized.current && (!initialLocation.recognized || initialView !== initialLocation.view || `${window.location.pathname}${window.location.search}` !== canonicalUrl)) {
       window.history.replaceState({}, "", canonicalUrl);
     }
+    initialUrlNormalized.current = true;
 
     const restoreLocation = () => {
       const location = parseWorkspaceLocation(window.location.pathname, window.location.search, initialToday);
       const nextView = viewAllowed(location.view) ? location.view : fallbackView;
       const nextFocus = nextView === "directories" ? location.directoryFocus : "all";
+      const activeInput = document.activeElement;
+      const pendingReportText = activeInput instanceof HTMLInputElement && Boolean(activeInput.closest(".personnel-report-workspace:not(.equipment-report-workspace)")) && activeInput.matches(".ag-inline-control") && activeInput.value !== activeInput.defaultValue;
+      const pendingEquipmentText = activeInput instanceof HTMLInputElement && Boolean(activeInput.closest(".equipment-report-workspace")) && activeInput.matches(".ag-inline-control") && activeInput.value !== activeInput.defaultValue;
+      const pendingWorkTypesText = activeInput instanceof HTMLInputElement && Boolean(activeInput.closest(".work-types-directory .ag-cell-inline-editing, .work-types-directory .ag-cell-editor-host")) && activeInput.value !== activeInput.defaultValue;
+      const leavingWorkTypes = nextView !== "directories" || nextFocus !== "mainWorkType" && nextFocus !== "subworkType";
+      const discardWorkTypes = (workTypesDirtyRef.current || pendingWorkTypesText) && leavingWorkTypes;
+      const discardReport = (personnelReportDirtyRef.current || pendingReportText) && nextView !== "placement";
+      const discardEquipment = (equipmentReportDirtyRef.current || pendingEquipmentText) && nextView !== "equipment";
+      if (discardReport || discardEquipment || discardWorkTypes) {
+        if (!window.confirm(discardWorkTypes ? "Есть несохранённые изменения. Перейти в другой раздел и отменить их?" : "В отчёте есть несохранённые изменения. Перейти в другой раздел и отменить их?")) {
+          window.history.pushState({}, "", personnelReportLocationRef.current || workspaceUrl("placement", "all", initialToday, initialToday.slice(0, 7)));
+          return;
+        }
+        if (discardReport) { personnelReportDirtyRef.current = false; setPersonnelReportDirty(false); }
+        if (discardEquipment) { equipmentReportDirtyRef.current = false; setEquipmentReportDirty(false); }
+        if (discardWorkTypes) { workTypesDirtyRef.current = false; setWorkTypesDirty(false); }
+      }
       setSelectedMonth(location.month);
       setDirectoryFocus(nextFocus);
       setView(nextView);
@@ -646,14 +640,27 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }, [fallbackView, initialLocation, initialToday, initialView, viewAllowed]);
 
   useEffect(() => {
-    document.title = workspaceDocumentTitle(view, directoryFocus);
-  }, [directoryFocus, view]);
+    if (viewAllowed(view)) {
+      if (window.location.pathname === "/") window.history.replaceState({}, "", workspaceUrl(view, directoryFocus, workDate, selectedMonth));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setView(fallbackView);
+      setDirectoryFocus("all");
+      window.history.replaceState({}, "", viewAllowed(fallbackView) ? workspaceUrl(fallbackView, "all", workDate, selectedMonth) : "/");
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [view, viewAllowed, fallbackView, workDate, selectedMonth, directoryFocus]);
+
+  useEffect(() => {
+    document.title = viewAllowed(view) ? workspaceDocumentTitle(view, directoryFocus) : "Ресурсный отчёт";
+  }, [directoryFocus, view, viewAllowed]);
   const loadData = useCallback(async () => {
     const signal = dataRequest.start();
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=settings&${reportRangeQuery}`, { cache: "no-store", signal });
+      const response = await fetch(`/api/data?siteId=${siteId}&date=${workDate}&scope=settings&section=${view}&${reportRangeQuery}`, { cache: "no-store", signal });
       if (signal.aborted) return;
       if (response.status === 401) { window.location.replace("/login"); return; }
       const payload = await response.json() as DataSet & { error?: string };
@@ -663,13 +670,13 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       loadedSiteId.current = siteId;
       loadedWorkDate.current = workDate;
       loadedReportRange.current = reportRangeQuery;
-      adminDataLoaded.current = true;
+      adminDataLoaded.current = view;
       workspaceDataLoaded.current = false;
     } catch (loadError) {
       if (signal.aborted) return;
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить данные.");
     } finally { if (!signal.aborted) setLoading(false); }
-  }, [dataRequest, siteId, workDate, reportRangeQuery]);
+  }, [dataRequest, siteId, workDate, reportRangeQuery, view]);
 
   const loadWorkspace = useCallback(async () => {
     const signal = dataRequest.start();
@@ -686,7 +693,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       loadedSiteId.current = siteId;
       loadedWorkDate.current = workDate;
       loadedReportRange.current = reportRangeQuery;
-      adminDataLoaded.current = false;
+      adminDataLoaded.current = null;
       workspaceDataLoaded.current = true;
     } catch (loadError) {
       if (signal.aborted) return;
@@ -709,7 +716,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       loadedSiteId.current = siteId;
       loadedWorkDate.current = workDate;
       loadedReportRange.current = reportRangeQuery;
-      adminDataLoaded.current = false;
+      adminDataLoaded.current = null;
       workspaceDataLoaded.current = false;
     } catch (loadError) {
       if (signal.aborted) return;
@@ -738,10 +745,17 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }, [dataRequest, siteId, workDate, reportRangeQuery]);
 
   useEffect(() => {
+    if (loadedPermissions.current !== currentUser.permissions) {
+      loadedPermissions.current = currentUser.permissions;
+      loadedSiteId.current = null;
+      adminDataLoaded.current = null;
+      workspaceDataLoaded.current = false;
+    }
+    if (!viewAllowed(view)) return;
     const settingsDataView = view === "employees" || view === "positions" || view === "users" || view === "projects" || view === "projectEmployees" || view === "directories";
     const loader = loadedSiteId.current !== siteId
       ? view === "placement" ? loadWorkspace : settingsDataView ? loadData : loadNavigation
-      : settingsDataView && !adminDataLoaded.current
+      : settingsDataView && adminDataLoaded.current !== view
         ? loadData
         : view === "placement" && !workspaceDataLoaded.current
           ? loadWorkspace
@@ -750,7 +764,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
             : null;
     const task = window.setTimeout(() => { if (loader) void loader(); else setLoading(false); }, 0);
     return () => { window.clearTimeout(task); dataRequest.cancel(); };
-  }, [dataRequest, siteId, workDate, view, reportRangeQuery, loadData, loadEntries, loadNavigation, loadWorkspace]);
+  }, [currentUser.permissions, dataRequest, siteId, workDate, view, viewAllowed, reportRangeQuery, loadData, loadEntries, loadNavigation, loadWorkspace]);
 
   const filteredEntries = data?.entries ?? [];
   const exportEntries = visibleEntryIds === null
@@ -884,6 +898,12 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }
   function changeSite(nextSiteId: number) {
     if (nextSiteId === siteId) return;
+    if ((personnelReportDirty || equipmentReportDirty || workTypesDirty) && !window.confirm(workTypesDirty ? "Есть несохранённые изменения. Перейти в другой проект и отменить их?" : "В отчёте есть несохранённые изменения. Перейти в другой проект и отменить их?")) return;
+    setPersonnelReportDirty(false);
+    equipmentReportDirtyRef.current = false;
+    setEquipmentReportDirty(false);
+    workTypesDirtyRef.current = false;
+    setWorkTypesDirty(false);
     rememberCurrentReportDraftSession();
     const session = takeReportDraftSession(nextSiteId, workDate);
     setSiteId(nextSiteId); setDraftRows(session?.draftRows ?? []); setEditingRows(session?.editingRows ?? []); setPreviousDayReport(null); setSelectedRosterDraftKeys(session?.selectedRosterDraftKeys ?? []); setPendingDeletes(session?.pendingDeletes ?? []); setDeleteConfirmationOpen(false);
@@ -910,6 +930,12 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   function navigateTo(nextView: View, nextDirectoryFocus: DirectoryFocus = "all") {
     const allowedView = viewAllowed(nextView) ? nextView : fallbackView;
     const allowedFocus = allowedView === "directories" ? nextDirectoryFocus : "all";
+    const leavingWorkTypes = allowedView !== "directories" || allowedFocus !== "mainWorkType" && allowedFocus !== "subworkType";
+    const discardWorkTypes = workTypesDirty && leavingWorkTypes;
+    if ((personnelReportDirty && nextView !== "placement" || equipmentReportDirty && nextView !== "equipment" || discardWorkTypes) && !window.confirm(discardWorkTypes ? "Есть несохранённые изменения. Перейти в другой раздел и отменить их?" : "В отчёте есть несохранённые изменения. Перейти в другой раздел и отменить их?")) return;
+    if (nextView !== "placement") setPersonnelReportDirty(false);
+    if (nextView !== "equipment") { equipmentReportDirtyRef.current = false; setEquipmentReportDirty(false); }
+    if (leavingWorkTypes) { workTypesDirtyRef.current = false; setWorkTypesDirty(false); }
     const url = workspaceUrl(allowedView, allowedFocus, workDate, selectedMonth);
     setDirectoryFocus(allowedFocus);
     setView(allowedView);
@@ -918,11 +944,11 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }
 
   function patchDraft(key: string, changes: Partial<DraftRow>) {
-    setDraftRows((rows) => rows.map((row) => row.key === key ? { ...row, ...changes } : row));
+    setDraftRows((rows) => rows.map((row) => row.key === key ? { ...row, ...workTypeChanges(row, changes, data?.subworkTypes ?? []) } : row));
     setError("");
   }
   function patchEditing(id: number, changes: Partial<DraftRow>) {
-    setEditingRows((current) => current.map((item) => item.id === id ? { ...item, row: { ...item.row, ...changes } } : item));
+    setEditingRows((current) => current.map((item) => item.id === id ? { ...item, row: { ...item.row, ...workTypeChanges(item.row, changes, data?.subworkTypes ?? []) } } : item));
     setError("");
   }
   function startEdit(entry: GridEntry, changes: Partial<DraftRow> = {}) {
@@ -930,8 +956,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setPendingDeletes([]);
     setEditingRows((current) => {
       const existing = current.find((item) => item.id === entry.id);
-      if (existing) return current.map((item) => item.id === entry.id ? { ...item, row: { ...item.row, ...changes } } : item);
-      return [...current, { id: entry.id, row: { ...makeEntryDraft(entry), ...changes } }];
+      if (existing) return current.map((item) => item.id === entry.id ? { ...item, row: { ...item.row, ...workTypeChanges(item.row, changes, data?.subworkTypes ?? []) } } : item);
+      return [...current, { id: entry.id, row: { ...makeEntryDraft(entry), ...workTypeChanges(makeEntryDraft(entry), changes, data?.subworkTypes ?? []) } }];
     });
     setNotice("");
   }
@@ -1403,14 +1429,20 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     } catch (deleteError) { setError(deleteError instanceof Error ? deleteError.message : "Не удалось удалить должности."); }
     finally { setSaving(false); }
   }
+  function requireSavedExcelRows(pending: number) {
+    if (!pending) return true;
+    setError("Сначала сохраните или отмените изменения в таблице, затем повторите действие с Excel.");
+    return false;
+  }
   function openSettingsExportPreview(options: { title: string; description: string; fileName: string; sheetName: string; workbookTitle: string; headers: string[]; rows: (string | number)[][] }) {
     setError("");
     try {
+      if (!options.rows.length) throw new Error("Нет строк для экспорта с текущими фильтрами.");
       openExcelExportPreview({
         version: 1,
         title: options.title,
         description: options.description,
-        fileName: options.fileName,
+        fileName: excelFileName(options.fileName),
         headers: options.headers,
         rows: options.rows,
         workbook: { kind: "table", sheetName: options.sheetName, workbookTitle: options.workbookTitle, rows: options.rows },
@@ -1420,10 +1452,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     }
   }
   function exportEmployees() {
-    if (!data) return;
-    const employees = employeeVisibleIds === null ? visibleEmployees : visibleEmployees.filter((employee) => employeeVisibleIds.includes(employee.id));
+    if (!data || !requireSavedExcelRows(employeeDrafts.length + employeeFullRowEditIds.length)) return;
+    const employees = excelRowsInOrder(visibleEmployees, employeeVisibleIds);
     const headers = ["ФИО", "Тип", "Отдел", "Должность", "Проект"];
-    const rows = employees.map((employee) => [employee.fullName, employee.employmentType, employee.department, employee.position, employee.siteName ?? "Без объекта"]);
+    const rows = employees.map((employee) => [employee.fullName, employee.employmentType, employee.department, employee.position, employee.projectCodes ?? employee.siteName ?? "Без объекта"]);
     openSettingsExportPreview({ title: "Сотрудники", description: `Строк в выгрузке: ${rows.length}`, fileName: "Сотрудники.xlsx", sheetName: "Сотрудники", workbookTitle: "Список сотрудников", headers, rows });
   }
   function showBitrixCheckResult(result: BitrixCheckResult) {
@@ -1622,8 +1654,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     } finally { setProcessingBitrixEmployee(false); }
   }
   function exportPositions() {
-    if (!data) return;
-    const positions = positionVisibleIds === null ? visiblePositions : visiblePositions.filter((position) => positionVisibleIds.includes(position.id));
+    if (!data || !requireSavedExcelRows(positionDrafts.length + positionFullRowEditIds.length)) return;
+    const positions = excelRowsInOrder(visiblePositions, positionVisibleIds);
     const headers = ["Тип", "Отдел", "Должность"];
     const rows = positions.map((position) => [position.employmentType, position.department, position.position]);
     openSettingsExportPreview({ title: "Должности", description: `Строк в выгрузке: ${rows.length}`, fileName: "Список_должностей.xlsx", sheetName: "Должности", workbookTitle: "Список должностей", headers, rows });
@@ -1631,8 +1663,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   async function importEmployees(file: File) {
     setImporting(true); setError(""); setNotice("");
     try {
+      if (!requireSavedExcelRows(employeeDrafts.length + employeeFullRowEditIds.length)) return;
       const { parseTableXlsx } = await loadPlacementXlsx();
-      const rows = await parseTableXlsx(file, ["ФИО", "Тип", "Отдел", "Должность", "Проект"]);
+      const rows = await parseTableXlsx(file, SETTINGS_EXCEL_HEADERS.employees);
+      if (!rows.length) throw new Error("В файле нет заполненных сотрудников.");
       const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "import-employees", employees: rows.map((row) => ({ fullName: row["ФИО"], employmentType: row["Тип"], department: row["Отдел"], position: row["Должность"], projectCode: row["Проект"] })) }) });
       const result = await response.json() as { error?: string; count?: number; unassigned?: number };
       if (!response.ok) throw new Error(result.error ?? "Не удалось импортировать сотрудников.");
@@ -1644,8 +1678,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   async function importPositions(file: File) {
     setImporting(true); setError(""); setNotice("");
     try {
+      if (!requireSavedExcelRows(positionDrafts.length + positionFullRowEditIds.length)) return;
       const { parseTableXlsx } = await loadPlacementXlsx();
-      const rows = await parseTableXlsx(file, ["Тип", "Отдел", "Должность"]);
+      const rows = await parseTableXlsx(file, SETTINGS_EXCEL_HEADERS.positions);
+      if (!rows.length) throw new Error("В файле нет заполненных должностей.");
       const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "import-positions", positions: rows.map((row) => ({ employmentType: row["Тип"], department: row["Отдел"], position: row["Должность"] })) }) });
       const result = await response.json() as { error?: string; count?: number };
       if (!response.ok) throw new Error(result.error ?? "Не удалось импортировать должности.");
@@ -1654,92 +1690,96 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     finally { setImporting(false); if (positionFileInput.current) positionFileInput.current.value = ""; }
   }
   function exportProjectEmployees() {
-    if (!data) return;
+    if (!data || !requireSavedExcelRows(projectEmployeeDrafts.length)) return;
     const projectName = activeSite?.name ?? "Проект";
     const headers = ["ФИО", "Тип", "Отдел", "Должность"];
-    const rows = visibleProjectEmployees.map((employee) => [employee.fullName, employee.employmentType, employee.department, employee.position]);
-    openSettingsExportPreview({ title: "Сотрудники проекта", description: `${projectName} · строк в выгрузке: ${rows.length}`, fileName: `Сотрудники_${safeFilePart(projectName)}.xlsx`, sheetName: "Сотрудники проекта", workbookTitle: `Сотрудники проекта — ${projectName}`, headers, rows });
+    const rows = excelRowsInOrder(visibleProjectEmployees, referenceExportOrder.current.get(`projectEmployees:${siteId}`) ?? null).map((employee) => [employee.fullName, employee.employmentType, employee.department, employee.position]);
+    openSettingsExportPreview({ title: "Сотрудники проекта", description: `${projectName} · строк в выгрузке: ${rows.length}`, fileName: excelFileName("Сотрудники проекта", [projectName]), sheetName: "Сотрудники проекта", workbookTitle: `Сотрудники проекта — ${projectName}`, headers, rows });
   }
-  async function downloadProjectEmployeeTemplate() {
-    const { createTableXlsx } = await loadPlacementXlsx();
-    download(createTableXlsx("Шаблон", `Шаблон сотрудников проекта — ${activeSite?.name ?? "Проект"}`, ["ФИО"], blankTemplateRows), `Шаблон_сотрудников_${safeFilePart(activeSite?.name ?? "проект")}.xlsx`);
+  async function downloadSettingsTemplate(kind: keyof typeof SETTINGS_EXCEL_HEADERS) {
+    setError("");
+    try {
+      const { createTableXlsx } = await loadPlacementXlsx();
+      const title = kind === "employees" ? "Сотрудники" : kind === "positions" ? "Должности" : kind === "projectEmployees" ? "Сотрудники проекта" : kind === "master" ? "Мастера" : "Зоны";
+      const project = kind === "employees" || kind === "positions" ? undefined : activeSite?.name ?? "Проект";
+      const headers = SETTINGS_EXCEL_HEADERS[kind];
+      download(createTableXlsx(title, `Шаблон: ${title}${project ? ` — ${project}` : ""}`, headers, blankExcelRows(headers.length)), excelFileName(`Шаблон ${title.toLocaleLowerCase("ru-RU")}`, [project]));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось скачать шаблон Excel."); }
   }
+  const downloadProjectEmployeeTemplate = () => downloadSettingsTemplate("projectEmployees");
   async function importProjectEmployees(file: File) {
     setImporting(true); setError(""); setNotice("");
     try {
+      if (!requireSavedExcelRows(projectEmployeeDrafts.length)) return;
       const { parseTableXlsx } = await loadPlacementXlsx();
       const rows = await parseTableXlsx(file, ["ФИО"]);
       const uniqueNames = [...new Map(rows.map((row) => [normalize(row["ФИО"]), row["ФИО"].trim()])).values()].filter(Boolean);
       if (!uniqueNames.length) throw new Error("В файле нет заполненных сотрудников.");
-      const employeesByName = new Map((data?.employees ?? []).map((employee) => [normalize(employee.fullName), employee]));
-      const missing = uniqueNames.filter((name) => !employeesByName.has(normalize(name)));
-      if (missing.length) throw new Error(`Сотрудники не найдены в общем справочнике: ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? "…" : ""}.`);
-      const assigned = new Set((data?.placementEmployees ?? []).map((employee) => employee.id));
-      const employees = uniqueNames.map((name) => employeesByName.get(normalize(name))!).filter((employee) => !assigned.has(employee.id));
-      for (const employee of employees) {
-        const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "assign-employee-project", employeeId: employee.id, siteId }) });
-        const result = await response.json() as { error?: string };
-        if (!response.ok) throw new Error(result.error ?? `Не удалось добавить сотрудника «${employee.fullName}».`);
-      }
-      setNotice(employees.length ? `Импортировано сотрудников в проект: ${employees.length}` : "Все сотрудники из файла уже добавлены в проект");
+      const employees = employeesFromExcelNames(uniqueNames, data?.employees ?? []);
+      const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "import-project-employees", siteId, employeeIds: employees.map(employee => employee.id) }) });
+      const result = await response.json() as { error?: string; count?: number; skipped?: number };
+      if (!response.ok) throw new Error(result.error ?? "Не удалось импортировать сотрудников проекта.");
+      setNotice(result.count ? `Импортировано сотрудников в проект: ${result.count}${result.skipped ? ` · уже были в проекте: ${result.skipped}` : ""}` : "Все сотрудники из файла уже добавлены в проект");
       await loadData();
     } catch (importError) { setError(importError instanceof Error ? importError.message : "Не удалось импортировать сотрудников проекта."); }
     finally { setImporting(false); if (projectEmployeeFileInput.current) projectEmployeeFileInput.current.value = ""; }
   }
   function exportProjectDirectory() {
-    if (!activeDirectoryGroup) return;
+    if (!activeDirectoryGroup || !requireSavedExcelRows(directoryDrafts.length)) return;
     const projectName = activeSite?.name ?? "Проект";
     if (activeDirectoryGroup.entity === "master") {
       const employeesByName = new Map((data?.placementEmployees ?? []).map((employee) => [normalize(employee.fullName), employee]));
       const headers = ["ФИО", "Тип", "Отдел", "Должность"];
-      const rows = visibleDirectoryItems.map((item) => { const employee = employeesByName.get(normalize(item.name)); return [item.name, employee?.employmentType ?? "", employee?.department ?? "", employee?.position ?? ""]; });
+      const rows = excelRowsInOrder(visibleDirectoryItems, referenceExportOrder.current.get(`directory:${siteId}:${directoryFocus}`) ?? null).map((item) => { const employee = employeesByName.get(normalize(item.name)); return [item.name, employee?.employmentType ?? "", employee?.department ?? "", employee?.position ?? ""]; });
       openSettingsExportPreview({ title: "Мастера", description: `${projectName} · строк в выгрузке: ${rows.length}`, fileName: `Мастера_${safeFilePart(projectName)}.xlsx`, sheetName: "Мастера", workbookTitle: `Мастера — ${projectName}`, headers, rows });
       return;
     }
     const header = directoryExcelHeader(activeDirectoryGroup.entity);
-    const rows = visibleDirectoryItems.map((item) => [item.name]);
+    const rows = excelRowsInOrder(visibleDirectoryItems, referenceExportOrder.current.get(`directory:${siteId}:${directoryFocus}`) ?? null).map((item) => [item.name]);
     openSettingsExportPreview({ title: focusedDirectoryTitle, description: `${projectName} · строк в выгрузке: ${rows.length}`, fileName: `${safeFilePart(focusedDirectoryTitle)}_${safeFilePart(projectName)}.xlsx`, sheetName: focusedDirectoryTitle, workbookTitle: `${focusedDirectoryTitle} — ${projectName}`, headers: [header], rows });
   }
   function exportProjects() {
+    if (!requireSavedExcelRows(siteDrafts.length + siteFullRowEditIds.length)) return;
     const headers = ["Проект", "Код", "Часовой пояс"];
-    const rows = visibleSites.map((site) => [site.name, site.code, site.timezone]);
+    const rows = excelRowsInOrder(visibleSites, useProjectCardLayout ? null : referenceExportOrder.current.get("projects") ?? null).map((site) => [site.name, site.code, site.timezone]);
     openSettingsExportPreview({ title: "Проекты", description: `Строк в выгрузке: ${rows.length}`, fileName: "Проекты.xlsx", sheetName: "Проекты", workbookTitle: "Список проектов", headers, rows });
   }
   function exportUsers() {
+    if (!requireSavedExcelRows(userDrafts.length + userFullRowEditIds.length)) return;
     const siteNames = new Map(visibleSites.map((site) => [site.id, site.name]));
     const headers = ["ФИО", "Email", "Роль", "Проект", "Статус"];
-    const rows = visibleUsers.map((user) => [user.fullName, user.email, ROLE_LABELS[user.role], user.assignedSiteId ? siteNames.get(user.assignedSiteId) ?? "Проект не найден" : "Не назначен", user.status === "invited" ? "Приглашён" : "Активен"]);
+    const rows = excelRowsInOrder(visibleUsers, useUserAccessCardLayout ? null : referenceExportOrder.current.get("users") ?? null).map((user) => [user.fullName, user.email, ROLE_LABELS[user.role], user.assignedSiteId ? siteNames.get(user.assignedSiteId) ?? "Проект не найден" : "Не назначен", user.status === "invited" ? "Приглашён" : "Активен"]);
     openSettingsExportPreview({ title: "Пользователи системы", description: `Строк в выгрузке: ${rows.length}`, fileName: "Пользователи_системы.xlsx", sheetName: "Пользователи", workbookTitle: "Пользователи системы", headers, rows });
   }
   async function downloadProjectDirectoryTemplate() {
     if (!activeDirectoryGroup) return;
-    const { createTableXlsx } = await loadPlacementXlsx();
-    const header = directoryExcelHeader(activeDirectoryGroup.entity);
-    download(createTableXlsx("Шаблон", `Шаблон: ${focusedDirectoryTitle} — ${activeSite?.name ?? "Проект"}`, [header], blankTemplateRows), `Шаблон_${safeFilePart(focusedDirectoryTitle)}_${safeFilePart(activeSite?.name ?? "проект")}.xlsx`);
+    // Legacy links must never fall back to the old one-column work-type template.
+    if (activeDirectoryGroup.entity === "mainWorkType" || activeDirectoryGroup.entity === "subworkType") {
+      setError("");
+      try {
+        const { createTableXlsx } = await loadPlacementXlsx();
+        download(createTableXlsx(WORK_TYPES_EXCEL_SHEET, `Шаблон: Виды и подвиды работ — ${activeSite?.name ?? "Проект"}`, WORK_TYPES_EXCEL_HEADERS, workTypesTemplateRows(), WORK_TYPES_EXCEL_WIDTHS), excelFileName("Шаблон видов и подвидов работ", [activeSite?.name]));
+      } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось скачать шаблон Excel."); }
+      return;
+    }
+    if (activeDirectoryGroup.entity === "zone" || activeDirectoryGroup.entity === "master") await downloadSettingsTemplate(activeDirectoryGroup.entity);
   }
   async function importProjectDirectory(file: File) {
     if (!activeDirectoryGroup) return;
     setImporting(true); setError(""); setNotice("");
     try {
+      if (!requireSavedExcelRows(directoryDrafts.length)) return;
       const header = directoryExcelHeader(activeDirectoryGroup.entity);
       const { parseTableXlsx } = await loadPlacementXlsx();
       const rows = await parseTableXlsx(file, [header]);
       const names = [...new Map(rows.map((row) => [normalize(row[header]), row[header].trim()])).values()].filter(Boolean);
       if (!names.length) throw new Error("В файле нет заполненных значений.");
-      const existing = new Set(activeDirectoryGroup.items.map((item) => normalize(item.name)));
-      const newNames = names.filter((name) => !existing.has(normalize(name)));
-      const employeesByName = new Map((data?.placementEmployees ?? []).map((employee) => [normalize(employee.fullName), employee]));
-      if (activeDirectoryGroup.entity === "master") {
-        const missing = newNames.filter((name) => !employeesByName.has(normalize(name)));
-        if (missing.length) throw new Error(`Мастера не относятся к текущему проекту: ${missing.slice(0, 5).join(", ")}${missing.length > 5 ? "…" : ""}.`);
-      }
-      for (const name of newNames) {
-        const employee = activeDirectoryGroup.entity === "master" ? employeesByName.get(normalize(name)) : undefined;
-        const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "create-directory", entity: activeDirectoryGroup.entity, name: employee?.fullName ?? name, employeeId: employee?.id, siteId }) });
-        const result = await response.json() as { error?: string };
-        if (!response.ok) throw new Error(result.error ?? `Не удалось добавить значение «${name}».`);
-      }
-      setNotice(newNames.length ? `Импортировано значений: ${newNames.length}` : "Все значения из файла уже есть в справочнике");
+      if (activeDirectoryGroup.entity !== "zone" && activeDirectoryGroup.entity !== "master") throw new Error("Для видов и подвидов работ используйте объединённый справочник и шаблон с двумя колонками.");
+      const employees = activeDirectoryGroup.entity === "master" ? employeesFromExcelNames(names, data?.placementEmployees ?? []) : [];
+      const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "import-project-directory", entity: activeDirectoryGroup.entity, siteId, ...(activeDirectoryGroup.entity === "master" ? { employeeIds: employees.map(employee => employee.id) } : { names }) }) });
+      const result = await response.json() as { error?: string; count?: number; skipped?: number };
+      if (!response.ok) throw new Error(result.error ?? "Не удалось импортировать справочник.");
+      setNotice(result.count ? `Импортировано значений: ${result.count}${result.skipped ? ` · уже существовали: ${result.skipped}` : ""}` : "Все значения из файла уже есть в справочнике");
       await loadData();
     } catch (importError) { setError(importError instanceof Error ? importError.message : "Не удалось импортировать справочник."); }
     finally { setImporting(false); if (projectDirectoryFileInput.current) projectDirectoryFileInput.current.value = ""; }
@@ -1979,8 +2019,11 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }
   async function downloadTemplate() {
     if (!data) return;
-    const { createPlacementTemplateXlsx } = await loadPlacementXlsx();
-    download(createPlacementTemplateXlsx(activeSite?.name ?? "Объект", workDate, { employees: data.reportEmployees, shifts: data.shifts.map((item) => item.name), zones: data.zones.map((item) => item.name), mainWorkTypes: data.mainWorkTypes.map((item) => item.name), subworkTypes: data.subworkTypes.map((item) => item.name), masters: data.masters.map((item) => item.name) }), `Шаблон_отчёта_${activeSite?.code ?? siteId}_${workDate}.xlsx`);
+    setError("");
+    try {
+      const { createPlacementTemplateXlsx } = await loadPlacementXlsx();
+      download(createPlacementTemplateXlsx(activeSite?.name ?? "Объект", workDate, { employees: data.reportEmployees, shifts: data.shifts.map((item) => item.name), zones: data.zones.map((item) => item.name), mainWorkTypes: data.mainWorkTypes.map((item) => item.name), subworkTypes: data.subworkTypes.map((item) => item.name), workTypePairs: data.mainWorkTypes.flatMap(parent => { const children = subworkOptions(data.subworkTypes, parent.id); return children.length ? children.map(child => ({ mainWorkTypeName: parent.name, subworkTypeName: child.name })) : [{ mainWorkTypeName: parent.name, subworkTypeName: "" }]; }), masters: data.masters.map((item) => item.name) }), excelFileName("Шаблон отчёта персонала", [activeSite?.name ?? siteId, workDate]));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось скачать шаблон Excel."); }
   }
   async function importExcel(file: File) {
     if (!data) return;
@@ -1988,21 +2031,22 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     try {
       const { parsePlacementXlsx } = await loadPlacementXlsx();
       const rows = await parsePlacementXlsx(file);
-      const findEmployee = (name: string) => data.reportEmployees.find((item) => normalize(item.fullName) === normalize(name));
-      const findOption = (options: Option[], name: string) => options.find((item) => normalize(item.name) === normalize(name));
+      if (rows.some(row => row.workDate !== workDate)) throw new Error("Даты в Excel не совпадают с датой открытого отчёта. Используйте общую таблицу отчётов для многодневного импорта.");
+      const findEmployee = (name: string) => { const matches = data.reportEmployees.filter((item) => normalize(item.fullName) === normalize(name)); return matches.length === 1 ? matches[0] : undefined; };
+      const findOption = (options: Option[], name: string) => { const matches = options.filter((item) => normalize(item.name) === normalize(name)); return matches.length === 1 ? matches[0] : undefined; };
       const issues: string[] = [];
       const imported = rows.flatMap((row, index) => {
         const employee = findEmployee(row.employeeName); const shift = findOption(data.shifts, row.shiftName); const zone = findOption(data.zones, row.zoneName);
-        const main = findOption(data.mainWorkTypes, row.mainWorkTypeName); const subwork = findOption(data.subworkTypes, row.subworkTypeName); const master = findOption(data.masters, row.masterName);
+        const main = findOption(data.mainWorkTypes, row.mainWorkTypeName); const subwork = findOption(subworkOptions(data.subworkTypes, main?.id), row.subworkTypeName); const master = findOption(data.masters, row.masterName);
         if (!employee || !shift || !zone || !main || !subwork || !master || !Number.isInteger(Number(row.hours)) || Number(row.hours) < 1 || Number(row.hours) > 10) {
           issues.push(`${index + 1}: ${row.employeeName || "без ФИО"}`); return [];
         }
         return [makeDraft({ employeeId: String(employee.id), employeeQuery: employee.fullName, shiftId: String(shift.id), zoneId: String(zone.id), mainWorkTypeId: String(main.id), subworkTypeId: String(subwork.id), masterId: String(master.id), hours: row.hours, note: row.note })];
       });
-      if (!imported.length) throw new Error(issues.length ? `Не удалось сопоставить строки: ${issues.slice(0, 5).join(", ")}.` : "В файле нет заполненных строк.");
+      if (issues.length) throw new Error(`Не удалось однозначно сопоставить строки: ${issues.slice(0, 5).join(", ")}. Проверьте названия по справочникам и часы. Файл не импортирован.`);
+      if (!imported.length) throw new Error("В файле нет заполненных строк.");
       setDraftRows((current) => [...current, ...imported]);
       setNotice(`Из Excel загружено строк: ${imported.length}. Проверьте и нажмите «Сохранить».`);
-      if (issues.length) setError(`Пропущено строк: ${issues.length} (${issues.slice(0, 5).join(", ")}). Проверьте названия по справочникам.`);
     } catch (importError) { setError(importError instanceof Error ? importError.message : "Не удалось прочитать XLSX."); }
     finally { setImporting(false); if (fileInput.current) fileInput.current.value = ""; }
   }
@@ -2015,7 +2059,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   ];
   const activeDirectoryGroup = directoryFocus === "all" || directoryFocus === "sites" ? undefined : directoryGroups.find((group) => group.entity === directoryFocus);
   const visibleDirectoryItems = activeDirectoryGroup?.items ?? [];
-  const focusedDirectoryTitle = directoryFocus === "sites" ? "Объекты" : directoryFocus === "all" ? "Все справочники" : directoryGroups.find((group) => group.entity === directoryFocus)?.title ?? "Справочник";
+  const focusedDirectoryTitle = directoryFocus === "mainWorkType" || directoryFocus === "subworkType" ? "Виды и подвиды работ" : directoryFocus === "sites" ? "Объекты" : directoryFocus === "all" ? "Все справочники" : directoryGroups.find((group) => group.entity === directoryFocus)?.title ?? "Справочник";
   const generalSettingsCards: Array<{ icon: string; title: string; description: string; resource: PermissionResource; view?: View; focus?: DirectoryFocus }> = [
     { icon: "С", title: "Сотрудники", description: "Кадровые данные и проекты сотрудников с безопасной проверкой по Битрикс24.", resource: "employees", view: "employees" },
     { icon: "Т", title: "Реестр техники", description: "Единый список техники с назначением на проекты.", resource: "equipment_registry", view: "equipmentRegistry" },
@@ -2029,9 +2073,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     { icon: "С", title: "Сотрудники проекта", description: "Состав выбранного проекта без дублирования карточек сотрудников.", resource: "project_employees", view: "projectEmployees" },
     { icon: "Т", title: "Техника проекта", description: "Техника, назначенная выбранному проекту, без дублирования общего реестра.", resource: "project_equipment", view: "projectEquipment" },
     { icon: "З", title: "Зоны", description: "Зоны, доступные только в выбранном проекте.", resource: "project_directories", focus: "zone" },
-    { icon: "Р", title: "Виды работ", description: "Работы из одноимённой колонки отчёта выбранного проекта.", resource: "project_directories", focus: "mainWorkType" },
-    { icon: "П", title: "Виды подработ", description: "Виды подработ, доступные только в выбранном проекте.", resource: "project_directories", focus: "subworkType" },
-    { icon: "М", title: "Мастера", description: "Мастера из одноимённой колонки отчёта выбранного проекта.", resource: "project_directories", focus: "master" },
+    { icon: "Р", title: "Виды и подвиды работ", description: "Виды работ с вложенными подвидами для отчётов персонала и техники.", resource: "project_directories", focus: "mainWorkType" },
+    { icon: "М", title: "Мастера", description: "Автоматически из сотрудников проекта по должностям мастеров участка.", resource: "project_directories", focus: "master" },
   ];
   const tableWorkspacePage = view === "placement"
     || view === "equipment"
@@ -2041,11 +2084,11 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     || view === "positions"
     || view === "projectEmployees"
     || view === "directories";
-  const pageContentClassName = view === "placement"
+  const pageContentClassName = view === "placement" || view === "equipment"
     ? "page-content personnel-report-page table-workspace-page"
     : view === "timesheet" || view === "equipmentTimesheet"
       ? "page-content timesheet-workspace-page"
-      : tableWorkspacePage ? "page-content table-workspace-page" : "page-content";
+      : view === "directories" && (directoryFocus === "mainWorkType" || directoryFocus === "subworkType") ? "page-content table-workspace-page work-types-workspace-page" : tableWorkspacePage ? "page-content table-workspace-page" : "page-content";
   const selectedBitrixDifferenceSafeIndex = bitrixCheckResult
     ? Math.min(selectedBitrixDifferenceIndex, Math.max(0, bitrixCheckResult.differences.length - 1))
     : 0;
@@ -2064,7 +2107,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     ? selectedBitrixDifference.suggestedEmployeeIds?.length ? "Выберите подходящего сотрудника из справочника." : "Такого сотрудника нет в справочнике нашей системы."
     : selectedBitrixDifference?.details ?? "";
 
-  return <main className={sidebarOpen ? "app-shell" : "app-shell sidebar-collapsed"}>
+  const currentTableOrderScope = viewAllowed(view) ? tableOrderScope(view, directoryFocus) : null;
+  return <WorkspaceAccessProvider access={tableAccess}><TableOrderProvider key={`${currentTableOrderScope}:${siteId}:${currentUser.id}`} scope={currentTableOrderScope} siteId={siteId}><main className={sidebarOpen ? "app-shell" : "app-shell sidebar-collapsed"}>
     <button type="button" className="sidebar-edge-trigger" onClick={() => setSidebarOpen((open) => !open)} aria-controls="primary-sidebar" aria-expanded={sidebarOpen} aria-label={sidebarOpen ? "Свернуть меню" : "Развернуть меню"} title={sidebarOpen ? "Свернуть меню" : "Развернуть меню"}>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={sidebarOpen ? "m14 7-5 5 5 5" : "m10 7 5 5-5 5"}/></svg>
     </button>
@@ -2081,20 +2125,22 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
           {(personnelOpen || !sidebarOpen) && <div className="nav-sub" id="personnel-navigation">{mayViewWorkersReport && <button className={view === "placement" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("placement")} aria-label="Отчёт персонала" title="Отчёт персонала"><span className="nav-item-icon"><AppIcon name="workersReport" /></span>Отчёт персонала</button>}{mayViewWorkersTimesheet && <button className={view === "timesheet" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("timesheet")} aria-label="Табель персонала" title="Табель персонала"><span className="nav-item-icon"><AppIcon name="workersTimesheet" /></span>Табель персонала</button>}</div>}
         </div>}
       </nav>
-      <div className="sidebar-bottom"><div className="nav-group settings-group">
+      <div className="sidebar-bottom">{(mayAccessGeneralSettings || mayAccessProjectSettings) && <div className="nav-group settings-group">
         <button type="button" className="nav-heading" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen} aria-controls="settings-navigation" aria-label={settingsOpen ? "Свернуть раздел «Настройки»" : "Развернуть раздел «Настройки»"}><span className="nav-heading-icon"><AppIcon name="settings" /></span><span>Настройки</span><SidebarChevron open={settingsOpen} /></button>
         {(settingsOpen || !sidebarOpen) && <div className="nav-sub" id="settings-navigation">
           {mayAccessGeneralSettings && <button className={view === "settings" || view === "users" || view === "employees" || view === "positions" || view === "projects" || view === "equipmentRegistry" || view === "auditLog" || view === "accessRights" ? "nav-item active" : "nav-item"} onClick={() => { navigateTo("settings"); setUserDrafts([]); setUserFullRowEditIds([]); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setPositionDrafts([]); setPositionFullRowEditIds([]); setSiteDrafts([]); setSiteFullRowEditIds([]); }} aria-label="Общие настройки" title="Общие настройки"><span className="nav-item-icon"><AppIcon name="generalSettings" /></span>Общие</button>}
           {mayAccessProjectSettings && <button className={view === "projectSettings" || view === "projectEmployees" || view === "projectEquipment" || view === "directories" ? "nav-item active" : "nav-item"} onClick={() => { navigateTo("projectSettings"); setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false); setProjectEmployeeDrafts([]); }} aria-label="Настройки проекта" title="Настройки проекта"><span className="nav-item-icon"><AppIcon name="projectSettings" /></span>Настройки проекта</button>}
         </div>}
-      </div>
+      </div>}
         <div className="sidebar-user"><div><strong>{currentUser.fullName}</strong><small>{ROLE_LABELS[role]}</small></div><button className="profile-button" onClick={openProfile} title="Профиль" aria-label="Открыть профиль пользователя"><AppIcon name="user" /></button></div>
       </div>
     </aside>
     <section className="workspace">
-      <div className={pageContentClassName}><div className={["page-heading", view === "placement" || view === "equipment" ? "report-page-heading" : "", view === "timesheet" || view === "equipmentTimesheet" ? "timesheet-page-heading" : ""].filter(Boolean).join(" ")}>
+      {viewAllowed(view) ? <div className={pageContentClassName}><div className={["page-heading", view === "placement" || view === "equipment" ? "report-page-heading" : "", view === "placement" && useUnifiedPersonnelReport || view === "equipment" ? "personnel-report-heading" : "", view === "timesheet" || view === "equipmentTimesheet" ? "timesheet-page-heading" : ""].filter(Boolean).join(" ")}>
         <div className="page-heading-title"><h1>{view === "placement" ? "Отчёт персонала" : view === "equipment" ? "Отчёт техники" : view === "timesheet" ? "Табель рабочих" : view === "equipmentTimesheet" ? "Табель техники" : view === "equipmentRegistry" ? "Реестр техники" : view === "projectEquipment" ? "Техника проекта" : view === "employees" ? "Сотрудники" : view === "settings" ? "Общие настройки" : view === "projectSettings" ? "Настройки проекта" : view === "projectEmployees" ? "Сотрудники проекта" : view === "users" ? "Пользователи системы" : view === "positions" ? "Список должностей" : view === "projects" ? "Проекты" : view === "auditLog" ? "Журнал действий" : view === "accessRights" ? "Права доступа" : focusedDirectoryTitle}</h1></div>
-        {view === "placement" && <div className="report-heading-controls">
+        {view === "placement" && useUnifiedPersonnelReport && <div id="personnel-report-views" className="personnel-report-views-portal" />}
+        {view === "equipment" && <div id="equipment-report-views" className="personnel-report-views-portal" />}
+        {view === "placement" && !useUnifiedPersonnelReport && <div className="report-heading-controls">
           <div className="report-heading-date"><ReportDateNavigation dates={recentDates} value={workDate} today={initialToday} filledDates={filledDates} onChange={changeWorkDate} onRangeChange={changeReportRange} /></div>
           <ExcelActionsMenu actions={[
             { label: "Экспорт в Excel", onSelect: openExportPreview, disabled: !data },
@@ -2105,12 +2151,17 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
           ]} />
           <input ref={fileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importExcel(file); }} />
         </div>}
+        {view === "placement" && useUnifiedPersonnelReport && <div id="personnel-report-actions" className="report-heading-portal" />}
         {view === "equipment" && <div id="equipment-report-actions" className="report-heading-portal" />}
         {view === "timesheet" && <div id="personnel-timesheet-actions" className="timesheet-heading-portal" />}
         {view === "equipmentTimesheet" && <div id="equipment-timesheet-actions" className="timesheet-heading-portal" />}
       </div>
 
-      {mayViewWorkersReport && view === "placement" && <>
+      {mayViewWorkersReport && view === "placement" && useUnifiedPersonnelReport && <>
+        {error && <div className="message error" role="alert"><strong>Не удалось загрузить справочники</strong><span>{error}</span></div>}
+        <Suspense fallback={<p role="status">Загружаем отчёты персонала…</p>}><PersonnelReportWorkspace key={`personnel-reports-${siteId}-${currentUser.id}`} siteId={siteId} siteName={activeSite?.name ?? "Проект"} today={initialToday} currentUser={currentUser} permissions={{ create: mayCreateWorkersReport, update: mayUpdateWorkersReport, delete: mayDeleteWorkersReport }} employees={data?.reportEmployees ?? []} shifts={data?.shifts ?? []} zones={data?.zones ?? []} mainWorkTypes={data?.mainWorkTypes ?? []} subworkTypes={data?.subworkTypes ?? []} masters={data?.masters ?? []} loading={loading} onDirtyChange={setPersonnelReportDirty} /></Suspense>
+      </>}
+      {mayViewWorkersReport && view === "placement" && !useUnifiedPersonnelReport && <>
         {error && <div className="message error"><strong>Нужно проверить данные</strong><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
         {notice && <div className="message success"><strong>Готово</strong><span>{notice}</span><button onClick={() => setNotice("")}>×</button></div>}
         <section className="table-card personnel-table-card">
@@ -2153,7 +2204,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       </>}
 
       {mayViewWorkersTimesheet && view === "timesheet" && <TimesheetView siteId={siteId} initialMonth={selectedMonth} today={initialToday} onMonthChange={changeTimesheetMonth} />}
-      {mayViewEquipmentReport && view === "equipment" && <EquipmentAccountingView key={`equipment-report-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} mode="daily" onDateChange={changeWorkDate} />}
+      {mayViewEquipmentReport && view === "equipment" && <Suspense fallback={<p role="status">Загружаем отчёты техники…</p>}><EquipmentReportPage key={`equipment-report-${siteId}-${currentUser.id}`} siteId={siteId} siteName={activeSite?.name ?? "Проект"} today={initialToday} currentUser={currentUser} permissions={{ create: may("equipment_report", "create"), update: may("equipment_report", "update"), delete: may("equipment_report", "delete") }} onDirtyChange={setEquipmentReportDirty} /></Suspense>}
       {mayViewEquipmentTimesheet && view === "equipmentTimesheet" && <EquipmentAccountingView key={`equipment-timesheet-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} mode="month" onMonthChange={changeTimesheetMonth} />}
 
       {canDeleteReportDate && deleteConfirmationOpen && <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setDeleteConfirmationOpen(false); }}><section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-confirmation-title"><h2 id="delete-confirmation-title">Удалить выбранные строки?</h2><p>Вы точно хотите удалить строки ({pendingDeletes.length})? Это действие нельзя отменить.</p><div><button type="button" className="secondary-button" onClick={() => setDeleteConfirmationOpen(false)} disabled={saving}>Отмена</button><button type="button" className="delete-rows-button" onClick={() => void deletePendingEntries()} disabled={saving}>{saving ? "Удаляем…" : "Удалить"}</button></div></section></div>}
@@ -2169,16 +2220,28 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         <div className="settings-grid">{projectSettingsCards.filter((card) => may(card.resource)).map((card) => <button type="button" key={card.title} onClick={() => { setError(""); setNotice(""); setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false); setProjectEmployeeDrafts([]); if (card.focus) navigateTo("directories", card.focus); else if (card.view) navigateTo(card.view); }}><span className="settings-card-icon">{card.icon}</span><strong>{card.title}</strong><p>{card.description}</p></button>)}</div>
       </section>}
       {view === "projectEmployees" && may("project_employees") && <section className="users-settings admin-section reference-section">
-        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("projectSettings"); setProjectEmployeeDrafts([]); setProjectEmployeePendingDeletes([]); setProjectEmployeeDeleteConfirmationOpen(false); }}>← К настройкам проекта</button><div className="toolbar-actions"><button type="button" onClick={exportProjectEmployees}>Экспорт в Excel</button>{mayCreateProjectEmployees && <><button type="button" onClick={downloadProjectEmployeeTemplate}>Скачать шаблон</button><button type="button" onClick={() => projectEmployeeFileInput.current?.click()} disabled={importing}>Импорт из Excel</button><input ref={projectEmployeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProjectEmployees(file); }} /></>}</div></div>
+        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("projectSettings"); setProjectEmployeeDrafts([]); setProjectEmployeePendingDeletes([]); setProjectEmployeeDeleteConfirmationOpen(false); }}>← К настройкам проекта</button><div className="toolbar-actions"><ExcelActionsMenu actions={[
+          { label: "Экспорт в Excel", onSelect: exportProjectEmployees },
+          ...(mayCreateProjectEmployees ? [
+            { label: importing ? "Импортируем…" : "Импорт из Excel", onSelect: () => projectEmployeeFileInput.current?.click(), disabled: importing },
+            { label: "Скачать шаблон", onSelect: downloadProjectEmployeeTemplate },
+          ] : []),
+        ]} />{mayCreateProjectEmployees && <><input ref={projectEmployeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProjectEmployees(file); }} /></>}</div></div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
-        <ProjectEmployeeAgGrid rows={visibleProjectEmployees} allEmployees={data?.employees ?? []} drafts={projectEmployeeDrafts} pendingDeletes={projectEmployeePendingDeletes} readOnly={!mayCreateProjectEmployees} selectionDisabled={!mayDeleteProjectEmployees} onPatchDraft={patchProjectEmployeeDraft} onSelectionChange={(ids) => { setProjectEmployeePendingDeletes(ids); setError(""); setNotice(""); }} />
+        <ProjectEmployeeAgGrid onVisibleIdsChange={ids => referenceExportOrder.current.set(`projectEmployees:${siteId}`, ids)} rows={visibleProjectEmployees} allEmployees={data?.employees ?? []} drafts={projectEmployeeDrafts} pendingDeletes={projectEmployeePendingDeletes} readOnly={!mayCreateProjectEmployees} selectionDisabled={!mayDeleteProjectEmployees} onPatchDraft={patchProjectEmployeeDraft} onSelectionChange={(ids) => { setProjectEmployeePendingDeletes(ids); setError(""); setNotice(""); }} />
         {mayManageProjectEmployees && <AdminGridFooter addLabel="Добавить сотрудника в проект" countLabel="Всего в проекте" count={visibleProjectEmployees.length} deletingCount={projectEmployeePendingDeletes.length} deletingLabel="Убрать из проекта" uniformActions editorOpen={Boolean(projectEmployeeDrafts.length)} pendingCount={projectEmployeeDrafts.length} saving={saving} allowMultiple canCreate={mayCreateProjectEmployees} canUpdate={mayUpdateProjectEmployees} canDelete={mayDeleteProjectEmployees} onAdd={() => { setProjectEmployeeDrafts((current) => [...current, { key: newKey(), employeeId: "", employeeQuery: "" }]); setNotice(""); }} onDelete={() => setProjectEmployeeDeleteConfirmationOpen(true)} onClearSelection={() => { setProjectEmployeePendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={() => { setProjectEmployeeDrafts([]); setError(""); setNotice(""); }} onSave={() => void assignProjectEmployees()} />}
       </section>}
       {mayDeleteProjectEmployees && projectEmployeeDeleteConfirmationOpen && <AdminDeleteConfirmation title="Убрать выбранных сотрудников из проекта?" text={`Сотрудники (${projectEmployeePendingDeletes.length}) исчезнут только из проекта «${activeSite?.name ?? ""}». Их общие карточки и история отчётов сохранятся.`} saving={saving} onCancel={() => setProjectEmployeeDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingProjectEmployees()} />}
       {view === "employees" && may("employees") && <section className="users-settings admin-section employee-section">
         <div className="settings-toolbar">
           <button type="button" className="back-button" onClick={() => { navigateTo("settings"); setBitrixCheckResult(null); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setEmployeePendingDeletes([]); setEmployeeDeleteConfirmationOpen(false); setEmployeeBulkEditOpen(false); }}>← К настройкам</button>
-          <div className="toolbar-actions">{mayInspectBitrix24 && <span className="cooldown-button-wrapper" title={inspectBitrix24Title}><button type="button" className="bitrix-check-button" onClick={() => void inspectBitrix24Connection()} disabled={syncingBitrix24 || linkingBitrix24 || importing || inspectBitrix24Remaining > 0}>{syncingBitrix24 ? "Проверяем…" : "Проверить с Битрикс24"}</button></span>}<button type="button" onClick={exportEmployees}>Экспорт в Excel</button>{(mayCreateEmployees || mayUpdateEmployees) && <><button type="button" onClick={() => employeeFileInput.current?.click()} disabled={importing || syncingBitrix24 || linkingBitrix24}>Импорт из Excel</button><input ref={employeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importEmployees(file); }} /></>}</div>
+          <div className="toolbar-actions">{mayInspectBitrix24 && <span className="cooldown-button-wrapper" title={inspectBitrix24Title}><button type="button" className="bitrix-check-button" onClick={() => void inspectBitrix24Connection()} disabled={syncingBitrix24 || linkingBitrix24 || importing || inspectBitrix24Remaining > 0}>{syncingBitrix24 ? "Проверяем…" : "Проверить с Битрикс24"}</button></span>}<ExcelActionsMenu actions={[
+            { label: "Экспорт в Excel", onSelect: exportEmployees },
+            ...(mayCreateEmployees || mayUpdateEmployees ? [
+              { label: importing ? "Импортируем…" : "Импорт из Excel", onSelect: () => employeeFileInput.current?.click(), disabled: importing || syncingBitrix24 || linkingBitrix24 },
+              { label: "Скачать шаблон", onSelect: () => downloadSettingsTemplate("employees"), disabled: loading },
+            ] : []),
+          ]} />{(mayCreateEmployees || mayUpdateEmployees) && <><input ref={employeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importEmployees(file); }} /></>}</div>
         </div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}
         {notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
@@ -2207,10 +2270,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
           onValidationError={(message) => { setError(message); setNotice(""); }}
           onReorder={reorderEmployees}
         />
-        {mayEditGlobalEmployees && <AdminGridFooter addLabel="Добавить сотрудника" countLabel="Всего сотрудников" count={visibleEmployees.length} deletingCount={employeePendingDeletes.length} deletingLabel="Удалить сотрудников" editSelectionLabel="Редактировать" bulkEditSelectionLabel="Массовое редактирование" uniformActions editorOpen={Boolean(employeeDrafts.length)} editingExisting={employeeDrafts.some((draft) => Boolean(draft.id))} pendingCount={employeeDrafts.length} saving={saving || processingBitrixEmployee} allowMultiple canCreate={mayCreateEmployees} canUpdate={mayUpdateEmployees} canDelete={mayDeleteEmployees} selectionActions={[
+        {mayEditGlobalEmployees && <AdminGridFooter addLabel="Добавить сотрудника" countLabel="Всего сотрудников" count={visibleEmployees.length} deletingCount={employeePendingDeletes.length} deletingLabel="Удалить сотрудников" editSelectionLabel="Редактировать" bulkEditSelectionLabel="Массовое редактирование" uniformActions editorOpen={Boolean(employeeDrafts.length)} editingExisting={employeeDrafts.some((draft) => Boolean(draft.id))} pendingCount={employeeDrafts.length} saving={saving || processingBitrixEmployee} allowMultiple canCreate={mayCreateEmployees} canUpdate={mayUpdateEmployees} canDelete={mayDeleteEmployees} selectionActions={mayUpdateEmployees ? [
           { key: "bitrix-update", label: `Актуализировать с Битрикс24 (${selectedBitrixUpdatableEmployees.length})`, className: "bitrix-selection-update-button", disabled: !mayUpdateEmployees || selectedBitrixUpdatableEmployees.length === 0, title: selectedBitrixUpdatableEmployees.length ? "Каждый выбранный сотрудник будет обновлён по своей связанной карточке Битрикс24." : "Среди выбранных строк нет неподтверждённых расхождений, которые можно актуализировать.", onClick: () => void updateSelectedEmployeesFromBitrix() },
           { key: "bitrix-acknowledge", label: `Подтвердить предупреждение (${selectedBitrixWarningEmployees.length})`, className: "bitrix-selection-acknowledge-button", disabled: !mayUpdateEmployees || selectedBitrixWarningEmployees.length === 0, title: selectedBitrixWarningEmployees.length ? "Отметить выбранные расхождения как допустимые и снять выделение." : "Среди выбранных строк нет активных предупреждений.", onClick: () => void acknowledgeSelectedBitrixWarnings() },
-        ]} onAdd={() => { setEmployeeDrafts((current) => current.some((draft) => draft.id) ? current : [...current, { key: newKey(), fullName: "", employmentType: "", department: "", position: "", projectSiteId: "" }]); setNotice(""); }} onDelete={() => setEmployeeDeleteConfirmationOpen(true)} onEditSelection={editSelectedEmployeeRows} onBulkEditSelection={openEmployeeBulkEdit} onClearSelection={() => { setEmployeePendingDeletes([]); setEmployeeBulkEditOpen(false); setEmployeeBulkEditError(""); setNotice(""); }} onCancelEditing={cancelEmployeeEditing} onSave={() => void saveEmployees()} />}
+        ] : []} onAdd={() => { setEmployeeDrafts((current) => current.some((draft) => draft.id) ? current : [...current, { key: newKey(), fullName: "", employmentType: "", department: "", position: "", projectSiteId: "" }]); setNotice(""); }} onDelete={() => setEmployeeDeleteConfirmationOpen(true)} onEditSelection={editSelectedEmployeeRows} onBulkEditSelection={openEmployeeBulkEdit} onClearSelection={() => { setEmployeePendingDeletes([]); setEmployeeBulkEditOpen(false); setEmployeeBulkEditError(""); setNotice(""); }} onCancelEditing={cancelEmployeeEditing} onSave={() => void saveEmployees()} />}
       </section>}
 
       {bitrixCheckResult && <div className="bitrix-check-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !linkingBitrix24 && !creatingBitrixEmployee && !processingBitrixEmployee && !bitrixEmployeeCreateDraft && !bitrixEmployeeAction) setBitrixCheckResult(null); }}><section className={`bitrix-check-dialog ${bitrixCheckResult.status}`} role="dialog" aria-modal="true" aria-labelledby="bitrix-check-title">
@@ -2225,7 +2288,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         <div className="bitrix-check-footer"><span>{bitrixCheckResult.autoLinkable > 0 ? `Можно автоматически сопоставить: ${bitrixCheckResult.autoLinkable}` : bitrixCheckResult.totalDifferences ? "Изменения применяются только после выбора действия." : "Проверка завершена."}</span><div>{mayUpdateEmployees && bitrixCheckResult.autoLinkable > 0 && <button type="button" className="bitrix-auto-link-button" onClick={() => void linkBitrix24Employees()} disabled={linkingBitrix24 || creatingBitrixEmployee || processingBitrixEmployee}>{linkingBitrix24 ? "Сопоставляем…" : `Сопоставить автоматически: ${bitrixCheckResult.autoLinkable}`}</button>}<button type="button" onClick={() => setBitrixCheckResult(null)} disabled={linkingBitrix24 || creatingBitrixEmployee || processingBitrixEmployee || Boolean(bitrixEmployeeCreateDraft) || Boolean(bitrixEmployeeAction)}>Закрыть</button></div></div>
       </section></div>}
 
-      {bitrixEmployeeCreateDraft && <div className="confirmation-backdrop bitrix-employee-create-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !creatingBitrixEmployee) setBitrixEmployeeCreateDraft(null); }}><form className="bitrix-employee-create-dialog" role="dialog" aria-modal="true" aria-labelledby="bitrix-employee-create-title" onSubmit={(event) => void createBitrix24Employee(event)}>
+      {mayCreateEmployees && bitrixEmployeeCreateDraft && <div className="confirmation-backdrop bitrix-employee-create-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !creatingBitrixEmployee) setBitrixEmployeeCreateDraft(null); }}><form className="bitrix-employee-create-dialog" role="dialog" aria-modal="true" aria-labelledby="bitrix-employee-create-title" onSubmit={(event) => void createBitrix24Employee(event)}>
         <div className="bitrix-employee-create-heading"><div><small>НОВАЯ КАРТОЧКА СОТРУДНИКА</small><h2 id="bitrix-employee-create-title">Добавить из Битрикс24</h2><p>ФИО и связь с Битрикс24 заполнятся автоматически. Выберите данные, которые будут использоваться в нашей системе.</p></div><button type="button" className="bulk-edit-close" aria-label="Закрыть добавление сотрудника" onClick={() => setBitrixEmployeeCreateDraft(null)} disabled={creatingBitrixEmployee}>×</button></div>
         <div className="bitrix-employee-source-card"><span>Сотрудник</span><strong>{bitrixEmployeeCreateDraft.fullName}</strong><p>{[bitrixEmployeeCreateDraft.sourceEmploymentType, bitrixEmployeeCreateDraft.sourceDepartment, bitrixEmployeeCreateDraft.sourcePosition].filter(Boolean).join(" · ") || "Кадровые данные в Битрикс24 не заполнены полностью"}</p></div>
         <div className="bitrix-employee-create-fields">
@@ -2237,14 +2300,14 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         <div className="bitrix-employee-create-actions"><button type="button" className="secondary-button" onClick={() => setBitrixEmployeeCreateDraft(null)} disabled={creatingBitrixEmployee}>Отмена</button><button type="submit" className="save-edits-button" disabled={creatingBitrixEmployee || !bitrixEmployeeCreateDraft.positionId || !bitrixEmployeeCreateDraft.projectSiteId}>{creatingBitrixEmployee ? "Добавляем…" : "Добавить сотрудника"}</button></div>
       </form></div>}
 
-      {bitrixEmployeeAction && <div className="confirmation-backdrop bitrix-employee-action-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !processingBitrixEmployee) setBitrixEmployeeAction(null); }}><section className="confirmation-dialog bitrix-employee-action-dialog" role="dialog" aria-modal="true" aria-labelledby="bitrix-employee-action-title">
+      {(bitrixEmployeeAction?.kind === "delete" ? mayDeleteEmployees : mayUpdateEmployees) && bitrixEmployeeAction && <div className="confirmation-backdrop bitrix-employee-action-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !processingBitrixEmployee) setBitrixEmployeeAction(null); }}><section className="confirmation-dialog bitrix-employee-action-dialog" role="dialog" aria-modal="true" aria-labelledby="bitrix-employee-action-title">
         <h2 id="bitrix-employee-action-title">{bitrixEmployeeAction.kind === "update" ? "Применить изменения из Битрикс24?" : "Удалить сотрудника из справочника?"}</h2>
         <strong>{bitrixEmployeeAction.difference.employeeName}</strong>
         <p>{bitrixEmployeeAction.kind === "update" ? bitrixEmployeeAction.difference.details : "Карточка больше не найдена в Битрикс24. Сотрудник исчезнет из активного справочника и текущих проектов, но ранее заполненные отчёты и табели сохранятся без изменений."}</p>
         <div><button type="button" className="secondary-button" onClick={() => setBitrixEmployeeAction(null)} disabled={processingBitrixEmployee}>Отмена</button><button type="button" className={bitrixEmployeeAction.kind === "delete" ? "delete-rows-button" : "save-edits-button"} onClick={() => void applyBitrixEmployeeAction()} disabled={processingBitrixEmployee}>{processingBitrixEmployee ? "Выполняем…" : bitrixEmployeeAction.kind === "update" ? "Применить изменения" : "Удалить сотрудника"}</button></div>
       </section></div>}
 
-      {employeeBulkEditOpen && <div className="confirmation-backdrop employee-bulk-edit-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setEmployeeBulkEditOpen(false); }}><section className="employee-bulk-edit-dialog" role="dialog" aria-modal="true" aria-labelledby="employee-bulk-edit-title">
+      {mayUpdateEmployees && employeeBulkEditOpen && <div className="confirmation-backdrop employee-bulk-edit-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setEmployeeBulkEditOpen(false); }}><section className="employee-bulk-edit-dialog" role="dialog" aria-modal="true" aria-labelledby="employee-bulk-edit-title">
         <div className="employee-bulk-edit-heading"><div><h2 id="employee-bulk-edit-title">Массовое редактирование сотрудников</h2><p>Выбрано сотрудников: {employeePendingDeletes.length}. Укажите только те поля, которые нужно изменить у всех отмеченных сотрудников. Остальные значения сохранятся.</p></div><button type="button" className="bulk-edit-close" aria-label="Закрыть массовое редактирование" onClick={() => setEmployeeBulkEditOpen(false)}>×</button></div>
         {employeeBulkEditError && <div className="bulk-edit-error" role="alert">{employeeBulkEditError}</div>}
         <div className="employee-bulk-edit-form">
@@ -2259,7 +2322,13 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
 
       {mayDeleteEmployees && employeeDeleteConfirmationOpen && <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setEmployeeDeleteConfirmationOpen(false); }}><section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="employee-delete-confirmation-title"><h2 id="employee-delete-confirmation-title">Удалить выбранных сотрудников?</h2><p>Вы точно хотите удалить сотрудников ({employeePendingDeletes.length})? Они исчезнут из активного справочника и проектов, но история ранее созданных отчётов сохранится.</p><div><button type="button" className="secondary-button" onClick={() => setEmployeeDeleteConfirmationOpen(false)} disabled={saving}>Отмена</button><button type="button" className="delete-rows-button" onClick={() => void deletePendingEmployees()} disabled={saving}>{saving ? "Удаляем…" : "Удалить"}</button></div></section></div>}
       {view === "positions" && may("positions") && <section className="users-settings admin-section reference-section">
-        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("settings"); setPositionDrafts([]); setPositionFullRowEditIds([]); setPositionPendingDeletes([]); setPositionDeleteConfirmationOpen(false); }}>← К настройкам</button><div className="toolbar-actions"><button type="button" onClick={exportPositions}>Экспорт в Excel</button>{mayCreatePositions && <><button type="button" onClick={() => positionFileInput.current?.click()} disabled={importing}>Импорт из Excel</button><input ref={positionFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importPositions(file); }} /></>}</div></div>
+        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("settings"); setPositionDrafts([]); setPositionFullRowEditIds([]); setPositionPendingDeletes([]); setPositionDeleteConfirmationOpen(false); }}>← К настройкам</button><div className="toolbar-actions"><ExcelActionsMenu actions={[
+          { label: "Экспорт в Excel", onSelect: exportPositions },
+          ...(mayCreatePositions ? [
+            { label: importing ? "Импортируем…" : "Импорт из Excel", onSelect: () => positionFileInput.current?.click(), disabled: importing },
+            { label: "Скачать шаблон", onSelect: () => downloadSettingsTemplate("positions"), disabled: loading },
+          ] : []),
+        ]} />{mayCreatePositions && <><input ref={positionFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importPositions(file); }} /></>}</div></div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
         <PositionAgGrid rows={visiblePositions} drafts={positionDrafts} employmentTypes={data?.employmentTypes ?? []} departments={data?.departments ?? []} pendingDeletes={positionPendingDeletes} fullRowEditIds={positionFullRowEditIds} readOnly={!mayUpdatePositions} selectionDisabled={!mayUpdatePositions && !mayDeletePositions} onEdit={editPositionRow} onSelectionChange={(ids) => { setPositionPendingDeletes(ids); setPositionDrafts((current) => current.filter((draft) => !draft.id || !ids.includes(draft.id))); setPositionFullRowEditIds((current) => current.filter((id) => !ids.includes(id))); setNotice(""); }} onPatchDraft={patchPositionDraft} onVisibleIdsChange={(ids) => setPositionVisibleIds((current) => current?.length === ids.length && current.every((id, index) => id === ids[index]) ? current : ids)} />
         {mayManagePositions && <AdminGridFooter addLabel="Добавить должность" countLabel="Всего должностей" count={visiblePositions.length} deletingCount={positionPendingDeletes.length} deletingLabel="Удалить должности" editSelectionLabel="Редактировать" uniformActions editorOpen={Boolean(positionDrafts.length)} editingExisting={positionDrafts.some((draft) => Boolean(draft.id))} pendingCount={positionDrafts.length} saving={saving} allowMultiple canCreate={mayCreatePositions} canUpdate={mayUpdatePositions} canDelete={mayDeletePositions} onAdd={() => { setPositionDrafts((current) => current.some((draft) => draft.id) ? current : [...current, { key: newKey(), employmentType: "", department: "", position: "" }]); setNotice(""); }} onDelete={() => setPositionDeleteConfirmationOpen(true)} onEditSelection={editSelectedPositionRows} onClearSelection={() => { setPositionPendingDeletes([]); setNotice(""); }} onCancelEditing={cancelPositionEditing} onSave={() => void savePositions()} />}
@@ -2267,33 +2336,40 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       {mayDeletePositions && positionDeleteConfirmationOpen && <AdminDeleteConfirmation title="Удалить выбранные должности?" text={`Вы точно хотите удалить должности (${positionPendingDeletes.length})? Используемые сотрудниками должности удалить нельзя.`} saving={saving} onCancel={() => setPositionDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingPositions()} />}
 
       {view === "projects" && may("projects") && <section className="users-settings admin-section reference-section project-cards-section">
-        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("settings"); setSiteDrafts([]); setSiteFullRowEditIds([]); setSitePendingDeletes([]); setSiteDeleteConfirmationOpen(false); }}>← К настройкам</button><div className="toolbar-actions"><button type="button" onClick={exportProjects} disabled={!visibleSites.length}>Экспорт в Excel</button></div></div>
+        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("settings"); setSiteDrafts([]); setSiteFullRowEditIds([]); setSitePendingDeletes([]); setSiteDeleteConfirmationOpen(false); }}>← К настройкам</button><div className="toolbar-actions"><ExcelActionsMenu actions={[{ label: "Экспорт в Excel", onSelect: exportProjects, disabled: !visibleSites.length }]} /></div></div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
         {useProjectCardLayout
-          ? <ProjectCards rows={visibleSites} drafts={siteDrafts} employees={data?.employees ?? []} users={data?.users ?? []} currentSiteId={siteId} selectedIds={sitePendingDeletes} readOnly={!mayManageProjects} canCreate={mayCreateProjects} canUpdate={mayUpdateProjects} canDelete={mayDeleteProjects} onEdit={editSiteRow} onSelectionChange={changeSiteSelection} onPatchDraft={patchSiteDraft} onCancelEditing={cancelSiteEditing} onSave={() => void saveSites()} saving={saving} />
-          : <ProjectAgGrid rows={visibleSites} drafts={siteDrafts} pendingDeletes={sitePendingDeletes} fullRowEditIds={siteFullRowEditIds} onEdit={editSiteRow} onSelectionChange={changeSiteSelection} onPatchDraft={patchSiteDraft} />}
+          ? <ProjectCards rows={visibleSites} drafts={siteDrafts} employees={data?.employees ?? []} users={data?.users ?? []} projectStats={data?.projectStats} currentSiteId={siteId} selectedIds={sitePendingDeletes} readOnly={!mayManageProjects} canCreate={mayCreateProjects} canUpdate={mayUpdateProjects} canDelete={mayDeleteProjects} onEdit={editSiteRow} onSelectionChange={changeSiteSelection} onPatchDraft={patchSiteDraft} onCancelEditing={cancelSiteEditing} onSave={() => void saveSites()} saving={saving} />
+          : <ProjectAgGrid onVisibleIdsChange={ids => referenceExportOrder.current.set("projects", ids)} rows={visibleSites} drafts={siteDrafts} pendingDeletes={sitePendingDeletes} fullRowEditIds={siteFullRowEditIds} onEdit={editSiteRow} onSelectionChange={changeSiteSelection} onPatchDraft={patchSiteDraft} />}
         {mayManageProjects && <AdminGridFooter addLabel="Добавить проект" countLabel="Всего проектов" count={visibleSites.length} deletingCount={sitePendingDeletes.length} deletingLabel="Удалить проекты" editSelectionLabel="Редактировать" uniformActions editorOpen={Boolean(siteDrafts.length)} editingExisting={siteDrafts.some((draft) => Boolean(draft.id))} pendingCount={siteDrafts.length} saving={saving} canCreate={mayCreateProjects} canUpdate={mayUpdateProjects} canDelete={mayDeleteProjects} onAdd={() => { setSiteDrafts((current) => current.length ? current : [...current, { key: newKey(), name: "", code: "", timezone: "Europe/Moscow" }]); setNotice(""); }} onDelete={() => setSiteDeleteConfirmationOpen(true)} onEditSelection={editSelectedSiteRows} onClearSelection={() => { setSitePendingDeletes([]); setNotice(""); }} onCancelEditing={cancelSiteEditing} onSave={() => void saveSites()} />}
       </section>}
       {mayDeleteProjects && siteDeleteConfirmationOpen && <AdminDeleteConfirmation title="Удалить выбранные проекты?" text={`Вы точно хотите удалить проекты (${sitePendingDeletes.length})? Проекты со связанными сотрудниками, пользователями или отчётами удалить нельзя.`} saving={saving} onCancel={() => setSiteDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingSites()} />}
 
       {view === "users" && may("system_users") && <section className="users-settings admin-section reference-section user-access-section">
-        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("settings"); setUserDrafts([]); setUserFullRowEditIds([]); setUserPendingDeletes([]); setUserDeleteConfirmationOpen(false); setInvitationResults([]); }}>← К настройкам</button><div className="toolbar-actions"><button type="button" onClick={exportUsers} disabled={!visibleUsers.length}>Экспорт в Excel</button></div></div>
+        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("settings"); setUserDrafts([]); setUserFullRowEditIds([]); setUserPendingDeletes([]); setUserDeleteConfirmationOpen(false); setInvitationResults([]); }}>← К настройкам</button><div className="toolbar-actions"><ExcelActionsMenu actions={[{ label: "Экспорт в Excel", onSelect: exportUsers, disabled: !visibleUsers.length }]} /></div></div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
         {invitationResults.map((invitation) => <div className="invitation-result" key={invitation.email}><strong>Приглашение для {invitation.email}</strong><span>Передайте эту ссылку пользователю. После настройки почты она будет отправляться автоматически.</span><a href={invitation.url}>{invitation.url}</a></div>)}
         {useUserAccessCardLayout
           ? <UserAccessCards rows={visibleUsers} drafts={userDrafts} sites={data?.sites ?? []} selectedIds={userPendingDeletes} readOnly={!mayManageSystemUsers} canCreate={mayCreateSystemUsers} canUpdate={mayUpdateSystemUsers} canDelete={mayDeleteSystemUsers} onEdit={editUserRow} onSelectionChange={changeUserSelection} onPatchDraft={patchUserDraft} onCancelEditing={cancelUserEditing} onSave={() => void saveUsers()} saving={saving} />
-          : <UserAgGrid rows={visibleUsers} drafts={userDrafts} sites={data?.sites ?? []} pendingDeletes={userPendingDeletes} fullRowEditIds={userFullRowEditIds} onEdit={editUserRow} onSelectionChange={changeUserSelection} onPatchDraft={patchUserDraft} />}
+          : <UserAgGrid onVisibleIdsChange={ids => referenceExportOrder.current.set("users", ids)} rows={visibleUsers} drafts={userDrafts} sites={data?.sites ?? []} pendingDeletes={userPendingDeletes} fullRowEditIds={userFullRowEditIds} onEdit={editUserRow} onSelectionChange={changeUserSelection} onPatchDraft={patchUserDraft} />}
         {mayManageSystemUsers && <AdminGridFooter addLabel="Добавить пользователя" countLabel="Всего пользователей" count={visibleUsers.length} deletingCount={userPendingDeletes.length} deletingLabel="Удалить пользователей" editSelectionLabel="Редактировать" uniformActions editorOpen={Boolean(userDrafts.length)} editingExisting={userDrafts.some((draft) => Boolean(draft.id))} pendingCount={userDrafts.length} saving={saving} canCreate={mayCreateSystemUsers} canUpdate={mayUpdateSystemUsers} canDelete={mayDeleteSystemUsers} onAdd={() => { setUserDrafts((current) => current.length ? current : [...current, { key: newKey(), fullName: "", email: "", role: "foreman", assignedSiteId: String(siteId) }]); setNotice(""); }} onDelete={() => setUserDeleteConfirmationOpen(true)} onEditSelection={editSelectedUserRows} onClearSelection={() => { setUserPendingDeletes([]); setNotice(""); }} onCancelEditing={cancelUserEditing} onSave={() => void saveUsers()} />}
       </section>}
       {mayDeleteSystemUsers && userDeleteConfirmationOpen && <AdminDeleteConfirmation title="Удалить выбранных пользователей?" text={`Вы точно хотите удалить пользователей (${userPendingDeletes.length})? Это действие нельзя отменить.`} saving={saving} onCancel={() => setUserDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingUsers()} />}
-      {view === "directories" && may("project_directories") && activeDirectoryGroup && <section className="users-settings admin-section reference-section">
-        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("projectSettings"); setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false); }}>← К настройкам проекта</button><div className="toolbar-actions"><button type="button" onClick={exportProjectDirectory}>Экспорт в Excel</button>{mayCreateProjectDirectories && <><button type="button" onClick={downloadProjectDirectoryTemplate}>Скачать шаблон</button><button type="button" onClick={() => projectDirectoryFileInput.current?.click()} disabled={importing}>Импорт из Excel</button><input ref={projectDirectoryFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProjectDirectory(file); }} /></>}</div></div>
+      {view === "directories" && may("project_directories") && (directoryFocus === "mainWorkType" || directoryFocus === "subworkType") && <WorkTypesDirectory key={siteId} loading={loading} siteId={siteId} projectName={activeSite?.name ?? "Проект"} mainWorkTypes={data?.mainWorkTypes ?? []} subworkTypes={data?.subworkTypes ?? []} canCreate={mayCreateProjectDirectories} canUpdate={mayUpdateProjectDirectories} canDelete={mayDeleteProjectDirectories} onRefresh={loadData} onDirtyChange={setWorkTypesDirty} onBack={() => navigateTo("projectSettings")} />}
+      {view === "directories" && may("project_directories") && activeDirectoryGroup && directoryFocus !== "mainWorkType" && directoryFocus !== "subworkType" && <section className="users-settings admin-section reference-section">
+        <div className="settings-toolbar"><button type="button" className="back-button" onClick={() => { navigateTo("projectSettings"); setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false); }}>← К настройкам проекта</button><div className="toolbar-actions"><ExcelActionsMenu actions={[
+          { label: "Экспорт в Excel", onSelect: exportProjectDirectory },
+          ...(mayCreateProjectDirectories ? [
+            { label: importing ? "Импортируем…" : "Импорт из Excel", onSelect: () => projectDirectoryFileInput.current?.click(), disabled: importing },
+            { label: "Скачать шаблон", onSelect: downloadProjectDirectoryTemplate },
+          ] : []),
+        ]} />{mayCreateProjectDirectories && <><input ref={projectDirectoryFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProjectDirectory(file); }} /></>}</div></div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
-        <DirectoryAgGrid title={focusedDirectoryTitle} rows={visibleDirectoryItems} drafts={directoryDrafts} employees={data?.placementEmployees ?? []} selectEmployee={activeDirectoryGroup.entity === "master"} pendingDeletes={directoryPendingDeletes} readOnly={!mayUpdateProjectDirectories} selectionDisabled={!mayUpdateProjectDirectories && !mayDeleteProjectDirectories} onEdit={editDirectoryItem} onSelectionChange={changeDirectorySelection} onPatchDraft={patchDirectoryDraft} />
+        <DirectoryAgGrid onVisibleIdsChange={ids => referenceExportOrder.current.set(`directory:${siteId}:${directoryFocus}`, ids)} title={focusedDirectoryTitle} rows={visibleDirectoryItems} drafts={directoryDrafts} employees={data?.placementEmployees ?? []} selectEmployee={activeDirectoryGroup.entity === "master"} pendingDeletes={directoryPendingDeletes} readOnly={!mayUpdateProjectDirectories} selectionDisabled={!mayUpdateProjectDirectories && !mayDeleteProjectDirectories} onEdit={editDirectoryItem} onSelectionChange={changeDirectorySelection} onPatchDraft={patchDirectoryDraft} />
         {mayManageProjectDirectories && <AdminGridFooter addLabel={`Добавить: ${focusedDirectoryTitle.toLocaleLowerCase("ru-RU")}`} countLabel="Всего" count={visibleDirectoryItems.length} deletingCount={directoryPendingDeletes.length} deletingLabel="Удалить" editSelectionLabel="Редактировать" uniformActions editorOpen={Boolean(directoryDrafts.length)} editingExisting={directoryDrafts.some((draft) => Boolean(draft.id))} pendingCount={directoryDrafts.length} saving={saving} allowMultiple canCreate={mayCreateProjectDirectories} canUpdate={mayUpdateProjectDirectories} canDelete={mayDeleteProjectDirectories} onAdd={addDirectoryItem} onDelete={() => setDirectoryDeleteConfirmationOpen(true)} onEditSelection={editSelectedDirectoryItems} onClearSelection={() => { setDirectoryPendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={cancelDirectoryEditing} onSave={() => void saveDirectoryItems()} />}
       </section>}
       {mayDeleteProjectDirectories && directoryDeleteConfirmationOpen && activeDirectoryGroup && <AdminDeleteConfirmation title="Удалить выбранные значения?" text={`Вы точно хотите удалить значения (${directoryPendingDeletes.length}) из справочника «${focusedDirectoryTitle}» проекта «${activeSite?.name ?? ""}»?`} saving={saving} onCancel={() => setDirectoryDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingDirectoryItems(activeDirectoryGroup.entity)} />}
-      </div>
+      </div> : <div className="page-content"><h1>Нет доступных разделов</h1><p>Обратитесь к администратору для настройки доступа.</p></div>}
     </section>
     {profileOpen && <div className="profile-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !profileSaving) setProfileOpen(false); }}>
       <section className="profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-title">
@@ -2303,5 +2379,5 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         <button type="button" className="profile-logout" onClick={() => void logout()} disabled={profileSaving}>Выйти из системы</button>
       </section>
     </div>}
-  </main>;
+  </main></TableOrderProvider></WorkspaceAccessProvider>;
 }

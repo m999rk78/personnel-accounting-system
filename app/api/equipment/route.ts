@@ -1,7 +1,12 @@
 import { getDatabase } from "../../../db/client";
 import { withAuditTrail } from "../../auditLog";
+import { compressJsonResponse } from "../../compressJsonResponse";
 import { assertSameOrigin, getAuthUser } from "../../auth";
 import { equipmentUnavailableReason } from "../../equipmentAvailability";
+import { importEquipmentEntries } from "../../equipmentImportServer";
+import { assertUniqueEquipmentImportIdentities, equipmentRegistryProjectIndex, resolveEquipmentRegistryProject } from "../../equipmentImport";
+import { equipmentTimesheetUnitsStatement } from "../../equipmentTimesheetUnits";
+import { isLegacyEquipmentReportMutation } from "../../equipmentReportWorkflow";
 import { hasPermission, type PermissionAction, type PermissionResource } from "../../permissionModel";
 
 type EquipmentInput = {
@@ -78,7 +83,16 @@ function equipmentValues(input: EquipmentInput) {
   };
 }
 
-function validateEquipment(input: EquipmentInput) {
+function validateEquipment(input: EquipmentInput, strict = false) {
+  if (strict) {
+    const limits = { organization: 120, equipmentType: 120, brand: 120, model: 180, registrationNumber: 80, note: 300 } as const;
+    const labels = { organization: "Организация", equipmentType: "Тип", brand: "Марка", model: "Модель", registrationNumber: "ГРЗ / Инв. №", note: "Примечание" } as const;
+    for (const key of Object.keys(limits) as Array<keyof typeof limits>) {
+      const value = input[key];
+      if (value === undefined || value === null) continue;
+      if (typeof value !== "string" || value.trim().length > limits[key]) throw new Error(`Поле «${labels[key]}» должно быть текстом длиной до ${limits[key]} символов.`);
+    }
+  }
   const values = equipmentValues(input);
   if (!values.organization || !values.equipmentType || !values.model) {
     throw new Error("Заполните организацию, тип и модель техники.");
@@ -273,7 +287,7 @@ async function validateReferenceIds(siteId: number, equipmentId: number, shiftId
     db.prepare("SELECT id FROM shifts WHERE id = ? AND site_id = ? AND active = 1").bind(shiftId, siteId),
     db.prepare("SELECT id FROM zones WHERE id = ? AND site_id = ? AND active = 1").bind(zoneId, siteId),
     db.prepare("SELECT id FROM main_work_types WHERE id = ? AND site_id = ? AND active = 1").bind(mainWorkTypeId, siteId),
-    db.prepare("SELECT id FROM subwork_types WHERE id = ? AND site_id = ? AND active = 1").bind(subworkTypeId, siteId),
+    db.prepare("SELECT id FROM subwork_types WHERE id = ? AND site_id = ? AND active = 1 AND main_work_type_id = ?").bind(subworkTypeId, siteId, mainWorkTypeId),
   ]);
   if (!equipment.results.length || !shift.results.length || !zone.results.length || !mainWork.results.length || !subwork.results.length) {
     throw new Error("Одно из выбранных значений отсутствует в справочниках проекта.");
@@ -356,7 +370,7 @@ async function setEquipmentProjectAssignment(database: EquipmentAssignmentDataba
       ended_at = NULL`).bind(equipmentId, projectSiteId).run();
 }
 
-export async function GET(request: Request) {
+async function handleGET(request: Request) {
   try {
     const authUser = await getAuthUser(request);
     if (!authUser) return errorResponse("Требуется авторизация.", 401);
@@ -438,11 +452,7 @@ export async function GET(request: Request) {
     const monthEnd = nextMonthStart(month);
     if (viewMode === "timesheet" && section === "month" && scope === "project") {
       const [units, entries, marks] = await db.readBatch([
-        db.prepare(`SELECT eu.id, eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
-          eu.registration_number AS "registrationNumber", eu.note
-          FROM equipment_units eu JOIN equipment_project_assignments epa ON epa.equipment_id = eu.id
-          WHERE eu.active = 1 AND epa.site_id = ? AND epa.active = 1
-          ORDER BY eu.equipment_type, eu.model, eu.registration_number, eu.id`).bind(siteId),
+        equipmentTimesheetUnitsStatement(db, siteId, monthStart, monthEnd),
         db.prepare(`SELECT ee.id, ee.work_date AS "workDate", ee.equipment_id AS "equipmentId",
           ee.shift_id AS "shiftId", ee.zone_id AS "zoneId", ee.main_work_type_id AS "mainWorkTypeId",
           ee.subwork_type_id AS "subworkTypeId", ee.note, ee.hours,
@@ -601,7 +611,7 @@ export async function GET(request: Request) {
       db.prepare("SELECT id, name FROM shifts WHERE site_id = ? AND active = 1 ORDER BY id").bind(siteId),
       db.prepare("SELECT id, name FROM zones WHERE site_id = ? AND active = 1 ORDER BY name").bind(siteId),
       db.prepare("SELECT id, name FROM main_work_types WHERE site_id = ? AND active = 1 ORDER BY name").bind(siteId),
-      db.prepare("SELECT id, name FROM subwork_types WHERE site_id = ? AND active = 1 ORDER BY name").bind(siteId),
+      db.prepare("SELECT id, name, main_work_type_id AS mainWorkTypeId FROM subwork_types WHERE site_id = ? AND active = 1 ORDER BY name").bind(siteId),
       reportSubmissionStatement,
       equipmentForemanProgressStatement(siteId, workDate),
     ]);
@@ -636,6 +646,9 @@ async function handlePOST(request: Request): Promise<Response> {
     const payload = await request.json() as Record<string, unknown>;
     const requestedSiteId = positiveInteger(payload.siteId);
     if (!requestedSiteId) return errorResponse("Не указан объект.", 400);
+    if (isLegacyEquipmentReportMutation(payload.action)) {
+      return Response.json({ error: "Откройте обновлённый отчёт техники. Строки сохраняются в черновик и попадают в табель после подтверждения.", code: "REPORT_WORKFLOW_REQUIRED" }, { status: 409 });
+    }
     await ensureEquipmentSchema();
     const resolved = await resolveSite(requestedSiteId, authUser);
     if ("error" in resolved) return resolved.error;
@@ -816,124 +829,11 @@ async function handlePOST(request: Request): Promise<Response> {
 
     if (payload.action === "import-entries") {
       if (!hasPermission(authUser.permissions, "equipment_report", "create")) return errorResponse("Нет права импортировать строки отчёта техники.", 403);
-      if (!Array.isArray(payload.entries) || !payload.entries.length || payload.entries.length > 5000) return errorResponse("В файле нет строк расстановки или их слишком много.", 400);
-      const importEntries = payload.entries.map((entry) => (entry ?? {}) as Record<string, unknown>);
-      const names = (key: string) => Array.from(new Set(importEntries.map((entry) => text(entry[key], 240)).filter((value) => value && value !== "-")));
-      const directoryImports = [
-        { table: "zones", values: names("zoneName") },
-        { table: "main_work_types", values: names("mainWorkTypeName") },
-        { table: "subwork_types", values: names("subworkTypeName") },
-      ];
-      await db.transaction(async (transaction) => {
-        for (const directory of directoryImports) {
-          for (const name of directory.values) {
-            await transaction.prepare(`UPDATE ${directory.table} SET active = 1 WHERE site_id = ? AND LOWER(name) = LOWER(?)`).bind(siteId, name).run();
-            await transaction.prepare(`INSERT INTO ${directory.table} (site_id, name, active)
-              SELECT ?, ?, 1 WHERE NOT EXISTS (SELECT 1 FROM ${directory.table} WHERE site_id = ? AND LOWER(name) = LOWER(?))`)
-              .bind(siteId, name, siteId, name).run();
-          }
-        }
+      const result = await importEquipmentEntries(db, siteId, payload.entries, authUser, async (transaction, dates) => {
+        if (authUser.role !== "foreman") return;
+        for (const workDate of dates) await touchEquipmentContribution(transaction, authUser, siteId, workDate, false);
       });
-      const [unitsResult, shiftsResult, zonesResult, mainWorkResult, subworkResult] = await db.readBatch([
-        db.prepare(`SELECT id, organization, equipment_type AS "equipmentType", brand, model,
-          registration_number AS "registrationNumber" FROM equipment_units eu
-          JOIN equipment_project_assignments epa ON epa.equipment_id = eu.id
-          WHERE epa.site_id = ? AND epa.active = 1 AND eu.active = 1`).bind(siteId),
-        db.prepare("SELECT id, name FROM shifts WHERE site_id = ? AND active = 1").bind(siteId),
-        db.prepare("SELECT id, name FROM zones WHERE site_id = ? AND active = 1").bind(siteId),
-        db.prepare("SELECT id, name FROM main_work_types WHERE site_id = ? AND active = 1").bind(siteId),
-        db.prepare("SELECT id, name FROM subwork_types WHERE site_id = ? AND active = 1").bind(siteId),
-      ]);
-      type ImportUnit = { id: number; organization: string; equipmentType: string; brand: string; model: string; registrationNumber: string };
-      const units = unitsResult.results as ImportUnit[];
-      const options = (rows: typeof shiftsResult.results) => new Map(rows.map((row) => [normalize(String(row.name ?? "")), Number(row.id)]));
-      const shifts = options(shiftsResult.results);
-      const zones = options(zonesResult.results);
-      const mainWorkTypes = options(mainWorkResult.results);
-      const subworkTypes = options(subworkResult.results);
-      const byRegistration = new Map(units.filter((unit) => unit.registrationNumber && !["-", "—"].includes(unit.registrationNumber)).map((unit) => [normalize(unit.registrationNumber).replaceAll(" ", ""), unit]));
-      const issues: string[] = [];
-      const prepared = importEntries.flatMap((entry, index) => {
-        const workDate = text(entry.workDate, 10);
-        const equipmentName = text(entry.equipmentName, 400);
-        const parts = equipmentName.split("//").map((part) => part.trim());
-        const registration = normalize(parts[2] ?? "").replaceAll(" ", "");
-        let unit = registration && !["-", "—"].includes(registration) ? byRegistration.get(registration) : undefined;
-        if (!unit) {
-          const typeName = normalize(parts[0] ?? "");
-          const modelName = normalize(parts[1] ?? "");
-          const organization = normalize(parts[3] ?? "");
-          const candidates = units.filter((candidate) => normalize(candidate.equipmentType) === typeName
-            && normalize(candidate.organization) === organization
-            && [normalize(candidate.model), normalize(`${candidate.brand} ${candidate.model}`)].includes(modelName));
-          if (candidates.length === 1) unit = candidates[0];
-        }
-        const shiftId = shifts.get(normalize(text(entry.shiftName)));
-        const zoneId = zones.get(normalize(text(entry.zoneName)));
-        const mainWorkTypeId = mainWorkTypes.get(normalize(text(entry.mainWorkTypeName)));
-        const subworkTypeId = subworkTypes.get(normalize(text(entry.subworkTypeName)));
-        const hours = Number(entry.hours);
-        const missing = [
-          !validDate(workDate) ? "дата" : "",
-          !unit ? "техника" : "",
-          !shiftId ? "смена" : "",
-          !zoneId ? "зона" : "",
-          !mainWorkTypeId ? "основная работа" : "",
-          !subworkTypeId ? "вид подработ" : "",
-          !Number.isInteger(hours) || hours < 1 || hours > 10 ? "часы" : "",
-        ].filter(Boolean);
-        if (missing.length) {
-          issues.push(`Строка ${index + 1}: не найдено или некорректно — ${missing.join(", ")}`);
-          return [];
-        }
-        return [{ workDate, equipmentId: unit!.id, shiftId: shiftId!, zoneId: zoneId!, mainWorkTypeId: mainWorkTypeId!, subworkTypeId: subworkTypeId!, note: text(entry.note, 500), hours }];
-      });
-      if (issues.length) return errorResponse(`Импорт остановлен. ${issues.slice(0, 5).join("; ")}${issues.length > 5 ? `; ещё ошибок: ${issues.length - 5}` : ""}. Проверьте справочники проекта.`, 400);
-
-      let imported = 0;
-      let skipped = 0;
-      await db.transaction(async (transaction) => {
-        for (const entry of prepared) {
-          await transaction.prepare("SELECT pg_advisory_xact_lock(hashtext(?))")
-            .bind(`equipment-hours:${entry.workDate}:${entry.equipmentId}`).first();
-          const planConflict = await transaction.prepare(`SELECT eu.id AS "equipmentId", eu.equipment_type AS "equipmentType",
-              eu.brand, eu.model, eu.registration_number AS "registrationNumber",
-              etm.downtime_hours AS "downtimeHours", etm.note
-            FROM equipment_timesheet_marks etm
-            JOIN equipment_units eu ON eu.id = etm.equipment_id
-            WHERE etm.site_id = ? AND etm.equipment_id = ? AND etm.work_date = ?
-              AND etm.productive_hours = 0 AND etm.downtime_hours > 0
-            LIMIT 1`).bind(siteId, entry.equipmentId, entry.workDate).first<EquipmentPlanConflict>();
-          if (planConflict) throw new Error(equipmentPlanConflictMessage(planConflict));
-          const existing = await transaction.prepare(`SELECT id FROM equipment_entries
-            WHERE site_id = ? AND work_date = ? AND equipment_id = ? AND shift_id = ? AND zone_id = ?
-              AND main_work_type_id = ? AND subwork_type_id = ? AND note = ? AND hours = ? AND deleted_at IS NULL
-            LIMIT 1`).bind(siteId, entry.workDate, entry.equipmentId, entry.shiftId, entry.zoneId, entry.mainWorkTypeId, entry.subworkTypeId, entry.note, entry.hours).first();
-          if (existing) {
-            skipped += 1;
-            continue;
-          }
-          const used = await transaction.prepare(`SELECT COALESCE(SUM(hours), 0) AS hours FROM equipment_entries
-            WHERE site_id = ? AND work_date = ? AND equipment_id = ? AND deleted_at IS NULL`)
-            .bind(siteId, entry.workDate, entry.equipmentId).first<{ hours: number }>();
-          if (Number(used?.hours ?? 0) + entry.hours > 20) {
-            throw new Error(`У техники из импортируемой строки уже учтено ${Number(used?.hours ?? 0)} ч. За сутки можно указать не более 20 ч.`);
-          }
-          await transaction.prepare(`INSERT INTO equipment_entries
-            (site_id, work_date, equipment_id, shift_id, zone_id, main_work_type_id, subwork_type_id, note, hours, created_by,
-             responsible_user_id, created_by_user_id, updated_by_user_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-            .bind(siteId, entry.workDate, entry.equipmentId, entry.shiftId, entry.zoneId, entry.mainWorkTypeId, entry.subworkTypeId, entry.note, entry.hours,
-              authUser.fullName, authUser.role === "foreman" ? authUser.id : null, authUser.id, authUser.id).run();
-          imported += 1;
-        }
-        if (authUser.role === "foreman") {
-          for (const workDate of [...new Set(prepared.map((entry) => entry.workDate))]) {
-            await touchEquipmentContribution(transaction, authUser, siteId, workDate, false);
-          }
-        }
-      });
-      return Response.json({ imported, skipped });
+      return Response.json(result);
     }
 
     if (payload.action === "assign-unit-project") {
@@ -1029,27 +929,19 @@ async function handlePOST(request: Request): Promise<Response> {
       if (!hasPermission(authUser.permissions, "equipment_registry", "create")) return errorResponse("Нет права импортировать технику в реестр.", 403);
       if (!Array.isArray(payload.units) || !payload.units.length || payload.units.length > 1000) return errorResponse("В файле нет строк реестра или их слишком много.", 400);
       const siteRows = await db.prepare("SELECT id, name FROM sites WHERE active = 1").all<{ id: number; name: string }>();
-      const sitesByName = new Map(siteRows.results.map((project) => [normalize(project.name), project.id]));
+      const sitesByName = equipmentRegistryProjectIndex(siteRows.results);
       const prepared = payload.units.map((unit, index) => {
         try {
           const row = (unit ?? {}) as EquipmentInput & { projectName?: unknown };
-          const values = validateEquipment(row);
-          const hasProjectColumn = Object.prototype.hasOwnProperty.call(row, "projectName");
-          const projectName = text(row.projectName, 240);
-          const normalizedProject = normalize(projectName);
-          const projectSiteId = !hasProjectColumn
-            ? undefined
-            : !projectName || ["не назначена", "не назначен", "без проекта", "-", "—"].includes(normalizedProject)
-              ? null
-              : sitesByName.get(normalizedProject) ?? null;
-          if (hasProjectColumn && projectName && projectSiteId === null && !["не назначена", "не назначен", "без проекта", "-", "—"].includes(normalizedProject)) {
-            throw new Error(`проект «${projectName}» не найден`);
-          }
+          const values = validateEquipment(row, true);
+          const hasProjectColumn = Object.prototype.hasOwnProperty.call(row, "projectName") && row.projectName !== undefined;
+          const projectSiteId = resolveEquipmentRegistryProject(sitesByName, row.projectName, hasProjectColumn);
           return { values, identityKey: equipmentIdentity(values), projectSiteId };
         } catch (error) {
           throw new Error(`Строка ${index + 1}: ${error instanceof Error ? error.message : "некорректные данные"}`);
         }
       });
+      assertUniqueEquipmentImportIdentities(prepared);
       const identityKeys = [...new Set(prepared.map((item) => item.identityKey))];
       const existingRows = identityKeys.length
         ? await db.prepare("SELECT id, identity_key AS \"identityKey\" FROM equipment_units WHERE identity_key = ANY(?) ORDER BY active DESC, id").bind(identityKeys).all<{ id: number; identityKey: string }>()
@@ -1101,6 +993,10 @@ async function handlePOST(request: Request): Promise<Response> {
     if (/unique|duplicate|idx_equipment_units_site_identity/i.test(message)) return errorResponse("Единица техники с такими данными уже существует.", 409);
     return errorResponse(message, 400);
   }
+}
+
+export async function GET(request: Request) {
+  return compressJsonResponse(request, await handleGET(request));
 }
 
 export async function POST(request: Request) {

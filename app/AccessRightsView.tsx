@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useWorkspaceAccess } from "./TableAccessContext";
 import {
   PERMISSION_ACTION_LABELS,
   PERMISSION_ACTIONS,
@@ -48,7 +49,9 @@ export function AccessRightsView({ onBack }: { onBack: () => void }) {
   const [users, setUsers] = useState<AccessUser[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
   const [draft, setDraft] = useState<PermissionSet>(() => emptyPermissionSet());
-  const [canManage, setCanManage] = useState(false);
+  const access = useWorkspaceAccess();
+  const [serverCanManage, setCanManage] = useState(false);
+  const canManage = access?.update ?? serverCanManage;
   const [currentUserId, setCurrentUserId] = useState(0);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);

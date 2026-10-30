@@ -121,8 +121,9 @@ test("exports the equipment timesheet as a formatted monthly workbook", async ()
   assert.match(contents, /<t xml:space="preserve">ЧАСЫ<\/t>/);
   assert.match(contents, /<t xml:space="preserve">ПРОСТОЙ<\/t>/);
   assert.match(contents, /<t xml:space="preserve">РАСТ<\/t>/);
-  assert.match(contents, /<f>SUM\(E6:AI6\)<\/f><v>8<\/v>/);
+  assert.match(contents, /<c r="AJ6" s="10"><v>8<\/v><\/c>/);
   assert.match(contents, /<c r="AK6" s="11"><v>2<\/v><\/c>/);
+  assert.match(contents, /<c r="F6"[^>]*>.*?<t xml:space="preserve">П 2<\/t>/);
   assert.match(contents, /<f>AJ6\+AK6-10<\/f><v>0<\/v>/);
   assert.match(contents, /autoFilter ref="B5:AL6"/);
   assert.match(contents, /Усть-Луга ГПЗ — Сентябрь 2026 г\./);
@@ -138,6 +139,7 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   const timesheetMigration = await readFile(new URL("../drizzle-postgres/0011_equipment_timesheet_marks.sql", import.meta.url), "utf8");
   const grids = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const timesheetFilters = await readFile(new URL("../app/equipmentTimesheetFilters.ts", import.meta.url), "utf8");
 
   assert.match(api, /getAuthUser\(request\)/);
   assert.match(api, /viewMode === "timesheet"[\s\S]*"equipment_timesheet"/);
@@ -196,28 +198,33 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(view, /equipment-timesheet-summary timesheet-top-summary/);
   assert.match(view, /onScroll=\{\(event\) => syncTimesheetHeaderScroll\(event\.currentTarget\)\}/);
   assert.match(view, /section === "month" \? "timesheet-page"/);
-  assert.match(view, /className="timesheet-export-button"/);
+  assert.match(view, /<ExcelActionsMenu actions=\{\[\s*\{ label: "Экспорт в Excel", onSelect: openTimesheetExportPreview, disabled: loading \|\| monthRows\.length === 0 \}/);
   assert.match(view, /className="equipment-total"><small>Всего<\/small><strong>\{monthSummary\.total\} ч\.<\/strong>/);
   assert.match(view, /timesheet-fill-row[\s\S]*colSpan=\{monthDays\.length \+ 6\}/);
   assert.match(view, /TimesheetFilterableHeading/);
   assert.match(view, /label="Техника"/);
   assert.match(view, /label="Организация"/);
-  assert.match(view, /monthDayFilters/);
+  assert.match(view, /useTimesheetFilters\(\{ rows: orderedMonthRows/);
+  assert.match(view, /const monthRows = monthFilters\.rows/);
+  assert.match(view, /TimesheetFiltersProvider value=\{monthFilters\.context\}/);
+  assert.match(view, /TimesheetFilterableHeading columnId=\{date\}/);
   assert.doesNotMatch(view, /timesheet-filter-panel/);
   assert.doesNotMatch(view, /timesheet-search/);
   assert.match(view, /EquipmentMonthPicker/);
   assert.match(view, /current=\{today\.slice\(0, 7\)\}/);
   assert.doesNotMatch(view, /disabled=\{month >= today\.slice\(0, 7\)\}/);
   assert.match(view, /date > today \? "future" : ""/);
-  assert.match(view, /timesheet-month-popover/);
-  assert.match(view, /Выбор месяца табеля/);
+  const monthPicker = await readFile(new URL("../app/TimesheetMonthPicker.tsx", import.meta.url), "utf8");
+  assert.match(monthPicker, /TimesheetCellPopover/);
+  assert.match(monthPicker, /timesheet-month-popover/);
+  assert.match(monthPicker, /Выбор месяца табеля/);
   assert.doesNotMatch(view, /type="month"/);
   assert.doesNotMatch(view, /Данные формируются из ежедневных отчётов техники/);
   assert.match(view, /parseEquipmentRegistryXlsx/);
   assert.match(view, /parseEquipmentEntriesXlsx/);
   assert.match(view, /EquipmentReportDateNavigation/);
   assert.match(view, /Сбросить фильтры/);
-  assert.match(view, /Есть простой/);
+  assert.match(timesheetFilters, /Есть простой/);
   assert.match(view, /timesheet-header-filter-reset/);
   assert.match(view, /openTimesheetEditor/);
   assert.match(view, /saveTimesheetMark/);
@@ -253,7 +260,7 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(view, /createTableXlsx/);
   assert.match(view, /openTimesheetExportPreview/);
   assert.match(view, /kind: "equipment-timesheet"/);
-  assert.match(view, /Табель_техники_/);
+  assert.match(view, /excelFileName\("Табель техники", \[payload\?\.siteName, month\]\)/);
   assert.match(view, /equipment-timesheet-page-actions/);
   assert.match(styles, /equipment-timesheet-summary \{ grid-template-columns:minmax\(184px,1\.2fr\) repeat\(4,minmax\(0,1fr\)\)/);
   assert.match(styles, /equipment-machine-column \{ width:288px; min-width:288px; max-width:288px; left:44px/);
@@ -276,7 +283,7 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(grids, /selectAll: "filtered"/);
   assert.match(grids, /onFilterChanged/);
   assert.match(grids, /function EquipmentCombobox/);
-  assert.equal((grids.match(/useState<\{ top: number; left: number; width: number \} \| null>\(null\)/g) ?? []).length, 2);
+  assert.equal((grids.match(/useState<ChoiceMenuPosition \| null>\(null\)/g) ?? []).length, 2);
   assert.equal((grids.match(/open && position && typeof document !== "undefined" && createPortal/g) ?? []).length, 2);
   assert.doesNotMatch(grids, /useState\(\{ top: 0, left: 0, width: (?:360|420) \}\)/);
   assert.match(grids, /Недоступна по табелю/);
@@ -293,7 +300,7 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(parser, /export async function parseEquipmentEntriesXlsx/);
   assert.match(parser, /ГРЗ \/ Инв\. №/);
   assert.match(parser, /projectName/);
-  assert.match(parser, /xl\/worksheets\/sheet\$\{sheetNumber\}\.xml/);
+  assert.match(parser, /for \(const sheet of workbook\.sheets\)/);
 
   assert.match(migration, /CREATE TABLE IF NOT EXISTS "equipment_units"/);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS "equipment_entries"/);
@@ -353,8 +360,8 @@ test("separates the daily equipment report into foreman contributions", async ()
   assert.match(view, /entryDrafts\.length === 0 && selectedEntryIds\.length === 0 && <div className="employee-footer-base">/);
   assert.match(view, /payload\?\.canCreateDaily && <button[^>]+onClick=\{\(\) => openEntry\(\)\}/);
   assert.match(view, /onClick=\{\(\) => \{ const selected = dailyEntries\.filter/);
-  assert.match(view, /disabled=\{saving \|\| !payload\?\.canUpdateDaily\} title=\{payload\?\.canUpdateDaily \? undefined : "Нет права редактирования"\}>Редактировать/);
-  assert.match(view, /onClick=\{\(\) => setDeleteConfirmationTarget\("daily"\)\} disabled=\{saving \|\| !payload\?\.canDeleteDaily\} title=\{payload\?\.canDeleteDaily \? undefined : "Нет права удаления"\}/);
+  assert.match(view, /payload\?\.canUpdateDaily && <button[\s\S]*?disabled=\{saving\}>Редактировать/);
+  assert.match(view, /payload\?\.canDeleteDaily && <button[^>]+onClick=\{\(\) => setDeleteConfirmationTarget\("daily"\)\} disabled=\{saving\}/);
   assert.match(view, /payload\.currentUserRole !== "foreman" \|\| !payload\.canCreateDaily\) return/);
   assert.match(view, /workDate !== today \|\| payload\?\.workDate !== workDate[\s\S]*scope=carryover/);
   assert.match(view, /equipmentCarryoverMode = section === "daily" && workDate === today[\s\S]*payload\.currentUserRole === "foreman" && payload\.canCreateDaily/);

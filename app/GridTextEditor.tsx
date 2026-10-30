@@ -4,19 +4,20 @@ import { useEffect, useRef, useState } from "react";
 import { createCellTextEditSession } from "./cellTextEditing";
 
 /** Keep keystrokes local: updating grid rows while typing can remount the input. */
-export function GridTextEditor({ value, onChange, onBlur, onEnter, focusOnMount = true, placeholder = "ФИО сотрудника" }: {
+export function GridTextEditor({ value, onChange, onBlur, onEnter, focusOnMount = true, selectOnMount = true, placeholder = "ФИО сотрудника" }: {
   value: string;
   onChange: (value: string) => void;
   onBlur?: () => void;
   onEnter?: () => void;
   focusOnMount?: boolean;
+  selectOnMount?: boolean;
   placeholder?: string;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [session] = useState(() => createCellTextEditSession(value));
   useEffect(() => {
-    if (focusOnMount) { input.current?.focus(); input.current?.select(); }
-  }, [focusOnMount]);
+    if (focusOnMount) { input.current?.focus(); if (selectOnMount) input.current?.select(); else input.current?.setSelectionRange(value.length, value.length); }
+  }, [focusOnMount, selectOnMount, value]);
   const commit = () => {
     const next = session.commit(input.current?.value ?? value);
     if (next !== undefined) onChange(next);

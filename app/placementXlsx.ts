@@ -1,3 +1,5 @@
+import { parsePersonnelImportDate } from "./personnelImportDates.ts";
+
 type CellValue = string | number;
 
 export type PlacementExportRow = {
@@ -32,10 +34,21 @@ export type PlacementTemplateData = {
   zones: string[];
   mainWorkTypes: string[];
   subworkTypes: string[];
+  workTypePairs?: Array<{ mainWorkTypeName: string; subworkTypeName: string }>;
   masters: string[];
 };
 
+export type EquipmentPlacementTemplateData = {
+  equipmentNames: string[];
+  shifts: string[];
+  zones: string[];
+  mainWorkTypes: string[];
+  subworkTypes: string[];
+  workTypePairs?: Array<{ mainWorkTypeName: string; subworkTypeName: string }>;
+};
+
 export type PlacementImportRow = {
+  workDate: string;
   employeeName: string;
   shiftName: string;
   zoneName: string;
@@ -99,8 +112,8 @@ export type EquipmentTimesheetExportRow = {
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const placementHeaders = ["Дата", "ФИО", "Смена", "Зона", "Виды основных работ", "Виды подработ", "Примечание", "Мастер", "Часы", "Тип - 2"];
-const placementTemplateHeaders = ["Дата", "ФИО", "Тип", "Отдел", "Должность", "Смена", "Зона", "Основная работа", "Вид подработ", "Мастер", "Часы", "Примечание"];
+const placementHeaders = ["Дата", "ФИО", "Смена", "Зона", "Вид работы", "Подвид работы", "Примечание", "Мастер", "Часы", "Тип - 2"];
+const placementTemplateHeaders = ["Дата", "ФИО", "Тип", "Отдел", "Должность", "Смена", "Зона", "Вид работы", "Подвид работы", "Мастер", "Часы", "Примечание"];
 const letters = "ABCDEFGHIJKL";
 
 function columnLetter(index: number) {
@@ -171,9 +184,17 @@ function zip(files: Array<{ name: string; content: string }>) {
   return join([...localParts, central, join([uint32(0x06054b50), uint16(0), uint16(0), uint16(files.length), uint16(files.length), uint32(central.length), uint32(offset), uint16(0)])]);
 }
 
+function spreadsheetText(value: string) {
+  return value.replace(/_x[0-9a-f]{4}_/gi, (escape) => `_x005F_${escape.slice(1)}`)
+    // XML 1.0 forbids these controls; Excel stores them as escaped text.
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\r\uFFFE\uFFFF]|\p{Surrogate}/gu, (character) => `_x${character.charCodeAt(0).toString(16).padStart(4, "0").toUpperCase()}_`);
+}
+
 function cell(reference: string, value: CellValue, style = 0) {
+  if (typeof value === "number" && !Number.isFinite(value)) throw new Error(`Ячейка ${reference}: некорректное числовое значение.`);
   if (typeof value === "number") return `<c r="${reference}" s="${style}"><v>${value}</v></c>`;
-  return `<c r="${reference}" t="inlineStr" s="${style}"><is><t xml:space="preserve">${xml(value)}</t></is></c>`;
+  return `<c r="${reference}" t="inlineStr" s="${style}"><is><t xml:space="preserve">${xml(spreadsheetText(value))}</t></is></c>`;
 }
 
 function formulaCell(reference: string, formula: string, cachedValue: number, style = 0) {
@@ -227,7 +248,14 @@ const timesheetStylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes
   </cellXfs>
 </styleSheet>`;
 
+function safeSheetName(value: string, fallback: string) {
+  return [...value].map((character) => character.charCodeAt(0) < 32 || "\\/?*[]:".includes(character) ? " " : character).join("").replace(/^'+|'+$/g, "").trim().slice(0, 31) || fallback;
+}
+
 function workbookFiles(sheet1: string, sheet2?: string, sheet1Name = "Расстановка", sheet2Name = "Справочники", stylesXml?: string) {
+  sheet1Name = safeSheetName(sheet1Name, "Лист 1");
+  sheet2Name = safeSheetName(sheet2Name, "Лист 2");
+  if (sheet1Name.toLocaleLowerCase() === sheet2Name.toLocaleLowerCase()) sheet2Name = `${sheet2Name.slice(0, 29)} 2`;
   const hasReferences = Boolean(sheet2);
   const sheetOverride = hasReferences ? '<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' : "";
   const secondSheet = hasReferences ? `<sheet name="${xml(sheet2Name)}" sheetId="2" r:id="rId2"/>` : "";
@@ -241,7 +269,11 @@ function workbookFiles(sheet1: string, sheet2?: string, sheet1Name = "Расст
     { name: "xl/styles.xml", content: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="dd"/></numFmts><fonts count="7"><font><sz val="10"/><name val="Arial"/></font><font><b/><sz val="16"/><color rgb="FF24272A"/><name val="Arial"/></font><font><b/><sz val="10"/><color rgb="FF24272A"/><name val="Arial"/></font><font><b/><sz val="11"/><color rgb="FF173E27"/><name val="Aptos"/></font><font><sz val="10"/><color rgb="FF24272A"/><name val="Aptos"/></font><font><b/><sz val="10"/><color rgb="FF24272A"/><name val="Aptos"/></font><font><b/><sz val="10"/><color rgb="FFC00000"/><name val="Aptos"/></font></fonts><fills count="9"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF2AD24"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFC6EFCE"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2F0D9"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF7FBF7"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF2F2F2"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE2F0D9"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFCE8E6"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="4"><border/><border><left style="thin"><color rgb="FFD9D9D6"/></left><right style="thin"><color rgb="FFD9D9D6"/></right><top style="thin"><color rgb="FFD9D9D6"/></top><bottom style="thin"><color rgb="FFD9D9D6"/></bottom></border><border><left style="thin"><color rgb="FFA6A6A6"/></left><right style="thin"><color rgb="FFA6A6A6"/></right><top style="thin"><color rgb="FFA6A6A6"/></top><bottom style="thin"><color rgb="FFA6A6A6"/></bottom></border><border><left style="medium"><color rgb="FF7F7F7F"/></left><right style="medium"><color rgb="FF7F7F7F"/></right><top style="medium"><color rgb="FF7F7F7F"/></top><bottom style="medium"><color rgb="FF7F7F7F"/></bottom></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="16"><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="0" borderId="1" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="3" fillId="3" borderId="3" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="164" fontId="3" fillId="3" borderId="2" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="5" fillId="4" borderId="2" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="4" fillId="5" borderId="2" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="4" fillId="5" borderId="2" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="4" fillId="6" borderId="2" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="5" fillId="7" borderId="3" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="6" fillId="8" borderId="3" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="4" fillId="5" borderId="3" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="5" fillId="7" borderId="3" xfId="0" applyAlignment="1"><alignment horizontal="left" vertical="center"/></xf><xf numFmtId="0" fontId="5" fillId="7" borderId="3" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="6" fillId="8" borderId="3" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf></cellXfs></styleSheet>' },
     { name: "xl/worksheets/sheet1.xml", content: sheet1 },
   ];
-  if (stylesXml) files.find((file) => file.name === "xl/styles.xml")!.content = stylesXml;
+  const styles = files.find((file) => file.name === "xl/styles.xml")!;
+  styles.content = stylesXml ?? styles.content;
+  // All three style families share base xf 0. Register it as Excel's Normal
+  // style so spreadsheet readers do not invent a replacement default style.
+  if (!/<cellStyles\b/.test(styles.content)) styles.content = styles.content.replace("</cellXfs>", '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>');
   if (sheet2) files.push({ name: "xl/worksheets/sheet2.xml", content: sheet2 });
   return files;
 }
@@ -266,7 +298,7 @@ export function createPlacementXlsx(siteName: string, rangeStart: string, rangeE
 
 export function createEquipmentPlacementXlsx(siteName: string, rangeStart: string, rangeEnd: string, rows: EquipmentPlacementExportRow[]) {
   void siteName; void rangeStart; void rangeEnd;
-  const headers = ["Дата", "Уникальное наименование единицы", "Смена", "Зона", "Виды основных работ", "Виды подработ", "Примечание", "Часы"];
+  const headers = ["Дата", "Уникальное наименование единицы", "Смена", "Зона", "Вид работы", "Подвид работы", "Примечание", "Часы"];
   const lastRow = Math.max(4, rows.length + 3);
   const totalHours = rows.reduce((sum, row) => sum + Number(row.hours || 0), 0);
   const dataRows = rows.map((row, index) => {
@@ -284,21 +316,40 @@ export function createPlacementTemplateXlsx(siteName: string, workDate: string, 
     const rowNumber = index + 5;
     return `<row r="${rowNumber}" ht="24">${cell(`A${rowNumber}`, workDate)}${Array.from({ length: 11 }, (__, column) => cell(`${letters[column + 1]}${rowNumber}`, "")).join("")}</row>`;
   }).join("");
-  const sheet1 = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="4" topLeftCell="A5" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols><col min="1" max="1" width="13" customWidth="1"/><col min="2" max="2" width="34" customWidth="1"/><col min="3" max="4" width="13" customWidth="1"/><col min="5" max="5" width="34" customWidth="1"/><col min="6" max="7" width="18" customWidth="1"/><col min="8" max="10" width="30" customWidth="1"/><col min="11" max="11" width="10" customWidth="1"/><col min="12" max="12" width="28" customWidth="1"/></cols><sheetData><row r="1" ht="34">${cell("A1", `Шаблон отчёта персонала — ${siteName}`, 1)}</row><row r="2" ht="22">${cell("A2", "Заполняйте белые строки. Тип, отдел и должность можно не вводить — система подставит их по ФИО.", 0)}</row><row r="4" ht="30">${placementTemplateHeaders.map((header, index) => cell(`${letters[index]}4`, header, 2)).join("")}</row>${blankRows}</sheetData><autoFilter ref="A4:L104"/><mergeCells count="2"><mergeCell ref="A1:L1"/><mergeCell ref="A2:L2"/></mergeCells></worksheet>`;
-  const referenceRows = Math.max(data.employees.length, data.shifts.length, data.zones.length, data.mainWorkTypes.length, data.subworkTypes.length, data.masters.length);
-  const references = Array.from({ length: referenceRows }, (_, index) => `<row r="${index + 2}">${cell(`A${index + 2}`, data.employees[index]?.fullName ?? "")}${cell(`B${index + 2}`, data.employees[index]?.employmentType ?? "")}${cell(`C${index + 2}`, data.employees[index]?.department ?? "")}${cell(`D${index + 2}`, data.employees[index]?.position ?? "")}${cell(`E${index + 2}`, data.shifts[index] ?? "")}${cell(`F${index + 2}`, data.zones[index] ?? "")}${cell(`G${index + 2}`, data.mainWorkTypes[index] ?? "")}${cell(`H${index + 2}`, data.subworkTypes[index] ?? "")}${cell(`I${index + 2}`, data.masters[index] ?? "")}</row>`).join("");
-  const sheet2 = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols><col min="1" max="1" width="34" customWidth="1"/><col min="2" max="3" width="14" customWidth="1"/><col min="4" max="4" width="34" customWidth="1"/><col min="5" max="6" width="22" customWidth="1"/><col min="7" max="9" width="34" customWidth="1"/></cols><sheetData><row r="1">${["ФИО", "Тип", "Отдел", "Должность", "Смена", "Зона", "Основная работа", "Вид подработ", "Мастер"].map((header, index) => cell(`${"ABCDEFGHI"[index]}1`, header, 2)).join("")}</row>${references}</sheetData><autoFilter ref="A1:I${Math.max(2, referenceRows + 1)}"/></worksheet>`;
+  const sheet1 = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="4" topLeftCell="A5" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols><col min="1" max="1" width="13" customWidth="1"/><col min="2" max="2" width="34" customWidth="1"/><col min="3" max="4" width="13" customWidth="1"/><col min="5" max="5" width="34" customWidth="1"/><col min="6" max="7" width="18" customWidth="1"/><col min="8" max="10" width="30" customWidth="1"/><col min="11" max="11" width="10" customWidth="1"/><col min="12" max="12" width="28" customWidth="1"/></cols><sheetData><row r="1" ht="34">${cell("A1", `Шаблон отчёта персонала — ${siteName}`, 1)}</row><row r="2" ht="22">${cell("A2", "Дата в каждой строке определяет день отчёта. Тип, отдел и должность система подставит по ФИО.", 0)}</row><row r="4" ht="30">${placementTemplateHeaders.map((header, index) => cell(`${letters[index]}4`, header, 2)).join("")}</row>${blankRows}</sheetData><autoFilter ref="A4:L104"/><mergeCells count="2"><mergeCell ref="A1:L1"/><mergeCell ref="A2:L2"/></mergeCells></worksheet>`;
+  const referenceRows = Math.max(data.employees.length, data.shifts.length, data.zones.length, data.mainWorkTypes.length, data.subworkTypes.length, data.workTypePairs?.length ?? 0, data.masters.length);
+  const references = Array.from({ length: referenceRows }, (_, index) => `<row r="${index + 2}">${cell(`A${index + 2}`, data.employees[index]?.fullName ?? "")}${cell(`B${index + 2}`, data.employees[index]?.employmentType ?? "")}${cell(`C${index + 2}`, data.employees[index]?.department ?? "")}${cell(`D${index + 2}`, data.employees[index]?.position ?? "")}${cell(`E${index + 2}`, data.shifts[index] ?? "")}${cell(`F${index + 2}`, data.zones[index] ?? "")}${cell(`G${index + 2}`, data.workTypePairs ? data.workTypePairs[index]?.mainWorkTypeName ?? "" : data.mainWorkTypes[index] ?? "")}${cell(`H${index + 2}`, data.workTypePairs ? data.workTypePairs[index]?.subworkTypeName ?? "" : data.subworkTypes[index] ?? "")}${cell(`I${index + 2}`, data.masters[index] ?? "")}</row>`).join("");
+  const sheet2 = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols><col min="1" max="1" width="34" customWidth="1"/><col min="2" max="3" width="14" customWidth="1"/><col min="4" max="4" width="34" customWidth="1"/><col min="5" max="6" width="22" customWidth="1"/><col min="7" max="9" width="34" customWidth="1"/></cols><sheetData><row r="1">${["ФИО", "Тип", "Отдел", "Должность", "Смена", "Зона", "Вид работы", "Подвид работы", "Мастер"].map((header, index) => cell(`${"ABCDEFGHI"[index]}1`, header, 2)).join("")}</row>${references}</sheetData><autoFilter ref="A1:I${Math.max(2, referenceRows + 1)}"/></worksheet>`;
   return downloadBlob(zip(workbookFiles(sheet1, sheet2)));
 }
 
+export function createEquipmentPlacementTemplateXlsx(siteName: string, workDate: string, data: EquipmentPlacementTemplateData) {
+  const headers = ["Дата", "Уникальное наименование единицы", "Смена", "Зона", "Вид работы", "Подвид работы", "Примечание", "Часы"];
+  const blanks = Array.from({ length: 100 }, (_, index) => {
+    const rowNumber = index + 5;
+    return `<row r="${rowNumber}" ht="24">${headers.map((_, column) => cell(`${columnLetter(column)}${rowNumber}`, column === 0 ? workDate : "")).join("")}</row>`;
+  }).join("");
+  const sheet1 = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="4" topLeftCell="A5" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols><col min="1" max="1" width="14" customWidth="1"/><col min="2" max="2" width="60" customWidth="1"/><col min="3" max="4" width="22" customWidth="1"/><col min="5" max="6" width="40" customWidth="1"/><col min="7" max="7" width="36" customWidth="1"/><col min="8" max="8" width="12" customWidth="1"/></cols><sheetData><row r="1" ht="34">${cell("A1", `Шаблон отчёта техники — ${siteName}`, 1)}</row><row r="2" ht="24">${cell("A2", "Технику и работы скопируйте с листа «Справочники». Подвид должен относиться к выбранному виду работы.")}</row><row r="4" ht="30">${headers.map((header, column) => cell(`${columnLetter(column)}4`, header, 2)).join("")}</row>${blanks}</sheetData><autoFilter ref="A4:H104"/><mergeCells count="2"><mergeCell ref="A1:H1"/><mergeCell ref="A2:H2"/></mergeCells></worksheet>`;
+  const referenceHeaders = ["Уникальное наименование единицы", "Смена", "Зона", "Вид работы", "Подвид работы"];
+  const count = Math.max(data.equipmentNames.length, data.shifts.length, data.zones.length, data.workTypePairs?.length ?? data.mainWorkTypes.length, data.workTypePairs ? 0 : data.subworkTypes.length);
+  const referenceRows = Array.from({ length: count }, (_, index) => {
+    const values = [data.equipmentNames[index] ?? "", data.shifts[index] ?? "", data.zones[index] ?? "", data.workTypePairs ? data.workTypePairs[index]?.mainWorkTypeName ?? "" : data.mainWorkTypes[index] ?? "", data.workTypePairs ? data.workTypePairs[index]?.subworkTypeName ?? "" : data.subworkTypes[index] ?? ""];
+    return `<row r="${index + 2}">${values.map((value, column) => cell(`${columnLetter(column)}${index + 2}`, value)).join("")}</row>`;
+  }).join("");
+  const sheet2 = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols><col min="1" max="1" width="60" customWidth="1"/><col min="2" max="3" width="22" customWidth="1"/><col min="4" max="5" width="40" customWidth="1"/></cols><sheetData><row r="1">${referenceHeaders.map((header, column) => cell(`${columnLetter(column)}1`, header, 2)).join("")}</row>${referenceRows}</sheetData><autoFilter ref="A1:E${Math.max(2, count + 1)}"/></worksheet>`;
+  return downloadBlob(zip(workbookFiles(sheet1, sheet2, "Отчёт техники")));
+}
+
 export function createTableXlsx(sheetName: string, title: string, tableHeaders: string[], rows: CellValue[][], columnWidths?: number[]) {
+  if (!tableHeaders.length) throw new Error("Не указаны столбцы таблицы для экспорта.");
+  if (rows.some((values) => values.length > tableHeaders.length)) throw new Error("В строке экспорта больше значений, чем столбцов.");
   const lastLetter = columnLetter(tableHeaders.length - 1);
   const dataRows = rows.map((values, index) => {
     const rowNumber = index + 4;
-    return `<row r="${rowNumber}" ht="24">${values.map((value, column) => cell(`${columnLetter(column)}${rowNumber}`, value)).join("")}</row>`;
+    return `<row r="${rowNumber}" ht="24">${tableHeaders.map((_, column) => cell(`${columnLetter(column)}${rowNumber}`, values[column] ?? "")).join("")}</row>`;
   }).join("");
   const columns = tableHeaders.map((_, index) => `<col min="${index + 1}" max="${index + 1}" width="${columnWidths?.[index] ?? (index === 0 ? 36 : 24)}" customWidth="1"/>`).join("");
-  const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${columns}</cols><sheetData><row r="1" ht="34">${cell("A1", title, 1)}</row><row r="3" ht="30">${tableHeaders.map((header, index) => cell(`${columnLetter(index)}3`, header, 2)).join("")}</row>${dataRows}</sheetData><autoFilter ref="A3:${lastLetter}${Math.max(3, rows.length + 3)}"/><mergeCells count="1"><mergeCell ref="A1:${lastLetter}1"/></mergeCells></worksheet>`;
+  const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${columns}</cols><sheetData><row r="1" ht="34">${cell("A1", title, 1)}</row><row r="3" ht="30">${tableHeaders.map((header, index) => cell(`${columnLetter(index)}3`, header, 2)).join("")}</row>${dataRows}</sheetData><autoFilter ref="A3:${lastLetter}${Math.max(3, rows.length + 3)}"/>${tableHeaders.length > 1 ? `<mergeCells count="1"><mergeCell ref="A1:${lastLetter}1"/></mergeCells>` : ""}</worksheet>`;
   return downloadBlob(zip(workbookFiles(worksheet, undefined, sheetName)));
 }
 
@@ -374,8 +425,8 @@ export function createPersonnelTimesheetXlsx(siteName: string, monthLabel: strin
     return `${identityCells}${dailyCells}${formulaCell(`${hoursLetter}${rowNumber}`, `SUM(${firstDayLetter}${rowNumber}:${lastDayLetter}${rowNumber})`, row.timesheetHours, 10)}${formulaCell(`${differenceLetter}${rowNumber}`, `IF(B${rowNumber}="ОПР",${hoursLetter}${rowNumber}-${reportHoursLetter}${rowNumber},0)`, difference, difference === 0 ? 14 : 15)}${cell(`${masterLetter}${rowNumber}`, row.masters, 12)}${cell(`${reportHoursLetter}${rowNumber}`, row.reportHours)}`;
   });
   dataRows.forEach((value, index) => addRowCells(index + firstDataRow, value));
-  void dayTotals;
-  void totalDifference;
+  const totalsRow = Math.max(lastDataRow + 2, 8);
+  addRowCells(totalsRow, `${cell(`B${totalsRow}`, "Итого", 10)}${Array.from({ length: dayColumnCount }, (_, index) => formulaCell(`${columnLetter(dayStartColumn + index)}${totalsRow}`, sumDataColumn(columnLetter(dayStartColumn + index)), dayTotals[index] ?? 0, 10)).join("")}${formulaCell(`${hoursLetter}${totalsRow}`, sumDataColumn(hoursLetter), totalHours, 10)}${formulaCell(`${differenceLetter}${totalsRow}`, sumDataColumn(differenceLetter), totalDifference, 10)}`);
   const reportHoursTotal = rows.reduce((sum, row) => sum + row.reportHours, 0);
   const firstDate = dates[0] ?? "";
   const lastDate = dates.at(-1) ?? firstDate;
@@ -403,13 +454,13 @@ export function createPersonnelTimesheetXlsx(siteName: string, monthLabel: strin
     `<col min="${panelStartColumn + 1}" max="${panelEndColumn + 1}" width="13" customWidth="1"/>`,
     `<col min="${reportHoursColumn + 1}" max="${reportHoursColumn + 1}" width="0" hidden="1" customWidth="1"/>`,
   ].join("");
-  const lastContentRow = Math.max(lastDataRow, 6);
+  const lastContentRow = totalsRow;
   const sheetRows = Array.from({ length: lastContentRow }, (_, index) => index + 1).map((rowNumber) => {
     const sortedCells = ((rowCells.get(rowNumber) ?? []).join("").match(/<c\b.*?<\/c>/g) ?? [])
       .sort((left, right) => cellXmlColumnIndex(left) - cellXmlColumnIndex(right));
     return `<row r="${rowNumber}"${rowHeights.has(rowNumber) ? ` ht="${rowHeights.get(rowNumber)}"` : ""}>${sortedCells.join("")}</row>`;
   }).join("");
-  const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="B2:${reportHoursLetter}${lastContentRow}"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="6" ySplit="3" topLeftCell="G4" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols>${columns}</cols><sheetData>${sheetRows}</sheetData><autoFilter ref="B3:${masterLetter}${lastDataRow}"/><pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/><headerFooter><oddHeader>&amp;C${xml(`${siteName} — ${monthLabel}`)}</oddHeader></headerFooter></worksheet>`;
+  const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="B2:${reportHoursLetter}${lastContentRow}"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="6" ySplit="3" topLeftCell="G4" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols>${columns}</cols><sheetData>${sheetRows}</sheetData><autoFilter ref="B3:${masterLetter}${Math.max(3, lastDataRow)}"/><pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/><headerFooter><oddHeader>&amp;C${xml(`${siteName} — ${monthLabel}`)}</oddHeader></headerFooter></worksheet>`;
   return downloadBlob(zip(workbookFiles(worksheet, undefined, timesheetSheetName(dates), "Справочники", timesheetStylesXml)));
 }
 
@@ -422,6 +473,7 @@ export function createEquipmentTimesheetXlsx(siteName: string, monthLabel: strin
   const differenceColumn = downtimeColumn + 1;
   const firstDataRow = 6;
   const lastDataRow = rows.length + 5;
+  const totalsRow = lastDataRow + 2;
   const headerCells = ["Тип", "Уникальное наименование единицы", "ГРЗ"].map((header, index) => cell(`${columnLetter(index + 1)}4`, header, 4)).join("");
   const dateCells = Array.from({ length: dayColumnCount }, (_, index) => dates[index]
     ? cell(`${columnLetter(dayStartColumn + index)}4`, excelDateSerial(dates[index]), 5)
@@ -453,22 +505,26 @@ export function createEquipmentTimesheetXlsx(siteName: string, monthLabel: strin
   const dataRows = rows.map((row, index) => {
     const rowNumber = index + firstDataRow;
     const parsed = parseName(row);
-    const productiveByDay = row.dailyProductiveHours ?? row.dailyValues.map((value) => typeof value === "number" ? value : Number(value) || 0);
+    const productiveByDay = row.dailyProductiveHours;
+    const downtimeByDay = row.dailyDowntimeHours;
     const identityCells = [parsed.type, row.equipmentName, parsed.registration]
       .map((value, column) => cell(`${columnLetter(column + 1)}${rowNumber}`, value, 7)).join("");
     const dailyCells = Array.from({ length: dayColumnCount }, (_, dayIndex) => {
       const date = dates[dayIndex];
       const dayOfWeek = date ? new Date(`${date}T00:00:00Z`).getUTCDay() : -1;
-      return cell(`${columnLetter(dayStartColumn + dayIndex)}${rowNumber}`, productiveByDay[dayIndex] || "", dayOfWeek === 0 || dayOfWeek === 6 ? 9 : 8);
+      const productive = productiveByDay[dayIndex] ?? 0;
+      const downtime = downtimeByDay[dayIndex] ?? 0;
+      const display = row.dailyValues[dayIndex] ?? (downtime ? (productive ? `${productive} / П ${downtime}` : `П ${downtime}`) : productive || "");
+      return cell(`${columnLetter(dayStartColumn + dayIndex)}${rowNumber}`, display, dayOfWeek === 0 || dayOfWeek === 6 ? 9 : 8);
     }).join("");
     const reportHours = row.reportHours ?? row.totalHours;
     const difference = row.productiveHours + row.downtimeHours - reportHours;
-    return `<row r="${rowNumber}" ht="20">${identityCells}${dailyCells}${formulaCell(`${columnLetter(productiveColumn)}${rowNumber}`, `SUM(${columnLetter(dayStartColumn)}${rowNumber}:${columnLetter(dayStartColumn + dayColumnCount - 1)}${rowNumber})`, row.productiveHours, 10)}${cell(`${columnLetter(downtimeColumn)}${rowNumber}`, row.downtimeHours, row.downtimeHours > 0 ? 11 : 10)}${formulaCell(`${columnLetter(differenceColumn)}${rowNumber}`, `${columnLetter(productiveColumn)}${rowNumber}+${columnLetter(downtimeColumn)}${rowNumber}-${reportHours}`, difference, difference === 0 ? 14 : 15)}</row>`;
+    return `<row r="${rowNumber}" ht="20">${identityCells}${dailyCells}${cell(`${columnLetter(productiveColumn)}${rowNumber}`, row.productiveHours, 10)}${cell(`${columnLetter(downtimeColumn)}${rowNumber}`, row.downtimeHours, row.downtimeHours > 0 ? 11 : 10)}${formulaCell(`${columnLetter(differenceColumn)}${rowNumber}`, `${columnLetter(productiveColumn)}${rowNumber}+${columnLetter(downtimeColumn)}${rowNumber}-${reportHours}`, difference, difference === 0 ? 14 : 15)}</row>`;
   }).join("");
-  void dayTotals;
-  void productiveTotal;
-  void downtimeTotal;
-  void totalHours;
+  const sumDataColumn = (column: string) => rows.length ? `SUM(${column}${firstDataRow}:${column}${lastDataRow})` : "0";
+  const totalDifference = totalHours - rows.reduce((sum, row) => sum + (row.reportHours ?? row.totalHours), 0);
+  const totalDailyCells = Array.from({ length: dayColumnCount }, (_, dayIndex) => cell(`${columnLetter(dayStartColumn + dayIndex)}${totalsRow}`, dayTotals[dayIndex] ?? 0, 10)).join("");
+  const totals = `<row r="${totalsRow}" ht="24">${cell(`B${totalsRow}`, "Итого", 10)}${totalDailyCells}${formulaCell(`${columnLetter(productiveColumn)}${totalsRow}`, sumDataColumn(columnLetter(productiveColumn)), productiveTotal, 10)}${formulaCell(`${columnLetter(downtimeColumn)}${totalsRow}`, sumDataColumn(columnLetter(downtimeColumn)), downtimeTotal, 10)}${formulaCell(`${columnLetter(differenceColumn)}${totalsRow}`, sumDataColumn(columnLetter(differenceColumn)), totalDifference, totalDifference === 0 ? 14 : 15)}</row>`;
   const columns = [
     '<col min="1" max="1" width="3.164" customWidth="1"/>',
     '<col min="2" max="2" width="15.332" customWidth="1"/>',
@@ -478,39 +534,61 @@ export function createEquipmentTimesheetXlsx(siteName: string, monthLabel: strin
     `<col min="${productiveColumn + 1}" max="${differenceColumn + 1}" width="12.664" customWidth="1"/>`,
   ].join("");
   const lastColumn = columnLetter(differenceColumn);
-  const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="B2:${lastColumn}${Math.max(lastDataRow, 5)}"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="4" ySplit="5" topLeftCell="E6" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols>${columns}</cols><sheetData><row r="1" ht="16"></row><row r="2" ht="18">${metaCells}</row><row r="3" ht="15"></row><row r="4" ht="32">${headerCells}${dateCells}${summaryHeaders}</row><row r="5" ht="12">${filterCells}</row>${dataRows}</sheetData><autoFilter ref="B5:${lastColumn}${Math.max(lastDataRow, 5)}"/><pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/><headerFooter><oddHeader>&amp;C${xml(`${siteName} — ${monthLabel}`)}</oddHeader></headerFooter></worksheet>`;
+  const worksheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="B2:${lastColumn}${totalsRow}"/><sheetViews><sheetView workbookViewId="0"><pane xSplit="4" ySplit="5" topLeftCell="E6" activePane="bottomRight" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="18"/><cols>${columns}</cols><sheetData><row r="1" ht="16"></row><row r="2" ht="18">${metaCells}</row><row r="3" ht="15"></row><row r="4" ht="32">${headerCells}${dateCells}${summaryHeaders}</row><row r="5" ht="12">${filterCells}</row>${dataRows}${totals}</sheetData><autoFilter ref="B5:${lastColumn}${Math.max(lastDataRow, 5)}"/><pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/><headerFooter><oddHeader>&amp;C${xml(`${siteName} — ${monthLabel}`)}</oddHeader></headerFooter></worksheet>`;
   return downloadBlob(zip(workbookFiles(worksheet, undefined, timesheetSheetName(dates), "Справочники", timesheetStylesXml)));
 }
 
-async function unzipEntry(buffer: ArrayBuffer, targetName: string) {
+type ZipPart = { method: number; checksum: number; size: number; compressedSize: number; dataOffset: number };
+
+function readZipParts(buffer: ArrayBuffer) {
   const view = new DataView(buffer);
+  const invalid = () => new Error("Файл не является корректным XLSX. Используйте книгу Excel в формате .xlsx.");
+  const inBounds = (offset: number, length: number) => offset >= 0 && length >= 0 && offset + length <= buffer.byteLength;
+  if (buffer.byteLength < 22) throw invalid();
   let eocd = buffer.byteLength - 22;
-  while (eocd >= 0 && view.getUint32(eocd, true) !== 0x06054b50) eocd -= 1;
-  if (eocd < 0) throw new Error("Файл не является корректным XLSX.");
+  const earliest = Math.max(0, eocd - 65_535);
+  while (eocd >= earliest && !(view.getUint32(eocd, true) === 0x06054b50 && eocd + 22 + view.getUint16(eocd + 20, true) === buffer.byteLength)) eocd -= 1;
+  if (eocd < earliest) throw invalid();
+  if (view.getUint16(eocd + 4, true) || view.getUint16(eocd + 6, true)) throw invalid();
   const entries = view.getUint16(eocd + 10, true);
   let offset = view.getUint32(eocd + 16, true);
+  const parts = new Map<string, ZipPart>();
   for (let index = 0; index < entries; index += 1) {
-    if (view.getUint32(offset, true) !== 0x02014b50) break;
+    if (!inBounds(offset, 46) || view.getUint32(offset, true) !== 0x02014b50) throw invalid();
+    const flags = view.getUint16(offset + 8, true);
     const method = view.getUint16(offset + 10, true);
+    const checksum = view.getUint32(offset + 16, true);
     const compressedSize = view.getUint32(offset + 20, true);
+    const size = view.getUint32(offset + 24, true);
     const nameLength = view.getUint16(offset + 28, true);
     const extraLength = view.getUint16(offset + 30, true);
     const commentLength = view.getUint16(offset + 32, true);
     const localOffset = view.getUint32(offset + 42, true);
+    if (flags & 1) throw new Error("Книга XLSX защищена паролем. Сохраните копию без пароля для импорта.");
+    if (!inBounds(offset + 46, nameLength + extraLength + commentLength) || !inBounds(localOffset, 30) || view.getUint32(localOffset, true) !== 0x04034b50) throw invalid();
     const name = decoder.decode(new Uint8Array(buffer, offset + 46, nameLength));
-    if (name === targetName) {
-      const localNameLength = view.getUint16(localOffset + 26, true);
-      const localExtraLength = view.getUint16(localOffset + 28, true);
-      const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
-      const bytes = new Uint8Array(buffer, dataOffset, compressedSize);
-      if (method === 0) return decoder.decode(bytes);
-      if (method !== 8) throw new Error("Этот способ сжатия XLSX пока не поддерживается.");
-      const stream = new Blob([bytes.slice().buffer]).stream().pipeThrough(new DecompressionStream("deflate-raw" as CompressionFormat));
-      return decoder.decode(await new Response(stream).arrayBuffer());
-    }
+    const dataOffset = localOffset + 30 + view.getUint16(localOffset + 26, true) + view.getUint16(localOffset + 28, true);
+    if (!inBounds(dataOffset, compressedSize)) throw invalid();
+    parts.set(name, { method, checksum, size, compressedSize, dataOffset });
     offset += 46 + nameLength + extraLength + commentLength;
   }
-  return null;
+  return async (name: string) => {
+    const part = parts.get(name);
+    if (!part) return null;
+    const compressed = new Uint8Array(buffer, part.dataOffset, part.compressedSize);
+    let bytes: Uint8Array;
+    if (part.method === 0) bytes = compressed;
+    else if (part.method === 8) {
+      try {
+        const stream = new Blob([compressed.slice().buffer]).stream().pipeThrough(new DecompressionStream("deflate-raw" as CompressionFormat));
+        bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+      } catch {
+        throw new Error("Не удалось распаковать XLSX. Пересохраните файл в Excel и попробуйте снова.");
+      }
+    } else throw new Error("Этот способ сжатия XLSX пока не поддерживается.");
+    if (bytes.length !== part.size || crc32(bytes) !== part.checksum) throw new Error("Файл XLSX повреждён. Скачайте или сохраните его ещё раз.");
+    return decoder.decode(bytes);
+  };
 }
 
 function normalizeHeader(value: string) {
@@ -521,108 +599,223 @@ function elementsByLocalName(container: Document | Element, name: string) {
   return Array.from(container.getElementsByTagNameNS("*", name));
 }
 
-function readWorksheetRows(document: Document, shared: string[]) {
-  return elementsByLocalName(document, "row").map((row) => {
+function parseXml(parser: DOMParser, source: string, label = "структуру XLSX") {
+  const document = parser.parseFromString(source, "application/xml");
+  if (elementsByLocalName(document, "parsererror").length) throw new Error(`Не удалось прочитать ${label}.`);
+  return document;
+}
+
+function spreadsheetString(container: Element) {
+  return elementsByLocalName(container, "t").filter((node) => {
+    // Pronunciation guides are not part of the visible value of an Excel cell.
+    for (let parent = node.parentElement; parent && parent !== container; parent = parent.parentElement) if (parent.localName === "rPh") return false;
+    return true;
+  }).map((node) => node.textContent ?? "").join("").replace(/_x([0-9a-f]{4})_/gi, (_, code: string) => String.fromCharCode(parseInt(code, 16)));
+}
+
+type WorksheetRow = { values: Map<number, string>; number: number; errors: Map<number, string> };
+
+function readIntegerPaddingFormats(parser: DOMParser, source: string | null) {
+  const result = new Map<number, number>();
+  if (!source) return result;
+  const styles = parseXml(parser, source, "форматы ячеек XLSX");
+  const formats = new Map(elementsByLocalName(styles, "numFmt").map((format) => [Number(format.getAttribute("numFmtId")), format.getAttribute("formatCode") ?? ""]));
+  const cellFormats = elementsByLocalName(styles, "cellXfs")[0];
+  if (!cellFormats) return result;
+  elementsByLocalName(cellFormats, "xf").forEach((format, index) => {
+    const code = formats.get(Number(format.getAttribute("numFmtId"))) ?? "";
+    // Interpret only the unambiguous integer mask. Date, decimal, conditional
+    // and other custom formats retain their raw value for the import contract.
+    if (format.getAttribute("applyNumberFormat") !== "0" && /^0{2,}$/.test(code)) result.set(index, code.length);
+  });
+  return result;
+}
+
+function readWorksheetRows(document: Document, shared: string[], integerPadding: Map<number, number>) {
+  let previousRow = 0;
+  return elementsByLocalName(document, "row").map((row): WorksheetRow => {
     const values = new Map<number, string>();
+    const errors = new Map<number, string>();
+    const number = Number(row.getAttribute("r")) || previousRow + 1;
+    previousRow = number;
+    let previousColumn = -1;
     for (const cellNode of elementsByLocalName(row, "c")) {
-      const ref = cellNode.getAttribute("r") ?? "A1";
-      const lettersOnly = ref.match(/[A-Z]+/)?.[0] ?? "A";
+      const lettersOnly = cellNode.getAttribute("r")?.match(/^([A-Za-z]+)\d+$/)?.[1];
       let column = 0;
-      for (const character of lettersOnly) column = column * 26 + character.charCodeAt(0) - 64;
+      if (lettersOnly) for (const character of lettersOnly.toUpperCase()) column = column * 26 + character.charCodeAt(0) - 64;
+      column = lettersOnly ? column - 1 : previousColumn + 1;
+      previousColumn = column;
       const type = cellNode.getAttribute("t");
-      const raw = type === "inlineStr"
-        ? elementsByLocalName(cellNode, "is")[0]?.textContent ?? ""
-        : elementsByLocalName(cellNode, "v")[0]?.textContent ?? "";
-      values.set(column - 1, type === "s" ? shared[Number(raw)] ?? "" : raw);
+      const valueNode = elementsByLocalName(cellNode, "v")[0];
+      const raw = valueNode?.textContent ?? "";
+      const inline = elementsByLocalName(cellNode, "is")[0];
+      if (type === "e") errors.set(column, `Ошибка формулы Excel (${raw || "неизвестная ошибка"}). Исправьте ячейку перед импортом.`);
+      else if (elementsByLocalName(cellNode, "f").length && !valueNode && !inline) errors.set(column, "У формулы нет рассчитанного значения. Откройте и сохраните книгу в Excel перед импортом.");
+      if (type === "s" && (raw.trim() === "" || !Number.isInteger(Number(raw)) || shared[Number(raw)] === undefined)) errors.set(column, "Повреждена ссылка на текст ячейки в XLSX.");
+      let value = type === "inlineStr" ? (inline ? spreadsheetString(inline) : "") : type === "s" ? shared[Number(raw)] ?? "" : raw.replace(/_x([0-9a-f]{4})_/gi, (_, code: string) => String.fromCharCode(parseInt(code, 16)));
+      const padding = integerPadding.get(Number(cellNode.getAttribute("s") ?? 0));
+      const numeric = Number(raw);
+      if ((!type || type === "n") && padding && raw.trim() && Number.isSafeInteger(numeric)) {
+        value = `${numeric < 0 ? "-" : ""}${String(Math.abs(numeric)).padStart(padding, "0")}`;
+      }
+      values.set(column, value);
     }
-    return values;
+    return { values, number, errors };
   });
 }
 
-function readSharedStrings(parser: DOMParser, sharedXml: string | null) {
-  if (!sharedXml) return [];
-  return elementsByLocalName(parser.parseFromString(sharedXml, "application/xml"), "si").map((node) => node.textContent ?? "");
+function resolvePart(base: string, target: string) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.includes("\\")) throw new Error("Некорректная внутренняя ссылка в XLSX.");
+  const segments = (target.startsWith("/") ? target.slice(1) : `${base.slice(0, base.lastIndexOf("/") + 1)}${target}`).split("/");
+  const result: string[] = [];
+  for (const segment of segments) {
+    if (segment === "..") {
+      if (!result.length) throw new Error("Некорректная внутренняя ссылка в XLSX.");
+      result.pop();
+    } else if (segment && segment !== ".") result.push(segment);
+  }
+  return result.join("/");
+}
+
+async function readWorkbook(file: File) {
+  const readPart = readZipParts(await file.arrayBuffer());
+  const parser = new DOMParser();
+  const packageRelationsXml = await readPart("_rels/.rels");
+  const packageRelations = packageRelationsXml ? elementsByLocalName(parseXml(parser, packageRelationsXml), "Relationship") : [];
+  const officeDocument = packageRelations.find((relation) => relation.getAttribute("Type")?.endsWith("/officeDocument") && relation.getAttribute("TargetMode") !== "External");
+  const workbookPath = officeDocument ? resolvePart("", officeDocument.getAttribute("Target") ?? "") : "xl/workbook.xml";
+  const workbookXml = await readPart(workbookPath);
+  if (!workbookXml) throw new Error("В файле нет книги Excel. Используйте формат .xlsx.");
+  const workbook = parseXml(parser, workbookXml, "настройки книги XLSX");
+  const date1904 = /^(1|true)$/i.test(elementsByLocalName(workbook, "workbookPr")[0]?.getAttribute("date1904") ?? "");
+  const slash = workbookPath.lastIndexOf("/");
+  const relationPath = `${workbookPath.slice(0, slash + 1)}_rels/${workbookPath.slice(slash + 1)}.rels`;
+  const relationsXml = await readPart(relationPath);
+  if (!relationsXml) throw new Error("В файле нет связей с листами Excel.");
+  const relations = elementsByLocalName(parseXml(parser, relationsXml), "Relationship").filter((relation) => relation.getAttribute("TargetMode") !== "External");
+  const sharedRelation = relations.find((relation) => relation.getAttribute("Type")?.endsWith("/sharedStrings"));
+  const sharedXml = await readPart(sharedRelation ? resolvePart(workbookPath, sharedRelation.getAttribute("Target") ?? "") : "xl/sharedStrings.xml");
+  const stylesRelation = relations.find((relation) => relation.getAttribute("Type")?.endsWith("/styles"));
+  const stylesXml = await readPart(stylesRelation ? resolvePart(workbookPath, stylesRelation.getAttribute("Target") ?? "") : "xl/styles.xml");
+  const integerPadding = readIntegerPaddingFormats(parser, stylesXml);
+  const shared = sharedXml ? elementsByLocalName(parseXml(parser, sharedXml, "текст ячеек XLSX"), "si").map(spreadsheetString) : [];
+  const sheets: Array<{ name: string; path: string }> = [];
+  for (const sheet of elementsByLocalName(workbook, "sheet")) {
+    const relationId = Array.from(sheet.attributes).find((attribute) => attribute.localName === "id")?.value;
+    const relation = relations.find((item) => item.getAttribute("Id") === relationId && item.getAttribute("Type")?.endsWith("/worksheet"));
+    if (relation) sheets.push({ name: sheet.getAttribute("name") ?? "Лист", path: resolvePart(workbookPath, relation.getAttribute("Target") ?? "") });
+  }
+  if (!sheets.length) throw new Error("В файле нет листов Excel.");
+  return {
+    date1904,
+    sheets,
+    async readSheet(sheet: { name: string; path: string }) {
+      const source = await readPart(sheet.path);
+      if (!source) throw new Error(`В файле отсутствует лист «${sheet.name}».`);
+      return readWorksheetRows(parseXml(parser, source), shared, integerPadding);
+    },
+  };
+}
+
+function headerColumns(row: WorksheetRow) {
+  const columns = new Map<string, number>();
+  for (const [column, value] of row.values) {
+    const header = normalizeHeader(value);
+    if (!header) continue;
+    if (columns.has(header)) throw new Error(`Строка Excel ${row.number}: столбец «${value.trim()}» повторяется. Оставьте один столбец с этим названием.`);
+    columns.set(header, column);
+  }
+  return columns;
+}
+
+function requiredCellErrors(row: WorksheetRow, columns: Array<number | undefined>) {
+  for (const column of columns) {
+    if (column === undefined) continue;
+    const error = row.errors.get(column);
+    if (error) throw new Error(`Строка Excel ${row.number}, столбец ${columnLetter(column)}: ${error}`);
+  }
+}
+
+function isReportFilterRow(row: WorksheetRow, index: number) {
+  return index === 0 && row.values.size > 0 && [...row.values.values()].every((value) => !value.trim() || value.trim() === "-");
 }
 
 export async function parseTableXlsx(file: File, requiredHeaders: string[]) {
-  const buffer = await file.arrayBuffer();
-  const worksheetXml = await unzipEntry(buffer, "xl/worksheets/sheet1.xml");
-  if (!worksheetXml) throw new Error("В файле нет первого листа.");
-  const sharedXml = await unzipEntry(buffer, "xl/sharedStrings.xml");
-  const parser = new DOMParser();
-  const shared = readSharedStrings(parser, sharedXml);
-  const document = parser.parseFromString(worksheetXml, "application/xml");
-  if (elementsByLocalName(document, "parsererror").length) throw new Error("Не удалось прочитать структуру XLSX.");
-  const parsedRows = readWorksheetRows(document, shared);
+  if (!requiredHeaders.length) throw new Error("Не указаны обязательные столбцы для импорта.");
+  const workbook = await readWorkbook(file);
   const normalizedRequired = requiredHeaders.map(normalizeHeader);
-  const headerIndex = parsedRows.findIndex((row) => normalizedRequired.every((header) => Array.from(row.values()).some((value) => normalizeHeader(value) === header)));
-  if (headerIndex < 0) throw new Error(`Не найдены обязательные столбцы: ${requiredHeaders.join(", ")}.`);
-  const headerMap = new Map<string, number>();
-  parsedRows[headerIndex].forEach((value, column) => headerMap.set(normalizeHeader(value), column));
-  return parsedRows.slice(headerIndex + 1).map((row) => Object.fromEntries(requiredHeaders.map((header) => [header, row.get(headerMap.get(normalizeHeader(header))!)?.trim() ?? ""]))).filter((row) => Object.values(row).some(Boolean));
+  for (const sheet of workbook.sheets) {
+    const rows = await workbook.readSheet(sheet);
+    const headerIndex = rows.findIndex((row) => normalizedRequired.every((header) => [...row.values.values()].some((value) => normalizeHeader(value) === header)));
+    if (headerIndex < 0) continue;
+    const headers = headerColumns(rows[headerIndex]);
+    return rows.slice(headerIndex + 1).map((row) => {
+      requiredCellErrors(row, requiredHeaders.map((header) => headers.get(normalizeHeader(header))));
+      return Object.fromEntries(requiredHeaders.map((header) => [header, row.values.get(headers.get(normalizeHeader(header))!)?.trim() ?? ""]));
+    }).filter((row) => Object.values(row).some(Boolean));
+  }
+  throw new Error(`Не найдены обязательные столбцы: ${requiredHeaders.join(", ")}. Используйте шаблон этого раздела.`);
 }
 
 export async function parsePlacementXlsx(file: File): Promise<PlacementImportRow[]> {
-  const buffer = await file.arrayBuffer();
-  const worksheetXml = await unzipEntry(buffer, "xl/worksheets/sheet1.xml");
-  if (!worksheetXml) throw new Error("В файле нет листа с расстановкой.");
-  const sharedXml = await unzipEntry(buffer, "xl/sharedStrings.xml");
-  const parser = new DOMParser();
-  const shared = readSharedStrings(parser, sharedXml);
-  const document = parser.parseFromString(worksheetXml, "application/xml");
-  if (elementsByLocalName(document, "parsererror").length) throw new Error("Не удалось прочитать структуру XLSX.");
-  const parsedRows = readWorksheetRows(document, shared);
-  const headerIndex = parsedRows.findIndex((row) => Array.from(row.values()).some((value) => normalizeHeader(value) === "фио"));
-  if (headerIndex < 0) throw new Error("Не найдена строка заголовков. Используйте скачанный шаблон.");
-  const headerMap = new Map<string, number>();
-  parsedRows[headerIndex].forEach((value, column) => headerMap.set(normalizeHeader(value), column));
-  const column = (...names: string[]) => names.map(normalizeHeader).map((name) => headerMap.get(name)).find((value) => value !== undefined);
-  const employeeColumn = column("ФИО");
-  const shiftColumn = column("Смена");
-  const zoneColumn = column("Зона");
-  const mainColumn = column("Основная работа", "Виды основных работ");
-  const subworkColumn = column("Вид подработ", "Виды подработ");
-  const masterColumn = column("Мастер");
-  const hoursColumn = column("Часы");
-  const noteColumn = column("Примечание");
-  if ([employeeColumn, shiftColumn, zoneColumn, mainColumn, subworkColumn, masterColumn, hoursColumn].some((value) => value === undefined)) throw new Error("В XLSX отсутствуют обязательные столбцы. Используйте скачанный шаблон.");
-  return parsedRows.slice(headerIndex + 1).map((row) => ({
-    employeeName: row.get(employeeColumn!)?.trim() ?? "",
-    shiftName: row.get(shiftColumn!)?.trim() ?? "",
-    zoneName: row.get(zoneColumn!)?.trim() ?? "",
-    mainWorkTypeName: row.get(mainColumn!)?.trim() ?? "",
-    subworkTypeName: row.get(subworkColumn!)?.trim() ?? "",
-    masterName: row.get(masterColumn!)?.trim() ?? "",
-    hours: row.get(hoursColumn!)?.trim() ?? "",
-    note: noteColumn === undefined ? "" : row.get(noteColumn)?.trim() ?? "",
-  })).filter((row) => Object.values(row).some(Boolean));
+  const workbook = await readWorkbook(file);
+  let incompleteHeader: WorksheetRow | undefined;
+  for (const sheet of workbook.sheets) {
+    const rows = await workbook.readSheet(sheet);
+    const headerIndex = rows.findIndex((row) => {
+      const headers = [...row.values.values()].map(normalizeHeader);
+      if (headers.includes("фио")) incompleteHeader ??= row;
+      return ["фио", "дата", "смена", "зона", "часы"].every((header) => headers.includes(header));
+    });
+    if (headerIndex < 0) continue;
+    const headers = headerColumns(rows[headerIndex]);
+    const column = (...names: string[]) => names.map(normalizeHeader).map((name) => headers.get(name)).find((value) => value !== undefined);
+    const employeeColumn = column("ФИО");
+    const dateColumn = column("Дата");
+    const shiftColumn = column("Смена");
+    const zoneColumn = column("Зона");
+    const mainColumn = column("Вид работы", "Основная работа", "Виды основных работ", "Работа");
+    const subworkColumn = column("Подвид работы", "Вид подработ", "Виды подработ", "Подработа");
+    const masterColumn = column("Мастер");
+    const hoursColumn = column("Часы");
+    const noteColumn = column("Примечание");
+    const importColumns = [employeeColumn, shiftColumn, zoneColumn, mainColumn, subworkColumn, masterColumn, hoursColumn, noteColumn];
+    if ([employeeColumn, shiftColumn, zoneColumn, mainColumn, subworkColumn, masterColumn, hoursColumn].some((value) => value === undefined)) throw new Error(`Строка Excel ${rows[headerIndex].number}: в XLSX отсутствуют обязательные столбцы. Используйте скачанный шаблон.`);
+    return rows.slice(headerIndex + 1).flatMap((row, index) => {
+      if (isReportFilterRow(row, index)) return [];
+      // Dates are pre-filled in the template; they do not create blank reports.
+      if (!importColumns.some((columnIndex) => columnIndex !== undefined && (row.values.get(columnIndex)?.trim() || row.errors.has(columnIndex)))) return [];
+      requiredCellErrors(row, [dateColumn, ...importColumns]);
+      const get = (columnIndex: number | undefined) => columnIndex === undefined ? "" : row.values.get(columnIndex)?.trim() ?? "";
+      try {
+        return [{ workDate: parsePersonnelImportDate(get(dateColumn), { date1904: workbook.date1904 }), employeeName: get(employeeColumn), shiftName: get(shiftColumn), zoneName: get(zoneColumn), mainWorkTypeName: get(mainColumn), subworkTypeName: get(subworkColumn), masterName: get(masterColumn), hours: get(hoursColumn), note: get(noteColumn) }];
+      } catch (failure) {
+        throw new Error(`Строка Excel ${row.number}: ${failure instanceof Error ? failure.message : "Некорректная дата отчёта."}`);
+      }
+    });
+  }
+  if (incompleteHeader) {
+    const hasDate = [...incompleteHeader.values.values()].some((value) => normalizeHeader(value) === "дата");
+    throw new Error(`Строка Excel ${incompleteHeader.number}: ${hasDate ? "в XLSX отсутствуют обязательные столбцы" : "отсутствует обязательный столбец «Дата»"}. Используйте скачанный шаблон.`);
+  }
+  throw new Error("Не найдена строка заголовков отчёта персонала. Используйте скачанный шаблон.");
 }
 
 export async function parseEquipmentRegistryXlsx(file: File): Promise<EquipmentRegistryImportRow[]> {
-  const buffer = await file.arrayBuffer();
-  const sharedXml = await unzipEntry(buffer, "xl/sharedStrings.xml");
-  const parser = new DOMParser();
-  const shared = readSharedStrings(parser, sharedXml);
+  const workbook = await readWorkbook(file);
   const required = ["организация", "тип", "марка", "модель"];
-
-  for (let sheetNumber = 1; sheetNumber <= 20; sheetNumber += 1) {
-    const worksheetXml = await unzipEntry(buffer, `xl/worksheets/sheet${sheetNumber}.xml`);
-    if (!worksheetXml) continue;
-    const document = parser.parseFromString(worksheetXml, "application/xml");
-    if (elementsByLocalName(document, "parsererror").length) continue;
-    const parsedRows = readWorksheetRows(document, shared);
-    const headerIndex = parsedRows.findIndex((row) => {
-      const values = Array.from(row.values()).map(normalizeHeader);
-      return required.every((header) => values.includes(header))
-        && values.some((header) => header.includes("грз") || header.includes("инв."));
+  for (const sheet of workbook.sheets) {
+    const rows = await workbook.readSheet(sheet);
+    const headerIndex = rows.findIndex((row) => {
+      const values = [...row.values.values()].map(normalizeHeader);
+      return required.every((header) => values.includes(header)) && values.some((header) => header.includes("грз") || header.includes("инв."));
     });
     if (headerIndex < 0) continue;
-
-    const headerMap = new Map<string, number>();
-    parsedRows[headerIndex].forEach((value, column) => headerMap.set(normalizeHeader(value), column));
+    const headers = headerColumns(rows[headerIndex]);
     const column = (...names: string[]) => {
       const normalizedNames = names.map(normalizeHeader);
-      return Array.from(headerMap.entries()).find(([header]) => normalizedNames.some((name) => header === name || header.includes(name)))?.[1];
+      return normalizedNames.map((name) => headers.get(name)).find((value) => value !== undefined)
+        ?? [...headers.entries()].find(([header]) => normalizedNames.some((name) => header.includes(name)))?.[1];
     };
     const organizationColumn = column("Организация");
     const typeColumn = column("Тип");
@@ -632,74 +825,49 @@ export async function parseEquipmentRegistryXlsx(file: File): Promise<EquipmentR
     const projectColumn = column("Проект", "Объект");
     const noteColumn = column("Примечание");
     if ([organizationColumn, typeColumn, brandColumn, modelColumn, registrationColumn].some((value) => value === undefined)) continue;
-
-    return parsedRows.slice(headerIndex + 1).map((row) => ({
-      organization: row.get(organizationColumn!)?.trim() ?? "",
-      equipmentType: row.get(typeColumn!)?.trim() ?? "",
-      brand: row.get(brandColumn!)?.trim() ?? "",
-      model: row.get(modelColumn!)?.trim() ?? "",
-      registrationNumber: row.get(registrationColumn!)?.trim() ?? "",
-      projectName: projectColumn === undefined ? undefined : row.get(projectColumn)?.trim() ?? "",
-      note: noteColumn === undefined ? "" : row.get(noteColumn)?.trim() ?? "",
-    })).filter((row) => row.organization && row.equipmentType && row.model && Object.values(row).some((value) => value && value !== "-"));
+    return rows.slice(headerIndex + 1).flatMap((row) => {
+      const columns = [organizationColumn, typeColumn, brandColumn, modelColumn, registrationColumn, projectColumn, noteColumn];
+      if (!columns.some((columnIndex) => columnIndex !== undefined && (row.values.get(columnIndex)?.trim() || row.errors.has(columnIndex)))) return [];
+      requiredCellErrors(row, columns);
+      const get = (columnIndex: number | undefined) => columnIndex === undefined ? "" : row.values.get(columnIndex)?.trim() ?? "";
+      return [{ organization: get(organizationColumn), equipmentType: get(typeColumn), brand: get(brandColumn), model: get(modelColumn), registrationNumber: get(registrationColumn), projectName: projectColumn === undefined ? undefined : get(projectColumn), note: get(noteColumn) }];
+    });
   }
-
   throw new Error("Не найден лист реестра техники со столбцами «Организация», «Тип», «Марка», «Модель» и «ГРЗ / Инв. №».");
 }
 
-function excelDate(value: string) {
-  const trimmed = value.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
-  const russian = trimmed.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
-  if (russian) return `${russian[3]}-${russian[2].padStart(2, "0")}-${russian[1].padStart(2, "0")}`;
-  const serial = Number(trimmed);
-  if (!Number.isFinite(serial) || serial < 1) return "";
-  return new Date(Date.UTC(1899, 11, 30) + Math.round(serial) * 86_400_000).toISOString().slice(0, 10);
-}
-
 export async function parseEquipmentEntriesXlsx(file: File): Promise<EquipmentEntryImportRow[]> {
-  const buffer = await file.arrayBuffer();
-  const sharedXml = await unzipEntry(buffer, "xl/sharedStrings.xml");
-  const parser = new DOMParser();
-  const shared = readSharedStrings(parser, sharedXml);
-
-  for (let sheetNumber = 1; sheetNumber <= 20; sheetNumber += 1) {
-    const worksheetXml = await unzipEntry(buffer, `xl/worksheets/sheet${sheetNumber}.xml`);
-    if (!worksheetXml) continue;
-    const document = parser.parseFromString(worksheetXml, "application/xml");
-    if (elementsByLocalName(document, "parsererror").length) continue;
-    const parsedRows = readWorksheetRows(document, shared);
-    const headerIndex = parsedRows.findIndex((row) => {
-      const values = Array.from(row.values()).map(normalizeHeader);
-      return values.includes("дата") && values.includes("уникальное наименование единицы")
-        && values.includes("смена") && values.includes("зона") && values.includes("часы");
+  const workbook = await readWorkbook(file);
+  for (const sheet of workbook.sheets) {
+    const rows = await workbook.readSheet(sheet);
+    const headerIndex = rows.findIndex((row) => {
+      const values = [...row.values.values()].map(normalizeHeader);
+      return ["дата", "уникальное наименование единицы", "смена", "зона", "часы"].every((header) => values.includes(header));
     });
     if (headerIndex < 0) continue;
-
-    const headerMap = new Map<string, number>();
-    parsedRows[headerIndex].forEach((value, column) => headerMap.set(normalizeHeader(value), column));
-    const column = (...names: string[]) => names.map(normalizeHeader).map((name) => headerMap.get(name)).find((value) => value !== undefined);
+    const headers = headerColumns(rows[headerIndex]);
+    const column = (...names: string[]) => names.map(normalizeHeader).map((name) => headers.get(name)).find((value) => value !== undefined);
     const dateColumn = column("Дата");
     const equipmentColumn = column("Уникальное наименование единицы");
     const shiftColumn = column("Смена");
     const zoneColumn = column("Зона");
-    const mainColumn = column("Виды основных работ", "Основная работа");
-    const subworkColumn = column("Виды подработ", "Вид подработ");
+    const mainColumn = column("Вид работы", "Виды основных работ", "Основная работа");
+    const subworkColumn = column("Подвид работы", "Виды подработ", "Вид подработ");
     const noteColumn = column("Примечание");
     const hoursColumn = column("Часы");
-    if ([dateColumn, equipmentColumn, shiftColumn, zoneColumn, mainColumn, subworkColumn, hoursColumn].some((value) => value === undefined)) continue;
-
-    return parsedRows.slice(headerIndex + 1).map((row) => ({
-      workDate: excelDate(row.get(dateColumn!) ?? ""),
-      equipmentName: row.get(equipmentColumn!)?.trim() ?? "",
-      shiftName: row.get(shiftColumn!)?.trim() ?? "",
-      zoneName: row.get(zoneColumn!)?.trim() ?? "",
-      mainWorkTypeName: row.get(mainColumn!)?.trim() ?? "",
-      subworkTypeName: row.get(subworkColumn!)?.trim() ?? "",
-      note: noteColumn === undefined ? "" : row.get(noteColumn)?.trim() ?? "",
-      hours: row.get(hoursColumn!)?.trim() ?? "",
-    })).filter((row) => row.workDate && row.equipmentName && row.equipmentName !== "-" && row.hours && row.hours !== "-");
+    if ([dateColumn, equipmentColumn, shiftColumn, zoneColumn, mainColumn, subworkColumn, hoursColumn].some((value) => value === undefined)) throw new Error(`Строка Excel ${rows[headerIndex].number}: отсутствуют столбцы вида или подвида работ. Используйте шаблон отчёта техники.`);
+    return rows.slice(headerIndex + 1).flatMap((row, index) => {
+      if (isReportFilterRow(row, index)) return [];
+      const importColumns = [equipmentColumn, shiftColumn, zoneColumn, mainColumn, subworkColumn, noteColumn, hoursColumn];
+      if (!importColumns.some((columnIndex) => columnIndex !== undefined && (row.values.get(columnIndex)?.trim() || row.errors.has(columnIndex)))) return [];
+      requiredCellErrors(row, [dateColumn, ...importColumns]);
+      const get = (columnIndex: number | undefined) => columnIndex === undefined ? "" : row.values.get(columnIndex)?.trim() ?? "";
+      try {
+        return [{ workDate: parsePersonnelImportDate(get(dateColumn), { date1904: workbook.date1904 }), equipmentName: get(equipmentColumn), shiftName: get(shiftColumn), zoneName: get(zoneColumn), mainWorkTypeName: get(mainColumn), subworkTypeName: get(subworkColumn), note: get(noteColumn), hours: get(hoursColumn) }];
+      } catch (failure) {
+        throw new Error(`Строка Excel ${row.number}: ${failure instanceof Error ? failure.message : "Некорректная дата отчёта."}`);
+      }
+    });
   }
-
-  throw new Error("Не найден лист расстановки техники с датой, техникой, сменой, зоной, работами и часами.");
+  throw new Error("Не найден лист отчёта техники с датой, техникой, сменой, зоной, работами и часами.");
 }

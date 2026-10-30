@@ -1,0 +1,48 @@
+/* Native AG Grid Master / Detail, using the shared directory theme and footer. */
+.work-types-directory { min-width: 0; min-height: 0; }
+.work-types-directory > .settings-toolbar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+.work-types-directory .back-button { flex: 0 0 auto; }
+.work-types-toolbar-actions { display: flex; align-items: center; gap: 12px; }
+.work-types-search { width: 100%; min-width: 0; max-width: 440px; height: 38px; padding: 0 12px; border: 1px solid #d4d4d8; border-radius: 7px; background: #fff; font: inherit; font-size: 12px; }
+.work-types-totals { white-space: nowrap; color: #71717a; font-size: 11px; }
+.work-types-master { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+.work-types-master-grid.ag-grid-shell { flex: 1; height: auto; min-height: 300px; }
+.work-types-master-name { font-weight: 550; white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
+.work-types-master-grid .ag-group-value { min-width: 0; white-space: normal; }
+.work-types-master-grid .ag-group-expanded, .work-types-master-grid .ag-group-contracted { cursor: pointer; }
+.work-types-master-grid .ag-cell-wrapper, .work-types-detail-grid .ag-cell-wrapper { align-items: center; }
+.work-types-master-grid .ag-cell .ag-cell-wrapper, .work-types-detail-grid .ag-cell .ag-cell-wrapper { width: 100%; min-width: 0; }
+.work-types-master-grid .ag-cell-value > .ag-cell-wrapper { display: flex; align-items: center; white-space: normal; overflow: visible; gap: 8px; }
+.work-types-master-grid .ag-group-expanded, .work-types-master-grid .ag-group-contracted { flex: 0 0 16px; width: 16px; margin: 0; }
+.work-types-master-grid .ag-group-checkbox.ag-invisible, .work-types-master-grid .ag-group-child-count:empty { display: none; }
+.work-types-master-grid .ag-group-value { flex: 1; }
+.work-types-master-grid .ag-cell-wrap-text, .work-types-detail-grid .ag-cell-wrap-text { line-height: 1.5; padding-top: 12px; padding-bottom: 12px; }
+.work-types-count { display: inline-flex; min-width: 28px; justify-content: center; padding: 3px 8px; border-radius: 5px; color: #52525b; background: #f4f4f5; font-size: 12px; line-height: 1.5; }
+.work-types-count-cell { display: flex; align-items: center; }
+.work-types-unassigned .work-types-master-name { color: #8a5b0b; }
+.work-types-detail { display: flex; flex-direction: column; height: 100%; padding: 14px 22px 16px 54px; background: #fafafa; border-bottom: 1px solid #dedede; }
+.work-types-detail-heading { display: flex; flex: 0 0 auto; align-items: baseline; gap: 12px; min-width: 0; margin-bottom: 10px; font-size: 12px; }
+.work-types-detail-heading > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #71717a; font-size: 11px; }
+.work-types-detail-content { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+.work-types-detail-grid.ag-grid-shell { flex: 1; height: auto; min-height: 180px; border-radius: 8px 8px 0 0; }
+.work-types-detail-grid .ag-cell-inline-editing { padding: 6px 8px !important; }
+.work-types-detail-grid .ag-cell-inline-editing .ag-cell-edit-wrapper { width: 100%; height: 100%; align-items: center; }
+.work-types-detail-grid .ag-cell-inline-editing .ag-cell-editor { width: 100%; height: 38px; }
+.work-types-detail-grid .ag-cell-inline-editing .ag-input-wrapper { height: 100%; }
+.work-types-detail-grid .ag-cell-inline-editing input { height: 100%; padding: 0 10px; font-size: 13px; }
+.work-types-detail-content .table-edit-footer { flex: 0 0 auto; padding: 0; border: 1px solid #dedede; border-top: 0; border-radius: 0 0 8px 8px; background: #fff; }
+.work-types-detail-content .employee-editing-bar, .work-types-detail-content .employee-selection-bar, .work-types-detail-content .employee-selection-actions { flex-wrap: wrap; }
+.work-types-detail-content .employee-editing-summary, .work-types-detail-content .employee-selection-summary { margin-right: auto; }
+.work-types-detail-content .employee-footer-base { width: 100%; }
+.work-types-directory .work-types-invalid-cell { box-shadow: inset 0 0 0 1px #dc2626; background: #fff1f2 !important; }
+.work-types-error { color: #b91c1c; font-size: 12px; }
+@media (max-width: 680px) {
+  .work-types-directory .employee-footer-base, .work-types-directory .employee-selection-actions { flex-wrap: wrap; }
+  .work-types-search { grid-column: 1 / -1; grid-row: 2; max-width: none; }
+  .work-types-toolbar-actions { grid-column: 3; gap: 8px; }
+  .work-types-totals { font-size: 10px; }
+  .work-types-detail { padding-left: 14px; padding-right: 14px; }
+}
+@media (max-width: 560px) {
+  .work-types-totals { display: none; }
+}

@@ -1,0 +1,201 @@
+.personnel-report-workspace {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.personnel-report-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.page-heading.personnel-report-heading { flex-wrap:wrap; gap:6px 12px; padding-bottom:8px; }
+.personnel-report-views-portal { display:flex; justify-content:flex-end; flex:1 0 auto; min-width:0; max-width:100%; }
+.personnel-report-heading > .report-heading-portal { flex:0 1 auto; width:auto; max-width:100%; margin-left:auto; }
+.personnel-report-views-portal .personnel-report-workflow-bar { flex-direction:column; align-items:flex-end; gap:3px; padding:0; }
+.personnel-report-views-portal .personnel-report-views { flex-wrap:nowrap; gap:2px; }
+.personnel-report-views-portal .personnel-report-views button { gap:5px; padding:6px 8px; font-size:11px; white-space:nowrap; }
+@media (max-width:680px) {
+  .page-heading.personnel-report-heading { align-items:stretch; gap:8px; }
+  .personnel-report-views-portal { flex:1 1 auto; justify-content:flex-start; }
+  .personnel-report-views-portal .personnel-report-workflow-bar { align-items:flex-start; }
+  .personnel-report-views-portal .personnel-report-views { flex-wrap:wrap; }
+  .personnel-report-heading > .report-heading-portal { margin-left:0; }
+  .personnel-report-heading .personnel-report-header-actions { justify-content:flex-start; }
+}
+.personnel-report-header-actions .secondary-button,
+.personnel-report-header-actions .excel-menu-trigger {
+  min-height: 36px;
+  height: 36px;
+  padding: 7px 12px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.personnel-report-queue-button.has-pending { border-color: #ebce86; background: #fffbef; color: #795611; }
+.personnel-report-refresh {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  padding: 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #71717a;
+  cursor: pointer;
+}
+.personnel-report-refresh svg { width: 18px; height: 18px; }
+.personnel-report-refresh:hover:not(:disabled) { background: #f4f4f5; color: #27272a; }
+.personnel-report-refresh:disabled { opacity: .4; cursor: default; }
+.personnel-report-refresh:focus-visible,
+.personnel-report-dialog-close:focus-visible,
+.personnel-report-discard:focus-visible { outline: 2px solid #ce9c2c; outline-offset: 2px; }
+.personnel-report-unsaved-dot { display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: #d4951e; vertical-align: middle; }
+.personnel-history-footer-actions .personnel-report-discard { border: 0; border-radius: 6px; background: transparent; color: #71717a; cursor: pointer; }
+.personnel-report-discard:hover:not(:disabled) { color: #b42318; background: #fff0ef; }
+.personnel-report-error { flex: 0 0 auto; margin: 0; }
+.personnel-report-error button { margin-left: auto; }
+
+.personnel-report-toast {
+  position: fixed;
+  z-index: 3500;
+  right: 24px;
+  bottom: 90px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border: 1px solid #cfe4d7;
+  border-radius: 10px;
+  background: #f3fbf6;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 10%);
+  color: #245b3c;
+  font-size: 13px;
+}
+.personnel-report-toast button { flex-shrink: 0; padding: 0 3px; border: 0; background: transparent; color: inherit; font: inherit; font-size: 20px; cursor: pointer; }
+
+.personnel-report-dialog {
+  width: min(760px, calc(100vw - 40px));
+  max-width: none;
+  max-height: calc(100dvh - 48px);
+  margin: auto;
+  padding: 24px;
+  overflow: auto;
+  border: 1px solid #e4e4e7;
+  border-radius: 14px;
+  background: #fff;
+  color: #27272a;
+  box-shadow: 0 20px 60px rgb(0 0 0 / 25%);
+}
+.personnel-report-dialog::backdrop { background: rgb(17 24 39 / 45%); }
+.personnel-report-dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.personnel-report-dialog-heading h2 { margin: 0; font-size: 20px; line-height: 1.3; }
+.personnel-report-dialog-close { display: grid; place-items: center; width: 30px; height: 30px; flex-shrink: 0; padding: 0; border: 0; border-radius: 6px; background: #f4f4f5; color: #71717a; font-size: 22px; cursor: pointer; }
+.personnel-report-reviews { display: flex; flex-direction: column; gap: 10px; }
+.personnel-report-review { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid #e4e4e7; border-radius: 9px; background: #fafafa; }
+.personnel-report-review > div:first-child { display: flex; flex-direction: column; gap: 6px; }
+.personnel-report-review strong { font-size: 14px; }
+.personnel-report-review span { font-size: 12px; color: #71717a; }
+.personnel-report-review p { margin: 2px 0 0; font-size: 13px; line-height: 1.5; }
+.personnel-report-review.status-submitted { background: #fffdf5; border-color: #ebdcae; }
+.personnel-report-review.status-rejected { background: #fff8f7; border-color: #f0ceca; }
+.personnel-report-dialog .toolbar-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.personnel-report-dialog .toolbar-actions button { min-height: 36px; padding: 8px 12px; font-size: 12px; }
+.personnel-report-dialog-note,
+.personnel-report-empty { margin: 12px 0 0; color: #71717a; font-size: 13px; line-height: 1.5; }
+.personnel-report-dialog-error { margin: 12px 0; color: #b42318; font-size: 13px; line-height: 1.5; }
+.personnel-report-review-modal { width: min(560px, calc(100vw - 40px)); }
+.personnel-report-review-modal > p { font-size: 13px; line-height: 1.5; }
+.personnel-report-review-modal label { display: flex; flex-direction: column; gap: 6px; margin: 16px 0; font-size: 13px; }
+.personnel-report-review-modal textarea { min-height: 92px; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font: inherit; }
+
+@media (max-width: 760px) {
+  .personnel-report-header-actions { gap: 5px; }
+  .personnel-report-header-actions .secondary-button,
+  .personnel-report-header-actions .excel-menu-trigger { padding: 6px 9px; font-size: 11px; }
+  .personnel-report-dialog { padding: 18px; }
+  .personnel-report-toast { right: 16px; bottom: 120px; }
+}
+
+.personnel-report-workflow-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex:0 0 auto; min-width:0; padding:2px 0; }
+.personnel-report-views { display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
+.personnel-report-views button { display:flex; align-items:center; gap:7px; min-height:34px; padding:7px 10px; border:1px solid transparent; border-radius:7px; background:transparent; color:#62626d; font:inherit; font-size:12px; cursor:pointer; }
+.personnel-report-views button:hover { background:#f4f4f5; color:#27272a; }
+.personnel-report-views button[aria-pressed="true"] { border-color:#e2d6b9; background:#fff8e7; color:#684b13; font-weight:650; }
+.personnel-report-views button > span,
+.personnel-report-header-actions .personnel-report-queue-button > span,
+.personnel-report-header-actions .personnel-report-check-button > span { display:inline-grid; place-items:center; min-width:19px; padding:1px 5px; border-radius:5px; background:#eaeaec; color:#52525b; font-size:11px; }
+.personnel-report-views .has-pending > span { background:#fff0c5; color:#825711; }
+.personnel-report-header-actions .personnel-report-check-button { display:flex; align-items:center; gap:7px; min-height:36px; padding:7px 12px; font-size:12px; }
+.personnel-report-header-actions .personnel-report-check-button > span { background:#fff1c5; color:#80560e; }
+.personnel-report-dirty-caption { display:flex; align-items:center; gap:6px; color:#7b683c; font-size:11px; white-space:nowrap; }
+.personnel-report-dirty-caption i { width:5px; height:5px; border-radius:50%; background:#c28c21; }
+.personnel-report-views button:focus-visible,.personnel-report-workspace input:focus-visible,.personnel-report-focused-caption button:focus-visible { outline:2px solid #ce9c2c; outline-offset:2px; }
+.personnel-report-review-focus { flex:0 0 auto; padding:14px 16px; border:1px solid #e9d7a2; border-radius:10px; background:#fffdf7; }
+.personnel-report-review-focus-title { display:flex; align-items:center; gap:10px; }
+.personnel-report-review-focus-title > div { flex:1; }
+.personnel-report-review-focus-title strong { font-size:14px; }
+.personnel-report-review-focus-title p { margin:3px 0 0; color:#71717a; font-size:12px; line-height:1.4; }
+.personnel-report-step { display:grid; place-items:center; width:30px; height:30px; border-radius:8px; background:#fff0c6; color:#8f6716; font-weight:700; }
+.personnel-report-review-focus-controls { display:flex; align-items:center; gap:12px; margin-top:12px; }
+.personnel-report-review-focus-controls > .custom-select { flex:1; min-width:220px; }
+.personnel-report-review-focus-controls .toolbar-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.personnel-report-review-focus-controls button { min-height:36px; padding:8px 12px; font-size:12px; }
+.personnel-report-review-focus-controls .save-edits-button { background:#256a45; border-color:#256a45; color:#fff; }
+.personnel-report-review-focus-controls .save-edits-button:hover:not(:disabled) { background:#1b5536; }
+.personnel-report-review-scope { margin:9px 0 0; color:#797367; font-size:11px; line-height:1.5; }
+.personnel-report-focused-caption { display:flex; align-items:center; justify-content:space-between; gap:12px; flex:0 0 auto; padding:9px 12px; border:1px solid #e4e4e7; border-radius:7px; background:#fafafa; color:#52525b; font-size:12px; }
+.personnel-report-focused-caption button { border:0; border-bottom:1px solid #c5b386; padding:2px 0; background:transparent; color:#89661c; font:inherit; cursor:pointer; }
+.personnel-report-carry-notice { display:flex; align-items:center; gap:16px; flex:0 0 auto; padding:10px 12px; border:1px solid #d6e3f3; border-radius:8px; background:#f5f9fe; color:#4b617b; font-size:12px; line-height:1.5; }
+.personnel-report-carry-notice strong { color:#2f4e72; margin-right:8px; }
+.personnel-report-carry-notice button { flex-shrink:0; margin-left:auto; padding:0 4px; border:0; background:transparent; color:inherit; font-size:20px; cursor:pointer; }
+.personnel-report-dialog-heading p { margin:6px 0 0; color:#71717a; font-size:13px; line-height:1.5; }
+.personnel-report-review > .personnel-report-card-heading { flex-direction:row; align-items:center; justify-content:space-between; gap:12px; }
+.personnel-report-card-heading > div { display:flex; flex-direction:column; gap:4px; }
+.personnel-report-card-heading .personnel-report-status { font-size:11px; }
+.personnel-report-card-details { display:flex; align-items:center; gap:14px; }
+.personnel-report-card-details span { color:#52525b; }
+.personnel-report-card-details .personnel-report-unsaved-label { color:#936c1a; }
+.personnel-report-review .personnel-report-return-note { padding:8px 10px; border-left:2px solid #d48375; background:#fff; color:#925345; }
+.personnel-report-dialog-footer { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-top:18px; padding-top:16px; border-top:1px solid #e4e4e7; }
+.personnel-report-dialog-footer > p { max-width:320px; margin:0; color:#71717a; font-size:12px; line-height:1.5; }
+.personnel-report-dialog-footer > button { padding:9px 13px; font-size:12px; }
+.personnel-report-send-modal[open] { display:flex; flex-direction:column; overflow:hidden; }
+.personnel-report-send-modal .personnel-report-dialog-heading,.personnel-report-send-modal .personnel-report-dialog-footer,.personnel-report-send-select { flex:0 0 auto; }
+.personnel-report-send-select { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; color:#71717a; font-size:12px; }
+.personnel-report-send-select label { display:flex; align-items:center; gap:9px; color:#52525b; cursor:pointer; }
+.personnel-report-send-list { min-height:0; overflow:auto; border:1px solid #e4e4e7; border-radius:9px; overscroll-behavior:contain; }
+.personnel-report-send-row { display:flex; align-items:center; gap:18px; padding:13px 14px; background:#fff; border-bottom:1px solid #e4e4e7; }
+.personnel-report-send-row:last-child { border-bottom:0; }
+.personnel-report-send-row.selected { background:#fffcf3; }
+.personnel-report-send-row > label { display:flex; align-items:center; flex:1; gap:11px; min-width:0; cursor:pointer; }
+.personnel-report-send-row input,.personnel-report-send-select input { width:17px; height:17px; margin:0; accent-color:#b8831a; flex-shrink:0; cursor:pointer; }
+.personnel-report-send-row label > span,.personnel-report-send-metrics { display:flex; flex-direction:column; gap:5px; }
+.personnel-report-send-row strong { color:#3f3f46; font-size:13px; font-weight:650; }
+.personnel-report-send-row small { color:#71717a; font-size:11px; line-height:1.4; }
+.personnel-report-send-metrics { min-width:125px; }
+.personnel-report-send-metrics .invalid { color:#b45309; }
+.personnel-report-send-metrics .complete { color:#2d7b4d; }
+.personnel-report-send-row > button { min-height:32px; padding:6px 10px; font-size:11px; }
+.personnel-report-send-footer { justify-content:flex-end; }
+.personnel-report-validation-status { flex:0 0 auto; margin:12px 0 0; color:#71717a; font-size:12px; }
+.personnel-report-validation-errors { flex:0 1 auto; min-height:80px; max-height:32vh; margin-top:14px; padding:12px 14px; overflow:auto; overscroll-behavior:contain; border:1px solid #f0c7c2; border-radius:8px; background:#fff8f7; color:#9f291c; font-size:12px; line-height:1.5; }
+.personnel-report-validation-errors > strong { display:block; margin-bottom:8px; }
+.personnel-report-validation-errors ul { display:grid; gap:10px; margin:0; padding-left:19px; }
+.personnel-report-validation-errors li > div { display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 10px; }
+.personnel-report-validation-errors li > div > span { font-size:11px; color:#986056; }
+.personnel-report-validation-errors li p { margin:2px 0 0; }
+.personnel-report-confirm-summary { display:flex; flex-wrap:wrap; gap:7px 14px; padding:13px 14px; border:1px solid #e4e4e7; border-radius:8px; background:#fafafa; font-size:13px; }
+.personnel-report-confirm-summary strong { color:#27272a; }
+.personnel-report-confirm-summary span { color:#62626d; }
+@media (max-width:1000px) { .personnel-report-workflow-bar { align-items:flex-start; flex-direction:column; gap:4px; }.personnel-report-review-focus-controls { align-items:stretch; flex-direction:column; }.personnel-report-review-focus-controls > .custom-select { min-width:0; }.personnel-report-review-focus-controls .toolbar-actions { justify-content:flex-start; } }
+@media (max-width:600px) { .personnel-report-views { gap:2px; }.personnel-report-views button { padding:6px 7px; font-size:11px; }.personnel-report-review-focus { padding:12px; }.personnel-report-review-focus-title > .personnel-report-status { display:none; }.personnel-report-send-row { flex-wrap:wrap; gap:10px; padding:12px; }.personnel-report-send-metrics { min-width:0; }.personnel-report-send-row > label { flex-basis:55%; }.personnel-report-dialog-footer { align-items:stretch; flex-direction:column; gap:12px; }.personnel-report-dialog-footer > p { max-width:none; }.personnel-report-dialog-footer .toolbar-actions { justify-content:flex-end; } }
+.personnel-report-return-comment { display:block; margin-top:6px; color:#9b4937; font-size:12px; line-height:1.5; }

@@ -52,7 +52,7 @@ test("server-renders the protected personnel accounting workspace", async () => 
   );
   const layout = await readFile(new URL("../app/layout.tsx", import.meta.url), "utf8");
   assert.match(grid, /AgGridReact/);
-  assert.match(grid, /headerName: "Вид подработ"/);
+  assert.match(grid, /headerName: "Подвид работы"/);
   assert.match(grid, /headerName: "Должность"/);
   assert.match(grid, /pinned: "right"/);
   assert.doesNotMatch(grid, /AllCommunityModule/);
@@ -119,19 +119,23 @@ test("keeps business validation in the data API", async () => {
   assert.match(api, /idx_personnel_options_kind_name/);
   assert.match(api, /CREATE TABLE IF NOT EXISTS position_catalog/);
   assert.match(api, /payload\.action === "import-employees"/);
-  assert.match(api, /projectCode \?\? ""\)\.split\(","\)/);
+  const directoryImport = await readFile(new URL("../app/excelDirectoryImports.ts", import.meta.url), "utf8");
+  assert.match(api, /prepareEmployeeExcelImport\(payload\.employees/);
+  assert.match(directoryImport, /rawProjects\.split/);
+  assert.match(directoryImport, /if \(!fullName \|\| !employmentType \|\| !department \|\| !position\)/);
   assert.match(api, /if \(!fullName \|\| !employmentType \|\| !department \|\| !position\)/);
   assert.match(api, /UPDATE employee_project_assignments SET active = 0, end_date = COALESCE\(end_date, DATE\('now'\)\)/);
-  assert.match(api, /INSERT INTO employee_project_assignments \(employee_id, site_id, source, start_date\) SELECT \?, \?, 'excel', DATE\('now'\) WHERE NOT EXISTS/);
-  assert.match(api, /unassigned: validatedRows\.filter\(\(row\) => row\.siteIds\.length === 0\)\.length/);
+  assert.match(api, /INSERT INTO employee_project_assignments \(employee_id, site_id, source, start_date\) SELECT \?, \?, 'excel', CURRENT_DATE WHERE NOT EXISTS/);
+  assert.match(api, /unassigned: rows\.filter\(row => row\.siteIds\.length === 0\)\.length/);
   assert.match(api, /payload\.action === "import-positions"/);
   assert.match(api, /UPDATE app_users SET active = 0/);
   assert.match(api, /UPDATE employees SET active = 0, site_id = NULL WHERE id = ANY\(\?\) AND active = 1/);
   assert.match(api, /DELETE FROM position_catalog WHERE id = \?/);
   assert.match(api, /repairNumericPersonnelValues/);
   assert.match(api, /ensureStandardShifts/);
-  assert.match(api, /syncMasterEmployees/);
-  assert.match(api, /Мастер строительно-монтажных работ/);
+  const projectMasters = await readFile(new URL("../app/projectMasters.ts", import.meta.url), "utf8");
+  assert.match(api, /await syncProjectMasters\(env\.DB, siteId\)/);
+  assert.match(projectMasters, /PROJECT_MASTER_POSITIONS/);
   assert.match(api, /name IN \('день', 'ночь'\)/);
   assert.match(api, /Смены фиксированы для всех проектов: день и ночь/);
   assert.match(api, /CREATE TABLE IF NOT EXISTS employee_project_assignments/);
@@ -265,7 +269,7 @@ test("keeps the employee grid compact without duplicated filter controls", async
   assert.match(grid, /field: "department", headerName: "Отдел"/);
   assert.match(grid, /field: "position", headerName: "Должность"/);
   assert.match(grid, /field: "siteName", headerName: "Проект"/);
-  assert.match(grid, /rowSelection=\{\{ mode: "multiRow"/);
+  assert.match(grid, /rowSelection=\{[^\n]*?\{ mode: "multiRow"/);
   assert.match(grid, /onSelectionChanged=/);
   assert.match(grid, /if \(!row \|\| row\.kind === "entry"\) return null/);
   assert.doesNotMatch(grid, /headerName: "Сотрудник"/);
@@ -302,6 +306,7 @@ test("selects employees with checkboxes and deletes them in one validated reques
 
 test("separates full-row editing from validated bulk editing and can clear the selection", async () => {
   const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const adminFooter = await readFile(new URL("../app/AdminGridFooter.tsx", import.meta.url), "utf8");
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
@@ -312,8 +317,8 @@ test("separates full-row editing from validated bulk editing and can clear the s
   assert.match(app, /onCancelEditing=\{cancelEmployeeEditing\}/);
   assert.match(app, /function cancelEmployeeEditing\(\)/);
   assert.match(app, /Выбрано сотрудников:/);
-  assert.match(app, /Отменить выделение/);
-  assert.match(app, /Отменить редактирование/);
+  assert.match(adminFooter, /Отменить выделение/);
+  assert.match(adminFooter, /Отменить редактирование/);
   assert.match(app, /setEmployeePendingDeletes\(\[\]\)/);
   assert.match(app, /Массовое редактирование сотрудников/);
   assert.match(app, /Выберите хотя бы одно поле, которое нужно изменить/);
@@ -323,10 +328,10 @@ test("separates full-row editing from validated bulk editing and can clear the s
   assert.match(app, /employmentType: catalogPosition\.employmentType, department: catalogPosition\.department/);
   assert.match(app, /Применить к таблице/);
   assert.match(app, /Проверьте таблицу и нажмите «Сохранить»/);
-  assert.match(app, /employee-selection-bar/);
-  assert.match(app, /employee-editing-bar/);
-  assert.match(app, /employee-footer-base/);
-  assert.match(app, /bulk-edit-selection-button/);
+  assert.match(adminFooter, /employee-selection-bar/);
+  assert.match(adminFooter, /employee-editing-bar/);
+  assert.match(adminFooter, /employee-footer-base/);
+  assert.match(adminFooter, /bulk-edit-selection-button/);
   assert.match(grid, /fullRowEditIds/);
   assert.match(grid, /const showEmployeeRowCancelActions = false/);
   assert.match(grid, /showEmployeeRowCancelActions && props\.drafts\.length/);
@@ -364,9 +369,9 @@ test("edits rows on double click and provides spreadsheet-style copy and paste",
   assert.match(filters, /ArrowRight: \{ row: 0, column: 1 \}/);
   assert.match(filters, /ArrowUp: \{ row: -1, column: 0 \}/);
   assert.match(filters, /ArrowDown: \{ row: 1, column: 0 \}/);
-  assert.match(filters, /event\.shiftKey && selectionRef\.current/);
-  assert.match(filters, /api\.ensureIndexVisible\(rowIndex\)/);
-  assert.match(filters, /api\.ensureColumnVisible\(columns\[columnIndex\]\)/);
+  assert.match(filters, /event\.shiftKey && event\.key !== "Tab" && selectionRef\.current/);
+  assert.match(filters, /api\.ensureIndexVisible\(nextRowIndex\)/);
+  assert.match(filters, /api\.ensureColumnVisible\(columns\[nextColumnIndex\]\)/);
   assert.match(filters, /rowId: event\.node\.id/);
   assert.match(filters, /api\.getRowNode\(current\.rowId\)/);
   assert.match(filters, /event\.key === "Escape"/);
@@ -375,7 +380,7 @@ test("edits rows on double click and provides spreadsheet-style copy and paste",
   assert.match(filters, /lastSelectionRef/);
   assert.match(filters, /selectionToRestore/);
   assert.match(filters, /body\.current\?\.focus\(\{ preventScroll: true \}\)/);
-  assert.match(filters, /target\.closest\("\.custom-select-menu,\.ag-employee-menu,\.table-context-menu"\)/);
+  assert.match(filters, /target\.closest\("\.custom-select-menu,\.ag-employee-menu,\.table-context-menu,\.personnel-spreadsheet-tools"\)/);
   assert.match(filters, /clearSelectionOutsideGrid/);
   assert.match(filters, /clearSelectionOnEmptySpace/);
   assert.match(filters, /onPointerDown=\{clearSelectionOnEmptySpace\}/);
@@ -416,16 +421,17 @@ test("adds richer filters, multi-column sorting, and persistent employee row ord
   assert.match(filterModel, /notStartsWith/);
   assert.match(filterModel, /notEndsWith/);
   assert.match(filterModel, /Intl\.Collator\("ru-RU", \{ numeric: true/);
-  assert.match(filters, /Добавить ↑/);
-  assert.match(filters, /Добавить ↓/);
+  assert.match(filters, /Сохранить сортировку других колонок/);
+  assert.match(filters, /По алфавиту: от Я до А/);
   assert.match(filters, /sortIndex/);
   assert.match(filters, /grid-sort-chip/);
   assert.match(filters, /columnId !== "rowOrder"/);
   assert.match(filters, /source\?: "paste" \| "undo"/);
   assert.match(filters, /refreshCells\(\{ force: true \}\)/);
-  assert.match(grid, /colId: "rowOrder"/);
-  assert.match(grid, /rowDragManaged/);
-  assert.match(grid, /onRowDragEnd/);
+  assert.doesNotMatch(filters, /colId: "rowOrder"/);
+  assert.match(filters, /cellRenderer: SelectionRowDragRenderer/);
+  assert.match(filters, /rowDragManaged=\{false\}/);
+  assert.match(filters, /onRowDragEnd/);
   assert.match(grid, /onReorder: \(employeeIds: number\[\]\) => Promise<void>/);
   assert.match(app, /action: "reorder-employees"/);
   assert.match(api, /payload\.action === "reorder-employees"/);
@@ -462,6 +468,7 @@ test("saves edited placement rows as one validated batch", async () => {
 test("supports bulk editing in every reference table and refreshes master details", async () => {
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
   const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const adminFooter = await readFile(new URL("../app/AdminGridFooter.tsx", import.meta.url), "utf8");
   const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
 
   assert.match(grid, /const draftEmployeeIds = props\.drafts\.map/);
@@ -478,7 +485,7 @@ test("supports bulk editing in every reference table and refreshes master detail
   assert.match(app, /drafts=\{positionDrafts\}/);
   assert.match(app, /drafts=\{siteDrafts\}/);
   assert.match(app, /drafts=\{userDrafts\}/);
-  assert.match(app, /Сохранить \(\$\{pendingCount\}\)/);
+  assert.match(adminFooter, /Сохранить \(\$\{pendingCount\}\)/);
   assert.match(api, /payload\.action === "save-directory-items"/);
   assert.match(api, /await env\.DB\.batch\(statements\)/);
 });
@@ -491,9 +498,9 @@ test("uses the employee spreadsheet workflow in every general reference table", 
   assert.match(app, /const \[userFullRowEditIds, setUserFullRowEditIds\]/);
   assert.match(app, /const \[siteFullRowEditIds, setSiteFullRowEditIds\]/);
   assert.match(app, /<PositionAgGrid[^>]*fullRowEditIds=\{positionFullRowEditIds\}[^>]*onSelectionChange=/);
-  assert.match(app, /<UserAgGrid[^>]*fullRowEditIds=\{userFullRowEditIds\}[^>]*onSelectionChange=/);
-  assert.match(app, /<ProjectAgGrid[^>]*fullRowEditIds=\{siteFullRowEditIds\}[^>]*onSelectionChange=/);
-  assert.ok([...grid.matchAll(/rowSelection=\{\{ mode: "multiRow"/g)].length >= 4);
+  assert.match(app, /<UserAgGrid[^\n]*fullRowEditIds=\{userFullRowEditIds\}[^\n]*onSelectionChange=/);
+  assert.match(app, /<ProjectAgGrid[^\n]*fullRowEditIds=\{siteFullRowEditIds\}[^\n]*onSelectionChange=/);
+  assert.ok([...grid.matchAll(/rowSelection=\{[^\n]*?\{ mode: "multiRow"/g)].length >= 4);
   assert.ok([...grid.matchAll(/onCellDoubleClicked=/g)].length >= 4);
   assert.ok([...grid.matchAll(/onSpreadsheetPaste=\{pasteIntoRow\}/g)].length >= 4);
   assert.ok([...app.matchAll(/uniformActions/g)].length >= 4);
@@ -508,7 +515,7 @@ test("uses checkbox selection and footer actions in reports and project settings
   const directoryGrid = grid.slice(grid.indexOf("export function DirectoryAgGrid"), grid.indexOf("type PositionGridProps"));
 
   for (const source of [placementGrid, projectEmployeeGrid, directoryGrid]) {
-    assert.match(source, /rowSelection=\{\{ mode: "multiRow"/);
+    assert.match(source, /rowSelection=\{[^\n]*?\{ mode: "multiRow"/);
     assert.match(source, /onSelectionChanged=/);
     assert.doesNotMatch(source, /colId: "actions"/);
   }
@@ -516,8 +523,8 @@ test("uses checkbox selection and footer actions in reports and project settings
   assert.match(app, /onSelectionChange=\{\(ids\) => \{ changeReportSelection\(ids\)/);
   assert.match(app, /onSelectionChange=\{changeDirectorySelection\}/);
   assert.match(app, /function editSelectedReportRows\(\)[\s\S]*setEditingRows\(\(current\)/);
-  assert.match(app, /selectedSavedEntries && <button[^>]+onClick=\{onEditSelection\}/);
-  assert.match(app, /disabled=\{saving \|\| !canDelete\}[^>]*title=\{canDelete \? undefined : "Нет права удаления"\}/);
+  assert.match(app, /selectedSavedEntries && canUpdate && <button[^>]+onClick=\{onEditSelection\}/);
+  assert.match(app, /\{canDelete && <button[^>]+onClick=\{onDelete\}/);
   assert.match(app, /function editSelectedDirectoryItems\(\)[\s\S]*setDirectoryDrafts\(\(current\)/);
   assert.doesNotMatch(app, /selected\.forEach\(\(entry\) => startEdit\(entry\)\)/);
   assert.match(grid, /const editingStructureKey = props\.editing\.map/);
@@ -555,12 +562,13 @@ test("offers permission-aware right-click actions throughout system tables", asy
 
 test("keeps creation, selection, and editing as exclusive table modes", async () => {
   const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const adminFooter = await readFile(new URL("../app/AdminGridFooter.tsx", import.meta.url), "utf8");
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
   const projects = await readFile(new URL("../app/ProjectCards.tsx", import.meta.url), "utf8");
   const users = await readFile(new URL("../app/UserAccessCards.tsx", import.meta.url), "utf8");
 
-  assert.match(app, /const showAdd = canCreate && !editorOpen && !editingExisting && deletingCount === 0/);
-  assert.match(app, /!editorOpen && deletingCount === 0 && <div className="employee-footer-base">/);
+  assert.match(adminFooter, /const showAdd = canCreate && !editorOpen && !editingExisting && deletingCount === 0/);
+  assert.match(adminFooter, /!editorOpen && deletingCount === 0 && <div className="employee-footer-base">/);
   assert.match(app, /changedCount === 0 && selectedCount === 0 && <div className="employee-footer-base">/);
   assert.match(app, /!editorOpen && selectedCount === 0 && <div className="employee-footer-base">/);
   assert.match(app, /editingCount === 0 && newCount === 0 && selectedCount === 0[^\n]+Добавить запись/);
@@ -583,7 +591,9 @@ test("builds a foreman's report from the last personal submission and keeps proj
   const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
-  assert.match(app, /const useDailyRosterReport = true/);
+  assert.match(app, /const useUnifiedPersonnelReport = true/);
+  assert.match(app, /const useDailyRosterReport = !useUnifiedPersonnelReport/);
+  assert.match(app, /<PersonnelReportWorkspace/);
   assert.match(app, /function buildRosterDraftRows[\s\S]*data\.reportEmployees/);
   assert.match(app, /<RosterReportFooter mode=\{role === "foreman" \? "foreman" : "engineer"\}/);
   assert.match(app, /editorOpen=\{rosterEditorOpen\}/);
@@ -796,7 +806,7 @@ test("selects personnel and equipment export ranges directly in one calendar", a
   assert.match(api, /pe\.work_date >= \? AND pe\.work_date <= \?/);
   assert.match(api, /scope === "export-range"/);
   assert.match(preview, /\/api\/equipment\?\$\{query\.toString\(\)\}/);
-  assert.match(preview, /Отчёт_техники_/);
+  assert.match(preview, /excelFileName\("Отчёт техники", \[payload\.source\.siteName, suffix\]\)/);
   assert.match(equipmentApi, /scope === "export-range"/);
   assert.match(equipmentApi, /ee\.work_date >= \? AND ee\.work_date <= \?/);
   assert.match(equipmentView, /kind: "equipment"/);

@@ -25,7 +25,7 @@ test("keeps daily personnel reports limited to OPR employees", async () => {
   assert.match(app, /new Map\(data\.reportEmployees\.map\(\(employee\) => \[employee\.id, employee\]\)\)/);
   assert.match(app, /employees=\{data\?\.reportEmployees \?\? \[\]\}/);
   assert.match(app, /employees: data\.reportEmployees/);
-  assert.match(app, /data\.reportEmployees\.find\(\(item\) => normalize\(item\.fullName\) === normalize\(name\)\)/);
+  assert.match(app, /data\.reportEmployees\.filter\(\(item\) => normalize\(item\.fullName\) === normalize\(name\)\)/);
 
   assert.match(timesheetApi, /UPPER\(TRIM\(pe\.employment_type_snapshot\)\) = 'ОПР'/);
   assert.match(timesheetApi, /EXISTS \(SELECT 1 FROM employee_project_assignments epa[\s\S]*epa\.active = 1/);

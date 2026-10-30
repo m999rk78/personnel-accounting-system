@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, date, index, integer, pgTable, primaryKey, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { check, date, index, integer, jsonb, pgTable, primaryKey, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 const auditTimestamp = (name: string) => timestamp(name, { withTimezone: true, mode: "string" });
 
@@ -178,16 +178,18 @@ export const mainWorkTypes = pgTable("main_work_types", {
 export const subworkTypes = pgTable("subwork_types", {
   id: serial("id").primaryKey(),
   siteId: integer("site_id").notNull().references(() => sites.id),
+  mainWorkTypeId: integer("main_work_type_id").references(() => mainWorkTypes.id),
   name: text("name").notNull(),
   active: integer("active").notNull().default(1),
-});
+}, (table) => [index("idx_subwork_types_parent").on(table.siteId, table.mainWorkTypeId).where(sql`${table.active} = 1`)]);
 
 export const masters = pgTable("masters", {
   id: serial("id").primaryKey(),
   siteId: integer("site_id").notNull().references(() => sites.id),
+  employeeId: integer("employee_id").references(() => employees.id),
   name: text("name").notNull(),
   active: integer("active").notNull().default(1),
-});
+}, (table) => [uniqueIndex("idx_masters_project_employee").on(table.siteId, table.employeeId).where(sql`${table.employeeId} IS NOT NULL`)]);
 
 export const placementEntries = pgTable("placement_entries", {
   id: serial("id").primaryKey(),
@@ -248,6 +250,59 @@ export const placementReportContributions = pgTable("placement_report_contributi
   index("idx_report_contributions_foreman_date").on(table.foremanId, table.workDate),
   check("placement_report_contribution_status", sql`${table.status} IN ('draft', 'submitted')`),
   check("placement_report_contribution_revision_positive", sql`${table.revision} > 0`),
+]);
+
+// Drafts are deliberately separate from placement_entries: only the engineer's
+// atomic approval publishes hours to the reports and timesheet.
+export const personnelReports = pgTable("personnel_reports", {
+  id: serial("id").primaryKey(),
+  siteId: integer("site_id").notNull().references(() => sites.id),
+  workDate: date("work_date", { mode: "string" }).notNull(),
+  ownerUserId: integer("owner_user_id").notNull().references(() => appUsers.id),
+  status: text("status").notNull().default("draft"),
+  revision: integer("revision").notNull().default(1),
+  submittedAt: auditTimestamp("submitted_at"),
+  submittedByUserId: integer("submitted_by_user_id").references(() => appUsers.id),
+  reviewedAt: auditTimestamp("reviewed_at"),
+  reviewedByUserId: integer("reviewed_by_user_id").references(() => appUsers.id),
+  reviewComment: text("review_comment").notNull().default(""),
+  createdByUserId: integer("created_by_user_id").notNull().references(() => appUsers.id),
+  updatedByUserId: integer("updated_by_user_id").notNull().references(() => appUsers.id),
+  createdAt: auditTimestamp("created_at").notNull().defaultNow(),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  index("idx_personnel_reports_site_date").on(table.siteId, table.workDate),
+  index("idx_personnel_reports_review").on(table.siteId, table.status, table.workDate),
+  uniqueIndex("idx_personnel_reports_active_owner_day").on(table.siteId, table.workDate, table.ownerUserId)
+    .where(sql`${table.status} <> 'approved'`),
+  check("personnel_report_status", sql`${table.status} IN ('draft', 'submitted', 'approved', 'rejected')`),
+  check("personnel_report_revision_positive", sql`${table.revision} > 0`),
+]);
+
+export const personnelReportRows = pgTable("personnel_report_rows", {
+  id: serial("id").primaryKey(),
+  reportId: integer("report_id").notNull().references(() => personnelReports.id, { onDelete: "cascade" }),
+  rowOrder: integer("row_order").notNull(),
+  employeeId: integer("employee_id").references(() => employees.id),
+  shiftId: integer("shift_id").references(() => shifts.id),
+  zoneId: integer("zone_id").references(() => zones.id),
+  mainWorkTypeId: integer("main_work_type_id").references(() => mainWorkTypes.id),
+  subworkTypeId: integer("subwork_type_id").references(() => subworkTypes.id),
+  masterId: integer("master_id").references(() => masters.id),
+  hours: integer("hours"),
+  note: text("note").notNull().default(""),
+  positionSnapshot: text("position_snapshot").notNull().default(""),
+  employeeNameSnapshot: text("employee_name_snapshot").notNull().default(""),
+  employmentTypeSnapshot: text("employment_type_snapshot").notNull().default(""),
+  departmentSnapshot: text("department_snapshot").notNull().default(""),
+  masterNameSnapshot: text("master_name_snapshot").notNull().default(""),
+  approvedEntryId: integer("approved_entry_id").references(() => placementEntries.id),
+  createdAt: auditTimestamp("created_at").notNull().defaultNow(),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("idx_personnel_report_rows_order").on(table.reportId, table.rowOrder),
+  uniqueIndex("idx_personnel_report_rows_approved_entry").on(table.approvedEntryId),
+  check("personnel_report_row_hours", sql`${table.hours} IS NULL OR ${table.hours} BETWEEN 1 AND 10`),
 ]);
 
 export const timesheetMarks = pgTable("timesheet_marks", {
@@ -313,6 +368,12 @@ export const equipmentEntries = pgTable("equipment_entries", {
   subworkTypeId: integer("subwork_type_id").notNull().references(() => subworkTypes.id),
   note: text("note").notNull().default(""),
   hours: integer("hours").notNull(),
+  equipmentNameSnapshot: text("equipment_name_snapshot").notNull().default(""),
+  organizationSnapshot: text("organization_snapshot").notNull().default(""),
+  equipmentTypeSnapshot: text("equipment_type_snapshot").notNull().default(""),
+  brandSnapshot: text("brand_snapshot").notNull().default(""),
+  modelSnapshot: text("model_snapshot").notNull().default(""),
+  registrationNumberSnapshot: text("registration_number_snapshot").notNull().default(""),
   createdBy: text("created_by").notNull(),
   responsibleUserId: integer("responsible_user_id").references(() => appUsers.id),
   revision: integer("revision").notNull().default(1),
@@ -354,6 +415,56 @@ export const equipmentReportContributions = pgTable("equipment_report_contributi
   check("equipment_report_contribution_revision_positive", sql`${table.revision} > 0`),
 ]);
 
+export const equipmentReports = pgTable("equipment_reports", {
+  id: serial("id").primaryKey(),
+  siteId: integer("site_id").notNull().references(() => sites.id),
+  workDate: date("work_date", { mode: "string" }).notNull(),
+  ownerUserId: integer("owner_user_id").notNull().references(() => appUsers.id),
+  status: text("status").notNull().default("draft"),
+  revision: integer("revision").notNull().default(1),
+  submittedAt: auditTimestamp("submitted_at"),
+  submittedByUserId: integer("submitted_by_user_id").references(() => appUsers.id),
+  reviewedAt: auditTimestamp("reviewed_at"),
+  reviewedByUserId: integer("reviewed_by_user_id").references(() => appUsers.id),
+  reviewComment: text("review_comment").notNull().default(""),
+  createdByUserId: integer("created_by_user_id").notNull().references(() => appUsers.id),
+  updatedByUserId: integer("updated_by_user_id").notNull().references(() => appUsers.id),
+  createdAt: auditTimestamp("created_at").notNull().defaultNow(),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+}, table => [
+  index("idx_equipment_reports_site_date").on(table.siteId, table.workDate),
+  index("idx_equipment_reports_review").on(table.siteId, table.status, table.workDate),
+  uniqueIndex("idx_equipment_reports_active_owner_day").on(table.siteId, table.workDate, table.ownerUserId).where(sql`${table.status} <> 'approved'`),
+  check("equipment_reports_status", sql`${table.status} IN ('draft', 'submitted', 'approved', 'rejected')`),
+  check("equipment_reports_revision_positive", sql`${table.revision} > 0`),
+]);
+
+export const equipmentReportRows = pgTable("equipment_report_rows", {
+  id: serial("id").primaryKey(),
+  reportId: integer("report_id").notNull().references(() => equipmentReports.id, { onDelete: "cascade" }),
+  rowOrder: integer("row_order").notNull(),
+  equipmentId: integer("equipment_id").references(() => equipmentUnits.id),
+  shiftId: integer("shift_id").references(() => shifts.id),
+  zoneId: integer("zone_id").references(() => zones.id),
+  mainWorkTypeId: integer("main_work_type_id").references(() => mainWorkTypes.id),
+  subworkTypeId: integer("subwork_type_id").references(() => subworkTypes.id),
+  hours: integer("hours"),
+  note: text("note").notNull().default(""),
+  equipmentNameSnapshot: text("equipment_name_snapshot").notNull().default(""),
+  organizationSnapshot: text("organization_snapshot").notNull().default(""),
+  equipmentTypeSnapshot: text("equipment_type_snapshot").notNull().default(""),
+  brandSnapshot: text("brand_snapshot").notNull().default(""),
+  modelSnapshot: text("model_snapshot").notNull().default(""),
+  registrationNumberSnapshot: text("registration_number_snapshot").notNull().default(""),
+  approvedEntryId: integer("approved_entry_id").references(() => equipmentEntries.id),
+  createdAt: auditTimestamp("created_at").notNull().defaultNow(),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+}, table => [
+  uniqueIndex("idx_equipment_report_rows_order").on(table.reportId, table.rowOrder),
+  uniqueIndex("idx_equipment_report_rows_approved_entry").on(table.approvedEntryId),
+  check("equipment_report_row_hours_range", sql`${table.hours} IS NULL OR ${table.hours} BETWEEN 1 AND 10`),
+]);
+
 export const equipmentTimesheetMarks = pgTable("equipment_timesheet_marks", {
   id: serial("id").primaryKey(),
   siteId: integer("site_id").notNull().references(() => sites.id),
@@ -372,3 +483,9 @@ export const equipmentTimesheetMarks = pgTable("equipment_timesheet_marks", {
   check("equipment_timesheet_downtime_hours_range", sql`${table.downtimeHours} BETWEEN 0 AND 20`),
   check("equipment_timesheet_daily_hours_limit", sql`${table.productiveHours} + ${table.downtimeHours} <= 20`),
 ]);
+
+export const tableRowOrders = pgTable("table_row_orders", {
+  id: text("id").primaryKey(),
+  rowIds: jsonb("row_ids").$type<number[]>().notNull().default([]),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+});

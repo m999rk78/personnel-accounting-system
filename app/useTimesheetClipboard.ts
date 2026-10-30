@@ -1,7 +1,8 @@
 "use client";
 
 import { createElement, useCallback, useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent, type RefObject } from "react";
-import { TableContextMenu } from "./TableContextMenu";
+import { TableContextMenu, type TableContextMenuAction } from "./TableContextMenu";
+import { useWorkspaceAccess } from "./TableAccessContext";
 
 export type TimesheetClipboardChange = {
   rowIndex: number;
@@ -45,6 +46,7 @@ function scrollCellIntoVisibleArea(shell: HTMLDivElement, point: ClipboardPoint)
 }
 
 type TimesheetClipboardOptions = {
+  getContextActions?: (rowIndex: number, close: () => void) => TableContextMenuAction[];
   shellRef?: RefObject<HTMLDivElement | null>;
   ensureRowVisible?: (rowIndex: number) => void;
   rowCount: number;
@@ -71,7 +73,8 @@ function selectionBounds(selection: ClipboardSelection | null) {
   };
 }
 
-export function useTimesheetClipboard({ shellRef: suppliedShellRef, ensureRowVisible, rowCount, columnCount, resetKey, getValue, canPaste, onPaste, getUndoValue = getValue, getUndoNote, canDelete, onDelete, onActivate, onType }: TimesheetClipboardOptions) {
+export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShellRef, ensureRowVisible, rowCount, columnCount, resetKey, getValue, canPaste, onPaste, getUndoValue = getValue, getUndoNote, canDelete, onDelete, onActivate, onType }: TimesheetClipboardOptions) {
+  const access = useWorkspaceAccess();
   const defaultShellRef = useRef<HTMLDivElement>(null);
   const shellRef = suppliedShellRef ?? defaultShellRef;
   const [selection, setSelection] = useState<ClipboardSelection | null>(null);
@@ -290,7 +293,7 @@ export function useTimesheetClipboard({ shellRef: suppliedShellRef, ensureRowVis
     shellRef.current?.focus({ preventScroll: true });
     setContextMenu({
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - 256)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 280)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 480)),
       rowIndex,
       columnIndex,
       error: "",
@@ -413,10 +416,11 @@ export function useTimesheetClipboard({ shellRef: suppliedShellRef, ensureRowVis
       error: contextMenu.error,
       onClose: () => setContextMenu(null),
       actions: [
+        ...(getContextActions?.(contextMenu.rowIndex, () => setContextMenu(null)) ?? []),
         { label: "Копировать ячейку", shortcut: "Ctrl+C", onSelect: async () => { try { await navigator.clipboard.writeText(selectedText() ?? ""); setStatus("Ячейка скопирована"); setContextMenu(null); } catch { setContextMenu((current) => current ? { ...current, error: "Не удалось скопировать. Разрешите доступ к буферу обмена." } : current); } } },
-        { label: "Вставить в ячейку", shortcut: "Ctrl+V", disabled: !canPaste(contextMenu.rowIndex, contextMenu.columnIndex), title: canPaste(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Нет права редактирования этой ячейки", onSelect: async () => { try { const changed = await pasteText(await navigator.clipboard.readText()); if (changed) setContextMenu(null); else setContextMenu((current) => current ? { ...current, error: "Значение не вставлено." } : current); } catch { setContextMenu((current) => current ? { ...current, error: "Не удалось прочитать буфер обмена. Разрешите доступ в браузере." } : current); } } },
-        { label: "Редактировать ячейку", shortcut: "Enter", separatorBefore: true, disabled: !onActivate || !canPaste(contextMenu.rowIndex, contextMenu.columnIndex), title: onActivate && canPaste(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Нет права редактирования этой ячейки", onSelect: () => { const anchor = document.querySelector<HTMLElement>(`[data-timesheet-row="${contextMenu.rowIndex}"][data-timesheet-column="${contextMenu.columnIndex}"]`); if (anchor) onActivate?.(contextMenu.rowIndex, contextMenu.columnIndex, anchor); setContextMenu(null); } },
-        { label: "Удалить ручное значение", shortcut: "Delete", danger: true, separatorBefore: true, disabled: !canDelete?.(contextMenu.rowIndex, contextMenu.columnIndex), title: canDelete?.(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Удалить можно только ручное значение при наличии права", onSelect: async () => { const changed = await deleteSelection(); if (changed) setContextMenu(null); else setContextMenu((current) => current ? { ...current, error: "В ячейке нет доступного для удаления ручного значения." } : current); } },
+        ...(access?.edit !== false ? [{ label: "Вставить в ячейку", shortcut: "Ctrl+V", disabled: !canPaste(contextMenu.rowIndex, contextMenu.columnIndex), title: canPaste(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Нет права редактирования этой ячейки", onSelect: async () => { try { const changed = await pasteText(await navigator.clipboard.readText()); if (changed) setContextMenu(null); else setContextMenu((current) => current ? { ...current, error: "Значение не вставлено." } : current); } catch { setContextMenu((current) => current ? { ...current, error: "Не удалось прочитать буфер обмена. Разрешите доступ в браузере." } : current); } } }] satisfies TableContextMenuAction[] : []),
+        ...(access?.edit !== false ? [{ label: "Редактировать ячейку", shortcut: "Enter", separatorBefore: true, disabled: !onActivate || !canPaste(contextMenu.rowIndex, contextMenu.columnIndex), title: onActivate && canPaste(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Нет права редактирования этой ячейки", onSelect: () => { const anchor = document.querySelector<HTMLElement>(`[data-timesheet-row="${contextMenu.rowIndex}"][data-timesheet-column="${contextMenu.columnIndex}"]`); if (anchor) onActivate?.(contextMenu.rowIndex, contextMenu.columnIndex, anchor); setContextMenu(null); } }] satisfies TableContextMenuAction[] : []),
+        ...(access?.delete !== false ? [{ label: "Удалить ручное значение", shortcut: "Delete", danger: true, separatorBefore: true, disabled: !canDelete?.(contextMenu.rowIndex, contextMenu.columnIndex), title: canDelete?.(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Удалить можно только ручное значение при наличии права", onSelect: async () => { const changed = await deleteSelection(); if (changed) setContextMenu(null); else setContextMenu((current) => current ? { ...current, error: "В ячейке нет доступного для удаления ручного значения." } : current); } }] satisfies TableContextMenuAction[] : []),
       ],
     }) : null,
     rememberUndo,

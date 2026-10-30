@@ -131,6 +131,32 @@ function actionDescription(path: string, method: string, payload: Record<string,
   const id = positiveInteger(payload.id) ?? positiveInteger(payload.employeeId) ?? positiveInteger(payload.equipmentId) ?? positiveInteger(url.searchParams.get("id"));
   if (action === "inspect-bitrix24") return null;
 
+  if (path === "/api/personnel-report") {
+    const descriptions: Record<string, string> = {
+      save: "Сохранил изменения отчёта персонала",
+      "save-approved-entry": "Исправил подтверждённую запись отчёта персонала и обновил табель",
+      submit: "Отправил отчёт персонала на проверку инженеру",
+      approve: "Утвердил отчёт персонала и опубликовал часы в табель",
+      reject: "Вернул отчёт персонала на доработку",
+      reopen: "Снял отчёт персонала с проверки",
+    };
+    if (!descriptions[action]) return null;
+    return { category: "reports" as const, actionKey: `personnel_report.${action}`, entityType: action === "save-approved-entry" ? "placement_entry" : "personnel_report_draft", entityId: String(payload.reportId ?? payload.entryId ?? ""), summary: `${descriptions[action]}${workDate ? ` за ${workDate}` : ""}` };
+  }
+
+  if (path === "/api/equipment-report") {
+    const descriptions: Record<string, string> = {
+      save: "Сохранил изменения отчёта техники",
+      "save-approved-entry": "Исправил подтверждённую запись отчёта техники и обновил табель",
+      submit: "Отправил отчёт техники на проверку инженеру",
+      approve: "Утвердил отчёт техники и опубликовал часы в табель",
+      reject: "Вернул отчёт техники на доработку",
+      reopen: "Снял отчёт техники с проверки",
+    };
+    if (!descriptions[action]) return null;
+    return { category: "reports" as const, actionKey: `equipment_report.${action}`, entityType: action === "save-approved-entry" ? "equipment_entry" : "equipment_report_draft", entityId: String(payload.reportId ?? payload.entryId ?? ""), summary: `${descriptions[action]}${workDate ? ` за ${workDate}` : ""}` };
+  }
+
   if (path === "/api/timesheet") {
     const value = String(payload.value ?? "").trim();
     return {
@@ -164,6 +190,12 @@ function actionDescription(path: string, method: string, payload: Record<string,
     entityId: String(payload.userId ?? ""),
     summary: payload.reset === true ? "Вернул пользователю права его роли" : "Изменил права доступа пользователя",
   };
+  if (path === "/api/table-order" && method === "POST" && payload.action !== "remap") return { category: "directories" as const, actionKey: "table.reorder", entityType: "table_row_order", entityId: String(payload.scope ?? ""), summary: `Изменил порядок строк таблицы · перемещено: ${Array.isArray(payload.movingIds) ? payload.movingIds.length : 0}` };
+  if (path === "/api/work-types" && method === "POST") {
+    const descriptions: Record<string, string> = { assign: "Назначил вид работы выбранным подвидам", save: "Сохранил изменения видов и подвидов работ проекта", archive: "Архивировал выбранные виды и подвиды работ проекта", import: "Импортировал виды и подвиды работ проекта" };
+    const workAction = typeof payload.action === "string" ? payload.action : "import";
+    return descriptions[workAction] ? { category: "directories" as const, actionKey: `work_types.${workAction}`, entityType: "directory", entityId: String(payload.siteId ?? ""), summary: descriptions[workAction] } : null;
+  }
   if (path !== "/api/data") return null;
 
   if (method === "DELETE" && payload.entity) {
@@ -203,6 +235,8 @@ function actionDescription(path: string, method: string, payload: Record<string,
     "reorder-employees": ["directories", "employee.reorder", "Изменил порядок сотрудников", "employee"],
     "import-employees": ["directories", "employee.import", "Импортировал список сотрудников", "employee"],
     "assign-employee-project": ["directories", "employee.assign", "Добавил сотрудника в проект", "employee"],
+    "import-project-employees": ["directories", "project_employee.import", "Импортировал сотрудников проекта", "project_employee"],
+    "import-project-directory": ["directories", "directory.import", "Импортировал справочник проекта", "directory"],
     "create-position": ["directories", "position.create", `Добавил должность «${String(payload.position ?? "") || "Без названия"}»`, "position"],
     "update-position": ["directories", "position.update", `Изменил должность «${String(payload.position ?? "") || "Без названия"}»`, "position"],
     "import-positions": ["directories", "position.import", "Импортировал список должностей", "position"],
@@ -220,6 +254,52 @@ function actionDescription(path: string, method: string, payload: Record<string,
 
 async function previousState(path: string, method: string, payload: Record<string, unknown>) {
   const db = getDatabase();
+  if (path === "/api/work-types" && method === "POST" && (payload.action === "save" || payload.action === "archive")) {
+    const siteId = positiveInteger(payload.siteId);
+    if (!siteId) return null;
+    const selectedIds = (value: unknown) => Array.isArray(value) ? [...new Set(value.slice(0, 5000).map(row => positiveInteger(row && typeof row === "object" ? (row as Record<string, unknown>).id : row)).filter((id): id is number => id !== null))] : [];
+    const parentIds = selectedIds(payload.parents);
+    const childIds = selectedIds(payload.children);
+    const parents = await db.prepare("SELECT id, name, active FROM main_work_types WHERE site_id = ? AND id = ANY(?::integer[]) ORDER BY id").bind(siteId, parentIds).all();
+    const children = await db.prepare(`SELECT id, name, main_work_type_id AS parentId, active FROM subwork_types
+      WHERE site_id = ? AND (id = ANY(?::integer[]) OR (? AND active = 1 AND main_work_type_id = ANY(?::integer[]))) ORDER BY id`)
+      .bind(siteId, childIds, payload.action === "archive", parentIds).all();
+    return { parents: parents.results, children: children.results };
+  }
+  if (path === "/api/personnel-report") {
+    if (payload.action === "save-approved-entry") {
+      const entryId = positiveInteger(payload.entryId);
+      return entryId ? db.prepare(`SELECT id, site_id AS siteId, work_date AS workDate, employee_id AS employeeId,
+        employee_name_snapshot AS employeeName, shift_id AS shiftId, zone_id AS zoneId, main_work_type_id AS mainWorkTypeId,
+        subwork_type_id AS subworkTypeId, master_id AS masterId, hours, note, revision, responsible_user_id AS responsibleUserId
+        FROM placement_entries WHERE id = ?`).bind(entryId).first() : null;
+    }
+    const reportId = positiveInteger(payload.reportId);
+    if (!reportId) return null;
+    return db.prepare(`SELECT report.id, report.site_id AS siteId, report.work_date AS workDate, report.owner_user_id AS ownerUserId,
+      report.status, report.revision, report.review_comment AS reviewComment,
+      (SELECT jsonb_agg(to_jsonb(source) ORDER BY source.row_order) FROM personnel_report_rows source WHERE source.report_id = report.id) AS rows,
+      (SELECT jsonb_agg(to_jsonb(entry) ORDER BY source.row_order) FROM personnel_report_rows source
+        JOIN placement_entries entry ON entry.id = source.approved_entry_id WHERE source.report_id = report.id) AS publishedRows
+      FROM personnel_reports report WHERE report.id = ?`).bind(reportId).first();
+  }
+  if (path === "/api/equipment-report") {
+    if (payload.action === "save-approved-entry") {
+      const entryId = positiveInteger(payload.entryId);
+      return entryId ? db.prepare(`SELECT id, site_id AS siteId, work_date AS workDate, equipment_id AS equipmentId,
+        equipment_name_snapshot AS equipmentName, shift_id AS shiftId, zone_id AS zoneId, main_work_type_id AS mainWorkTypeId,
+        subwork_type_id AS subworkTypeId, hours, note, revision, responsible_user_id AS responsibleUserId
+        FROM equipment_entries WHERE id = ?`).bind(entryId).first() : null;
+    }
+    const reportId = positiveInteger(payload.reportId);
+    if (!reportId) return null;
+    return db.prepare(`SELECT report.id, report.site_id AS siteId, report.work_date AS workDate, report.owner_user_id AS ownerUserId,
+      report.status, report.revision, report.review_comment AS reviewComment,
+      (SELECT jsonb_agg(to_jsonb(source) ORDER BY source.row_order) FROM equipment_report_rows source WHERE source.report_id = report.id) AS rows,
+      (SELECT jsonb_agg(to_jsonb(entry) ORDER BY source.row_order) FROM equipment_report_rows source
+        JOIN equipment_entries entry ON entry.id = source.approved_entry_id WHERE source.report_id = report.id) AS publishedRows
+      FROM equipment_reports report WHERE report.id = ?`).bind(reportId).first();
+  }
   if (path === "/api/timesheet") {
     const siteId = positiveInteger(payload.siteId);
     const employeeId = positiveInteger(payload.employeeId);
@@ -267,14 +347,17 @@ export async function prepareAuditEvent(request: Request): Promise<AuditDraft | 
     }
     const description = actionDescription(url.pathname, request.method, payload, url);
     if (!description) return null;
-    const siteId = firstSiteId(payload, url);
+    const beforeData = await previousState(url.pathname, request.method, payload);
+    const reportSiteId = ["/api/personnel-report", "/api/equipment-report"].includes(url.pathname) && beforeData && typeof beforeData === "object" && "siteId" in beforeData
+      ? positiveInteger(beforeData.siteId) : null;
+    const siteId = firstSiteId(payload, url) ?? reportSiteId;
     const site = siteId ? await getDatabase().prepare("SELECT name FROM sites WHERE id = ?").bind(siteId).first<{ name: string }>() : null;
     return {
       actor,
       ...description,
       siteId,
       siteName: site?.name ?? "",
-      beforeData: safeAuditValue(await previousState(url.pathname, request.method, payload)),
+      beforeData: safeAuditValue(beforeData),
       requestedData: safeAuditValue(payload),
       requestPath: url.pathname,
     };
@@ -288,6 +371,10 @@ async function finishAuditEvent(draft: AuditDraft, response: Response) {
   await ensureAuditSchema();
   let responseData: unknown = null;
   try { responseData = await response.clone().json(); } catch { responseData = null; }
+  if (["personnel_report_draft", "equipment_report_draft"].includes(draft.entityType) && !draft.entityId && responseData && typeof responseData === "object" && "report" in responseData) {
+    const report = responseData.report;
+    if (report && typeof report === "object" && "id" in report) draft.entityId = String(report.id);
+  }
   const afterData = safeAuditValue({ requested: draft.requestedData, result: responseData });
   await getDatabase().prepare(`INSERT INTO audit_events
     (actor_user_id, actor_name, actor_role, category, action_key, entity_type, entity_id, site_id, site_name, summary, before_data, after_data, request_path)

@@ -1,4 +1,5 @@
 import type { GridEquipmentDraft, GridEquipmentEntry, GridEquipmentUnit, GridOption } from "./AgDataGrids";
+import { compatibleSubworkId } from "./workTypeHierarchy.ts";
 
 type EquipmentCarryoverContext = {
   reportSubmitted: boolean;
@@ -28,7 +29,7 @@ export function buildEquipmentCarryoverDrafts(context: EquipmentCarryoverContext
       shiftId: available(context.shifts, entry.shiftId),
       zoneId: available(context.zones, entry.zoneId),
       mainWorkTypeId: available(context.mainWorkTypes, entry.mainWorkTypeId),
-      subworkTypeId: available(context.subworkTypes, entry.subworkTypeId),
+      subworkTypeId: compatibleSubworkId(context.subworkTypes, available(context.mainWorkTypes, entry.mainWorkTypeId), entry.subworkTypeId),
       hours: String(entry.hours),
       note: entry.note,
     }];

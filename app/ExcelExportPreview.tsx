@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createEquipmentPlacementXlsx, createEquipmentTimesheetXlsx, createPersonnelTimesheetXlsx, createPlacementXlsx, createTableXlsx, type EquipmentPlacementExportRow } from "./placementXlsx";
 import { takeExcelExportPreview, type ExcelExportPreviewPayload } from "./excelExportPreviewStore";
+import { downloadExcelFile, excelFileName } from "./excelFiles";
 import {
   buildEquipmentTimesheetRange,
   buildPersonnelTimesheetRange,
@@ -74,14 +75,7 @@ function rangeInsideDates(dates: string[], start: string, end: string) {
   return Boolean(dates.length && start >= dates[0] && end <= dates.at(-1)!);
 }
 
-function download(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = name;
-  link.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
-}
+const download = downloadExcelFile;
 
 export function ExcelExportPreviewPage() {
   const [payload, setPayload] = useState<ExcelExportPreviewPayload | null>(null);
@@ -211,7 +205,7 @@ export function ExcelExportPreviewPage() {
         setPayload({
           ...originalTimesheet,
           description: `${originalTimesheet.workbook.siteName} · ${periodText(start, end)}`,
-          fileName: `Табель_рабочих_${suffix}.xlsx`,
+          fileName: excelFileName("Табель персонала", [originalTimesheet.workbook.siteName, suffix]),
           headers: ["Тип", "Отдел", "Фамилия, имя, отчество", "Должность", "Примечание к должности", ...dateHeaders(selected.dates), "ЧАСЫ", "РАСТ", "Мастер"],
           rows,
           workbook: { ...originalTimesheet.workbook, ...selected, monthLabel: periodText(start, end) },
@@ -235,7 +229,7 @@ export function ExcelExportPreviewPage() {
           row.equipmentType ?? "",
           row.equipmentName,
           row.registrationNumber ?? "",
-          ...row.dailyProductiveHours.map((value) => value || ""),
+          ...row.dailyValues,
           row.productiveHours,
           row.downtimeHours,
           row.productiveHours + row.downtimeHours - (row.reportHours ?? row.totalHours),
@@ -243,7 +237,7 @@ export function ExcelExportPreviewPage() {
         setPayload({
           ...originalTimesheet,
           description: `${originalTimesheet.workbook.siteName} · ${periodText(start, end)}`,
-          fileName: `Табель_техники_${suffix}.xlsx`,
+          fileName: excelFileName("Табель техники", [originalTimesheet.workbook.siteName, suffix]),
           headers: ["Тип", "Уникальное наименование единицы", "ГРЗ", ...dateHeaders(selected.dates), "ЧАСЫ", "ПРОСТОЙ", "РАСТ"],
           rows,
           workbook: { ...originalTimesheet.workbook, ...selected, monthLabel: periodText(start, end) },
@@ -268,7 +262,7 @@ export function ExcelExportPreviewPage() {
           note: entry.note,
         }));
         const rows = workbookRows.map((entry) => [entry.workDate, entry.employeeName, entry.shiftName, entry.zoneName, entry.mainWorkTypeName, entry.subworkTypeName, entry.note, entry.masterName, entry.hours, entry.positionSnapshot]);
-        setPayload({ ...payload, description: `${payload.source.siteName} · ${periodText(start, end)}`, fileName: `Отчёт_персонала_${payload.source.siteCode}_${suffix}.xlsx`, headers: placementHeaders, rows, workbook: { kind: "placement", siteName: payload.source.siteName, rangeStart: start, rangeEnd: end, rows: workbookRows } });
+        setPayload({ ...payload, description: `${payload.source.siteName} · ${periodText(start, end)}`, fileName: excelFileName("Отчёт персонала", [payload.source.siteName, suffix]), headers: placementHeaders, rows, workbook: { kind: "placement", siteName: payload.source.siteName, rangeStart: start, rangeEnd: end, rows: workbookRows } });
       } else if (payload.source?.kind === "equipment") {
         const query = new URLSearchParams({ siteId: String(payload.source.siteId), date: start, month: start.slice(0, 7), scope: "export-range", rangeStart: start, rangeEnd: end, view: "daily", section: "daily" });
         const response = await fetch(`/api/equipment?${query.toString()}`, { cache: "no-store" });
@@ -285,7 +279,7 @@ export function ExcelExportPreviewPage() {
           hours: entry.hours,
         }));
         const rows = workbookRows.map((entry) => [entry.workDate, entry.equipmentName, entry.shiftName, entry.zoneName, entry.mainWorkTypeName, entry.subworkTypeName, entry.note, entry.hours]);
-        setPayload({ ...payload, description: `${payload.source.siteName} · ${periodText(start, end)}`, fileName: `Отчёт_техники_${payload.source.siteId}_${suffix}.xlsx`, headers: equipmentHeaders, rows, workbook: { kind: "equipment-placement", siteName: payload.source.siteName, rangeStart: start, rangeEnd: end, rows: workbookRows } });
+        setPayload({ ...payload, description: `${payload.source.siteName} · ${periodText(start, end)}`, fileName: excelFileName("Отчёт техники", [payload.source.siteName, suffix]), headers: equipmentHeaders, rows, workbook: { kind: "equipment-placement", siteName: payload.source.siteName, rangeStart: start, rangeEnd: end, rows: workbookRows } });
       } else {
         throw new Error("Для этого файла выбор периода недоступен.");
       }

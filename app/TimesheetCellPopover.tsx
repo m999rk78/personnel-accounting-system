@@ -20,16 +20,22 @@ export function TimesheetCellPopover({ anchor, width = 300, ariaLabel, className
     const rect = anchor.getBoundingClientRect();
     const popoverHeight = root.current?.offsetHeight ?? 280;
     const padding = 8;
-    const left = Math.max(padding, Math.min(rect.left, window.innerWidth - width - padding));
+    const actualWidth = Math.min(width, window.innerWidth - padding * 2);
+    const actualHeight = Math.min(popoverHeight, window.innerHeight - padding * 2);
+    const left = Math.max(padding, Math.min(rect.left, window.innerWidth - actualWidth - padding));
     const roomBelow = window.innerHeight - rect.bottom - padding;
-    const top = roomBelow >= Math.min(popoverHeight, 220)
+    const preferredTop = roomBelow >= Math.min(actualHeight, 220)
       ? rect.bottom + 5
-      : Math.max(padding, rect.top - popoverHeight - 5);
+      : rect.top - actualHeight - 5;
+    const top = Math.max(padding, Math.min(preferredTop, window.innerHeight - actualHeight - padding));
     setPosition({ top, left });
   }, [anchor, width]);
 
   useLayoutEffect(() => {
     updatePosition();
+    const observer = new ResizeObserver(updatePosition);
+    if (root.current) observer.observe(root.current);
+    return () => observer.disconnect();
   }, [updatePosition]);
 
   useEffect(() => {

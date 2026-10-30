@@ -120,17 +120,18 @@ export async function GET(request: Request) {
     const [employeesResult, entriesResult, marksResult] = await db.readBatch([
       db.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position
         FROM employees e
-        WHERE (e.active = 1 AND EXISTS (
-          SELECT 1 FROM employee_project_assignments epa
-          WHERE epa.employee_id = e.id AND epa.site_id = ? AND epa.active = 1
-        )) OR EXISTS (
-          SELECT 1 FROM placement_entries pe
-          WHERE pe.employee_id = e.id AND pe.site_id = ?
+        WHERE e.id IN (
+          SELECT epa.employee_id FROM employee_project_assignments epa
+          JOIN employees assigned ON assigned.id = epa.employee_id AND assigned.active = 1
+          WHERE epa.site_id = ? AND epa.active = 1
+          UNION
+          SELECT pe.employee_id FROM placement_entries pe
+          WHERE pe.site_id = ?
             AND pe.work_date >= ? AND pe.work_date < ? AND pe.deleted_at IS NULL
             AND UPPER(TRIM(pe.employment_type_snapshot)) = 'ОПР'
-        ) OR EXISTS (
-          SELECT 1 FROM timesheet_marks tm
-          WHERE tm.employee_id = e.id AND tm.site_id = ? AND tm.work_date >= ? AND tm.work_date < ?
+          UNION
+          SELECT tm.employee_id FROM timesheet_marks tm
+          WHERE tm.site_id = ? AND tm.work_date >= ? AND tm.work_date < ?
         )
         ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId, siteId, startDate, endDate, siteId, startDate, endDate),
       db.prepare(`SELECT pe.employee_id AS employeeId, pe.work_date AS workDate,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compareGridValues, matchesPersonnelFilter as matches, isConditionValid, normalizeFilterText, filterValueKey } from "../app/gridFilterModel.ts";
+import { compareGridValues, matchesPersonnelFilter as matches, isConditionValid, normalizeFilterText, filterValueKey, filterDateKey, describePersonnelFilter, describeGridFilter } from "../app/gridFilterModel.ts";
 
 const model = (overrides = {}) => ({ filterType: "personnel", kind: "text", values: null, conditions: [], operator: "AND", ...overrides });
 
@@ -75,4 +75,43 @@ test("grid values use natural Russian sorting", () => {
   assert.deepEqual(values.sort(compareGridValues), ["Ёлка", "Ель", "Кран 1", "кран 2", "Кран 10"]);
   assert.equal(compareGridValues(2, 10) < 0, true);
   assert.equal(compareGridValues("", "Значение") > 0, true);
+});
+
+test("calendar ranges compare displayed dates across months and include both boundaries", () => {
+  const period = model({ kind: "date", conditions: [{ type: "inRange", value: "2026-09-30", to: "2026-10-02" }] });
+  for (const date of ["30.09.2026", "01.10.2026", "02.10.2026", "2026-10-01"]) assert.equal(matches(date, period), true);
+  for (const date of ["29.09.2026", "03.10.2026", "", "31.09.2026"]) assert.equal(matches(date, period), false);
+  assert.equal(describePersonnelFilter(period), "За период «30.09.2026» — «02.10.2026»");
+});
+
+test("date filters validate real calendar days and reject incomplete or reversed periods", () => {
+  assert.equal(filterDateKey("29.02.2024"), "2024-02-29");
+  for (const date of ["29.02.2026", "2026-02-30", "2026-13-01", "not-a-date"]) assert.equal(filterDateKey(date), "");
+  for (const condition of [{ type: "inRange", value: "2026-10-02", to: "2026-09-30" }, { type: "inRange", value: "2026-10-01" }, { type: "equals", value: "2026-02-29" }]) assert.equal(isConditionValid(condition, "date"), false);
+  assert.equal(isConditionValid({ type: "inRange", value: "2026-10-01", to: "2026-10-01" }, "date"), true);
+});
+
+test("date comparisons combine with exact checklist selection and empty values", () => {
+  const after = model({ kind: "date", values: ["30.09.2026", "01.10.2026"], conditions: [{ type: "greaterThan", value: "2026-09-30" }] });
+  assert.equal(matches("30.09.2026", after), false);
+  assert.equal(matches("01.10.2026", after), true);
+  assert.equal(matches("02.10.2026", after), false);
+  assert.equal(matches(null, model({ kind: "date", conditions: [{ type: "blank", value: "" }] })), true);
+});
+
+test("Enterprise filter chips describe the selected values and all date range boundaries", () => {
+  const filter = { filterType: "multi", filterModels: [null,
+    { filterType: "set", values: ["Иванов", "Петров"] },
+    { filterType: "date", type: "inRange", dateFrom: "2026-09-30 00:00:00", dateTo: "2026-10-02 00:00:00" },
+  ] };
+  assert.equal(describeGridFilter(filter), "Иванов, Петров; За период «30.09.2026» — «02.10.2026»");
+  assert.equal(describeGridFilter({ filterType: "set", values: [] }), "Ничего не выбрано");
+  assert.equal(describeGridFilter({ filterType: "multi", filterModels: [null, null, null] }), "Все значения");
+});
+
+test("Enterprise combined conditions retain AND/OR and numeric zero in the summary", () => {
+  assert.equal(describeGridFilter({ filterType: "number", operator: "OR", conditions: [
+    { filterType: "number", type: "equals", filter: 0 },
+    { filterType: "number", type: "inRange", filter: 5, filterTo: 10 },
+  ] }), "Равно «0» ИЛИ В диапазоне «5» — «10»");
 });

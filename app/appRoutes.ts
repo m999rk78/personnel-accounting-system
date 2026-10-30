@@ -98,8 +98,7 @@ export function workspaceTitle(view: WorkspaceView, directoryFocus: WorkspaceDir
   if (view === "projectEmployees") return "Сотрудники проекта";
   if (view === "projectEquipment") return "Техника проекта";
   if (directoryFocus === "zone") return "Зоны";
-  if (directoryFocus === "mainWorkType") return "Виды работ";
-  if (directoryFocus === "subworkType") return "Виды подработ";
+  if (directoryFocus === "mainWorkType" || directoryFocus === "subworkType") return "Виды и подвиды работ";
   return "Мастера";
 }
 

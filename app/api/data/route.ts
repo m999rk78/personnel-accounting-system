@@ -1,3 +1,9 @@
+import { ensureProjectMastersSchema, syncProjectMasters } from "../../projectMasters";
+import { settingsReadPolicy } from "../../settingsReadPolicy";
+import { readOptionalBatch } from "../../readOptionalBatch";
+import { compressJsonResponse } from "../../compressJsonResponse";
+import { saveSubworkDirectory } from "../../workTypeHierarchyServer";
+import { importProjectDirectoryExcel, importProjectEmployeesExcel, normalizeExcelDirectoryName, prepareEmployeeExcelImport } from "../../excelDirectoryImports";
 import { getDatabase } from "../../../db/client";
 import { withAuditTrail } from "../../auditLog";
 import { assertSameOrigin, createInvitation, ensureAuthSchema, getAuthUser, sendInvitationEmail, type AuthUser } from "../../auth";
@@ -9,8 +15,7 @@ import { canViewAllProjects, isUserRole, type UserRole } from "../../roles";
 const env = { get DB() { return getDatabase(); } };
 type DatabaseExecutor = Pick<ReturnType<typeof getDatabase>, "prepare" | "batch" | "readBatch">;
 
-async function reconcilePositionCatalogOptions() {
-  const db = env.DB;
+async function reconcilePositionCatalogOptions(db: DatabaseExecutor = env.DB) {
   await db.batch([
     db.prepare("UPDATE personnel_options SET active = 0 WHERE kind = 'employmentType' AND active = 1 AND NOT EXISTS (SELECT 1 FROM position_catalog WHERE active = 1 AND employment_type = personnel_options.name)"),
     db.prepare("UPDATE personnel_options SET active = 0 WHERE kind = 'department' AND active = 1 AND NOT EXISTS (SELECT 1 FROM position_catalog WHERE active = 1 AND department = personnel_options.name)"),
@@ -60,13 +65,15 @@ type ExistingPlacementEntry = {
 };
 
 type UserPayload = {
-  action?: "create-user" | "update-user" | "create-employee" | "reorder-employees" | "create-bitrix24-employee" | "update-bitrix24-employee" | "update-selected-bitrix24-employees" | "delete-bitrix24-employee" | "acknowledge-bitrix24-difference" | "acknowledge-selected-bitrix24-differences" | "update-employee" | "import-employees" | "inspect-bitrix24" | "link-bitrix24-employees" | "sync-bitrix24" | "create-position" | "update-position" | "import-positions" | "create-site" | "update-site" | "create-directory" | "update-directory" | "save-directory-items" | "assign-employee-project" | "assign-site";
+  action?: "create-user" | "update-user" | "create-employee" | "reorder-employees" | "create-bitrix24-employee" | "update-bitrix24-employee" | "update-selected-bitrix24-employees" | "delete-bitrix24-employee" | "acknowledge-bitrix24-difference" | "acknowledge-selected-bitrix24-differences" | "update-employee" | "import-employees" | "import-project-employees" | "import-project-directory" | "inspect-bitrix24" | "link-bitrix24-employees" | "sync-bitrix24" | "create-position" | "update-position" | "import-positions" | "create-site" | "update-site" | "create-directory" | "update-directory" | "save-directory-items" | "assign-employee-project" | "assign-site";
   userId?: number;
   employeeId?: number;
   employeeIds?: number[];
+  names?: string[];
   bitrix24Id?: string;
   positionId?: number;
   directoryId?: number;
+  mainWorkTypeId?: number | null;
   entity?: DirectoryEntity;
   fullName?: string;
   email?: string;
@@ -81,7 +88,7 @@ type UserPayload = {
   projectSiteId?: number | null;
   employees?: Array<{ fullName?: string; employmentType?: string; department?: string; position?: string; projectCode?: string }>;
   positions?: Array<{ employmentType?: string; department?: string; position?: string }>;
-  directories?: Array<{ directoryId?: number; name?: string; employeeId?: number }>;
+  directories?: Array<{ directoryId?: number; name?: string; employeeId?: number; mainWorkTypeId?: number | null }>;
   links?: Array<{ bitrix24Id?: string; employeeId?: number }>;
 };
 
@@ -231,6 +238,7 @@ const TABLE_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS subwork_types (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     site_id INTEGER NOT NULL,
+    main_work_type_id INTEGER REFERENCES main_work_types(id),
     name TEXT NOT NULL,
     active INTEGER NOT NULL DEFAULT 1
   )`,
@@ -321,6 +329,8 @@ async function initializeDatabase() {
   const db = env.DB;
   await ensureAuthSchema();
   await db.batch(TABLE_STATEMENTS.map((statement) => db.prepare(statement)));
+  await db.prepare("ALTER TABLE subwork_types ADD COLUMN IF NOT EXISTS main_work_type_id INTEGER REFERENCES main_work_types(id)").run();
+  await ensureProjectMastersSchema(db);
   await db.prepare(`INSERT INTO placement_report_days (site_id, work_date, submitted_at)
     SELECT site_id, work_date, MIN(created_at) FROM placement_entries WHERE deleted_at IS NULL GROUP BY site_id, work_date
     ON CONFLICT (site_id, work_date) DO NOTHING`).all();
@@ -446,32 +456,12 @@ async function initializeDatabase() {
         WHERE active = 0
           AND bitrix24_id IS NULL
           AND NOT EXISTS (SELECT 1 FROM placement_entries WHERE employee_id = employees.id)
-          AND NOT EXISTS (SELECT 1 FROM employee_project_assignments WHERE employee_id = employees.id)`),
+          AND NOT EXISTS (SELECT 1 FROM employee_project_assignments WHERE employee_id = employees.id)
+          AND NOT EXISTS (SELECT 1 FROM masters WHERE employee_id = employees.id)`),
     ]);
   }
   const syncPositionCatalog = () => db.prepare("INSERT OR IGNORE INTO position_catalog (employment_type, department, position) SELECT DISTINCT employment_type, department, position FROM employees WHERE active = 1 AND employment_type <> '' AND department <> '' AND position <> ''").run();
-  const syncEmployeeAssignments = () => db.prepare("INSERT OR IGNORE INTO employee_project_assignments (employee_id, site_id, source) SELECT id, site_id, source FROM employees WHERE active = 1 AND site_id IS NOT NULL").run();
-  const syncMasterEmployees = async () => {
-    await db.prepare(`INSERT INTO employees (full_name, employment_type, department, position, source, site_id, sort_order)
-      SELECT m.name, 'ОПР', 'УСР', 'Мастер строительно-монтажных работ', 'master-directory', m.site_id,
-        (SELECT COALESCE(MAX(sort_order), 0) FROM employees) + ROW_NUMBER() OVER (ORDER BY m.name)
-      FROM masters m
-      WHERE m.active = 1 AND NOT EXISTS (
-        SELECT 1 FROM employees e WHERE e.full_name = m.name AND e.active = 1
-      )`).run();
-    await db.prepare(`INSERT OR IGNORE INTO employee_project_assignments (employee_id, site_id, source)
-      SELECT e.id, m.site_id, 'master-directory'
-      FROM masters m JOIN employees e ON e.full_name = m.name AND e.active = 1
-      WHERE m.active = 1 AND NOT EXISTS (
-        SELECT 1 FROM employee_project_assignments epa
-        WHERE epa.employee_id = e.id AND epa.site_id = m.site_id AND epa.active = 1
-      )`).run();
-    await db.prepare(`UPDATE employees SET site_id = (
-      SELECT MIN(m.site_id) FROM masters m WHERE m.name = employees.full_name AND m.active = 1
-    ) WHERE site_id IS NULL AND active = 1 AND EXISTS (
-      SELECT 1 FROM masters m WHERE m.name = employees.full_name AND m.active = 1
-    )`).run();
-  };
+  const syncEmployeeAssignments = () => db.prepare("INSERT OR IGNORE INTO employee_project_assignments (employee_id, site_id, source) SELECT id, site_id, source FROM employees WHERE active = 1 AND site_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM employee_project_assignments history WHERE history.employee_id = employees.id)").run();
   const ensureStandardShifts = async () => {
     const sites = await db.prepare("SELECT id FROM sites WHERE active = 1").all<{ id: number }>();
     const statements = sites.results.flatMap((site) => [
@@ -492,9 +482,8 @@ async function initializeDatabase() {
   const siteCount = await db.prepare("SELECT COUNT(*) AS count FROM sites").first<{ count: number }>();
   if ((siteCount?.count ?? 0) > 0) {
     await db.prepare("UPDATE sites SET timezone = 'Europe/Moscow' WHERE timezone <> 'Europe/Moscow'").run();
-    await db.prepare("UPDATE employees SET site_id = 1 WHERE site_id IS NULL AND source <> 'bitrix24'").run();
+    await db.prepare("UPDATE employees SET site_id = 1 WHERE site_id IS NULL AND source <> 'bitrix24' AND NOT EXISTS (SELECT 1 FROM employee_project_assignments history WHERE history.employee_id = employees.id)").run();
     await repairNumericPersonnelValues();
-    await syncMasterEmployees();
     await syncPositionCatalog();
     await reconcilePositionCatalogOptions();
     await syncEmployeeAssignments();
@@ -519,7 +508,7 @@ async function initializeDatabase() {
     db.prepare("INSERT INTO shifts (id, site_id, name) VALUES (1, 1, 'день'), (2, 1, 'ночь'), (4, 2, 'день'), (5, 2, 'ночь')"),
     db.prepare("INSERT INTO zones (id, site_id, name) VALUES (1, 1, 'G4-C1810BX0'), (2, 1, 'G3-B1110BX0'), (3, 1, 'G1-B6710RX0'), (4, 1, 'отсутствует'), (5, 2, 'Секция A'), (6, 2, 'Секция B')"),
     db.prepare("INSERT INTO main_work_types (id, site_id, name) VALUES (1, 1, 'Трубопроводы /// Монтаж'), (2, 1, 'Трубопроводы /// Сварка'), (3, 1, 'Металлоконструкции /// Эстакады'), (4, 1, 'Вспомогательные и прочие работы'), (5, 2, 'Монтаж оборудования'), (6, 2, 'Подготовительные работы')"),
-    db.prepare("INSERT INTO subwork_types (id, site_id, name) VALUES (1, 1, 'Вспомогательные или прочие работы'), (2, 1, 'Погрузо-разгрузка, сортировка, склад'), (3, 1, 'Подготовка к сварочным работам'), (4, 1, 'Подкрасочные работы'), (5, 2, 'Сортировка материала'), (6, 2, 'Дополнительные работы')"),
+    db.prepare("INSERT INTO subwork_types (id, site_id, main_work_type_id, name) VALUES (1, 1, 4, 'Вспомогательные или прочие работы'), (2, 1, 4, 'Погрузо-разгрузка, сортировка, склад'), (3, 1, 2, 'Подготовка к сварочным работам'), (4, 1, 1, 'Подкрасочные работы'), (5, 2, 6, 'Сортировка материала'), (6, 2, 5, 'Дополнительные работы')"),
     db.prepare("INSERT INTO masters (id, site_id, name) VALUES (1, 1, 'Ниязметов Анвар Аминбаевич'), (2, 1, 'Мурзаев Алишер'), (3, 1, 'Раджабов Султонназир'), (4, 2, 'Кузнецов Артём Игоревич'), (5, 2, 'Орлов Максим Павлович')"),
     db.prepare(`INSERT INTO placement_entries
       (site_id, work_date, employee_id, shift_id, zone_id, main_work_type_id, subwork_type_id, note, master_id, hours, position_snapshot)
@@ -535,7 +524,6 @@ async function initializeDatabase() {
       .bind(today, "Электрогазосварщик"),
   ]);
   await db.prepare("UPDATE employees SET site_id = 1 WHERE site_id IS NULL").run();
-  await syncMasterEmployees();
   await syncPositionCatalog();
   await reconcilePositionCatalogOptions();
   await syncEmployeeAssignments();
@@ -568,6 +556,10 @@ function unauthorized() {
 
 function forbidden() {
   return Response.json({ error: "У вас нет прав для этого действия." }, { status: 403 });
+}
+
+function approvalRequired() {
+  return Response.json({ error: "Новые строки отчёта сохраняются в черновике и попадают в табель после проверки инженером. Обновите страницу отчёта.", code: "APPROVAL_REQUIRED" }, { status: 409 });
 }
 
 class PlacementRequestError extends Error {
@@ -638,7 +630,8 @@ function canRunAction(user: AuthUser, payload: UserPayload) {
   if (action === "delete-bitrix24-employee") return hasPermission(user.permissions, "employees", "delete");
   if (action === "create-employee" || action === "create-bitrix24-employee") return hasPermission(user.permissions, "employees", "create");
   if (action === "import-employees") return hasPermission(user.permissions, "employees", "create") || hasPermission(user.permissions, "employees", "update");
-  if (action === "assign-employee-project") return hasPermission(user.permissions, "project_employees", "create");
+  if (action === "assign-employee-project" || action === "import-project-employees") return hasPermission(user.permissions, "project_employees", "create");
+  if (action === "import-project-directory") return hasPermission(user.permissions, "project_directories", "create");
   if (action === "save-directory-items") {
     const rows = payload.directories ?? [];
     const creates = rows.some((row) => !asPositiveInteger(row.directoryId));
@@ -771,15 +764,22 @@ function reportSubmissionStatement(siteId: number, workDate: string, responsible
   ) AS submitted`).bind(siteId, workDate);
 }
 
-function employeeUsageStatement(workDate: string) {
+function employeeUsageStatement(workDate: string, siteId: number) {
   return env.DB.prepare(`SELECT pe.employee_id AS employeeId, pe.responsible_user_id AS responsibleUserId,
     COALESCE(responsible.full_name, 'Без ответственного') AS responsibleUserName, SUM(pe.hours) AS hours
     FROM placement_entries pe
     LEFT JOIN app_users responsible ON responsible.id = pe.responsible_user_id
     WHERE pe.work_date = ? AND pe.deleted_at IS NULL
       AND UPPER(TRIM(pe.employment_type_snapshot)) = 'ОПР'
+      AND pe.employee_id IN (
+        SELECT assignment.employee_id FROM employee_project_assignments assignment
+        WHERE assignment.site_id = ? AND assignment.active = 1
+        UNION
+        SELECT historical.employee_id FROM placement_entries historical
+        WHERE historical.site_id = ? AND historical.work_date = ? AND historical.deleted_at IS NULL
+      )
     GROUP BY pe.employee_id, pe.responsible_user_id, responsible.full_name
-    ORDER BY pe.employee_id, responsible.full_name`).bind(workDate);
+    ORDER BY pe.employee_id, responsible.full_name`).bind(workDate, siteId, siteId, workDate);
 }
 
 function reportTimesheetMarksStatement(siteId: number, workDate: string) {
@@ -856,7 +856,7 @@ async function validatePayload(db: DatabaseExecutor, payload: EntryPayload, excl
     db.prepare("SELECT id FROM shifts WHERE id = ? AND site_id = ? AND active = 1").bind(shiftId, siteId),
     db.prepare("SELECT id FROM zones WHERE id = ? AND site_id = ? AND active = 1").bind(zoneId, siteId),
     db.prepare("SELECT id FROM main_work_types WHERE id = ? AND site_id = ? AND active = 1").bind(mainWorkTypeId, siteId),
-    db.prepare("SELECT id FROM subwork_types WHERE id = ? AND site_id = ? AND active = 1").bind(subworkTypeId, siteId),
+    db.prepare("SELECT id FROM subwork_types WHERE id = ? AND site_id = ? AND active = 1 AND main_work_type_id = ?").bind(subworkTypeId, siteId, mainWorkTypeId),
     keepHistoricalEmployee && existing?.masterId === masterId
       ? db.prepare("SELECT id FROM masters WHERE id = ? AND site_id = ?").bind(masterId, siteId)
       : db.prepare("SELECT id FROM masters WHERE id = ? AND site_id = ? AND active = 1").bind(masterId, siteId),
@@ -906,7 +906,7 @@ async function validateBulkPayloads(db: DatabaseExecutor, payloads: EntryPayload
     db.prepare("SELECT id FROM shifts WHERE site_id = ? AND active = 1").bind(siteId),
     db.prepare("SELECT id FROM zones WHERE site_id = ? AND active = 1").bind(siteId),
     db.prepare("SELECT id FROM main_work_types WHERE site_id = ? AND active = 1").bind(siteId),
-    db.prepare("SELECT id FROM subwork_types WHERE site_id = ? AND active = 1").bind(siteId),
+    db.prepare("SELECT id, main_work_type_id AS mainWorkTypeId FROM subwork_types WHERE site_id = ? AND active = 1").bind(siteId),
     db.prepare("SELECT id, name, active FROM masters WHERE site_id = ?").bind(siteId),
     db.prepare("SELECT employee_id AS employeeId, SUM(hours) AS used FROM placement_entries WHERE work_date = ? AND deleted_at IS NULL AND UPPER(TRIM(employment_type_snapshot)) = 'ОПР' GROUP BY employee_id").bind(workDate),
   ]);
@@ -915,7 +915,7 @@ async function validateBulkPayloads(db: DatabaseExecutor, payloads: EntryPayload
   const shifts = new Set((shiftsResult.results as Array<{ id: number }>).map((item) => item.id));
   const zones = new Set((zonesResult.results as Array<{ id: number }>).map((item) => item.id));
   const mainWorks = new Set((mainWorksResult.results as Array<{ id: number }>).map((item) => item.id));
-  const subworks = new Set((subworksResult.results as Array<{ id: number }>).map((item) => item.id));
+  const subworks = new Map((subworksResult.results as Array<{ id: number; mainWorkTypeId: number | null }>).map((item) => [item.id, item.mainWorkTypeId]));
   const masters = new Map((mastersResult.results as Array<{ id: number; name: string; active: number }>).map((item) => [item.id, item]));
   const existingById = new Map(existingRows.map((entry) => [entry.id, entry]));
   const totals = new Map((totalsResult.results as Array<{ employeeId: number; used: number }>).map((item) => [item.employeeId, Number(item.used)]));
@@ -948,7 +948,7 @@ async function validateBulkPayloads(db: DatabaseExecutor, payloads: EntryPayload
     if (hours < 1 || hours > 10) throw new Error(`Строка ${index + 1}: количество часов должно быть от 1 до 10.`);
     if (!employee?.position) throw new Error(`Строка ${index + 1}: сотрудник недоступен или у него не заполнена должность.`);
     if (!isOprEmploymentType(employee.employmentType)) throw new Error(`Строка ${index + 1}: в отчёт рабочих можно добавлять только сотрудников с типом ОПР.`);
-    if (!shifts.has(shiftId) || !zones.has(zoneId) || !mainWorks.has(mainWorkTypeId) || !subworks.has(subworkTypeId) || !master || (!master.active && !keepHistoricalMaster)) {
+    if (!shifts.has(shiftId) || !zones.has(zoneId) || !mainWorks.has(mainWorkTypeId) || subworks.get(subworkTypeId) !== mainWorkTypeId || !master || (!master.active && !keepHistoricalMaster)) {
       throw new Error(`Строка ${index + 1}: одно из значений не относится к объекту.`);
     }
 
@@ -1741,7 +1741,7 @@ async function linkBitrixEmployees(sourceSnapshot: BitrixEmployeeSnapshot[], req
   return { ...updated.response, linked };
 }
 
-export async function GET(request: Request) {
+async function handleGET(request: Request) {
   try {
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
@@ -1785,7 +1785,7 @@ export async function GET(request: Request) {
         placementEntriesStatement(siteId, workDate, responsibleUserId),
         filledDatesStatement(siteId, rangeStart, rangeEnd, responsibleUserId),
         reportSubmissionStatement(siteId, workDate, responsibleUserId),
-        employeeUsageStatement(workDate),
+        employeeUsageStatement(workDate, siteId),
         foremanProgressStatement(siteId, workDate),
         reportTimesheetMarksStatement(siteId, workDate),
       ]);
@@ -1805,6 +1805,7 @@ export async function GET(request: Request) {
       return Response.json({ entries: entries.results });
     }
     if (scope === "workspace") {
+      await syncProjectMasters(env.DB, siteId);
       const [sites, reportEmployees, placementEmployees, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, reportSubmission, employeeUsage, foremanProgress, timesheetMarks] = await env.DB.readBatch([
         env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
         reportEmployeesStatement(siteId),
@@ -1816,12 +1817,12 @@ export async function GET(request: Request) {
         env.DB.prepare("SELECT id, name FROM shifts WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
         env.DB.prepare("SELECT id, name FROM zones WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
         env.DB.prepare("SELECT id, name FROM main_work_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
-        env.DB.prepare("SELECT id, name FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
-        env.DB.prepare("SELECT id, name FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+        env.DB.prepare("SELECT id, name, main_work_type_id AS mainWorkTypeId FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+        env.DB.prepare("SELECT id, name, employee_id AS employeeId FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
         placementEntriesStatement(siteId, workDate, responsibleUserId),
         filledDatesStatement(siteId, rangeStart, rangeEnd, responsibleUserId),
         reportSubmissionStatement(siteId, workDate, responsibleUserId),
-        employeeUsageStatement(workDate),
+        employeeUsageStatement(workDate, siteId),
         foremanProgressStatement(siteId, workDate),
         reportTimesheetMarksStatement(siteId, workDate),
       ]);
@@ -1854,13 +1855,17 @@ export async function GET(request: Request) {
         "employees", "positions", "system_users", "projects", "project_employees", "project_directories",
       ];
       if (!settingsResources.some((resource) => hasPermission(authUser.permissions, resource, "view"))) return forbidden();
-      const [sites, employees, projectEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, users, syncStatus, bitrix24ActionLimits] = await env.DB.readBatch([
+      const reads = settingsReadPolicy(authUser.permissions, url.searchParams.get("section"));
+      if (!reads.allowed) return forbidden();
+      if (reads.directories) await syncProjectMasters(env.DB, siteId);
+      const [sites, employees, projectEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, users, syncStatus, bitrix24ActionLimits, projectStats] = await readOptionalBatch(env.DB, [
         env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
-        env.DB.prepare(`SELECT e.id, e.bitrix24_id AS bitrix24Id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
+        reads.employees ? env.DB.prepare(`SELECT e.id, e.bitrix24_id AS bitrix24Id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
           e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError, e.last_synced_at AS lastSyncedAt,
           check_state.status AS bitrixCheckStatus, check_state.details AS bitrixCheckDetails,
           CASE WHEN check_state.acknowledged_at IS NOT NULL THEN 1 ELSE 0 END AS bitrixCheckAcknowledged,
-          MIN(epa.site_id) AS siteId, STRING_AGG(assigned_site.name, ', ' ORDER BY assigned_site.name) AS siteName
+          MIN(epa.site_id) AS siteId, STRING_AGG(assigned_site.name, ', ' ORDER BY assigned_site.name) AS siteName,
+          STRING_AGG(assigned_site.code, '; ' ORDER BY assigned_site.name) AS projectCodes
           FROM employees e
           LEFT JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1
           LEFT JOIN sites assigned_site ON assigned_site.id = epa.site_id AND assigned_site.active = 1
@@ -1868,24 +1873,34 @@ export async function GET(request: Request) {
           WHERE e.active = 1
           GROUP BY e.id, e.bitrix24_id, e.full_name, e.employment_type, e.department, e.position, e.source, e.sort_order, e.bitrix24_stage, e.availability_status, e.sync_error, e.last_synced_at,
             check_state.status, check_state.details, check_state.acknowledged_at
-          ORDER BY e.sort_order, e.full_name, e.id`),
-        env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
+          ORDER BY e.sort_order, e.full_name, e.id`) : null,
+        reads.projectEmployees ? env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
           e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
           epa.site_id AS siteId, s.name AS siteName
           FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
-          WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId),
-        env.DB.prepare("SELECT id, employment_type AS employmentType, department, position FROM position_catalog WHERE active = 1 ORDER BY employment_type, department, position"),
-        env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'employmentType' ORDER BY name"),
-        env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'department' ORDER BY name"),
-        env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'position' ORDER BY name"),
-        env.DB.prepare("SELECT id, name FROM shifts WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
-        env.DB.prepare("SELECT id, name FROM zones WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
-        env.DB.prepare("SELECT id, name FROM main_work_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
-        env.DB.prepare("SELECT id, name FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
-        env.DB.prepare("SELECT id, name FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
-        env.DB.prepare("SELECT id, full_name AS fullName, email, CASE WHEN role = 'office' THEN 'superadmin' ELSE role END AS role, assigned_site_id AS assignedSiteId, CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END AS status FROM app_users WHERE active = 1 ORDER BY full_name"),
-        env.DB.prepare("SELECT id, status, started_at AS startedAt, completed_at AS completedAt, summary, error_text AS errorText FROM employee_sync_runs ORDER BY id DESC LIMIT 1"),
-        env.DB.prepare("SELECT action_key AS actionKey, last_started_at AS lastStartedAt FROM bitrix24_action_limits WHERE action_key IN ('inspect-bitrix24', 'sync-bitrix24')"),
+          WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId) : null,
+        reads.positions ? env.DB.prepare("SELECT id, employment_type AS employmentType, department, position FROM position_catalog WHERE active = 1 ORDER BY employment_type, department, position") : null,
+        reads.positions ? env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'employmentType' ORDER BY name") : null,
+        reads.positions ? env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'department' ORDER BY name") : null,
+        reads.positions ? env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'position' ORDER BY name") : null,
+        reads.directories ? env.DB.prepare("SELECT id, name FROM shifts WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId) : null,
+        reads.directories ? env.DB.prepare("SELECT id, name FROM zones WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId) : null,
+        reads.directories ? env.DB.prepare("SELECT id, name FROM main_work_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId) : null,
+        reads.directories ? env.DB.prepare("SELECT id, name, main_work_type_id AS mainWorkTypeId FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId) : null,
+        reads.directories ? env.DB.prepare("SELECT id, name, employee_id AS employeeId FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId) : null,
+        reads.users ? env.DB.prepare("SELECT id, full_name AS fullName, email, CASE WHEN role = 'office' THEN 'superadmin' ELSE role END AS role, assigned_site_id AS assignedSiteId, CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END AS status FROM app_users WHERE active = 1 ORDER BY full_name") : null,
+        reads.sync ? env.DB.prepare("SELECT id, status, started_at AS startedAt, completed_at AS completedAt, summary, error_text AS errorText FROM employee_sync_runs ORDER BY id DESC LIMIT 1") : null,
+        reads.sync ? env.DB.prepare("SELECT action_key AS actionKey, last_started_at AS lastStartedAt FROM bitrix24_action_limits WHERE action_key IN ('inspect-bitrix24', 'sync-bitrix24')") : null,
+        reads.projectStats ? env.DB.prepare(`SELECT project.id AS siteId,
+            COALESCE(staff.employee_count, 0)::int AS employeeCount, COALESCE(foremen.foreman_count, 0)::int AS foremanCount
+          FROM sites project
+          LEFT JOIN (SELECT assignment.site_id, COUNT(DISTINCT employee.id) AS employee_count
+            FROM employee_project_assignments assignment JOIN employees employee ON employee.id = assignment.employee_id
+            WHERE assignment.active = 1 AND employee.active = 1 AND ?::boolean GROUP BY assignment.site_id) staff ON staff.site_id = project.id
+          LEFT JOIN (SELECT assigned_site_id, COUNT(*) AS foreman_count FROM app_users
+            WHERE active = 1 AND role = 'foreman' AND ?::boolean GROUP BY assigned_site_id) foremen ON foremen.assigned_site_id = project.id
+          WHERE project.active = 1 ORDER BY project.id`)
+          .bind(hasPermission(authUser.permissions, "employees", "view"), hasPermission(authUser.permissions, "system_users", "view")) : null,
       ]);
       const canViewEmployees = hasPermission(authUser.permissions, "employees", "view");
       const canManageEmployees = hasPermission(authUser.permissions, "employees", "create") || hasPermission(authUser.permissions, "employees", "update");
@@ -1921,15 +1936,18 @@ export async function GET(request: Request) {
         users: canViewSystemUsers ? users.results : [],
         syncStatus: canViewEmployees ? syncStatus.results[0] ?? null : null,
         bitrix24Cooldowns: canViewEmployees ? mapBitrix24Cooldowns(bitrix24ActionLimits.results as Bitrix24ActionLimitRow[]) : undefined,
+        projectStats: reads.projectStats ? projectStats.results.filter(row => canViewAllSites || row.siteId === siteId) : undefined,
       });
     }
+    if (hasPermission(authUser.permissions, "project_directories", "view") || hasPermission(authUser.permissions, "workers_report", "view")) await syncProjectMasters(env.DB, siteId);
     const [sites, employees, reportEmployees, placementEmployees, projectEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, reportSubmission, users, syncStatus, bitrix24ActionLimits, employeeUsage, foremanProgress, timesheetMarks] = await env.DB.readBatch([
       env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
       env.DB.prepare(`SELECT e.id, e.bitrix24_id AS bitrix24Id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
         e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError, e.last_synced_at AS lastSyncedAt,
         check_state.status AS bitrixCheckStatus, check_state.details AS bitrixCheckDetails,
         CASE WHEN check_state.acknowledged_at IS NOT NULL THEN 1 ELSE 0 END AS bitrixCheckAcknowledged,
-        MIN(epa.site_id) AS siteId, STRING_AGG(assigned_site.name, ', ' ORDER BY assigned_site.name) AS siteName
+        MIN(epa.site_id) AS siteId, STRING_AGG(assigned_site.name, ', ' ORDER BY assigned_site.name) AS siteName,
+          STRING_AGG(assigned_site.code, '; ' ORDER BY assigned_site.name) AS projectCodes
         FROM employees e
         LEFT JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1
         LEFT JOIN sites assigned_site ON assigned_site.id = epa.site_id AND assigned_site.active = 1
@@ -1956,15 +1974,15 @@ export async function GET(request: Request) {
       env.DB.prepare("SELECT id, name FROM shifts WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
       env.DB.prepare("SELECT id, name FROM zones WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
       env.DB.prepare("SELECT id, name FROM main_work_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
-      env.DB.prepare("SELECT id, name FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
-      env.DB.prepare("SELECT id, name FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+      env.DB.prepare("SELECT id, name, main_work_type_id AS mainWorkTypeId FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+      env.DB.prepare("SELECT id, name, employee_id AS employeeId FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
       placementEntriesStatement(siteId, workDate, responsibleUserId),
       filledDatesStatement(siteId, rangeStart, rangeEnd, responsibleUserId),
       reportSubmissionStatement(siteId, workDate, responsibleUserId),
       env.DB.prepare("SELECT id, full_name AS fullName, email, CASE WHEN role = 'office' THEN 'superadmin' ELSE role END AS role, assigned_site_id AS assignedSiteId, CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END AS status FROM app_users WHERE active = 1 ORDER BY full_name"),
       env.DB.prepare("SELECT id, status, started_at AS startedAt, completed_at AS completedAt, summary, error_text AS errorText FROM employee_sync_runs ORDER BY id DESC LIMIT 1"),
       env.DB.prepare("SELECT action_key AS actionKey, last_started_at AS lastStartedAt FROM bitrix24_action_limits WHERE action_key IN ('inspect-bitrix24', 'sync-bitrix24')"),
-      employeeUsageStatement(workDate),
+      employeeUsageStatement(workDate, siteId),
       foremanProgressStatement(siteId, workDate),
       reportTimesheetMarksStatement(siteId, workDate),
     ]);
@@ -2024,6 +2042,7 @@ async function handlePOST(request: Request) {
     if (!payload.action) {
       const placementRows = payload.entries?.length ? payload.entries : [payload];
       if (placementRows.some((row) => !canManagePlacement(authUser, asPositiveInteger(row.siteId) ?? undefined, row.workDate, "create"))) return forbidden();
+      return approvalRequired();
     }
     if (payload.action === "sync-bitrix24") {
       const cooldown = await reserveBitrix24Action(payload.action);
@@ -2153,88 +2172,82 @@ async function handlePOST(request: Request) {
       await reconcilePositionCatalogOptions();
       return Response.json({ id: result.meta.last_row_id }, { status: 201 });
     }
+    if (payload.action === "import-project-employees") {
+      const result = await importProjectEmployeesExcel(env.DB, Number(payload.siteId), payload.employeeIds);
+      return Response.json(result, { status: 201 });
+    }
+    if (payload.action === "import-project-directory") {
+      const result = await importProjectDirectoryExcel(env.DB, Number(payload.siteId), payload.entity, { names: payload.names, employeeIds: payload.employeeIds });
+      return Response.json(result, { status: 201 });
+    }
     if (payload.action === "import-positions") {
-      const rows = payload.positions ?? [];
-      if (!rows.length || rows.length > 2000) throw new Error("В файле должно быть от 1 до 2000 должностей.");
-      const statements = rows.map((row, index) => {
-        const employmentType = row.employmentType?.trim() ?? "";
-        const department = row.department?.trim() ?? "";
-        const position = row.position?.trim() ?? "";
+      const rows = payload.positions;
+      if (!Array.isArray(rows) || !rows.length || rows.length > 2000) throw new Error("В файле должно быть от 1 до 2000 должностей.");
+      const prepared = rows.map((row, index) => {
+        const employmentType = typeof row?.employmentType === "string" ? row.employmentType.trim() : "";
+        const department = typeof row?.department === "string" ? row.department.trim() : "";
+        const position = typeof row?.position === "string" ? row.position.trim() : "";
         if (!employmentType || !department || !position) throw new Error(`Строка ${index + 1}: заполните тип, отдел и должность.`);
-        return env.DB.prepare("INSERT OR IGNORE INTO position_catalog (employment_type, department, position) VALUES (?, ?, ?)").bind(employmentType, department, position);
+        return { employmentType, department, position };
       });
-      for (let offset = 0; offset < statements.length; offset += 100) await env.DB.batch(statements.slice(offset, offset + 100));
-      await reconcilePositionCatalogOptions();
-      return Response.json({ count: rows.length }, { status: 201 });
+      const result = await env.DB.transaction(async db => {
+        await db.prepare("SELECT pg_advisory_xact_lock(hashtext('personnel-position-import'))").first();
+        const existing = await db.prepare("SELECT employment_type AS employmentType, department, position FROM position_catalog WHERE active = 1 FOR UPDATE").all<{ employmentType: string; department: string; position: string }>();
+        const key = (row: { employmentType: string; department: string; position: string }) => [row.employmentType, row.department, row.position].map(normalizeExcelDirectoryName).join("\u0000");
+        const occupied = new Set(existing.results.map(key));
+        let count = 0;
+        for (const row of prepared) {
+          const rowKey = key(row);
+          if (occupied.has(rowKey)) continue;
+          const inserted = await db.prepare("INSERT INTO position_catalog (employment_type, department, position) VALUES (?, ?, ?)").bind(row.employmentType, row.department, row.position).run();
+          count += inserted.meta.changes;
+          occupied.add(rowKey);
+        }
+        await reconcilePositionCatalogOptions(db);
+        return { count, skipped: rows.length - count };
+      });
+      return Response.json(result, { status: 201 });
     }
     if (payload.action === "import-employees") {
-      const rows = payload.employees ?? [];
-      if (!rows.length || rows.length > 2000) throw new Error("В файле должно быть от 1 до 2000 сотрудников.");
-      const [sitesResult, employeesResult] = await env.DB.batch([
-        env.DB.prepare("SELECT id, code, name FROM sites WHERE active = 1"),
-        env.DB.prepare("SELECT id, full_name AS fullName FROM employees WHERE active = 1"),
-      ]);
-      const sitesByKey = new Map<string, number>();
-      for (const site of sitesResult.results as Array<{ id: number; code: string; name: string }>) {
-        sitesByKey.set(site.code.trim().toLocaleLowerCase("ru-RU"), site.id);
-        sitesByKey.set(site.name.trim().toLocaleLowerCase("ru-RU"), site.id);
-      }
-      const employeesByName = new Map((employeesResult.results as Array<{ id: number; fullName: string }>).map((employee) => [employee.fullName.trim().toLocaleLowerCase("ru-RU"), employee]));
-      const importedNames = new Set<string>();
-      const validatedRows = rows.map((row, index) => {
-        const fullName = row.fullName?.trim() ?? "";
-        const employmentType = row.employmentType?.trim() ?? "";
-        const department = row.department?.trim() ?? "";
-        const position = row.position?.trim() ?? "";
-        const rawProjectNames = (row.projectCode ?? "").split(",").map((name) => name.trim()).filter(Boolean);
-        const unassignedLabels = new Set(["без объекта", "не назначен", "не назначена", "без проекта", "-", "—"]);
-        const explicitlyUnassigned = rawProjectNames.length === 1 && unassignedLabels.has(normalizeBitrixText(rawProjectNames[0]));
-        const projectNames = explicitlyUnassigned ? [] : rawProjectNames;
-        if (!fullName || !employmentType || !department || !position) throw new Error(`Строка ${index + 1}: заполните ФИО, тип, отдел и должность.`);
-        const normalizedName = fullName.toLocaleLowerCase("ru-RU");
-        if (importedNames.has(normalizedName)) throw new Error(`Строка ${index + 1}: сотрудник «${fullName}» повторяется в файле.`);
-        importedNames.add(normalizedName);
-        const unknownProjects = projectNames.filter((name) => !sitesByKey.has(name.toLocaleLowerCase("ru-RU")));
-        if (unknownProjects.length) throw new Error(`Строка ${index + 1}: ${unknownProjects.length === 1 ? "проект" : "проекты"} «${unknownProjects.join("», «")}» не найдены.`);
-        const siteIds = [...new Set(projectNames.map((name) => sitesByKey.get(name.toLocaleLowerCase("ru-RU"))!))];
-        return { fullName, normalizedName, employmentType, department, position, siteIds };
-      });
-      if (validatedRows.some((row) => employeesByName.has(row.normalizedName)) && !hasPermission(authUser.permissions, "employees", "update")) {
-        return Response.json({ error: "Файл содержит сотрудников, которые уже есть в справочнике. Для обновления таких строк нужно право редактирования." }, { status: 403 });
-      }
-      if (validatedRows.some((row) => !employeesByName.has(row.normalizedName)) && !hasPermission(authUser.permissions, "employees", "create")) {
-        return Response.json({ error: "Файл содержит новых сотрудников. Для их импорта нужно право добавления." }, { status: 403 });
-      }
-      const employeeStatements = validatedRows.map((row) => {
-        const existingId = employeesByName.get(row.normalizedName)?.id;
-        return existingId
-          ? env.DB.prepare(`UPDATE employees SET employment_type = ?, department = ?, position = ?, site_id = ?,
-              availability_status = CASE WHEN source = 'bitrix24' THEN availability_status ELSE ? END
-            WHERE id = ?`).bind(row.employmentType, row.department, row.position, row.siteIds[0] ?? null, row.siteIds.length ? "on_site" : "unassigned", existingId)
-          : env.DB.prepare("INSERT INTO employees (full_name, employment_type, department, position, source, site_id, availability_status, sort_order) VALUES (?, ?, ?, ?, 'excel', ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM employees))")
-              .bind(row.fullName, row.employmentType, row.department, row.position, row.siteIds[0] ?? null, row.siteIds.length ? "on_site" : "unassigned");
-      });
-      for (let offset = 0; offset < employeeStatements.length; offset += 100) await env.DB.batch(employeeStatements.slice(offset, offset + 100));
-
-      const refreshedEmployees = await env.DB.prepare("SELECT id, full_name AS fullName FROM employees WHERE active = 1").all<{ id: number; fullName: string }>();
-      const refreshedByName = new Map(refreshedEmployees.results.map((employee) => [employee.fullName.trim().toLocaleLowerCase("ru-RU"), employee.id]));
-      const assignmentStatements = validatedRows.flatMap((row) => {
-        const employeeId = refreshedByName.get(row.normalizedName);
-        if (!employeeId) throw new Error(`Не удалось найти сотрудника «${row.fullName}» после импорта.`);
-        if (!row.siteIds.length) {
-          return [env.DB.prepare("UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, DATE('now')) WHERE employee_id = ? AND active = 1").bind(employeeId)];
+      const result = await env.DB.transaction(async db => {
+        await db.prepare("SELECT pg_advisory_xact_lock(hashtext('personnel-employee-excel-import'))").first();
+        const sites = await db.prepare("SELECT id, code, name FROM sites WHERE active = 1 ORDER BY id FOR SHARE").all<{ id: number; code: string; name: string }>();
+        const employees = await db.prepare("SELECT id, full_name AS fullName FROM employees WHERE active = 1 ORDER BY id FOR UPDATE").all<{ id: number; fullName: string }>();
+        const rows = prepareEmployeeExcelImport(payload.employees, sites.results, employees.results);
+        if (rows.some(row => row.existingId) && !hasPermission(authUser.permissions, "employees", "update")) {
+          throw new PlacementRequestError("Файл содержит сотрудников, которые уже есть в справочнике. Для обновления таких строк нужно право редактирования.", 403, "IMPORT_UPDATE_FORBIDDEN");
         }
-        const placeholders = row.siteIds.map(() => "?").join(", ");
-        return [
-          env.DB.prepare(`UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, DATE('now')) WHERE employee_id = ? AND active = 1 AND site_id NOT IN (${placeholders})`).bind(employeeId, ...row.siteIds),
-          ...row.siteIds.flatMap((siteId) => [
-            env.DB.prepare("UPDATE employee_project_assignments SET source = 'excel', end_date = NULL WHERE employee_id = ? AND site_id = ? AND active = 1").bind(employeeId, siteId),
-            env.DB.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source, start_date) SELECT ?, ?, 'excel', DATE('now') WHERE NOT EXISTS (SELECT 1 FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 1)").bind(employeeId, siteId, employeeId, siteId),
-          ]),
-        ];
+        if (rows.some(row => !row.existingId) && !hasPermission(authUser.permissions, "employees", "create")) {
+          throw new PlacementRequestError("Файл содержит новых сотрудников. Для их импорта нужно право добавления.", 403, "IMPORT_CREATE_FORBIDDEN");
+        }
+        // Resolve every name, project and permission before the first write.
+        // Keep profile changes and all project assignments in this same transaction.
+        for (const row of rows) {
+          let employeeId = row.existingId;
+          if (employeeId) {
+            const updated = await db.prepare(`UPDATE employees SET employment_type = ?, department = ?, position = ?, site_id = ?,
+              availability_status = CASE WHEN source = 'bitrix24' THEN availability_status ELSE ? END
+              WHERE id = ? AND active = 1`).bind(row.employmentType, row.department, row.position, row.siteIds[0] ?? null, row.siteIds.length ? "on_site" : "unassigned", employeeId).run();
+            if (updated.meta.changes !== 1) throw new Error(`Не удалось обновить сотрудника «${row.fullName}». Изменения импорта отменены.`);
+          } else {
+            const inserted = await db.prepare("INSERT INTO employees (full_name, employment_type, department, position, source, site_id, availability_status, sort_order) VALUES (?, ?, ?, ?, 'excel', ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM employees))")
+              .bind(row.fullName, row.employmentType, row.department, row.position, row.siteIds[0] ?? null, row.siteIds.length ? "on_site" : "unassigned").run();
+            employeeId = Number(inserted.meta.last_row_id);
+            if (!Number.isSafeInteger(employeeId) || employeeId <= 0) throw new Error(`Не удалось добавить сотрудника «${row.fullName}». Изменения импорта отменены.`);
+          }
+          if (!row.siteIds.length) {
+            await db.prepare("UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, CURRENT_DATE) WHERE employee_id = ? AND active = 1").bind(employeeId).run();
+            continue;
+          }
+          await db.prepare("UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, CURRENT_DATE) WHERE employee_id = ? AND active = 1 AND site_id <> ALL(?::integer[])").bind(employeeId, row.siteIds).run();
+          for (const siteId of row.siteIds) {
+            await db.prepare("UPDATE employee_project_assignments SET source = 'excel', end_date = NULL WHERE employee_id = ? AND site_id = ? AND active = 1").bind(employeeId, siteId).run();
+            await db.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source, start_date) SELECT ?, ?, 'excel', CURRENT_DATE WHERE NOT EXISTS (SELECT 1 FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 1)").bind(employeeId, siteId, employeeId, siteId).run();
+          }
+        }
+        return { count: rows.length, unassigned: rows.filter(row => row.siteIds.length === 0).length };
       });
-      for (let offset = 0; offset < assignmentStatements.length; offset += 100) await env.DB.batch(assignmentStatements.slice(offset, offset + 100));
-      return Response.json({ count: rows.length, unassigned: validatedRows.filter((row) => row.siteIds.length === 0).length }, { status: 201 });
+      return Response.json(result, { status: 201 });
     }
     if (payload.action === "create-site") {
       const name = payload.name?.trim() ?? "";
@@ -2258,6 +2271,10 @@ async function handlePOST(request: Request) {
       if (!rows.length || rows.length > 500) throw new Error("Подготовьте от 1 до 500 строк справочника.");
       const site = await env.DB.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(siteId).first();
       if (!site) throw new Error("Выбранный проект не найден или уже закрыт.");
+      if (directory.key === "subworkType") {
+        const ids = await saveSubworkDirectory(env.DB, siteId, rows);
+        return Response.json({ count: ids.length }, { status: 201 });
+      }
       const existing = await env.DB.prepare(`SELECT id, name FROM ${directory.table} WHERE site_id = ? AND active = 1`).bind(siteId).all<{ id: number; name: string }>();
       const existingById = new Map(existing.results.map((item) => [item.id, item]));
       const editedIds = rows.map((row) => asPositiveInteger(row.directoryId)).filter((id): id is number => Boolean(id));
@@ -2295,6 +2312,10 @@ async function handlePOST(request: Request) {
       let name = payload.name?.trim() ?? "";
       if (!directory || !name || (!directory.global && !siteId)) throw new Error("Укажите справочник, объект и название значения.");
       if (directory.key === "shift") throw new Error("Смены фиксированы для всех проектов: день и ночь.");
+      if (directory.key === "subworkType") {
+        const ids = await saveSubworkDirectory(env.DB, siteId!, [{ name, mainWorkTypeId: payload.mainWorkTypeId }]);
+        return Response.json({ id: ids[0] }, { status: 201 });
+      }
       if (directory.key === "master") {
         const employeeId = asPositiveInteger(payload.employeeId);
         const employee = employeeId ? await env.DB.prepare(`SELECT e.full_name AS fullName FROM employees e
@@ -2312,42 +2333,9 @@ async function handlePOST(request: Request) {
         : await env.DB.prepare(`INSERT INTO ${directory.table} (site_id, name) VALUES (?, ?)`).bind(siteId, name).run();
       return Response.json({ id: result.meta.last_row_id }, { status: 201 });
     }
-    if (Array.isArray(payload.entries)) {
-      const result = await env.DB.transaction(async (db) => {
-        await lockPlacementHours(db, payload.entries ?? []);
-        const rows = await validateBulkPayloads(db, payload.entries ?? []);
-        const responsibleUsers = await resolveResponsibleUsers(db, authUser, payload.entries ?? []);
-        for (let offset = 0; offset < rows.length; offset += 100) {
-          await db.batch(rows.slice(offset, offset + 100).map((data, index) => db.prepare(`INSERT INTO placement_entries
-            (site_id, work_date, employee_id, shift_id, zone_id, main_work_type_id, subwork_type_id, note, master_id, hours, position_snapshot,
-             employee_name_snapshot, employment_type_snapshot, department_snapshot, master_name_snapshot, created_by,
-             responsible_user_id, created_by_user_id, updated_by_user_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
-            .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
-              data.employeeName, data.employmentType, data.department, data.masterName, authUser.fullName,
-              responsibleUsers[offset + index], authUser.id, authUser.id)));
-        }
-        const contribution = await touchForemanContribution(db, authUser, rows[0].siteId, rows[0].workDate, false);
-        return { count: rows.length, contribution };
-      });
-      return Response.json(result, { status: 201 });
-    }
-    const result = await env.DB.transaction(async (db) => {
-      await lockPlacementHours(db, [payload]);
-      const data = await validatePayload(db, payload);
-      const [responsibleUserId] = await resolveResponsibleUsers(db, authUser, [payload]);
-      const insert = await db.prepare(`INSERT INTO placement_entries
-        (site_id, work_date, employee_id, shift_id, zone_id, main_work_type_id, subwork_type_id, note, master_id, hours, position_snapshot,
-         employee_name_snapshot, employment_type_snapshot, department_snapshot, master_name_snapshot, created_by,
-         responsible_user_id, created_by_user_id, updated_by_user_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
-        .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
-          data.employeeName, data.employmentType, data.department, data.masterName, authUser.fullName,
-          responsibleUserId, authUser.id, authUser.id).first<{ id: number }>();
-      const contribution = await touchForemanContribution(db, authUser, data.siteId, data.workDate, false);
-      return { id: insert?.id ?? null, contribution };
-    });
-    return Response.json(result, { status: 201 });
+    // Directory actions above return explicitly. No POST fallback may publish
+    // personnel hours, including a stale/misrouted action from an older client.
+    return approvalRequired();
   } catch (error) {
     if (error instanceof Bitrix24CooldownError) {
       return Response.json({ error: error.message, cooldown: error.cooldown }, {
@@ -2388,6 +2376,9 @@ async function handlePATCH(request: Request) {
       if (ownSubmission && (authUser.role !== "foreman" || !ownSubmissionSiteId || !validDate(ownSubmissionWorkDate) || !canManagePlacement(authUser, ownSubmissionSiteId, ownSubmissionWorkDate, "update"))) return forbidden();
       if (finalization && authUser.role === "foreman") return forbidden();
       if (finalization && (!finalizationSiteId || !validDate(finalizationWorkDate) || !canManagePlacement(authUser, finalizationSiteId, finalizationWorkDate, "update"))) return forbidden();
+      // Stale tabs must not bypass the engineer by writing directly to the
+      // approved table. Engineers retain existing-history corrections only.
+      if (authUser.role === "foreman" || placementCreates || ownSubmission || finalization) return approvalRequired();
     }
     if (payload.action === "update-user") {
       const userId = asPositiveInteger(payload.userId);
@@ -2477,6 +2468,10 @@ async function handlePATCH(request: Request) {
       let name = payload.name?.trim() ?? "";
       if (!directory || !directoryId || !name || (!directory.global && !siteId)) throw new Error("Укажите справочник, объект и название значения.");
       if (directory.key === "shift") throw new Error("Смены фиксированы для всех проектов: день и ночь.");
+      if (directory.key === "subworkType") {
+        await saveSubworkDirectory(env.DB, siteId!, [{ directoryId, name, mainWorkTypeId: payload.mainWorkTypeId }]);
+        return Response.json({ ok: true });
+      }
       if (directory.key === "master") {
         const employeeId = asPositiveInteger(payload.employeeId);
         const employee = employeeId ? await env.DB.prepare(`SELECT e.full_name AS fullName FROM employees e
@@ -2515,6 +2510,7 @@ async function handlePATCH(request: Request) {
       if (!result.meta.changes) throw new Error("Прораб не найден.");
       return Response.json({ ok: true });
     }
+    if (payload.action) return Response.json({ error: "Это действие недоступно для данного запроса." }, { status: 400 });
     if (placementCreates || ownSubmission || finalization) {
       const updates = placementUpdates ?? [];
       const creates = placementCreates ?? [];
@@ -2658,6 +2654,7 @@ async function handleDELETE(request: Request) {
     const entity = url.searchParams.get("entity");
     if (!canDeleteEntity(authUser, entity, url.searchParams.get("kind"))) return forbidden();
     if (!entity) {
+      if (authUser.role === "foreman") return approvalRequired();
       const body = request.headers.get("content-type")?.includes("application/json")
         ? await request.json() as { ids?: unknown[] }
         : null;
@@ -2779,7 +2776,11 @@ async function handleDELETE(request: Request) {
         if (usage) throw new Error("Значение используется в карточках рабочих. Сначала измените данные этих рабочих.");
         result = await env.DB.prepare("UPDATE personnel_options SET active = 0 WHERE id = ? AND kind = ? AND active = 1").bind(id, directory.key).run();
       } else {
-        result = await env.DB.prepare(`UPDATE ${directory.table} SET active = 0 WHERE id = ? AND site_id = ? AND active = 1`).bind(id, siteId).run();
+        result = await env.DB.transaction(async transaction => {
+          const archived = await transaction.prepare(`UPDATE ${directory.table} SET active = 0 WHERE id = ? AND site_id = ? AND active = 1`).bind(id, siteId).run();
+          if (directory.key === "mainWorkType" && archived.meta.changes) await transaction.prepare("UPDATE subwork_types SET active = 0 WHERE main_work_type_id = ? AND site_id = ? AND active = 1").bind(id, siteId).run();
+          return archived;
+        });
       }
       if (!result.meta.changes) throw new Error("Значение справочника не найдено.");
       return Response.json({ ok: true });
@@ -2788,6 +2789,10 @@ async function handleDELETE(request: Request) {
   } catch (error) {
     return placementErrorResponse(error, "Не удалось удалить строку.");
   }
+}
+
+export async function GET(request: Request) {
+  return compressJsonResponse(request, await handleGET(request));
 }
 
 export async function POST(request: Request) {

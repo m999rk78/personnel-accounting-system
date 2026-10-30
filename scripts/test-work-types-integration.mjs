@@ -1,0 +1,113 @@
+// Loopback only; schema, migration and fixtures are rolled back together.
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import pg from "pg";
+import ts from "typescript";
+import { assignWorkTypeChildren, saveSubworkDirectory, importWorkTypeDirectory } from "../app/workTypeHierarchyServer.ts";
+
+const hostname = process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL).hostname : process.env.PGHOST;
+assert.ok(["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname), "Use a loopback PostgreSQL database.");
+const source = await readFile(new URL("../db/client.ts", import.meta.url), "utf8");
+const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText.replaceAll('"pg"', JSON.stringify(import.meta.resolve("pg")));
+const { PostgresDatabase, PostgresStatement } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
+const pool = new pg.Pool({ ...(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : {}), ssl: false, max: 1, connectionTimeoutMillis: 5000 });
+const connection = await pool.connect();
+const database = new PostgresDatabase(pool);
+const executor = { prepare: sql => new PostgresStatement(database, sql, [], connection) };
+const scoped = { ...executor, async transaction(callback) {
+  await connection.query("SAVEPOINT work_types_operation");
+  try { const result = await callback(executor); await connection.query("RELEASE SAVEPOINT work_types_operation"); return result; }
+  catch (error) { await connection.query("ROLLBACK TO SAVEPOINT work_types_operation"); await connection.query("RELEASE SAVEPOINT work_types_operation"); throw error; }
+} };
+try {
+  await connection.query("BEGIN");
+  const schema = `work_types_test_${randomUUID().replaceAll("-", "")}`;
+  await connection.query(`CREATE SCHEMA ${schema}`);
+  await connection.query(`SET LOCAL search_path TO ${schema}`);
+  await connection.query(`CREATE TABLE sites(id serial PRIMARY KEY, active integer DEFAULT 1);
+    CREATE TABLE main_work_types(id serial PRIMARY KEY, site_id integer, name text, active integer DEFAULT 1);
+    CREATE TABLE subwork_types(id serial PRIMARY KEY, site_id integer, name text, active integer DEFAULT 1);
+    CREATE TABLE placement_entries(site_id integer, main_work_type_id integer, subwork_type_id integer);
+    CREATE TABLE equipment_entries(site_id integer, main_work_type_id integer, subwork_type_id integer);
+    CREATE TABLE personnel_reports(id integer PRIMARY KEY, site_id integer);
+    CREATE TABLE personnel_report_rows(report_id integer, main_work_type_id integer, subwork_type_id integer);
+    INSERT INTO sites(id) VALUES (1),(2);
+    INSERT INTO main_work_types(site_id,name) VALUES (1,'Вспомогательные'),(1,'Земляные'),(2,'Другой проект');
+    INSERT INTO subwork_types(site_id,name) VALUES (1,'Однозначный'),(1,'Неоднозначный'),(1,'Не использован'),(1,'Уборка'),(2,'Чужой подвид');
+    INSERT INTO placement_entries VALUES (1,1,1),(1,1,2);
+    INSERT INTO equipment_entries VALUES (1,1,1),(1,2,2);
+    INSERT INTO personnel_reports VALUES (1,1);
+    INSERT INTO personnel_report_rows VALUES (1,1,1);`);
+  await connection.query(await readFile(new URL("../drizzle-postgres/0022_work_type_hierarchy.sql", import.meta.url), "utf8"));
+  const children = (await connection.query("SELECT id, main_work_type_id FROM subwork_types ORDER BY id")).rows;
+  assert.deepEqual(children.map(row => row.main_work_type_id), [1, null, null, null, null]);
+  assert.equal((await connection.query("SELECT COUNT(*)::int AS n FROM placement_entries")).rows[0].n, 2);
+  await saveSubworkDirectory(scoped, 1, [{ directoryId: 4, name: "Уборка", mainWorkTypeId: 1 }]);
+  await assert.rejects(saveSubworkDirectory(scoped, 1, [{ name: "Уборка", mainWorkTypeId: 1 }]), /уже есть/);
+  await saveSubworkDirectory(scoped, 1, [{ name: "Уборка", mainWorkTypeId: 2 }]);
+  await assert.rejects(saveSubworkDirectory(scoped, 1, [{ name: "Чужой", mainWorkTypeId: 3 }]), /выберите/);
+  await assert.rejects(saveSubworkDirectory(scoped, 1, [{ directoryId: 5, name: "Чужой", mainWorkTypeId: 1 }]), /не найден/);
+  const before = (await connection.query("SELECT COUNT(*)::int AS n FROM subwork_types")).rows[0].n;
+  await assert.rejects(saveSubworkDirectory(scoped, 1, [{ name: "Не сохранить", mainWorkTypeId: 1 }, { name: "Ошибка", mainWorkTypeId: null }]), /выберите/);
+  assert.equal((await connection.query("SELECT COUNT(*)::int AS n FROM subwork_types")).rows[0].n, before);
+  await importWorkTypeDirectory(scoped, 1, [{ name: "Вспомогательные", subworkName: "Не использован" }, { name: "Новый вид", subworkName: "Перевозка" }]);
+  assert.equal((await connection.query("SELECT main_work_type_id FROM subwork_types WHERE id=3")).rows[0].main_work_type_id, 1);
+  await importWorkTypeDirectory(scoped, 1, [{ name: "Новый вид", subworkName: "Перевозка" }]);
+  assert.equal((await connection.query("SELECT COUNT(*)::int AS n FROM subwork_types WHERE name='Перевозка'")).rows[0].n, 1);
+  const legacySnapshot = async () => (await connection.query("SELECT id, site_id, name, main_work_type_id, active FROM subwork_types ORDER BY id")).rows;
+  const legacyBefore = await legacySnapshot();
+  await importWorkTypeDirectory(scoped, 1, [{ name: "", subworkName: "Неоднозначный" }]);
+  assert.deepEqual(await legacySnapshot(), legacyBefore, "a unique nullable-parent export row is an idempotent no-op");
+  await connection.query("INSERT INTO main_work_types(site_id,name,active) VALUES (1,'Архивный вид для импорта',0)");
+  const archivedParentId = (await connection.query("SELECT id FROM main_work_types WHERE name='Архивный вид для импорта'")).rows[0].id;
+  await connection.query("INSERT INTO subwork_types(site_id,name,main_work_type_id) VALUES (1,'Подвид архивного вида для импорта',$1)", [archivedParentId]);
+  const orphanBefore = await legacySnapshot();
+  await importWorkTypeDirectory(scoped, 1, [{ name: "", subworkName: "Подвид архивного вида для импорта" }]);
+  assert.deepEqual(await legacySnapshot(), orphanBefore, "blank export parents must preserve archived parent IDs and historical links");
+  await assert.rejects(importWorkTypeDirectory(scoped, 1, [{ name: "", subworkName: "Без родителя" }]), /заполните вид/);
+  await assert.rejects(importWorkTypeDirectory(scoped, 1, [{ name: "", subworkName: "Чужой подвид" }]), /заполните вид/);
+  await connection.query("INSERT INTO subwork_types(site_id,name) VALUES (1,'Дубликат'),(1,'Дубликат')");
+  await assert.rejects(importWorkTypeDirectory(scoped, 1, [{ name: "Откатить новый вид", subworkName: "Дубликат" }]), /неоднозначен/);
+  await assert.rejects(importWorkTypeDirectory(scoped, 1, [{ name: "", subworkName: "Дубликат" }]), /неоднозначен/);
+  assert.equal((await connection.query("SELECT COUNT(*)::int AS n FROM main_work_types WHERE name='Откатить новый вид'")).rows[0].n, 0);
+  await saveSubworkDirectory(scoped, 1, [{ directoryId: 1, name: "Однозначный", mainWorkTypeId: 2 }]);
+  await connection.query(await readFile(new URL("../drizzle-postgres/0022_work_type_hierarchy.sql", import.meta.url), "utf8"));
+  assert.equal((await connection.query("SELECT main_work_type_id FROM subwork_types WHERE id=1")).rows[0].main_work_type_id, 2, "idempotent migration must preserve an explicit classification");
+
+  const snapshot = async () => (await connection.query("SELECT id, site_id, name, main_work_type_id, active FROM subwork_types ORDER BY id")).rows;
+  const assignmentRows = (await connection.query("INSERT INTO subwork_types(site_id,name) VALUES (1,'  Текущее название  '),(1,'Подготовка проходов'),(1,'Архивный подвид для назначения') RETURNING id, name")).rows;
+  const [renamedId, otherId, archivedId] = assignmentRows.map(row => row.id);
+  assert.equal(await assignWorkTypeChildren(scoped, 1, 2, [renamedId, otherId]), 2);
+  assert.deepEqual((await connection.query("SELECT id, name, main_work_type_id FROM subwork_types WHERE id=ANY($1::integer[]) ORDER BY id", [[renamedId, otherId]])).rows, assignmentRows.slice(0, 2).map(row => ({ ...row, main_work_type_id: 2 })), "assigning changes only the parent, preserving exact names");
+  await connection.query("UPDATE subwork_types SET name='Название после редактирования' WHERE id=$1", [renamedId]);
+  assert.equal(await assignWorkTypeChildren(scoped, 1, 1, [renamedId]), 1);
+  assert.equal((await connection.query("SELECT name FROM subwork_types WHERE id=$1", [renamedId])).rows[0].name, "Название после редактирования", "a stale UI selection cannot overwrite the current database name");
+  assert.equal(await assignWorkTypeChildren(scoped, 1, 1, [renamedId]), 1, "assigning an existing parent is idempotent");
+  await connection.query("UPDATE subwork_types SET active=0 WHERE id=$1", [archivedId]);
+  const unchangedAfterRejection = async (operation, expected) => {
+    const before = await snapshot();
+    await assert.rejects(operation, expected);
+    assert.deepEqual(await snapshot(), before, "invalid assignment must leave every child unchanged");
+  };
+  await unchangedAfterRejection(() => assignWorkTypeChildren(scoped, 1, 2, [renamedId, 1_000_000]), /не найден/);
+  await unchangedAfterRejection(() => assignWorkTypeChildren(scoped, 1, 2, [renamedId, 5]), /не найден/);
+  await unchangedAfterRejection(() => assignWorkTypeChildren(scoped, 1, 2, [renamedId, archivedId]), /архивирован/);
+  await unchangedAfterRejection(() => assignWorkTypeChildren(scoped, 1, 3, [renamedId]), /из этого проекта/);
+  await unchangedAfterRejection(() => assignWorkTypeChildren(scoped, 1, 2, [renamedId, renamedId]), /повторяющихся/);
+  await unchangedAfterRejection(() => assignWorkTypeChildren(scoped, 1, 2, []), /от 1 до 500/);
+  await unchangedAfterRejection(() => assignWorkTypeChildren(scoped, 1, 2, Array.from({ length: 501 }, (_, index) => 10_000 + index)), /от 1 до 500/);
+
+  const duplicateRows = (await connection.query("INSERT INTO subwork_types(site_id,name,main_work_type_id) VALUES (1,'УЧЁТ   ТЕХНИКИ',1),(1,'  учет техники  ',NULL),(1,'Операция Ё',NULL),(1,' операция е ',NULL) RETURNING id")).rows;
+  await unchangedAfterRejection(() => assignWorkTypeChildren(scoped, 1, 1, [otherId, duplicateRows[1].id]), /уже есть/);
+  await unchangedAfterRejection(() => assignWorkTypeChildren(scoped, 1, 2, [duplicateRows[2].id, duplicateRows[3].id]), /повторяется/);
+  const batchIds = (await connection.query("INSERT INTO subwork_types(site_id,name) SELECT 1, 'Массовый подвид ' || value FROM generate_series(1,500) AS value RETURNING id")).rows.map(row => row.id);
+  assert.equal(await assignWorkTypeChildren(scoped, 1, 1, batchIds), 500, "the supported 500-child limit succeeds as one atomic assignment");
+  assert.equal((await connection.query("SELECT COUNT(*)::int AS n FROM subwork_types WHERE id=ANY($1::integer[]) AND main_work_type_id=1", [batchIds])).rows[0].n, 500);
+  await connection.query("UPDATE sites SET active=0 WHERE id=2");
+  await unchangedAfterRejection(() => assignWorkTypeChildren(scoped, 2, 3, [5]), /Проект не найден или закрыт/);
+  await connection.query("UPDATE main_work_types SET active=0 WHERE id=2");
+  await unchangedAfterRejection(() => assignWorkTypeChildren(scoped, 1, 2, [renamedId]), /действующий вид/);
+  await assert.rejects(saveSubworkDirectory(scoped, 1, [{ name: "Архив", mainWorkTypeId: 2 }]), /выберите/);
+  console.log("Work types: migration preserves history, scoped CRUD/import and id-only assignment passed, including duplicate/foreign/missing/archive rejection, exact name preservation and the 500-row limit. All data rolled back.");
+} finally { await connection.query("ROLLBACK"); connection.release(); await pool.end(); }

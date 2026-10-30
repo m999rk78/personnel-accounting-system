@@ -64,14 +64,16 @@ test("stores permissions, exposes a separate settings page, and enforces them in
 
 test("keeps create, update, and delete independent across every editable table", async () => {
   const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const adminFooter = await readFile(new URL("../app/AdminGridFooter.tsx", import.meta.url), "utf8");
   const equipment = await readFile(new URL("../app/EquipmentAccountingView.tsx", import.meta.url), "utf8");
   const grids = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
   const dataApi = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
   const timesheetApi = await readFile(new URL("../app/api/timesheet/route.ts", import.meta.url), "utf8");
   const equipmentApi = await readFile(new URL("../app/api/equipment/route.ts", import.meta.url), "utf8");
 
-  assert.match(app, /disabled=\{saving \|\| !canUpdate\} title=\{canUpdate \? undefined : "Нет права редактирования"\}/);
-  assert.match(app, /disabled=\{saving \|\| !canDelete\} title=\{canDelete \? undefined : "Нет права удаления"\}/);
+  assert.match(app, /import \{ AdminGridFooter \} from "\.\/AdminGridFooter"/);
+  assert.match(adminFooter, /\{canUpdate && onEditSelection && <button/);
+  assert.match(adminFooter, /\{canDelete && <button[^>]+onClick=\{onDelete\}/);
   assert.match(app, /<PlacementAgGrid[\s\S]*canCreate=\{canCreateReportDate\}[\s\S]*canUpdate=\{canUpdateReportDate\}[\s\S]*canDelete=\{canDeleteReportDate\}/);
   assert.match(equipment, /<EquipmentDailyAgGrid[\s\S]*canCreate=\{Boolean\(payload\?\.canCreateDaily\)\}[\s\S]*canUpdate=\{Boolean\(payload\?\.canUpdateDaily\)\}[\s\S]*canDelete=\{Boolean\(payload\?\.canDeleteDaily\)\}/);
   assert.match(grids, /row\.kind === "draft" \? !current\.canCreate : !current\.canUpdate/);
