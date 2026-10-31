@@ -131,7 +131,7 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(api, /getAuthUser\(request\)/);
   assert.match(api, /!hasPermission\(authUser\.permissions, "workers_timesheet", "view"\)/);
   assert.match(api, /Нет доступа к табелю рабочих/);
-  assert.match(api, /authUser\.role === "foreman"/);
+  assert.match(api, /!canAccessProject\(authUser, requestedSiteId\)/);
   assert.match(api, /pe\.work_date >= \? AND pe\.work_date < \?/);
   assert.match(api, /const workMonth = payload\.workDate\.slice\(0, 7\)/);
   assert.match(api, /const monthEndDate = nextMonthStart\(workMonth\)/);
@@ -145,7 +145,7 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(api, /CREATE TABLE IF NOT EXISTS timesheet_marks/);
   assert.match(api, /TIMESHEET_CODES/);
   assert.match(api, /assertSameOrigin\(request\)/);
-  assert.match(api, /authUser\.role === "foreman"/);
+  assert.match(api, /!canAccessProject\(authUser, requestedSiteId\)/);
   assert.match(api, /ON CONFLICT \(site_id, employee_id, work_date\) DO UPDATE/);
   assert.match(api, /hours BETWEEN 1 AND 10/);
   assert.match(api, /marks: marksResult\.results/);
@@ -319,7 +319,7 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(app, /aria-label="Табель персонала"/);
   assert.match(app, /aria-label="Табель техники"/);
   assert.match(roles, /canAccessTimesheets/);
-  assert.match(roles, /role === "engineer" \|\| role === "superadmin"/);
+  assert.match(roles, /role === "engineer" \|\| role === "viewer" \|\| role === "superadmin"/);
 });
 
 test("allows future personnel planning and warns the daily report about timesheet conflicts", async () => {

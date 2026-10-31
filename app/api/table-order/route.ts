@@ -5,7 +5,7 @@ import { moveRowBlock, reconcileRowOrder, type RowMove, type RowOrderId } from "
 import { isPersonnelReportOrderId, isUnsavedPersonnelReportOrderId, movePersonnelReportRows, remapPersonnelReportOrder, personnelReportOrderScope } from "../../personnelReportRowOrder";
 import { equipmentReportOrderScope, isEquipmentReportOrderId, isUnsavedEquipmentReportOrderId, moveEquipmentReportRows, remapEquipmentReportOrder } from "../../equipmentReportRowOrder";
 import { ensureEquipmentReportSchema } from "../../equipmentReportStore";
-import { canonicalRowIds, ensureTableOrderSchema, readTableOrder, rowOrderAccess } from "../../tableRowOrderServer";
+import { canonicalRowIds, ensureTableOrderSchema, readTableOrder, rowOrderAccess, TableOrderAccessError } from "../../tableRowOrderServer";
 import { isWorkTypesOrderId, workTypesOrderScope } from "../../workTypesRowOrder";
 
 const positiveId = (value: unknown) => Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : null;
@@ -26,7 +26,7 @@ export async function GET(request: Request) {
     ]);
     return Response.json({ ids, canWrite: access.canWrite, hasSavedOrder: Boolean(saved) }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Не удалось загрузить порядок строк." }, { status: 400 });
+    return Response.json({ error: error instanceof Error ? error.message : "Не удалось загрузить порядок строк." }, { status: error instanceof TableOrderAccessError ? error.status : 400 });
   }
 }
 
@@ -97,7 +97,7 @@ async function moveRows(request: Request) {
     });
     return Response.json({ ids });
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Не удалось сохранить порядок строк." }, { status: 400 });
+    return Response.json({ error: error instanceof Error ? error.message : "Не удалось сохранить порядок строк." }, { status: error instanceof TableOrderAccessError ? error.status : 400 });
   }
 }
 

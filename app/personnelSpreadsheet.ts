@@ -7,6 +7,7 @@ export type PersonnelSpreadsheetDraft = GridDraftRow & {
   reportRowId?: number;
   createdAt?: string;
   updatedAt?: string;
+  referenceIds?: Partial<Record<"employeeId" | "shiftId" | "zoneId" | "mainWorkTypeId" | "subworkTypeId" | "masterId", number | null>>;
   inputValues?: Partial<Record<PersonnelCellField, string>>;
 };
 export type PersonnelSpreadsheetCatalogs = {
@@ -69,13 +70,14 @@ export function pastePersonnelCells(draft: PersonnelSpreadsheetDraft, values: Re
 
 export function personnelCellErrors(draft: PersonnelSpreadsheetDraft, catalogs: PersonnelSpreadsheetCatalogs, required = false): Partial<Record<PersonnelCellField, string>> {
   const errors: Partial<Record<PersonnelCellField, string>> = {};
-  if (draft.inputValues?.employeeName !== undefined || draft.employeeId && !catalogs.employees.some(employee => String(employee.id) === draft.employeeId)) errors.employeeName = "Сотрудник не найден в справочнике проекта или ФИО неоднозначно. Выберите сотрудника из списка.";
+  const unchangedReference = (field: keyof NonNullable<PersonnelSpreadsheetDraft["referenceIds"]>) => Boolean(draft[field] && draft.referenceIds?.[field] === Number(draft[field]));
+  if (draft.inputValues?.employeeName !== undefined || draft.employeeId && !catalogs.employees.some(employee => String(employee.id) === draft.employeeId) && !unchangedReference("employeeId")) errors.employeeName = "Сотрудник не найден в справочнике проекта или ФИО неоднозначно. Выберите сотрудника из списка.";
   else if (required && !draft.employeeId) errors.employeeName = "Выберите сотрудника.";
   for (const [field, config] of Object.entries(personnelOptionFields)) {
-    if (draft.inputValues?.[field as PersonnelCellField] !== undefined || draft[config.draft] && !catalogs[config.options].some(option => String(option.id) === draft[config.draft])) errors[field as PersonnelCellField] = `Значение не найдено в справочнике «${config.label}» или неоднозначно. Выберите значение из списка.`;
+    if (draft.inputValues?.[field as PersonnelCellField] !== undefined || draft[config.draft] && !catalogs[config.options].some(option => String(option.id) === draft[config.draft]) && !unchangedReference(config.draft)) errors[field as PersonnelCellField] = `Значение не найдено в справочнике «${config.label}» или неоднозначно. Выберите значение из списка.`;
     else if (required && !draft[config.draft]) errors[field as PersonnelCellField] = `Заполните поле «${config.label}».`;
   }
-  if (draft.subworkTypeId && !subworkOptions(catalogs.subworkTypes, draft.mainWorkTypeId).some(option => String(option.id) === draft.subworkTypeId)) errors.subwork = "Подвид не относится к выбранному виду работы. Выберите подходящий подвид.";
+  if (draft.subworkTypeId && !subworkOptions(catalogs.subworkTypes, draft.mainWorkTypeId).some(option => String(option.id) === draft.subworkTypeId) && !(unchangedReference("mainWorkTypeId") && unchangedReference("subworkTypeId"))) errors.subwork = "Подвид не относится к выбранному виду работы. Выберите подходящий подвид.";
   if (draft.hours !== "" && (!Number.isInteger(Number(draft.hours)) || Number(draft.hours) < 1 || Number(draft.hours) > 10)) errors.hours = "Укажите целое число от 1 до 10.";
   else if (required && draft.hours === "") errors.hours = "Укажите часы.";
   if (draft.note.length > 4000) errors.note = "Примечание должно быть не длиннее 4000 символов.";

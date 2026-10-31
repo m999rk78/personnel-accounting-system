@@ -11,7 +11,7 @@ import { freezePersonnelReportSessions, mergePersonnelReportSessions, personnelR
 import { defaultPersonnelReportSubmissions, selectPersonnelReportSubmissions, personnelReportReviewIssue } from "./personnelReportActions";
 import { mergePersonnelSubmissionIssues, personnelSubmissionCanSend, personnelSubmissionCellIssues, personnelSubmissionToken, type PersonnelSubmissionValidationState } from "./personnelReportSubmissionValidation";
 import { buildPersonnelReportCrew, personnelReportCrewSource, personnelReportYesterday } from "./personnelReportCarryOver";
-import type { UserRole } from "./roles";
+import { canViewPendingReportsFor, type UserRole } from "./roles";
 import { openExcelExportPreview } from "./excelExportPreviewStore";
 import { ExcelActionsMenu } from "./ExcelActionsMenu";
 import { downloadExcelFile, excelFileName } from "./excelFiles";
@@ -29,7 +29,8 @@ const makeDraft = (seed: Partial<GridDraftRow> = {}): GridDraftRow => {
   return { key: crypto.randomUUID(), createdAt: time, updatedAt: time, employeeId: "", employeeQuery: "", shiftId: "", zoneId: "", mainWorkTypeId: "", subworkTypeId: "", masterId: "", hours: "", note: "", ...seed };
 };
 const toDraft = (row: PersonnelReportRow): GridDraftRow => makeDraft({ key: `report-${row.reportId}-${row.id}`, reportRowId: row.id, createdAt: row.createdAt, updatedAt: row.updatedAt, employeeId: String(row.employeeId ?? ""), employeeQuery: row.employeeName, shiftId: String(row.shiftId ?? ""), zoneId: String(row.zoneId ?? ""), mainWorkTypeId: String(row.mainWorkTypeId ?? ""), subworkTypeId: String(row.subworkTypeId ?? ""), masterId: String(row.masterId ?? ""), hours: String(row.hours ?? ""), note: row.note });
-const toEntryDraft = (entry: PersonnelReportApprovedEntry): GridDraftRow => ({ ...toDraft({ ...entry, reportId: 0, approvedEntryId: entry.id }), key: `approved-${entry.id}`, reportRowId: undefined });
+const toApprovedDraft = (row: PersonnelReportRow): GridDraftRow => ({ ...toDraft(row), referenceIds: { employeeId: row.employeeId, shiftId: row.shiftId, zoneId: row.zoneId, mainWorkTypeId: row.mainWorkTypeId, subworkTypeId: row.subworkTypeId, masterId: row.masterId } });
+const toEntryDraft = (entry: PersonnelReportApprovedEntry): GridDraftRow => ({ ...toApprovedDraft({ ...entry, reportId: 0, approvedEntryId: entry.id }), key: `approved-${entry.id}`, reportRowId: undefined });
 const entryKey = (entry: PersonnelReportApprovedEntry) => `entry-${entry.id}`;
 const displayDate = (date: string) => date.split("-").reverse().join(".");
 type SubmissionValidationPlan = { payload: PersonnelReportValidationRequest; token: string; localIssues: PersonnelReportValidationIssue[] };
@@ -49,7 +50,7 @@ function toPayload(row: GridDraftRow): PersonnelReportDraftRow {
 
 export type PersonnelReportWorkspaceProps = {
   siteId: number; siteName: string; today: string;
-  currentUser: { id: number; fullName: string; role: UserRole };
+  currentUser: { id: number; fullName: string; role: UserRole; canViewPendingReports?: boolean };
   permissions: { create: boolean; update: boolean; delete: boolean };
   employees: GridEmployee[]; shifts: GridOption[]; zones: GridOption[]; mainWorkTypes: GridOption[]; subworkTypes: GridOption[]; masters: GridOption[];
   loading: boolean;
@@ -57,7 +58,9 @@ export type PersonnelReportWorkspaceProps = {
 };
 
 export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
-  const { siteId, today, currentUser, permissions, onDirtyChange } = props;
+  const { siteId, today, currentUser, permissions: grantedPermissions, onDirtyChange } = props;
+  const permissions = useMemo(() => currentUser.role === "viewer" ? { create: false, update: false, delete: false } : grantedPermissions, [currentUser.role, grantedPermissions]);
+  const showPendingReports = canViewPendingReportsFor(currentUser);
   const rowOrder = useWorkspaceTableOrder();
   const [data, setData] = useState<PersonnelReportData | null>(null);
   type Edits = Record<string, GridDraftRow[]>;
@@ -189,7 +192,7 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
   }, [data, fetching, props, currentUser.role, currentUser.id, permissions.create, siteId, today, newDraftGroups, setEdits]);
   const rows = useMemo<(PersonnelReportGridRow & { draftGroupKey?: string })[]>(() => {
     const staged = reports.flatMap(report => {
-      const drafts = edits[keyOf(report)] ?? report.rows.map(toDraft);
+      const drafts = edits[keyOf(report)] ?? report.rows.map(report.status === "approved" ? toApprovedDraft : toDraft);
       return drafts.map(draft => {
         const snapshot = report.rows.find(row => `report-${row.reportId}-${row.id}` === draft.key);
         const entry = snapshot ? { ...snapshot, id: snapshot.approvedEntryId ?? snapshot.id, employeeId: snapshot.employeeId ?? 0, shiftId: snapshot.shiftId ?? 0, zoneId: snapshot.zoneId ?? 0, mainWorkTypeId: snapshot.mainWorkTypeId ?? 0, subworkTypeId: snapshot.subworkTypeId ?? 0, masterId: snapshot.masterId ?? 0, hours: snapshot.hours ?? 0, revision: report.revision, responsibleUserId: report.ownerUserId, responsibleUserName: report.ownerName } : undefined;
@@ -287,7 +290,7 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
       const entry = row.entry;
       const seed = row.draft ?? (entry ? { employeeId: String(entry.employeeId), employeeQuery: entry.employeeName, shiftId: String(entry.shiftId), zoneId: String(entry.zoneId), mainWorkTypeId: String(entry.mainWorkTypeId), subworkTypeId: String(entry.subworkTypeId), masterId: String(entry.masterId), hours: String(entry.hours), note: entry.note } : {});
       const time = new Date().toISOString();
-      return makeDraft({ ...seed, key: crypto.randomUUID(), reportRowId: undefined, createdAt: time, updatedAt: time, employeeId: props.employees.some(employee => String(employee.id) === seed.employeeId) ? seed.employeeId : "", shiftId: available(props.shifts, seed.shiftId ?? ""), zoneId: available(props.zones, seed.zoneId ?? ""), mainWorkTypeId: available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), subworkTypeId: compatibleSubworkId(props.subworkTypes, available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), seed.subworkTypeId), masterId: available(props.masters, seed.masterId ?? "") });
+      return makeDraft({ ...seed, key: crypto.randomUUID(), reportRowId: undefined, referenceIds: undefined, lockedEmployee: false, createdAt: time, updatedAt: time, employeeId: props.employees.some(employee => String(employee.id) === seed.employeeId) ? seed.employeeId : "", shiftId: available(props.shifts, seed.shiftId ?? ""), zoneId: available(props.zones, seed.zoneId ?? ""), mainWorkTypeId: available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), subworkTypeId: compatibleSubworkId(props.subworkTypes, available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), seed.subworkTypeId), masterId: available(props.masters, seed.masterId ?? "") });
     }));
   };
   const removeDrafts = (keys: string[]) => {
@@ -528,8 +531,8 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
   const workflowControls = <div className="personnel-report-workflow-bar">
     <div className="personnel-report-views" role="group" aria-label="Показать отчёты">
       <button type="button" aria-pressed={workflowView === "all"} onClick={() => changeWorkflow("all")}>Все записи</button>
-      <button type="button" aria-pressed={workflowView === "draft"} onClick={() => changeWorkflow("draft")}>Черновики <span>{draftItems.length}</span></button>
-      <button type="button" className={submittedCount ? "has-pending" : ""} aria-pressed={workflowView === "submitted"} onClick={() => changeWorkflow("submitted")}>На проверке <span>{submittedCount}</span></button>
+      {showPendingReports && <button type="button" aria-pressed={workflowView === "draft"} onClick={() => changeWorkflow("draft")}>Черновики <span>{draftItems.length}</span></button>}
+      {showPendingReports && <button type="button" className={submittedCount ? "has-pending" : ""} aria-pressed={workflowView === "submitted"} onClick={() => changeWorkflow("submitted")}>На проверке <span>{submittedCount}</span></button>}
     </div>
     {dirty && <span className="personnel-report-dirty-caption"><i aria-hidden="true" />Есть несохранённые изменения</span>}
   </div>;
@@ -559,7 +562,7 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
     {viewsTarget ? createPortal(workflowControls, viewsTarget) : workflowControls}
     {carryOverNotice && rows.some(row => row.workDate === today && row.draft?.carriedFromPreviousDay) && <div className="personnel-report-carry-notice" role="status"><span><strong>Ваша бригада на сегодня</strong> Из отчёта за {displayDate(personnelReportYesterday(today))} перенесено строк: {carryOverNotice.count}. Проверьте состав, работы и часы перед отправкой.{carryOverNotice.skipped > 0 && ` Не перенесено строк: ${carryOverNotice.skipped} — сотрудники больше не доступны в проекте.`}</span><button type="button" aria-label="Закрыть подсказку о бригаде" onClick={() => setCarryOverNotice(null)}>×</button></div>}
     {activeReview?.report && <section className="personnel-report-review-focus" aria-label={canReview ? "Проверка отчёта" : "Отчёт на проверке"}>
-      <div className="personnel-report-review-focus-title"><span className="personnel-report-step" aria-hidden="true">✓</span><div><strong>{canReview ? "Проверка отчёта" : "Отчёт на проверке"}</strong><p>{canReview ? "Выберите прораба и дату. Можно исправить данные прямо в таблице и сохранить перед подтверждением." : "Выберите отчёт по дате. Свой отчёт можно снять с проверки и вернуть в черновики."}</p></div><span className="personnel-report-status submitted">На проверке: {submittedCount}</span></div>
+      <div className="personnel-report-review-focus-title"><span className="personnel-report-step" aria-hidden="true">✓</span><div><strong>{canReview ? "Проверка отчёта" : "Отчёт на проверке"}</strong><p>{canReview ? "Выберите прораба и дату. Можно исправить данные прямо в таблице и сохранить перед подтверждением." : currentUser.role === "viewer" ? "Выберите прораба и дату для просмотра отчёта." : "Выберите отчёт по дате. Свой отчёт можно снять с проверки и вернуть в черновики."}</p></div><span className="personnel-report-status submitted">На проверке: {submittedCount}</span></div>
       <div className="personnel-report-review-focus-controls">
         <CustomSelect ariaLabel={canReview ? "Отчёт для проверки" : "Отчёт на проверке"} value={activeReview.key} onChange={key => changeWorkflow("submitted", key)} options={reviewItems.map(item => ({ value: item.key, label: `${displayDate(item.workDate)} · ${item.ownerName} · строк: ${item.rowCount} · ${item.hours} ч` }))} />
         <div className="toolbar-actions">{canReview && <>{edits[activeReview.key] && <button type="button" className="secondary-button" disabled={locked || fetching} onClick={() => void saveDrafts(undefined, [activeReview.key])}>Сохранить исправления</button>}<button type="button" className="save-edits-button" disabled={locked || fetching || Boolean(personnelReportReviewIssue(activeReview.report.id, Object.keys(edits)))} onClick={() => beginReview(activeReview.report!, "approve")}>Подтвердить отчёт</button><button type="button" className="secondary-button" disabled={locked || fetching || Boolean(personnelReportReviewIssue(activeReview.report.id, Object.keys(edits)))} onClick={() => beginReview(activeReview.report!, "reject")}>Вернуть на доработку</button></>}{permissions.update && activeReview.ownerUserId === currentUser.id && <button type="button" className="secondary-button" disabled={locked || fetching || Boolean(personnelReportReviewIssue(activeReview.report.id, Object.keys(edits)))} onClick={() => void transition(activeReview.report!, "reopen")}>Снять с проверки</button>}</div>

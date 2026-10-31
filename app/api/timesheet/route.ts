@@ -1,3 +1,4 @@
+import { canAccessProject } from "../../roles";
 import { getDatabase } from "../../../db/client";
 import { withAuditTrail } from "../../auditLog";
 import { assertSameOrigin, getAuthUser } from "../../auth";
@@ -90,8 +91,8 @@ async function resolveSite(
   requestedSiteId: number,
   authUser: NonNullable<Awaited<ReturnType<typeof getAuthUser>>>,
 ): Promise<{ error: Response } | { siteId: number; site: { id: number; name: string } }> {
-  if (authUser.role === "foreman" && !authUser.assignedSiteId) return { error: errorResponse("Для пользователя не назначен объект.", 403) };
-  const siteId = authUser.role === "foreman" ? authUser.assignedSiteId! : requestedSiteId;
+  if (!canAccessProject(authUser, requestedSiteId)) return { error: errorResponse("Нет доступа к проекту. Доступ к этому проекту не предоставлен.", 403) };
+  const siteId = requestedSiteId;
   const site = await getDatabase().prepare("SELECT id, name FROM sites WHERE id = ? AND active = 1")
     .bind(siteId).first<{ id: number; name: string }>();
   if (!site) return { error: errorResponse("Объект не найден.", 404) };
@@ -155,12 +156,12 @@ export async function GET(request: Request) {
       siteId,
       siteName: site.name,
       month,
-      canEdit: hasPermission(authUser.permissions, "workers_timesheet", "create")
+      canEdit: authUser.role !== "viewer" && (hasPermission(authUser.permissions, "workers_timesheet", "create")
         || hasPermission(authUser.permissions, "workers_timesheet", "update")
-        || hasPermission(authUser.permissions, "workers_timesheet", "delete"),
-      canCreate: hasPermission(authUser.permissions, "workers_timesheet", "create"),
-      canUpdate: hasPermission(authUser.permissions, "workers_timesheet", "update"),
-      canDelete: hasPermission(authUser.permissions, "workers_timesheet", "delete"),
+        || hasPermission(authUser.permissions, "workers_timesheet", "delete")),
+      canCreate: authUser.role !== "viewer" && hasPermission(authUser.permissions, "workers_timesheet", "create"),
+      canUpdate: authUser.role !== "viewer" && hasPermission(authUser.permissions, "workers_timesheet", "update"),
+      canDelete: authUser.role !== "viewer" && hasPermission(authUser.permissions, "workers_timesheet", "delete"),
       employees: employeesResult.results as TimesheetEmployee[],
       entries: entriesResult.results as TimesheetEntry[],
       marks: marksResult.results as TimesheetMark[],
@@ -176,6 +177,7 @@ async function handlePOST(request: Request): Promise<Response> {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return errorResponse("Требуется авторизация.", 401);
+    if (authUser.role === "viewer") return errorResponse("Роль «Просмотр» не может изменять данные.", 403);
     if (!hasPermission(authUser.permissions, "workers_timesheet", "view")) return errorResponse("Нет доступа к табелю рабочих.", 403);
 
     const payload = await request.json() as { siteId?: unknown; employeeId?: unknown; workDate?: unknown; value?: unknown; note?: unknown };
@@ -198,36 +200,41 @@ async function handlePOST(request: Request): Promise<Response> {
     if (!employee) return errorResponse("Сотрудник не относится к выбранному проекту.", 404);
 
     const rawValue = typeof payload.value === "number" ? String(payload.value) : String(payload.value ?? "").trim().toLocaleUpperCase("ru-RU");
-    const existingMark = await db.prepare("SELECT id FROM timesheet_marks WHERE site_id = ? AND employee_id = ? AND work_date = ?")
-      .bind(siteId, employeeId, payload.workDate).first<{ id: number }>();
-    if (!rawValue) {
-      if (!existingMark) return Response.json({ deleted: false, employeeId, workDate: payload.workDate });
-      if (!hasPermission(authUser.permissions, "workers_timesheet", "delete")) return errorResponse("Нет права удалять отметки табеля.", 403);
-      await db.prepare("DELETE FROM timesheet_marks WHERE site_id = ? AND employee_id = ? AND work_date = ?")
-        .bind(siteId, employeeId, payload.workDate).run();
-      return Response.json({ deleted: true, employeeId, workDate: payload.workDate });
-    }
-    if (!hasPermission(authUser.permissions, "workers_timesheet", existingMark ? "update" : "create")) {
-      return errorResponse(existingMark ? "Нет права изменять отметки табеля." : "Нет права добавлять отметки табеля.", 403);
-    }
+    const workDate = payload.workDate;
+    return await db.transaction(async transaction => {
+      await transaction.prepare("SELECT pg_advisory_xact_lock(hashtext(?))")
+        .bind(`timesheet-mark:${siteId}:${employeeId}:${workDate}`).first();
+      const existingMark = await transaction.prepare("SELECT id FROM timesheet_marks WHERE site_id = ? AND employee_id = ? AND work_date = ?")
+        .bind(siteId, employeeId, workDate).first<{ id: number }>();
+      if (!rawValue) {
+        if (!existingMark) return Response.json({ deleted: false, employeeId, workDate });
+        if (!hasPermission(authUser.permissions, "workers_timesheet", "delete")) return errorResponse("Нет права удалять отметки табеля.", 403);
+        await transaction.prepare("DELETE FROM timesheet_marks WHERE site_id = ? AND employee_id = ? AND work_date = ?")
+          .bind(siteId, employeeId, workDate).run();
+        return Response.json({ deleted: true, employeeId, workDate });
+      }
+      if (!hasPermission(authUser.permissions, "workers_timesheet", existingMark ? "update" : "create")) {
+        return errorResponse(existingMark ? "Нет права изменять отметки табеля." : "Нет права добавлять отметки табеля.", 403);
+      }
 
-    const numericHours = /^\d+$/.test(rawValue) ? Number(rawValue) : null;
-    if (numericHours !== null && (!Number.isInteger(numericHours) || numericHours < 1 || numericHours > 10)) {
-      return errorResponse("Количество часов должно быть целым числом от 1 до 10.", 400);
-    }
-    const code = numericHours === null ? rawValue : null;
-    if (code && !TIMESHEET_CODES.has(code)) return errorResponse("Неизвестный табельный код.", 400);
-    const note = typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "";
+      const numericHours = /^\d+$/.test(rawValue) ? Number(rawValue) : null;
+      if (numericHours !== null && (!Number.isInteger(numericHours) || numericHours < 1 || numericHours > 10)) {
+        return errorResponse("Количество часов должно быть целым числом от 1 до 10.", 400);
+      }
+      const code = numericHours === null ? rawValue : null;
+      if (code && !TIMESHEET_CODES.has(code)) return errorResponse("Неизвестный табельный код.", 400);
+      const note = typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "";
 
-    await db.prepare(`INSERT INTO timesheet_marks (site_id, employee_id, work_date, hours, code, note, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (site_id, employee_id, work_date) DO UPDATE SET
-        hours = EXCLUDED.hours, code = EXCLUDED.code, note = EXCLUDED.note,
-        created_by = EXCLUDED.created_by, updated_at = CURRENT_TIMESTAMP`)
-      .bind(siteId, employeeId, payload.workDate, numericHours, code, note, authUser.fullName).run();
+      await transaction.prepare(`INSERT INTO timesheet_marks (site_id, employee_id, work_date, hours, code, note, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (site_id, employee_id, work_date) DO UPDATE SET
+          hours = EXCLUDED.hours, code = EXCLUDED.code, note = EXCLUDED.note,
+          created_by = EXCLUDED.created_by, updated_at = CURRENT_TIMESTAMP`)
+        .bind(siteId, employeeId, workDate, numericHours, code, note, authUser.fullName).run();
 
-    const mark: TimesheetMark = { employeeId, workDate: payload.workDate, hours: numericHours, code, note, updatedBy: authUser.fullName };
-    return Response.json({ mark });
+      const mark: TimesheetMark = { employeeId, workDate, hours: numericHours, code, note, updatedBy: authUser.fullName };
+      return Response.json({ mark });
+    });
   } catch (error) {
     console.error("Timesheet update failed", error);
     return errorResponse(error instanceof Error ? error.message : "Не удалось сохранить отметку табеля.", 400);

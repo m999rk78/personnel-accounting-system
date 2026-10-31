@@ -75,7 +75,7 @@ test("technical IDs match actual employees and equipment instead of report entry
 async function serverModule() {
   let code = ts.transpileModule(await readFile(new URL("../app/tableRowOrderServer.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
   const databaseStub = `data:text/javascript,${encodeURIComponent("export function getDatabase(){ throw new Error('Use the injected executor'); }")}`;
-  code = code.replaceAll('"./workTypesRowOrder"', JSON.stringify(new URL("../app/workTypesRowOrder.ts", import.meta.url).href)).replaceAll('"./personnelReportRowOrder"', JSON.stringify(new URL("../app/personnelReportRowOrder.ts", import.meta.url).href)).replaceAll('"./equipmentReportRowOrder"', JSON.stringify(new URL("../app/equipmentReportRowOrder.ts", import.meta.url).href)).replaceAll('"../db/client"', JSON.stringify(databaseStub)).replaceAll('"./permissionModel"', JSON.stringify(new URL("../app/permissionModel.ts", import.meta.url).href)).replaceAll('"./tableRowOrder"', JSON.stringify(new URL("../app/tableRowOrder.ts", import.meta.url).href));
+  code = code.replaceAll('"./roles.ts"', JSON.stringify(new URL("../app/roles.ts", import.meta.url).href)).replaceAll('"./workTypesRowOrder"', JSON.stringify(new URL("../app/workTypesRowOrder.ts", import.meta.url).href)).replaceAll('"./personnelReportRowOrder"', JSON.stringify(new URL("../app/personnelReportRowOrder.ts", import.meta.url).href)).replaceAll('"./equipmentReportRowOrder"', JSON.stringify(new URL("../app/equipmentReportRowOrder.ts", import.meta.url).href)).replaceAll('"../db/client"', JSON.stringify(databaseStub)).replaceAll('"./permissionModel"', JSON.stringify(new URL("../app/permissionModel.ts", import.meta.url).href)).replaceAll('"./tableRowOrder"', JSON.stringify(new URL("../app/tableRowOrder.ts", import.meta.url).href));
   return import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 }
 
@@ -89,9 +89,40 @@ test("server permissions isolate projects and respect read-only references", asy
   assert.throws(() => rowOrderAccess(user("foreman", 1), "project-personnel", 2), /Нет доступа/);
   assert.notEqual(rowOrderAccess(user("engineer"), "project-equipment", 1).key, rowOrderAccess(user("engineer"), "project-equipment", 2).key);
   assert.equal(rowOrderAccess(user("foreman", 1), "equipment-report-rows", 1).canWrite, true);
-  assert.notEqual(rowOrderAccess(user("engineer"), "equipment-report-rows", 1).key, rowOrderAccess({ ...user("engineer"), id: 2 }, "equipment-report-rows", 1).key);
+  assert.notEqual(rowOrderAccess(user("engineer", 1), "equipment-report-rows", 1).key, rowOrderAccess({ ...user("engineer", 1), id: 2 }, "equipment-report-rows", 1).key);
   assert.throws(() => rowOrderAccess(user("foreman", 1), "equipment-report-rows", 2), /Нет доступа/);
   assert.throws(() => rowOrderAccess(user("superadmin"), "invalid", null), /Неизвестная таблица/);
+});
+
+test("engineer row orders cannot leave the assigned project, even with global overrides", async () => {
+  const { rowOrderAccess, TableOrderAccessError } = await serverModule();
+  const engineer = { id: 17, role: "engineer", assignedSiteId: 1, projectAccess: { mode: "selected", siteIds: [1] }, permissions: rolePermissionTemplate("superadmin") };
+  const allProjectEngineer = { ...engineer, assignedSiteId: null, projectAccess: { mode: "all", siteIds: [] } };
+  for (const scope of ["project-personnel", "project-equipment", "personnel-report-rows", "equipment-report-rows", "directory-work-types", "directory-zone", "employees", "equipment", "users", "projects"]) {
+    assert.equal(rowOrderAccess(engineer, scope, 1).canRead, true);
+    assert.throws(() => rowOrderAccess(engineer, scope, 2), error => error instanceof TableOrderAccessError && error.status === 403);
+    assert.throws(() => rowOrderAccess({ ...engineer, projectAccess: { mode: "selected", siteIds: [] } }, scope, 1), /Нет доступа/);
+    assert.equal(rowOrderAccess(allProjectEngineer, scope, 2).canRead, true);
+  }
+  assert.notEqual(rowOrderAccess(engineer, "employees", 1).key, rowOrderAccess(allProjectEngineer, "employees", 1).key);
+});
+
+test("scoped catalog order IDs include only active assignments from the engineer's project", async () => {
+  const { canonicalRowIds } = await serverModule();
+  const engineer = { id: 17, role: "engineer", assignedSiteId: 3, projectAccess: { mode: "selected", siteIds: [3] }, permissions: rolePermissionTemplate("engineer") };
+  const queries = [];
+  const executor = { prepare: sql => ({ bind: (...values) => ({ all: async () => { queries.push({ sql, values }); return { results: [{ id: 42 }] }; } }) }) };
+  for (const scope of ["employees", "equipment", "users", "projects"]) {
+    assert.deepEqual(await canonicalRowIds(scope, 3, executor, engineer), [42]);
+    assert.deepEqual(queries.at(-1).values, scope === "users" ? [[3], [3]] : [[3]]);
+  }
+  assert.match(queries[0].sql, /employee_project_assignments[\s\S]*assignment\.site_id = ANY\(\?::integer\[\]\)[\s\S]*assignment\.active = 1/);
+  assert.match(queries[1].sql, /equipment_project_assignments[\s\S]*assignment\.site_id = ANY\(\?::integer\[\]\)[\s\S]*assignment\.active = 1/);
+  assert.match(queries[2].sql, /assigned_site_id = ANY\(\?::integer\[\]\)/);
+  assert.match(queries[3].sql, /id = ANY\(\?::integer\[\]\)/);
+  const count = queries.length;
+  await assert.rejects(canonicalRowIds("employees", 4, executor, engineer), /Нет доступа/);
+  assert.equal(queries.length, count);
 });
 
 test("canonical project rows are read through the same transaction connection", async () => {
@@ -107,13 +138,13 @@ test("equipment report ordering uses record IDs, keeps published origins and iso
   let sql;
   let bound;
   const executor = { prepare: statement => { sql = statement; return { bind: (...values) => { bound = values; return { all: async () => ({ results: [{ id: "2026-10-30/report-8-10" }, { id: "2026-10-29/approved-44" }] }) }; } }; } };
-  assert.deepEqual(await canonicalRowIds("equipment-report-rows", 9, executor, { id: 7, role: "foreman" }), ["2026-10-30/report-8-10", "2026-10-29/approved-44"]);
+  assert.deepEqual(await canonicalRowIds("equipment-report-rows", 9, executor, { id: 7, role: "foreman", assignedSiteId: 9 }), ["2026-10-30/report-8-10", "2026-10-29/approved-44"]);
   assert.deepEqual(bound, [9, 7, 9, 7]);
   assert.match(sql, /FROM equipment_report_rows row JOIN equipment_reports/);
   assert.match(sql, /origin\.approved_entry_id = entry\.id/);
   assert.match(sql, /report\.owner_user_id = \?/);
   assert.match(sql, /entry\.responsible_user_id = \?/);
-  await canonicalRowIds("equipment-report-rows", 9, executor, { id: 8, role: "engineer" });
+  await canonicalRowIds("equipment-report-rows", 9, executor, { id: 8, role: "engineer", assignedSiteId: 9 });
   assert.deepEqual(bound, [9, 9]);
   assert.doesNotMatch(sql, /owner_user_id = \?|responsible_user_id = \?/);
 });

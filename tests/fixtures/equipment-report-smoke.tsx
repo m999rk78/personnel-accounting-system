@@ -7,6 +7,7 @@ import { ExcelExportPreviewPage } from "../../app/ExcelExportPreview";
 import { TableOrderProvider } from "../../app/TableRowMoves";
 import { equipmentReportOrderScope } from "../../app/equipmentReportRowOrder";
 import type { GridEquipmentUnit, GridOption } from "../../app/AgDataGrids";
+import type { UserRole } from "../../app/roles";
 import "../../app/globals.css";
 
 type Scenario = "default" | "workflow" | "conflicts";
@@ -14,12 +15,18 @@ type FixtureCatalog = {
   today: string; site: { id: number; name: string }; units: GridEquipmentUnit[];
   shifts: GridOption[]; zones: GridOption[]; mainWorkTypes: GridOption[]; subworkTypes: GridOption[]; scenario: Scenario;
 };
-const permissions = { create: true, update: true, delete: true };
+function fixtureActor(id: number, fullName: string, role: UserRole, canViewPendingReports = role !== "viewer") {
+  const permission = { view: true, create: role !== "viewer", update: role !== "viewer", delete: role !== "viewer" };
+  return { id, fullName, role, assignedSiteId: 1, projectAccess: { mode: "selected" as const, siteIds: [1] }, canViewPendingReports,
+    permissions: { equipment_report: { ...permission }, equipment_timesheet: { ...permission } } };
+}
 const actors = {
-  foreman: { id: 10, fullName: "Алексей Тестовый", role: "foreman" as const },
-  foreman2: { id: 11, fullName: "Борис Другая Бригада", role: "foreman" as const },
-  engineer: { id: 20, fullName: "Ирина Проверяющая", role: "engineer" as const },
-  superadmin: { id: 30, fullName: "Администратор Проверки", role: "superadmin" as const },
+  foreman: fixtureActor(10, "Алексей Тестовый", "foreman"),
+  foreman2: fixtureActor(11, "Борис Другая Бригада", "foreman"),
+  engineer: fixtureActor(20, "Ирина Проверяющая", "engineer"),
+  superadmin: fixtureActor(30, "Администратор Проверки", "superadmin"),
+  viewer: fixtureActor(40, "Виктор Наблюдатель", "viewer"),
+  viewer_pending: fixtureActor(41, "Вера Расширенный Просмотр", "viewer", true),
 };
 type FixtureStatus = {
   materializedHours: number; approvedEntryCount: number;
@@ -86,7 +93,7 @@ function EquipmentReportSmoke() {
       <strong>Изолированный стенд техники — рабочая база не подключена</strong>
       <label>Роль в проверке{" "}<select aria-label="Роль в проверке" value={role} onChange={event => {
         const next = event.target.value as keyof typeof actors; document.cookie = `equipment_smoke_role=${next}; path=/; SameSite=Lax`; setDirty(false); setRole(next);
-      }}><option value="foreman">Прораб — Алексей Тестовый</option><option value="foreman2">Прораб — Борис Другая Бригада</option><option value="engineer">Инженер — Ирина Проверяющая</option><option value="superadmin">Супер-админ — Администратор Проверки</option></select></label>
+      }}><option value="foreman">Прораб — Алексей Тестовый</option><option value="foreman2">Прораб — Борис Другая Бригада</option><option value="engineer">Инженер — Ирина Проверяющая</option><option value="superadmin">Супер-админ — Администратор Проверки</option><option value="viewer">Просмотр — только подтверждённые</option><option value="viewer_pending">Просмотр — включая черновики и проверку</option></select></label>
       <label>Сценарий{" "}<select aria-label="Сценарий" value={catalog?.scenario ?? "workflow"} disabled={!catalog} onChange={event => void reset(event.target.value as Scenario)}>
         <option value="workflow">Несколько дат и бригад</option><option value="default">История и перенос техники</option><option value="conflicts">Лимит 20 ч и недоступная техника</option>
       </select></label>
@@ -100,7 +107,7 @@ function EquipmentReportSmoke() {
     </div>
     <div className="timesheet-workspace-page" style={{ flex: 1, minHeight: 0 }}>
       {catalog ? <TableOrderProvider key={`${role}-${session}`} scope={equipmentReportOrderScope} siteId={catalog.site.id}>
-        <EquipmentReportWorkspace siteId={catalog.site.id} siteName={catalog.site.name} today={catalog.today} currentUser={actors[role]} permissions={permissions}
+        <EquipmentReportWorkspace siteId={catalog.site.id} siteName={catalog.site.name} today={catalog.today} currentUser={actors[role]} permissions={actors[role].permissions.equipment_report}
           units={catalog.units} shifts={catalog.shifts} zones={catalog.zones} mainWorkTypes={catalog.mainWorkTypes} subworkTypes={catalog.subworkTypes} loading={false} onDirtyChange={setDirty} />
       </TableOrderProvider> : !error && <p>Загрузка учебного каталога…</p>}
     </div>

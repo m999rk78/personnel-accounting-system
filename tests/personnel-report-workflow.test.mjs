@@ -9,7 +9,7 @@ import {
 } from "../app/personnelReportWorkflow.ts";
 
 const foreman = { id: 7, role: "foreman", assignedSiteId: 1, permissions: rolePermissionTemplate("foreman") };
-const engineer = { id: 8, role: "engineer", assignedSiteId: null, permissions: rolePermissionTemplate("engineer") };
+const engineer = { id: 8, role: "engineer", assignedSiteId: 1, projectAccess: { mode: "selected", siteIds: [1] }, permissions: rolePermissionTemplate("engineer") };
 const report = { siteId: 1, ownerUserId: foreman.id, status: "draft", revision: 2 };
 const completeRow = { employeeId: 11, shiftId: 1, zoneId: 1, mainWorkTypeId: 1, subworkTypeId: 1, masterId: 1, hours: 6, note: "" };
 const code = (value) => (error) => error.code === value;
@@ -118,4 +118,27 @@ test("all employee hour conflicts are collected once with all contributing row n
     return true;
   });
   assert.deepEqual(collectPersonnelReportHourIssues([{ employeeId: 11, hours: 2 }, { employeeId: 12, hours: 1 }], approved), []);
+});
+
+
+test("personnel engineers review every owner in their assigned project, while all-project engineers can review all projects", () => {
+  const ownProject = { ...report, status: "submitted", ownerUserId: 99 };
+  assert.doesNotThrow(() => assertPersonnelReportSiteAccess(engineer, 1));
+  assert.equal(nextPersonnelReportStatus(engineer, ownProject, "approve"), "approved");
+  assert.doesNotThrow(() => assertCanSavePersonnelReport(engineer, { ...ownProject, status: "approved" }));
+  const foreign = { ...ownProject, siteId: 2 };
+  // Even fully enabled resource overrides never remove a role's project boundary.
+  const enabled = { ...engineer, permissions: rolePermissionTemplate("superadmin") };
+  for (const action of ["submit", "approve", "reject", "reopen"]) {
+    assert.throws(() => nextPersonnelReportStatus(enabled, foreign, action, "Причина"), code("REPORT_FORBIDDEN"));
+  }
+  for (const status of ["draft", "submitted", "approved", "rejected"]) {
+    assert.throws(() => assertCanSavePersonnelReport(enabled, { ...foreign, status }), code("REPORT_FORBIDDEN"));
+  }
+  assert.throws(() => assertPersonnelReportSiteAccess({ ...engineer, projectAccess: { mode: "selected", siteIds: [] } }, 1), code("REPORT_FORBIDDEN"));
+  const allProjectEngineer = { ...engineer, assignedSiteId: null, projectAccess: { mode: "all", siteIds: [] } };
+  assert.doesNotThrow(() => assertPersonnelReportSiteAccess(allProjectEngineer, 2));
+  assert.equal(nextPersonnelReportStatus(allProjectEngineer, foreign, "approve"), "approved");
+  assert.equal(nextPersonnelReportStatus(allProjectEngineer, foreign, "reject", "Уточните работы"), "rejected");
+  assert.doesNotThrow(() => assertCanSavePersonnelReport(allProjectEngineer, { ...foreign, status: "approved" }));
 });

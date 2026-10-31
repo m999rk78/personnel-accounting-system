@@ -45,7 +45,7 @@ try {
   const foremanId = await insert("INSERT INTO app_users(full_name,email,role,assigned_site_id) VALUES ($1,$2,'foreman',$3) RETURNING id", [marker, `${marker}@invalid.test`, siteId]);
   const otherForemanId = await insert("INSERT INTO app_users(full_name,email,role,assigned_site_id) VALUES ($1,$2,'foreman',$3) RETURNING id", [`${marker}-second`, `${marker}-second@invalid.test`, siteId]);
   const engineerId = await insert("INSERT INTO app_users(full_name,email,role) VALUES ($1,$2,'engineer') RETURNING id", [`${marker}-engineer`, `${marker}-engineer@invalid.test`]);
-  const actor = (id, role) => ({ id, fullName: `${marker}-${role}`, role, assignedSiteId: role === "foreman" ? siteId : null, permissions: rolePermissionTemplate(role) });
+  const actor = (id, role) => ({ id, fullName: `${marker}-${role}`, role, assignedSiteId: role === "foreman" || role === "engineer" ? siteId : null, permissions: rolePermissionTemplate(role) });
   const foreman = actor(foremanId, "foreman"), otherForeman = actor(otherForemanId, "foreman"), engineer = actor(engineerId, "engineer");
   const equipmentId = await insert("INSERT INTO equipment_units(site_id,identity_key,organization,equipment_type,brand,model,registration_number) VALUES ($1,$2,'Организация','Экскаватор','Марка','Модель','ТЕСТ001') RETURNING id", [siteId, marker]);
   await connection.query("INSERT INTO equipment_project_assignments(equipment_id,site_id) VALUES ($1,$2),($1,$3)", [equipmentId, siteId, otherSiteId]);

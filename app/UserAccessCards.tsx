@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CustomSelect } from "./CustomSelect";
-import { ROLE_LABELS, type UserRole } from "./roles";
+import { ProjectAccessPicker } from "./ProjectAccessPicker";
+import { ROLE_LABELS, type ProjectAccess, type UserRole } from "./roles";
+import { userDraftProjectAccess, userProjectAccessValid, userProjectLabel, userRoleChanges } from "./userAccessModel";
 
 type AccessOption = { id: number; name: string };
-type AccessUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; status?: "active" | "invited" };
-type AccessUserDraft = { key: string; id?: number; fullName: string; email: string; role: UserRole; assignedSiteId: string };
+type AccessUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; projectAccess?: ProjectAccess; projectAccessLimitedToViewer?: boolean; canViewPendingReports?: boolean; status?: "active" | "invited" };
+type AccessUserDraft = { key: string; id?: number; fullName: string; email: string; role: UserRole; assignedSiteId: string; projectAccess?: ProjectAccess; canViewPendingReports?: boolean };
 
 type UserAccessCardsProps = {
   rows: AccessUser[];
@@ -39,6 +40,9 @@ function UserEditorDialog({ drafts, sites, saving, onPatch, onCancel, onSave }: 
   const safeActiveIndex = Math.min(activeIndex, drafts.length - 1);
   const draft = drafts[safeActiveIndex] ?? drafts[0];
   const editing = Boolean(draft.id);
+  const invalidProjectIndex = drafts.findIndex(item => !userProjectAccessValid(userDraftProjectAccess(item), sites, Boolean(item.id)));
+  const activeProjectInvalid = !userProjectAccessValid(userDraftProjectAccess(draft), sites, Boolean(draft.id));
+  const invalidProjectUser = invalidProjectIndex >= 0 ? drafts[invalidProjectIndex] : undefined;
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape" && !saving) onCancel(); };
@@ -47,7 +51,7 @@ function UserEditorDialog({ drafts, sites, saving, onPatch, onCancel, onSave }: 
   }, [onCancel, saving]);
 
   return <div className="user-create-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onCancel(); }}>
-    <form className="user-create-dialog" role="dialog" aria-modal="true" aria-labelledby="user-editor-title" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
+    <form className="user-create-dialog" role="dialog" aria-modal="true" aria-labelledby="user-editor-title" onSubmit={(event) => { event.preventDefault(); if (invalidProjectIndex >= 0) { setActiveIndex(invalidProjectIndex); return; } onSave(); }}>
       <header className="user-create-heading">
         <span className="user-create-icon" aria-hidden="true">{editing ? <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M3 20c0-3.4 2.7-6 6-6 1.7 0 3.2.6 4.3 1.7M15.5 17.5 20 13l1 1-4.5 4.5-2 .5.5-2Z"/></svg> : <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="4"/><path d="M3 20c0-3.4 2.7-6 6-6 1.7 0 3.2.6 4.3 1.7M18 8v6M15 11h6"/></svg>}</span>
         <div><h2 id="user-editor-title">{editing ? "Редактирование пользователя" : "Новый пользователь"}</h2><p>{editing ? "Обновите личные данные, роль или доступ к проектам." : "Добавьте сотрудника и настройте его доступ к системе."}</p></div>
@@ -59,30 +63,31 @@ function UserEditorDialog({ drafts, sites, saving, onPatch, onCancel, onSave }: 
         <section className="user-create-section">
           <div className="user-create-section-heading"><span>1</span><div><h3>Личные данные</h3><p>{editing ? "Имя отображается в системе, email используется для входа." : "Имя будет отображаться в системе, а на email придёт приглашение."}</p></div></div>
           <div className="user-create-personal-fields">
-            <label className="user-create-field"><span>ФИО</span><input value={draft.fullName} placeholder="Например, Иванов Иван Иванович" onChange={(event) => onPatch(draft.key, { fullName: event.target.value })} /></label>
-            <label className="user-create-field"><span>Рабочий email</span><input type="email" value={draft.email} placeholder="ivanov@company.ru" onChange={(event) => onPatch(draft.key, { email: event.target.value })} /></label>
+            <label className="user-create-field"><span>ФИО</span><input required value={draft.fullName} placeholder="Например, Иванов Иван Иванович" onChange={(event) => onPatch(draft.key, { fullName: event.target.value })} /></label>
+            <label className="user-create-field"><span>Рабочий email</span><input required type="email" value={draft.email} placeholder="ivanov@company.ru" onChange={(event) => onPatch(draft.key, { email: event.target.value })} /></label>
           </div>
         </section>
 
         <section className="user-create-section">
           <div className="user-create-section-heading"><span>2</span><div><h3>Роль и доступ</h3><p>Выберите, какие разделы и проекты будут доступны пользователю.</p></div></div>
           <div className="user-create-role-options" role="radiogroup" aria-label="Роль пользователя">
-            <button type="button" role="radio" aria-checked={draft.role === "foreman"} className={draft.role === "foreman" ? "selected" : ""} onClick={() => onPatch(draft.key, { role: "foreman" })}><span className="user-create-role-icon" aria-hidden="true">П</span><span><strong>Прораб</strong><small>Доступ только к выбранному проекту</small></span><i aria-hidden="true">✓</i></button>
-            <button type="button" role="radio" aria-checked={draft.role === "engineer"} className={draft.role === "engineer" ? "selected" : ""} onClick={() => onPatch(draft.key, { role: "engineer", assignedSiteId: "" })}><span className="user-create-role-icon engineer" aria-hidden="true">И</span><span><strong>Инженер</strong><small>Отчёты, сотрудники и настройки проектов</small></span><i aria-hidden="true">✓</i></button>
-            <button type="button" role="radio" aria-checked={draft.role === "superadmin"} className={draft.role === "superadmin" ? "selected" : ""} onClick={() => onPatch(draft.key, { role: "superadmin", assignedSiteId: "" })}><span className="user-create-role-icon superadmin" aria-hidden="true">С</span><span><strong>Супер-админ</strong><small>Полный доступ ко всей системе</small></span><i aria-hidden="true">✓</i></button>
+            <button type="button" role="radio" aria-checked={draft.role === "foreman"} className={draft.role === "foreman" ? "selected" : ""} onClick={() => onPatch(draft.key, userRoleChanges("foreman", draft.assignedSiteId, draft.projectAccess))}><span className="user-create-role-icon" aria-hidden="true">П</span><span><strong>Прораб</strong><small>Свои отчёты в доступных проектах</small></span><i aria-hidden="true">✓</i></button>
+            <button type="button" role="radio" aria-checked={draft.role === "engineer"} className={draft.role === "engineer" ? "selected" : ""} onClick={() => onPatch(draft.key, userRoleChanges("engineer", draft.assignedSiteId, draft.projectAccess))}><span className="user-create-role-icon engineer" aria-hidden="true">И</span><span><strong>Инженер</strong><small>Отчёты, табели и настройки доступных проектов</small></span><i aria-hidden="true">✓</i></button>
+            <button type="button" role="radio" aria-checked={draft.role === "viewer"} className={draft.role === "viewer" ? "selected" : ""} onClick={() => { if (draft.role !== "viewer") onPatch(draft.key, userRoleChanges("viewer", draft.assignedSiteId, draft.projectAccess)); }}><span className="user-create-role-icon viewer" aria-hidden="true">П</span><span><strong>Просмотр</strong><small>Чтение данных и экспорт Excel</small></span><i aria-hidden="true">✓</i></button>
+            <button type="button" role="radio" aria-checked={draft.role === "superadmin"} className={draft.role === "superadmin" ? "selected" : ""} onClick={() => onPatch(draft.key, userRoleChanges("superadmin", draft.assignedSiteId, draft.projectAccess))}><span className="user-create-role-icon superadmin" aria-hidden="true">С</span><span><strong>Супер-админ</strong><small>Полный доступ ко всей системе</small></span><i aria-hidden="true">✓</i></button>
           </div>
-          <div className="user-create-access-field">
-            <span>{draft.role === "foreman" ? "Доступный проект" : "Уровень доступа"}</span>
-            {draft.role !== "foreman"
-              ? <div className="user-create-all-projects"><span aria-hidden="true">✓</span><div><strong>{draft.role === "superadmin" ? "Полный доступ" : "Рабочий доступ"}</strong><small>{draft.role === "superadmin" ? "Все проекты и глобальные настройки" : "Все проекты, сотрудники и настройки проектов"}</small></div></div>
-              : <CustomSelect value={draft.assignedSiteId} ariaLabel={editing ? "Проект пользователя" : "Проект нового пользователя"} onChange={(assignedSiteId) => onPatch(draft.key, { assignedSiteId })} options={[{ value: "", label: "Выберите проект" }, ...sites.map((site) => ({ value: String(site.id), label: site.name }))]} />}
+          <div className={`user-create-access-field${activeProjectInvalid ? " invalid" : ""}`}>
+            <span>Доступ к проектам</span>
+            <ProjectAccessPicker value={userDraftProjectAccess(draft)} sites={sites} disabled={saving || draft.role === "superadmin"} onChange={projectAccess => onPatch(draft.key, { projectAccess, assignedSiteId: projectAccess.mode === "selected" ? String(projectAccess.siteIds[0] ?? "") : "" })} />
+            {activeProjectInvalid && <p className="user-create-project-error" role="alert">Выберите хотя бы один доступный проект или разрешите все проекты.</p>}
+            {draft.role === "viewer" && <label className="access-pending-toggle" aria-label="Показывать черновики и отчёты на проверке"><input type="checkbox" checked={Boolean(draft.canViewPendingReports)} disabled={saving} onChange={event => onPatch(draft.key, { canViewPendingReports: event.target.checked })} /><span><strong>Показывать черновики и отчёты на проверке</strong><small>По умолчанию доступны подтверждённые отчёты и табели. Изменение данных всегда запрещено.</small></span></label>}
           </div>
         </section>
       </div>
 
       <footer className="user-create-actions">
-        <p><span aria-hidden="true">i</span>{editing ? drafts.length > 1 ? `Изменения будут сохранены для ${drafts.length} пользователей.` : "Изменения доступа вступят в силу после сохранения." : "После сохранения будет создано приглашение для входа."}</p>
-        <div><button type="button" className="user-create-cancel" onClick={onCancel} disabled={saving}>Отмена</button><button type="submit" className="user-create-submit" disabled={saving}>{saving ? "Сохраняем…" : editing ? drafts.length > 1 ? `Сохранить всех (${drafts.length})` : "Сохранить изменения" : "Создать пользователя"}</button></div>
+        <p className={invalidProjectUser ? "user-create-save-error" : undefined} role={invalidProjectUser ? "alert" : undefined}><span aria-hidden="true">{invalidProjectUser ? "!" : "i"}</span>{invalidProjectUser ? drafts.length > 1 ? `Выберите проект: пользователь ${invalidProjectIndex + 1} из ${drafts.length} — ${invalidProjectUser.fullName || "Без имени"}.` : "Для сохранения нужно выбрать проект." : editing ? drafts.length > 1 ? `Изменения будут сохранены для ${drafts.length} пользователей.` : "Изменения доступа вступят в силу после сохранения." : "После сохранения будет создано приглашение для входа."}{invalidProjectUser && invalidProjectIndex !== safeActiveIndex && <button type="button" className="user-create-invalid-jump" disabled={saving} onClick={() => setActiveIndex(invalidProjectIndex)}>Показать</button>}</p>
+        <div><button type="button" className="user-create-cancel" onClick={onCancel} disabled={saving}>Отмена</button><button type="submit" className="user-create-submit" disabled={saving || invalidProjectIndex >= 0}>{saving ? "Сохраняем…" : editing ? drafts.length > 1 ? `Сохранить всех (${drafts.length})` : "Сохранить изменения" : "Создать пользователя"}</button></div>
       </footer>
     </form>
   </div>;
@@ -121,9 +126,8 @@ export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onSe
     <div className="user-access-list">
       {visibleRows.map((user) => {
         const selected = selectedIds.includes(user.id);
-        const siteName = sites.find((site) => site.id === user.assignedSiteId)?.name ?? "Проект не назначен";
-        const scopeTitle = user.role === "foreman" ? "Проектный доступ" : user.role === "engineer" ? "Рабочий доступ" : "Полный доступ";
-        const scopeText = user.role === "foreman" ? siteName : user.role === "engineer" ? "Все проекты, сотрудники и настройки проектов" : "Все проекты и глобальные настройки";
+        const scopeTitle = user.projectAccessLimitedToViewer ? "Проекты в пределах вашего доступа" : user.role === "superadmin" ? "Полный доступ" : user.role === "viewer" ? "Только просмотр" : "Рабочий доступ";
+        const scopeText = user.role === "superadmin" && !user.projectAccessLimitedToViewer ? "Все проекты и глобальные настройки" : userProjectLabel(user.role, user.assignedSiteId, sites, user.projectAccess, user.projectAccessLimitedToViewer);
         return <article className={`${selected ? "user-access-card selected" : "user-access-card"}${locked ? " read-only" : ""}`} key={user.id} onDoubleClick={(event) => { if (mayUpdate && !editorOpen && !(event.target as Element).closest("button,input")) onEdit(user); }}>
           <div className="user-access-identity">
             <span className="user-access-avatar" aria-hidden="true">{initials(user.fullName)}</span>

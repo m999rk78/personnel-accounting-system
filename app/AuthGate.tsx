@@ -3,8 +3,9 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import PersonnelApp from "./PersonnelApp";
 import type { PermissionSet } from "./permissionModel";
-import type { UserRole } from "./roles";
+import type { ProjectAccess, UserRole } from "./roles";
 import { permissionSetsEqual } from "./permissionModel";
+import { useProjectToday } from "./useProjectToday";
 
 export type CurrentUser = {
   id: number;
@@ -12,6 +13,8 @@ export type CurrentUser = {
   email: string;
   role: UserRole;
   assignedSiteId: number | null;
+  projectAccess?: ProjectAccess;
+  canViewPendingReports?: boolean;
   permissions: PermissionSet;
   permissionsCustomized: boolean;
 };
@@ -21,6 +24,7 @@ const hydratedInBrowser = () => true;
 const hydratingOnServer = () => false;
 
 export default function AuthGate({ initialToday, initialUser }: { initialToday: string; initialUser?: CurrentUser | null }) {
+  const today = useProjectToday(initialToday);
   const [user, setUser] = useState<CurrentUser | null>(initialUser ?? null);
   const [checking, setChecking] = useState(initialUser === undefined);
   const hydrated = useSyncExternalStore(subscribeToHydration, hydratedInBrowser, hydratingOnServer);
@@ -64,6 +68,7 @@ export default function AuthGate({ initialToday, initialUser }: { initialToday: 
         if (!result.authenticated || !result.user) { window.location.replace("/login"); return; }
         const next = result.user;
         setUser(current => current && current.id === next.id && current.role === next.role && current.assignedSiteId === next.assignedSiteId
+          && JSON.stringify(current.projectAccess) === JSON.stringify(next.projectAccess) && current.canViewPendingReports === next.canViewPendingReports
           && current.fullName === next.fullName && current.email === next.email && current.permissionsCustomized === next.permissionsCustomized
           && permissionSetsEqual(current.permissions, next.permissions) ? current : next);
       } catch { /* Keep the current screen during a temporary network failure; APIs still authorize each request. */ }
@@ -82,6 +87,6 @@ export default function AuthGate({ initialToday, initialUser }: { initialToday: 
   if (!hydrated || checking || !user) return <main className="auth-loading"><div className="auth-spinner" /><p>Проверяем доступ…</p></main>;
   // Permission changes update controls in place, preserving unfinished drafts.
   // Only an identity/project change starts a separate workspace session.
-  const accessKey = JSON.stringify([user.id, user.role, user.assignedSiteId]);
-  return <PersonnelApp key={accessKey} initialToday={initialToday} currentUser={user} />;
+  const accessKey = JSON.stringify([user.id, user.role, user.assignedSiteId, user.projectAccess, user.canViewPendingReports]);
+  return <PersonnelApp key={accessKey} initialToday={today} currentUser={user} />;
 }

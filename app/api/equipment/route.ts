@@ -1,3 +1,5 @@
+import { projectEntitiesAllowed } from "../../projectScopedData";
+import { accessibleProjectIds, canAccessProject, hasRestrictedProjectAccess } from "../../roles";
 import { getDatabase } from "../../../db/client";
 import { withAuditTrail } from "../../auditLog";
 import { compressJsonResponse } from "../../compressJsonResponse";
@@ -124,31 +126,32 @@ function equipmentPlanConflictMessage(conflict: EquipmentPlanConflict) {
 }
 
 function equipmentAccessPayload(authUser: NonNullable<Awaited<ReturnType<typeof getAuthUser>>>) {
+  const may = (resource: PermissionResource, action: PermissionAction) => authUser.role !== "viewer" && hasPermission(authUser.permissions, resource, action);
   return {
-    canEditDaily: hasPermission(authUser.permissions, "equipment_report", "create")
-      || hasPermission(authUser.permissions, "equipment_report", "update")
-      || hasPermission(authUser.permissions, "equipment_report", "delete"),
-    canCreateDaily: hasPermission(authUser.permissions, "equipment_report", "create"),
-    canUpdateDaily: hasPermission(authUser.permissions, "equipment_report", "update"),
-    canDeleteDaily: hasPermission(authUser.permissions, "equipment_report", "delete"),
-    canEditTimesheet: hasPermission(authUser.permissions, "equipment_timesheet", "create")
-      || hasPermission(authUser.permissions, "equipment_timesheet", "update")
-      || hasPermission(authUser.permissions, "equipment_timesheet", "delete"),
-    canCreateTimesheet: hasPermission(authUser.permissions, "equipment_timesheet", "create"),
-    canUpdateTimesheet: hasPermission(authUser.permissions, "equipment_timesheet", "update"),
-    canDeleteTimesheet: hasPermission(authUser.permissions, "equipment_timesheet", "delete"),
-    canManageRegistry: hasPermission(authUser.permissions, "equipment_registry", "create")
-      || hasPermission(authUser.permissions, "equipment_registry", "update")
-      || hasPermission(authUser.permissions, "equipment_registry", "delete"),
-    canCreateRegistry: hasPermission(authUser.permissions, "equipment_registry", "create"),
-    canUpdateRegistry: hasPermission(authUser.permissions, "equipment_registry", "update"),
-    canDeleteRegistry: hasPermission(authUser.permissions, "equipment_registry", "delete"),
-    canManageAssignments: hasPermission(authUser.permissions, "project_equipment", "create")
-      || hasPermission(authUser.permissions, "project_equipment", "update")
-      || hasPermission(authUser.permissions, "project_equipment", "delete"),
-    canCreateAssignments: hasPermission(authUser.permissions, "project_equipment", "create"),
-    canUpdateAssignments: hasPermission(authUser.permissions, "project_equipment", "update"),
-    canDeleteAssignments: hasPermission(authUser.permissions, "project_equipment", "delete"),
+    canEditDaily: may("equipment_report", "create")
+      || may("equipment_report", "update")
+      || may("equipment_report", "delete"),
+    canCreateDaily: may("equipment_report", "create"),
+    canUpdateDaily: may("equipment_report", "update"),
+    canDeleteDaily: may("equipment_report", "delete"),
+    canEditTimesheet: may("equipment_timesheet", "create")
+      || may("equipment_timesheet", "update")
+      || may("equipment_timesheet", "delete"),
+    canCreateTimesheet: may("equipment_timesheet", "create"),
+    canUpdateTimesheet: may("equipment_timesheet", "update"),
+    canDeleteTimesheet: may("equipment_timesheet", "delete"),
+    canManageRegistry: may("equipment_registry", "create")
+      || may("equipment_registry", "update")
+      || may("equipment_registry", "delete"),
+    canCreateRegistry: may("equipment_registry", "create"),
+    canUpdateRegistry: may("equipment_registry", "update"),
+    canDeleteRegistry: may("equipment_registry", "delete"),
+    canManageAssignments: may("project_equipment", "create")
+      || may("project_equipment", "update")
+      || may("project_equipment", "delete"),
+    canCreateAssignments: may("project_equipment", "create"),
+    canUpdateAssignments: may("project_equipment", "update"),
+    canDeleteAssignments: may("project_equipment", "delete"),
   };
 }
 
@@ -267,12 +270,30 @@ async function ensureEquipmentSchema() {
   return equipmentSchemaPromise;
 }
 
+function equipmentCatalogStatement(user: EquipmentAuthUser, includeFormer = false) {
+  const siteIds = accessibleProjectIds(user);
+  const scoped = siteIds !== null;
+  const statement = getDatabase().prepare(`SELECT eu.id, eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
+          eu.registration_number AS "registrationNumber", eu.note,
+          (SELECT epa.site_id FROM equipment_project_assignments epa
+            WHERE epa.equipment_id = eu.id AND epa.active = 1${scoped ? " AND epa.site_id = ANY(?::integer[])" : ""} ORDER BY epa.assigned_at DESC LIMIT 1) AS "assignedSiteId",
+          (SELECT s.name FROM equipment_project_assignments epa JOIN sites s ON s.id = epa.site_id
+            WHERE epa.equipment_id = eu.id AND epa.active = 1${scoped ? " AND epa.site_id = ANY(?::integer[])" : ""} ORDER BY epa.assigned_at DESC LIMIT 1) AS "assignedSiteName"
+          FROM equipment_units eu WHERE eu.active = 1${scoped ? ` AND (EXISTS (SELECT 1 FROM equipment_project_assignments own_assignment WHERE own_assignment.equipment_id = eu.id AND own_assignment.site_id = ANY(?::integer[]) AND own_assignment.active = 1)
+            ${includeFormer ? `OR (EXISTS (SELECT 1 FROM equipment_project_assignments former_assignment
+              WHERE former_assignment.equipment_id = eu.id AND former_assignment.site_id = ANY(?::integer[]))
+              AND NOT EXISTS (SELECT 1 FROM equipment_project_assignments current_assignment
+                WHERE current_assignment.equipment_id = eu.id AND current_assignment.active = 1))` : ""})` : ""}
+          ORDER BY eu.equipment_type, eu.model, eu.registration_number, eu.id`);
+  return scoped ? statement.bind(siteIds, siteIds, siteIds, ...(includeFormer ? [siteIds] : [])) : statement;
+}
+
 async function resolveSite(
   requestedSiteId: number,
   authUser: NonNullable<Awaited<ReturnType<typeof getAuthUser>>>,
 ): Promise<{ error: Response } | { siteId: number; site: { id: number; name: string } }> {
-  if (authUser.role === "foreman" && !authUser.assignedSiteId) return { error: errorResponse("Для пользователя не назначен объект.", 403) };
-  const siteId = authUser.role === "foreman" ? authUser.assignedSiteId! : requestedSiteId;
+  if (!canAccessProject(authUser, requestedSiteId)) return { error: errorResponse("Нет доступа к проекту. Доступ к этому проекту не предоставлен.", 403) };
+  const siteId = requestedSiteId;
   const site = await getDatabase().prepare("SELECT id, name FROM sites WHERE id = ? AND active = 1").bind(siteId).first<{ id: number; name: string }>();
   if (!site) return { error: errorResponse("Объект не найден.", 404) };
   return { siteId, site };
@@ -325,10 +346,13 @@ function equipmentForemanProgressStatement(siteId: number, workDate: string) {
       ON contribution.foreman_id = foreman.id AND contribution.site_id = ? AND contribution.work_date = ?
     LEFT JOIN equipment_entries entry
       ON entry.responsible_user_id = foreman.id AND entry.site_id = ? AND entry.work_date = ? AND entry.deleted_at IS NULL
-    WHERE (foreman.active = 1 AND foreman.role = 'foreman' AND foreman.assigned_site_id = ?)
+    WHERE (foreman.active = 1 AND foreman.role = 'foreman' AND (
+      EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = foreman.id AND access.all_projects = 1)
+      OR EXISTS (SELECT 1 FROM user_project_access_sites grant_site WHERE grant_site.user_id = foreman.id AND grant_site.site_id = ?)
+      OR (NOT EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = foreman.id) AND foreman.assigned_site_id = ?)))
       OR contribution.foreman_id IS NOT NULL
     GROUP BY foreman.id, foreman.full_name, contribution.status, contribution.submitted_at
-    ORDER BY foreman.full_name`).bind(siteId, workDate, siteId, workDate, siteId);
+    ORDER BY foreman.full_name`).bind(siteId, workDate, siteId, workDate, siteId, siteId);
 }
 
 function equipmentEntriesForDateStatement(siteId: number, workDate: string, responsibleUserId: number) {
@@ -388,6 +412,14 @@ async function handleGET(request: Request) {
     if (!["project", "global", "assignments", "carryover", "export-range"].includes(scope)) return errorResponse("Некорректный режим загрузки техники.", 400);
     if (!["daily", "month", "registry", "project"].includes(section)) return errorResponse("Некорректный раздел учёта техники.", 400);
     if (!["daily", "timesheet", "registry", "project"].includes(viewMode)) return errorResponse("Некорректный раздел учёта техники.", 400);
+    // Each response shape has one permission boundary. Reject mixed modes
+    // before loading data so a timesheet grant cannot expose the registry or
+    // a registry grant export report rows through a different scope.
+    const matchingMode = viewMode === "daily" && section === "daily" && ["project", "carryover", "export-range"].includes(scope)
+      || viewMode === "timesheet" && section === "month" && scope === "project"
+      || viewMode === "registry" && section === "registry" && scope === "global"
+      || viewMode === "project" && section === "project" && scope === "assignments";
+    if (!matchingMode) return errorResponse("Режим загрузки не соответствует выбранному разделу учёта техники.", 400);
     const requestedResource: PermissionResource = viewMode === "timesheet"
       ? "equipment_timesheet"
       : viewMode === "registry" || scope === "global"
@@ -495,14 +527,7 @@ async function handleGET(request: Request) {
     }
     if (viewMode === "registry" && section === "registry" && scope === "global") {
       const [units, sites] = await db.readBatch([
-        db.prepare(`SELECT eu.id, eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
-          eu.registration_number AS "registrationNumber", eu.note,
-          (SELECT epa.site_id FROM equipment_project_assignments epa
-            WHERE epa.equipment_id = eu.id AND epa.active = 1 ORDER BY epa.assigned_at DESC LIMIT 1) AS "assignedSiteId",
-          (SELECT s.name FROM equipment_project_assignments epa JOIN sites s ON s.id = epa.site_id
-            WHERE epa.equipment_id = eu.id AND epa.active = 1 ORDER BY epa.assigned_at DESC LIMIT 1) AS "assignedSiteName"
-          FROM equipment_units eu WHERE eu.active = 1
-          ORDER BY eu.equipment_type, eu.model, eu.registration_number, eu.id`),
+        equipmentCatalogStatement(authUser),
         db.prepare("SELECT id, name FROM sites WHERE active = 1 ORDER BY name"),
       ]);
       return Response.json({
@@ -511,7 +536,7 @@ async function handleGET(request: Request) {
         foremanProgress: [],
         units: units.results,
         availableUnits: [],
-        sites: sites.results,
+        sites: sites.results.filter((row) => canAccessProject(authUser, Number(row.id))),
         entries: [],
         marks: [],
         dailyTimesheetMarks: [],
@@ -529,14 +554,7 @@ async function handleGET(request: Request) {
           FROM equipment_units eu JOIN equipment_project_assignments epa ON epa.equipment_id = eu.id
           WHERE eu.active = 1 AND epa.site_id = ? AND epa.active = 1
           ORDER BY eu.equipment_type, eu.model, eu.registration_number, eu.id`).bind(siteId),
-        db.prepare(`SELECT eu.id, eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
-          eu.registration_number AS "registrationNumber", eu.note,
-          (SELECT epa.site_id FROM equipment_project_assignments epa
-            WHERE epa.equipment_id = eu.id AND epa.active = 1 ORDER BY epa.assigned_at DESC LIMIT 1) AS "assignedSiteId",
-          (SELECT s.name FROM equipment_project_assignments epa JOIN sites s ON s.id = epa.site_id
-            WHERE epa.equipment_id = eu.id AND epa.active = 1 ORDER BY epa.assigned_at DESC LIMIT 1) AS "assignedSiteName"
-          FROM equipment_units eu WHERE eu.active = 1
-          ORDER BY eu.equipment_type, eu.model, eu.registration_number, eu.id`),
+        equipmentCatalogStatement(authUser, true),
       ]);
       return Response.json({
         ...responseBase,
@@ -559,14 +577,7 @@ async function handleGET(request: Request) {
     const rangeEnd = requestedRangeEnd && validDate(requestedRangeEnd) ? requestedRangeEnd : workDate;
     const responsibleUserId = authUser.role === "foreman" && section === "daily" ? authUser.id : null;
     const unitsStatement = scope === "global"
-      ? db.prepare(`SELECT eu.id, eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
-          eu.registration_number AS "registrationNumber", eu.note,
-          (SELECT epa.site_id FROM equipment_project_assignments epa
-            WHERE epa.equipment_id = eu.id AND epa.active = 1 ORDER BY epa.assigned_at DESC LIMIT 1) AS "assignedSiteId",
-          (SELECT s.name FROM equipment_project_assignments epa JOIN sites s ON s.id = epa.site_id
-            WHERE epa.equipment_id = eu.id AND epa.active = 1 ORDER BY epa.assigned_at DESC LIMIT 1) AS "assignedSiteName"
-        FROM equipment_units eu WHERE eu.active = 1
-        ORDER BY eu.equipment_type, eu.model, eu.registration_number, eu.id`)
+      ? equipmentCatalogStatement(authUser)
       : db.prepare(`SELECT eu.id, eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
           eu.registration_number AS "registrationNumber", eu.note
         FROM equipment_units eu JOIN equipment_project_assignments epa ON epa.equipment_id = eu.id
@@ -618,8 +629,8 @@ async function handleGET(request: Request) {
 
     return Response.json({
       ...responseBase,
-      reportSubmitted: Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
-      foremanProgress: foremanProgress.results,
+      reportSubmitted: (authUser.role !== "viewer" || Boolean(authUser.canViewPendingReports)) && Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
+      foremanProgress: authUser.role === "viewer" && !authUser.canViewPendingReports ? [] : foremanProgress.results,
       units: units.results,
       availableUnits: [],
       sites: [],
@@ -643,6 +654,7 @@ async function handlePOST(request: Request): Promise<Response> {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return errorResponse("Требуется авторизация.", 401);
+    if (authUser.role === "viewer") return errorResponse("Роль «Просмотр» не может изменять данные.", 403);
     const payload = await request.json() as Record<string, unknown>;
     const requestedSiteId = positiveInteger(payload.siteId);
     if (!requestedSiteId) return errorResponse("Не указан объект.", 400);
@@ -689,51 +701,48 @@ async function handlePOST(request: Request): Promise<Response> {
     if (payload.action === "save-timesheet-mark") {
       if (!hasPermission(authUser.permissions, "equipment_timesheet", "view")) return errorResponse("Нет доступа к табелю техники.", 403);
       if (!validDate(payload.workDate)) return errorResponse("Некорректная дата табеля.", 400);
+      const workDate = payload.workDate;
       const equipmentId = positiveInteger(payload.equipmentId);
       if (!equipmentId) return errorResponse("Не выбрана единица техники.", 400);
       const equipment = await db.prepare(`SELECT eu.id FROM equipment_units eu WHERE eu.id = ? AND eu.active = 1 AND (
           EXISTS (SELECT 1 FROM equipment_project_assignments epa WHERE epa.equipment_id = eu.id AND epa.site_id = ? AND epa.active = 1)
           OR EXISTS (SELECT 1 FROM equipment_entries ee WHERE ee.equipment_id = eu.id AND ee.site_id = ? AND ee.work_date = ? AND ee.deleted_at IS NULL)
           OR EXISTS (SELECT 1 FROM equipment_timesheet_marks etm WHERE etm.equipment_id = eu.id AND etm.site_id = ? AND etm.work_date = ?)
-        )`).bind(equipmentId, siteId, siteId, payload.workDate, siteId, payload.workDate).first<{ id: number }>();
+        )`).bind(equipmentId, siteId, siteId, workDate, siteId, workDate).first<{ id: number }>();
       if (!equipment) return errorResponse("Техника не относится к выбранному проекту.", 404);
-      const existingMark = await db.prepare("SELECT id FROM equipment_timesheet_marks WHERE site_id = ? AND equipment_id = ? AND work_date = ?")
-        .bind(siteId, equipmentId, payload.workDate).first<{ id: number }>();
-
-      if (payload.clear === true) {
-        if (!existingMark) return Response.json({ deleted: false, equipmentId, workDate: payload.workDate });
-        if (!hasPermission(authUser.permissions, "equipment_timesheet", "delete")) return errorResponse("Нет права удалять отметки табеля техники.", 403);
-        await db.transaction(async (transaction) => {
-          await transaction.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(`equipment-hours:${payload.workDate}:${equipmentId}`).first();
+      return await db.transaction(async transaction => {
+        await transaction.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(`equipment-hours:${workDate}:${equipmentId}`).first();
+        const existingMark = await transaction.prepare("SELECT id FROM equipment_timesheet_marks WHERE site_id = ? AND equipment_id = ? AND work_date = ?")
+          .bind(siteId, equipmentId, workDate).first<{ id: number }>();
+        if (payload.clear === true) {
+          if (!existingMark) return Response.json({ deleted: false, equipmentId, workDate });
+          if (!hasPermission(authUser.permissions, "equipment_timesheet", "delete")) return errorResponse("Нет права удалять отметки табеля техники.", 403);
           await transaction.prepare("DELETE FROM equipment_timesheet_marks WHERE site_id = ? AND equipment_id = ? AND work_date = ?")
-            .bind(siteId, equipmentId, payload.workDate).run();
-        });
-        return Response.json({ deleted: true, equipmentId, workDate: payload.workDate });
-      }
-      if (!hasPermission(authUser.permissions, "equipment_timesheet", existingMark ? "update" : "create")) {
-        return errorResponse(existingMark ? "Нет права изменять отметки табеля техники." : "Нет права добавлять отметки табеля техники.", 403);
-      }
+            .bind(siteId, equipmentId, workDate).run();
+          return Response.json({ deleted: true, equipmentId, workDate });
+        }
+        if (!hasPermission(authUser.permissions, "equipment_timesheet", existingMark ? "update" : "create")) {
+          return errorResponse(existingMark ? "Нет права изменять отметки табеля техники." : "Нет права добавлять отметки табеля техники.", 403);
+        }
 
-      const productiveHours = Number(payload.productiveHours);
-      const downtimeHours = Number(payload.downtimeHours);
-      if (!Number.isInteger(productiveHours) || productiveHours < 0 || productiveHours > 20
-        || !Number.isInteger(downtimeHours) || downtimeHours < 0 || downtimeHours > 20
-        || productiveHours + downtimeHours > 20) {
-        return errorResponse("Укажите целые часы от 0 до 20. Сумма работы и простоя не должна превышать 20 часов.", 400);
-      }
-      const note = text(payload.note, 300);
-      await db.transaction(async (transaction) => {
-        await transaction.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(`equipment-hours:${payload.workDate}:${equipmentId}`).first();
+        const productiveHours = Number(payload.productiveHours);
+        const downtimeHours = Number(payload.downtimeHours);
+        if (!Number.isInteger(productiveHours) || productiveHours < 0 || productiveHours > 20
+          || !Number.isInteger(downtimeHours) || downtimeHours < 0 || downtimeHours > 20
+          || productiveHours + downtimeHours > 20) {
+          return errorResponse("Укажите целые часы от 0 до 20. Сумма работы и простоя не должна превышать 20 часов.", 400);
+        }
+        const note = text(payload.note, 300);
         await transaction.prepare(`INSERT INTO equipment_timesheet_marks
             (site_id, equipment_id, work_date, productive_hours, downtime_hours, note, created_by)
           VALUES (?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT (site_id, equipment_id, work_date) DO UPDATE SET
             productive_hours = EXCLUDED.productive_hours, downtime_hours = EXCLUDED.downtime_hours,
             note = EXCLUDED.note, created_by = EXCLUDED.created_by, updated_at = CURRENT_TIMESTAMP`)
-          .bind(siteId, equipmentId, payload.workDate, productiveHours, downtimeHours, note, authUser.fullName).run();
+          .bind(siteId, equipmentId, workDate, productiveHours, downtimeHours, note, authUser.fullName).run();
+        const mark: EquipmentTimesheetMark = { equipmentId, workDate, productiveHours, downtimeHours, note, updatedBy: authUser.fullName };
+        return Response.json({ mark });
       });
-      const mark: EquipmentTimesheetMark = { equipmentId, workDate: payload.workDate, productiveHours, downtimeHours, note, updatedBy: authUser.fullName };
-      return Response.json({ mark });
     }
 
     if (payload.action === "save-entry") {
@@ -840,10 +849,13 @@ async function handlePOST(request: Request): Promise<Response> {
       if (!hasPermission(authUser.permissions, "project_equipment", "create")) return errorResponse("Нет права добавлять технику в проект.", 403);
       const equipmentId = positiveInteger(payload.equipmentId);
       if (!equipmentId) return errorResponse("Выберите технику из общего реестра.", 400);
-      const unit = await db.prepare("SELECT id FROM equipment_units WHERE id = ? AND active = 1").bind(equipmentId).first();
-      if (!unit) return errorResponse("Единица техники не найдена.", 404);
-      await db.transaction(async (transaction) => setEquipmentProjectAssignment(transaction, equipmentId, siteId));
-      return Response.json({ assigned: true, equipmentId, siteId });
+      return await db.transaction(async transaction => {
+        const unit = await transaction.prepare("SELECT id FROM equipment_units WHERE id = ? AND active = 1 FOR UPDATE").bind(equipmentId).first();
+        if (!unit) return errorResponse("Единица техники не найдена.", 404);
+        if (!await projectEntitiesAllowed(transaction, authUser, "equipment", [equipmentId], true, true)) return errorResponse("Нет доступа к технике другого проекта.", 403);
+        await setEquipmentProjectAssignment(transaction, equipmentId, siteId);
+        return Response.json({ assigned: true, equipmentId, siteId });
+      });
     }
 
     if (payload.action === "remove-unit-project") {
@@ -866,6 +878,7 @@ async function handlePOST(request: Request): Promise<Response> {
       const noProject = payload.projectSiteId === undefined || payload.projectSiteId === null || (typeof payload.projectSiteId === "string" && !payload.projectSiteId.trim());
       const projectSiteId = noProject ? null : positiveInteger(payload.projectSiteId);
       if (!noProject && !projectSiteId) return errorResponse("Выбран некорректный проект.", 400);
+      if (hasRestrictedProjectAccess(authUser) && !canAccessProject(authUser, projectSiteId)) return errorResponse("Техника должна относиться к одному из доступных проектов.", 403);
       if (projectSiteId) {
         const project = await db.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(projectSiteId).first();
         if (!project) return errorResponse("Выбранный проект не найден.", 404);
@@ -876,6 +889,7 @@ async function handlePOST(request: Request): Promise<Response> {
       if (!unitId && matchedUnit && !hasPermission(authUser.permissions, "equipment_registry", "update")) {
         return errorResponse("Такая техника уже есть в реестре. Для её изменения нужно право редактирования.", 403);
       }
+      if (matchedUnit && !await projectEntitiesAllowed(db, authUser, "equipment", [matchedUnit.id], true)) return errorResponse("Нет доступа к технике другого проекта.", 403);
       const currentAssignment = matchedUnit
         ? await db.prepare("SELECT site_id AS \"siteId\" FROM equipment_project_assignments WHERE equipment_id = ? AND active = 1 ORDER BY assigned_at DESC LIMIT 1")
           .bind(matchedUnit.id).first<{ siteId: number }>()
@@ -885,16 +899,33 @@ async function handlePOST(request: Request): Promise<Response> {
         return errorResponse(projectAssignmentPermissionMessage(assignmentAction), 403);
       }
       const savedUnitId = await db.transaction(async (transaction) => {
+        const assignmentDenied = async (equipmentId: number) => {
+          const current = await transaction.prepare("SELECT site_id AS \"siteId\" FROM equipment_project_assignments WHERE equipment_id = ? AND active = 1 ORDER BY assigned_at DESC LIMIT 1")
+            .bind(equipmentId).first<{ siteId: number }>();
+          const action = projectAssignmentAction(current?.siteId ?? null, projectSiteId);
+          return action && !hasPermission(authUser.permissions, "project_equipment", action)
+            ? errorResponse(projectAssignmentPermissionMessage(action), 403) : null;
+        };
         let targetUnitId = unitId;
         if (targetUnitId) {
+          await transaction.prepare("SELECT id FROM equipment_units WHERE id = ? AND active = 1 FOR UPDATE").bind(targetUnitId).first();
+          if (hasRestrictedProjectAccess(authUser)) {
+            if (!await projectEntitiesAllowed(transaction, authUser, "equipment", [targetUnitId], true)) return errorResponse("Нет доступа к технике другого проекта.", 403);
+          }
+          const denied = await assignmentDenied(targetUnitId);
+          if (denied) return denied;
           const result = await transaction.prepare(`UPDATE equipment_units SET identity_key = ?, organization = ?, equipment_type = ?, brand = ?,
             model = ?, registration_number = ?, note = ?, active = 1, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?`)
             .bind(identityKey, values.organization, values.equipmentType, values.brand, values.model, values.registrationNumber, values.note, targetUnitId).run();
           if (!result.meta.changes) throw new Error("Единица техники не найдена.");
         } else {
-          const existing = await transaction.prepare("SELECT id FROM equipment_units WHERE identity_key = ? ORDER BY active DESC, id LIMIT 1").bind(identityKey).first<{ id: number }>();
+          const existing = await transaction.prepare("SELECT id FROM equipment_units WHERE identity_key = ? ORDER BY active DESC, id LIMIT 1 FOR UPDATE").bind(identityKey).first<{ id: number }>();
           if (existing) {
+            if (!hasPermission(authUser.permissions, "equipment_registry", "update")) return errorResponse("Такая техника уже есть в реестре. Для её изменения нужно право редактирования.", 403);
+            if (!await projectEntitiesAllowed(transaction, authUser, "equipment", [existing.id], true)) return errorResponse("Нет доступа к технике другого проекта.", 403);
+            const denied = await assignmentDenied(existing.id);
+            if (denied) return denied;
             targetUnitId = existing.id;
             await transaction.prepare(`UPDATE equipment_units SET organization = ?, equipment_type = ?, brand = ?, model = ?,
               registration_number = ?, note = ?, active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
@@ -911,6 +942,7 @@ async function handlePOST(request: Request): Promise<Response> {
         await setEquipmentProjectAssignment(transaction, targetUnitId, projectSiteId);
         return targetUnitId;
       });
+      if (savedUnitId instanceof Response) return savedUnitId;
       return Response.json({ saved: true, id: savedUnitId });
     }
 
@@ -918,14 +950,22 @@ async function handlePOST(request: Request): Promise<Response> {
       if (!hasPermission(authUser.permissions, "equipment_registry", "delete")) return errorResponse("Нет права удалять технику из реестра.", 403);
       const unitId = positiveInteger(payload.id);
       if (!unitId) return errorResponse("Не указана единица техники.", 400);
-      await db.batch([
-        db.prepare("UPDATE equipment_units SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(unitId),
-        db.prepare("UPDATE equipment_project_assignments SET active = 0, ended_at = CURRENT_TIMESTAMP WHERE equipment_id = ?").bind(unitId),
-      ]);
-      return Response.json({ deleted: true });
+      if (!await projectEntitiesAllowed(db, authUser, "equipment", [unitId], true)) return errorResponse("Нет доступа к технике другого проекта.", 403);
+      return await db.transaction(async transaction => {
+        if (hasRestrictedProjectAccess(authUser)) {
+          await transaction.prepare("SELECT id FROM equipment_units WHERE id = ? AND active = 1 FOR UPDATE").bind(unitId).first();
+          if (!await projectEntitiesAllowed(transaction, authUser, "equipment", [unitId], true)) return errorResponse("Нет доступа к технике другого проекта.", 403);
+        }
+        await transaction.batch([
+          transaction.prepare("UPDATE equipment_units SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(unitId),
+          transaction.prepare("UPDATE equipment_project_assignments SET active = 0, ended_at = CURRENT_TIMESTAMP WHERE equipment_id = ?").bind(unitId),
+        ]);
+        return Response.json({ deleted: true });
+      });
     }
 
     if (payload.action === "import-units") {
+      if (hasRestrictedProjectAccess(authUser)) return errorResponse("Общий импорт реестра требует доступа ко всем проектам. Добавляйте технику в доступный проект.", 403);
       if (!hasPermission(authUser.permissions, "equipment_registry", "create")) return errorResponse("Нет права импортировать технику в реестр.", 403);
       if (!Array.isArray(payload.units) || !payload.units.length || payload.units.length > 1000) return errorResponse("В файле нет строк реестра или их слишком много.", 400);
       const siteRows = await db.prepare("SELECT id, name FROM sites WHERE active = 1").all<{ id: number; name: string }>();

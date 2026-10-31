@@ -18,12 +18,13 @@ import { downloadExcelFile, excelFileName, excelRowsInOrder } from "./excelFiles
 import { SETTINGS_EXCEL_HEADERS, blankExcelRows, employeesFromExcelNames } from "./settingsExcel";
 import { WORK_TYPES_EXCEL_HEADERS, WORK_TYPES_EXCEL_SHEET, WORK_TYPES_EXCEL_WIDTHS, workTypesTemplateRows } from "./workTypesExcel";
 import { openExcelExportPreview } from "./excelExportPreviewStore";
-import { hasPermission, type PermissionAction, type PermissionResource, type PermissionSet } from "./permissionModel";
+import { hasPermission, limitPermissionsToRole, type PermissionAction, type PermissionResource, type PermissionSet } from "./permissionModel";
 import { ProjectCards } from "./ProjectCards";
 import { TimesheetView } from "./TimesheetView";
 import { UserAccessCards } from "./UserAccessCards";
 import { parseWorkspaceLocation, workspaceDocumentTitle, workspaceUrl, type WorkspaceDirectoryFocus, type WorkspaceView } from "./appRoutes";
-import { ROLE_LABELS, canViewAllProjects, type UserRole } from "./roles";
+import { ROLE_LABELS, accessibleProjectIds, canAccessProject, canInspectBitrix24, canViewAllProjects, hasRestrictedProjectAccess, type ProjectAccess, type UserRole } from "./roles";
+import { profileProjectChangeAllowed, userDraftProjectAccess, userProjectAccessValid, userProjectLabel, userVisibleProjects } from "./userAccessModel";
 import { createLatestRequest } from "./latestRequest";
 import { WorkspaceAccessProvider } from "./TableAccessContext";
 import { GENERAL_SETTINGS_RESOURCES, PROJECT_SETTINGS_RESOURCES, workspaceTableAccess, workspaceViewAllowed } from "./workspaceAccess";
@@ -32,8 +33,8 @@ type Option = { id: number; name: string; mainWorkTypeId?: number | null; employ
 type Site = Option & { code: string; timezone: string };
 type Employee = { id: number; sortOrder?: number; bitrix24Id?: string | null; fullName: string; employmentType: string; department: string; position: string; source: string; bitrix24Stage: string; availabilityStatus: string; syncError: string | null; lastSyncedAt?: string | null; siteId: number | null; siteName: string | null; projectCodes?: string | null; bitrixCheckStatus?: "mismatch" | "missing_in_bitrix" | "dismissed_in_bitrix" | null; bitrixCheckDetails?: string | null; bitrixCheckAcknowledged?: number | boolean };
 type PositionRecord = { id: number; employmentType: string; department: string; position: string };
-type AppUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; status?: "active" | "invited" };
-type CurrentUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; permissions: PermissionSet; permissionsCustomized: boolean };
+type AppUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; projectAccess?: ProjectAccess; projectAccessLimitedToViewer?: boolean; canViewPendingReports?: boolean; status?: "active" | "invited" };
+type CurrentUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; projectAccess?: ProjectAccess; canViewPendingReports?: boolean; permissions: PermissionSet; permissionsCustomized: boolean };
 type Entry = {
   id: number; siteId: number; workDate: string; employeeId: number; shiftId: number; zoneId: number;
   mainWorkTypeId: number; subworkTypeId: number; note: string; masterId: number; hours: number;
@@ -111,7 +112,7 @@ type ReportDraftSession = {
   pendingDeletes: number[];
 };
 type View = WorkspaceView;
-type UserDraft = { key: string; id?: number; fullName: string; email: string; role: UserRole; assignedSiteId: string };
+type UserDraft = { key: string; id?: number; fullName: string; email: string; role: UserRole; assignedSiteId: string; projectAccess?: ProjectAccess; canViewPendingReports?: boolean };
 type EmployeeDraft = { key: string; id?: number; fullName: string; employmentType: string; department: string; position: string; projectSiteId: string };
 type EmployeeBulkChanges = { employmentType: string; department: string; position: string; projectSiteId: string };
 type ProjectEmployeeDraft = { key: string; employeeId: string; employeeQuery: string };
@@ -416,7 +417,10 @@ function ReportDateNavigation({ dates, value, today, filledDates, onChange, onRa
 
 export default function PersonnelApp({ initialToday, currentUser }: { initialToday: string; currentUser: CurrentUser }) {
   const role = currentUser.role;
-  const may = useCallback((resource: PermissionResource, action: PermissionAction = "view") => hasPermission(currentUser.permissions, resource, action), [currentUser.permissions]);
+  const effectivePermissions = useMemo(() => limitPermissionsToRole(role, currentUser.permissions, currentUser.projectAccess), [role, currentUser.permissions, currentUser.projectAccess]);
+  const projectIds = accessibleProjectIds(currentUser);
+  const missingAssignedProject = projectIds !== null && projectIds.length === 0;
+  const may = useCallback((resource: PermissionResource, action: PermissionAction = "view") => !missingAssignedProject && hasPermission(effectivePermissions, resource, action), [effectivePermissions, missingAssignedProject]);
   const anyAction = (resource: PermissionResource) => (["create", "update", "delete"] as PermissionAction[]).some((action) => may(resource, action));
   const mayViewWorkersReport = may("workers_report");
   const mayViewEquipmentReport = may("equipment_report");
@@ -426,6 +430,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const mayUpdateWorkersReport = may("workers_report", "update");
   const mayDeleteWorkersReport = may("workers_report", "delete");
   const mayCreateEmployees = may("employees", "create");
+  const mayUseGlobalImports = !hasRestrictedProjectAccess(currentUser);
   const mayUpdateEmployees = may("employees", "update");
   const mayDeleteEmployees = may("employees", "delete");
   const mayEditGlobalEmployees = anyAction("employees");
@@ -451,14 +456,14 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const mayManageProjectDirectories = anyAction("project_directories");
   const mayAccessGeneralSettings = GENERAL_SETTINGS_RESOURCES.some((resource) => may(resource));
   const mayAccessProjectSettings = PROJECT_SETTINGS_RESOURCES.some((resource) => may(resource));
-  const mayInspectBitrix24 = may("employees");
-  const mayViewAllProjects = canViewAllProjects(role);
+  const mayInspectBitrix24 = canInspectBitrix24(role) && !hasRestrictedProjectAccess(currentUser) && may("employees");
+  const mayViewAllProjects = canViewAllProjects(currentUser) || (projectIds?.length ?? 0) > 1;
   const [initialLocation] = useState(() => parseWorkspaceLocation(
     typeof window === "undefined" ? "/reports/workers" : window.location.pathname,
     typeof window === "undefined" ? "" : window.location.search,
     initialToday,
   ));
-  const viewAllowed = useCallback((candidate: View) => workspaceViewAllowed(currentUser.permissions, candidate), [currentUser.permissions]);
+  const viewAllowed = useCallback((candidate: View) => !missingAssignedProject && workspaceViewAllowed(effectivePermissions, candidate), [effectivePermissions, missingAssignedProject]);
   const fallbackView = useMemo(() => (["placement", "equipment", "timesheet", "equipmentTimesheet", "projectSettings", "settings"] as View[]).find(viewAllowed) ?? "placement", [viewAllowed]);
   const [initialView] = useState(() => viewAllowed(initialLocation.view) ? initialLocation.view : fallbackView);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -466,8 +471,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const [personnelOpen, setPersonnelOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [view, setView] = useState<View>(initialView);
-  const tableAccess = useMemo(() => workspaceTableAccess(currentUser.permissions, view), [currentUser.permissions, view]);
-  const [siteId, setSiteId] = useState(currentUser.assignedSiteId ?? 1);
+  const tableAccess = useMemo(() => workspaceTableAccess(effectivePermissions, view), [effectivePermissions, view]);
+  const [selectedSiteId, setSiteId] = useState(() => currentUser.assignedSiteId && canAccessProject(currentUser, currentUser.assignedSiteId) ? currentUser.assignedSiteId : projectIds?.[0] ?? (projectIds === null ? 1 : 0));
+  const siteId = canAccessProject(currentUser, selectedSiteId) ? selectedSiteId : projectIds?.[0] ?? (projectIds === null ? selectedSiteId : 0);
   const [workDate, setWorkDate] = useState(initialLocation.date);
   const [reportRangeEnd, setReportRangeEnd] = useState(initialLocation.date);
   const [selectedMonth, setSelectedMonth] = useState(initialLocation.month);
@@ -555,7 +561,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const initializedRosterSession = useRef<string | null>(null);
   const reportDraftSessions = useRef(new Map<string, ReportDraftSession>());
   const adminDataLoaded = useRef<WorkspaceView | null>(null);
-  const loadedPermissions = useRef(currentUser.permissions);
+  const loadedPermissions = useRef(effectivePermissions);
   const initialUrlNormalized = useRef(false);
   const dataRequest = useMemo(() => createLatestRequest(), []);
   useEffect(() => () => dataRequest.cancel(), [dataRequest]);
@@ -579,7 +585,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const visibleProjectEmployees = data?.projectEmployees ?? data?.placementEmployees ?? [];
   const visiblePositions = data?.positionCatalog ?? [];
   const visibleUsers = data?.users ?? [];
-  const visibleSites = data?.sites ?? [];
+  const visibleSites = useMemo(() => userVisibleProjects(currentUser, data?.sites ?? []), [data?.sites, currentUser]);
   const inspectBitrix24Remaining = remainingBitrix24Cooldown(data?.bitrix24Cooldowns?.inspect.nextAllowedAt, bitrix24Clock);
   const inspectBitrix24Title = inspectBitrix24Remaining > 0
     ? `Повторная проверка будет доступна через ${formatBitrix24Cooldown(inspectBitrix24Remaining)}.`
@@ -745,8 +751,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }, [dataRequest, siteId, workDate, reportRangeQuery]);
 
   useEffect(() => {
-    if (loadedPermissions.current !== currentUser.permissions) {
-      loadedPermissions.current = currentUser.permissions;
+    if (loadedPermissions.current !== effectivePermissions) {
+      loadedPermissions.current = effectivePermissions;
       loadedSiteId.current = null;
       adminDataLoaded.current = null;
       workspaceDataLoaded.current = false;
@@ -764,7 +770,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
             : null;
     const task = window.setTimeout(() => { if (loader) void loader(); else setLoading(false); }, 0);
     return () => { window.clearTimeout(task); dataRequest.cancel(); };
-  }, [currentUser.permissions, dataRequest, siteId, workDate, view, viewAllowed, reportRangeQuery, loadData, loadEntries, loadNavigation, loadWorkspace]);
+  }, [effectivePermissions, dataRequest, siteId, workDate, view, viewAllowed, reportRangeQuery, loadData, loadEntries, loadNavigation, loadWorkspace]);
 
   const filteredEntries = data?.entries ?? [];
   const exportEntries = visibleEntryIds === null
@@ -897,7 +903,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     } finally { setProfileSaving(false); }
   }
   function changeSite(nextSiteId: number) {
-    if (nextSiteId === siteId) return;
+    if (!mayViewAllProjects || !canAccessProject(currentUser, nextSiteId) || nextSiteId === siteId) return;
     if ((personnelReportDirty || equipmentReportDirty || workTypesDirty) && !window.confirm(workTypesDirty ? "Есть несохранённые изменения. Перейти в другой проект и отменить их?" : "В отчёте есть несохранённые изменения. Перейти в другой проект и отменить их?")) return;
     setPersonnelReportDirty(false);
     equipmentReportDirtyRef.current = false;
@@ -1132,7 +1138,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       if (current.some((draft) => !draft.id)) return current;
       const existing = current.find((draft) => draft.id === user.id);
       if (existing) return current.map((draft) => draft.id === user.id ? { ...draft, ...changes } : draft);
-      return [...current, { key: `user-${user.id}`, id: user.id, fullName: user.fullName, email: user.email, role: user.role, assignedSiteId: user.assignedSiteId ? String(user.assignedSiteId) : "", ...changes }];
+      return [...current, { key: `user-${user.id}`, id: user.id, fullName: user.fullName, email: user.email, role: user.role, assignedSiteId: user.assignedSiteId ? String(user.assignedSiteId) : "", projectAccess: user.projectAccess, canViewPendingReports: user.canViewPendingReports, ...changes }];
     });
     setNotice("");
   }
@@ -1169,14 +1175,14 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       const usedEmails = new Set(visibleUsers.filter((user) => !editedIds.has(user.id)).map((user) => normalize(user.email)));
       userDrafts.forEach((draft, index) => {
         const email = draft.email.trim().toLocaleLowerCase();
-        if (!draft.fullName.trim() || !/^\S+@\S+\.\S+$/.test(email) || (draft.role === "foreman" && !Number(draft.assignedSiteId))) throw new Error(`Строка ${index + 1}: заполните ФИО, корректный email, роль и проект прораба.`);
+        if (!draft.fullName.trim() || !/^\S+@\S+\.\S+$/.test(email) || !userProjectAccessValid(userDraftProjectAccess(draft), visibleSites, Boolean(draft.id))) throw new Error(`Строка ${index + 1}: заполните ФИО, корректный email, роль и доступ к проектам.`);
         if (usedEmails.has(normalize(email))) throw new Error(`Строка ${index + 1}: пользователь с email «${email}» уже есть в списке.`);
         usedEmails.add(normalize(email));
       });
       const invitations: Array<{ email: string; url: string }> = [];
       for (let index = 0; index < userDrafts.length; index += 1) {
         const draft = userDrafts[index];
-        const response = await fetch("/api/data", { method: draft.id ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: draft.id ? "update-user" : "create-user", userId: draft.id, fullName: draft.fullName, email: draft.email, role: draft.role, assignedSiteId: draft.role === "foreman" ? Number(draft.assignedSiteId) : null }) });
+        const response = await fetch("/api/data", { method: draft.id ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: draft.id ? "update-user" : "create-user", userId: draft.id, fullName: draft.fullName, email: draft.email, role: draft.role, assignedSiteId: userDraftProjectAccess(draft).mode === "selected" ? userDraftProjectAccess(draft).siteIds[0] ?? null : null, projectAccess: userDraftProjectAccess(draft), canViewPendingReports: draft.canViewPendingReports ?? draft.role !== "viewer" }) });
         const result = await response.json() as { error?: string; invitationUrl?: string; emailSent?: boolean };
         if (!response.ok) throw new Error(`Строка ${index + 1}: ${result.error ?? "не удалось сохранить пользователя"}.`);
         if (result.invitationUrl && !result.emailSent) {
@@ -1268,6 +1274,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         const projectSiteId = employeeBulkChanges.projectSiteId === "__unassigned__"
           ? ""
           : employeeBulkChanges.projectSiteId || (employee.siteId ? String(employee.siteId) : "");
+        if (!profileProjectChangeAllowed(accessibleProjectIds(currentUser) ?? undefined, projectSiteId)) throw new Error("Сотрудники должны относиться к разрешённым проектам. Убрать сотрудника из проекта можно в настройках проекта.");
         return { key: `employee-${employee.id}`, id: employee.id, fullName: employee.fullName, employmentType, department, position, projectSiteId } satisfies EmployeeDraft;
       });
       setEmployeeDrafts((current) => {
@@ -1296,7 +1303,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       const validEmploymentTypes = new Set((data?.employmentTypes ?? []).map((option) => normalize(option.name)));
       const validDepartments = new Set((data?.departments ?? []).map((option) => normalize(option.name)));
       const validPositions = new Set((data?.positions ?? []).map((option) => normalize(option.name)));
-      const validSites = new Set((data?.sites ?? []).map((site) => site.id));
+      const validSites = new Set(visibleSites.map((site) => site.id));
       const validPositionCombinations = new Set((data?.positionCatalog ?? []).map((item) => normalize(`${item.employmentType}|${item.department}|${item.position}`)));
       employeeDrafts.forEach((draft, index) => {
         if (!draft.fullName.trim() || !draft.employmentType.trim() || !draft.department.trim() || !draft.position.trim()) throw new Error(`Строка ${index + 1}: заполните ФИО, тип, отдел и должность.`);
@@ -1304,6 +1311,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         if (!validDepartments.has(normalize(draft.department))) throw new Error(`Строка ${index + 1}: значение «${draft.department}» не относится к столбцу «Отдел».`);
         if (!validPositions.has(normalize(draft.position))) throw new Error(`Строка ${index + 1}: значение «${draft.position}» не относится к столбцу «Должность».`);
         if (draft.projectSiteId && !validSites.has(Number(draft.projectSiteId))) throw new Error(`Строка ${index + 1}: выбранный проект не найден или закрыт.`);
+        if (!profileProjectChangeAllowed(accessibleProjectIds(currentUser) ?? undefined, draft.projectSiteId)) throw new Error(`Строка ${index + 1}: сотрудник должен относиться к одному из разрешённых проектов. Для снятия с проекта используйте настройки проекта.`);
         if (!validPositionCombinations.has(normalize(`${draft.employmentType}|${draft.department}|${draft.position}`))) throw new Error(`Строка ${index + 1}: сочетание типа, отдела и должности отсутствует в справочнике должностей.`);
         const name = normalize(draft.fullName);
         if (usedNames.has(name)) throw new Error(`Строка ${index + 1}: сотрудник «${draft.fullName.trim()}» уже есть в справочнике.`);
@@ -1469,6 +1477,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         : [])));
   }
   async function inspectBitrix24Connection() {
+    if (!mayInspectBitrix24) return;
     setSyncingBitrix24(true); setBitrixCheckResult(null); setError(""); setNotice("");
     try {
       const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "inspect-bitrix24" }) });
@@ -1483,6 +1492,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     } finally { setSyncingBitrix24(false); }
   }
   async function linkBitrix24Employees(links?: Array<{ bitrix24Id: string; employeeId: number }>) {
+    if (!mayInspectBitrix24) return;
     setLinkingBitrix24(true); setError(""); setNotice("");
     try {
       const response = await fetch("/api/data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "link-bitrix24-employees", ...(links ? { links } : {}) }) });
@@ -1496,13 +1506,13 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     } finally { setLinkingBitrix24(false); }
   }
   function openBitrixEmployeeCreate(difference: BitrixCheckDifference) {
-    if (!difference.bitrix24Id) return;
+    if (!mayInspectBitrix24 || !difference.bitrix24Id) return;
     const position = data?.positionCatalog.find((option) =>
       normalize(option.employmentType) === normalize(difference.sourceEmploymentType ?? "")
       && normalize(option.department) === normalize(difference.sourceDepartment ?? "")
       && normalize(option.position) === normalize(difference.sourcePosition ?? ""));
     const projectKeys = difference.sourceProjectKeys ?? [];
-    const matchedSites = (data?.sites ?? []).filter((site) => projectKeys.some((key) =>
+    const matchedSites = visibleSites.filter((site) => projectKeys.some((key) =>
       normalize(key) === normalize(site.name) || normalize(key) === normalize(site.code)));
     setBitrixEmployeeCreateDraft({
       bitrix24Id: difference.bitrix24Id,
@@ -1518,7 +1528,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }
   async function createBitrix24Employee(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!bitrixEmployeeCreateDraft) return;
+    if (!mayInspectBitrix24 || !bitrixEmployeeCreateDraft) return;
     if (!bitrixEmployeeCreateDraft.positionId || !bitrixEmployeeCreateDraft.projectSiteId) {
       setBitrixEmployeeCreateError("Выберите должность и объект. Если объект ещё не назначен, выберите «Без объекта».");
       return;
@@ -1545,7 +1555,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     } finally { setCreatingBitrixEmployee(false); }
   }
   async function applyBitrixEmployeeAction() {
-    if (!bitrixEmployeeAction?.difference.localEmployeeId || !bitrixEmployeeAction.difference.bitrix24Id) return;
+    if (!mayInspectBitrix24 || !bitrixEmployeeAction?.difference.localEmployeeId || !bitrixEmployeeAction.difference.bitrix24Id) return;
     const { kind, difference } = bitrixEmployeeAction;
     setProcessingBitrixEmployee(true); setError(""); setNotice("");
     try {
@@ -1572,7 +1582,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     } finally { setProcessingBitrixEmployee(false); }
   }
   async function acknowledgeBitrixDifference(difference: BitrixCheckDifference) {
-    if (!difference.localEmployeeId) return;
+    if (!mayInspectBitrix24 || !difference.localEmployeeId) return;
     setProcessingBitrixEmployee(true); setError(""); setNotice("");
     try {
       const response = await fetch("/api/data", {
@@ -1608,7 +1618,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }
   async function updateSelectedEmployeesFromBitrix() {
     const employeeIds = selectedBitrixUpdatableEmployees.map((employee) => employee.id);
-    if (!mayUpdateEmployees || !employeeIds.length) return;
+    if (!mayInspectBitrix24 || !mayUpdateEmployees || !employeeIds.length) return;
     setProcessingBitrixEmployee(true); setError(""); setNotice("");
     try {
       const response = await fetch("/api/data", {
@@ -1635,7 +1645,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }
   async function acknowledgeSelectedBitrixWarnings() {
     const employeeIds = selectedBitrixWarningEmployees.map((employee) => employee.id);
-    if (!mayUpdateEmployees || !employeeIds.length) return;
+    if (!mayInspectBitrix24 || !mayUpdateEmployees || !employeeIds.length) return;
     setProcessingBitrixEmployee(true); setError(""); setNotice("");
     try {
       const response = await fetch("/api/data", {
@@ -1661,6 +1671,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     openSettingsExportPreview({ title: "Должности", description: `Строк в выгрузке: ${rows.length}`, fileName: "Список_должностей.xlsx", sheetName: "Должности", workbookTitle: "Список должностей", headers, rows });
   }
   async function importEmployees(file: File) {
+    if (!mayUseGlobalImports) return;
     setImporting(true); setError(""); setNotice("");
     try {
       if (!requireSavedExcelRows(employeeDrafts.length + employeeFullRowEditIds.length)) return;
@@ -1697,6 +1708,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     openSettingsExportPreview({ title: "Сотрудники проекта", description: `${projectName} · строк в выгрузке: ${rows.length}`, fileName: excelFileName("Сотрудники проекта", [projectName]), sheetName: "Сотрудники проекта", workbookTitle: `Сотрудники проекта — ${projectName}`, headers, rows });
   }
   async function downloadSettingsTemplate(kind: keyof typeof SETTINGS_EXCEL_HEADERS) {
+    if (kind === "employees" && !mayUseGlobalImports) return;
     setError("");
     try {
       const { createTableXlsx } = await loadPlacementXlsx();
@@ -1746,9 +1758,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }
   function exportUsers() {
     if (!requireSavedExcelRows(userDrafts.length + userFullRowEditIds.length)) return;
-    const siteNames = new Map(visibleSites.map((site) => [site.id, site.name]));
     const headers = ["ФИО", "Email", "Роль", "Проект", "Статус"];
-    const rows = excelRowsInOrder(visibleUsers, useUserAccessCardLayout ? null : referenceExportOrder.current.get("users") ?? null).map((user) => [user.fullName, user.email, ROLE_LABELS[user.role], user.assignedSiteId ? siteNames.get(user.assignedSiteId) ?? "Проект не найден" : "Не назначен", user.status === "invited" ? "Приглашён" : "Активен"]);
+    const rows = excelRowsInOrder(visibleUsers, useUserAccessCardLayout ? null : referenceExportOrder.current.get("users") ?? null).map((user) => [user.fullName, user.email, ROLE_LABELS[user.role], userProjectLabel(user.role, user.assignedSiteId, visibleSites, user.projectAccess, user.projectAccessLimitedToViewer), user.status === "invited" ? "Приглашён" : "Активен"]);
     openSettingsExportPreview({ title: "Пользователи системы", description: `Строк в выгрузке: ${rows.length}`, fileName: "Пользователи_системы.xlsx", sheetName: "Пользователи", workbookTitle: "Пользователи системы", headers, rows });
   }
   async function downloadProjectDirectoryTemplate() {
@@ -2098,11 +2109,11 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const selectedBitrixEmployeeId = selectedBitrixDifference?.bitrix24Id
     ? bitrixManualLinks[selectedBitrixDifference.bitrix24Id] ?? ""
     : "";
-  const canLinkSelectedBitrixEmployee = Boolean(mayUpdateEmployees && bitrixCheckResult?.autoLinkable === 0 && selectedBitrixDifference?.kind === "missing_locally" && selectedBitrixDifference.bitrix24Id);
-  const canCreateSelectedBitrixEmployee = Boolean(mayCreateEmployees && selectedBitrixDifference?.kind === "missing_locally" && selectedBitrixDifference.bitrix24Id && !selectedBitrixDifference.suggestedEmployeeIds?.length);
-  const canUpdateSelectedBitrixEmployee = Boolean(mayUpdateEmployees && selectedBitrixDifference?.kind === "changed" && selectedBitrixDifference.localEmployeeId && selectedBitrixDifference.bitrix24Id);
-  const canDeleteSelectedBitrixEmployee = Boolean(mayDeleteEmployees && selectedBitrixDifference && ["missing_in_bitrix", "dismissed_in_bitrix"].includes(selectedBitrixDifference.kind) && selectedBitrixDifference.localEmployeeId && selectedBitrixDifference.bitrix24Id);
-  const canAcknowledgeSelectedBitrixEmployee = Boolean(mayUpdateEmployees && selectedBitrixDifference?.localEmployeeId && selectedBitrixDifference.kind !== "missing_locally" && !selectedBitrixDifference.acknowledged);
+  const canLinkSelectedBitrixEmployee = Boolean(mayInspectBitrix24 && mayUpdateEmployees && bitrixCheckResult?.autoLinkable === 0 && selectedBitrixDifference?.kind === "missing_locally" && selectedBitrixDifference.bitrix24Id);
+  const canCreateSelectedBitrixEmployee = Boolean(mayInspectBitrix24 && mayCreateEmployees && selectedBitrixDifference?.kind === "missing_locally" && selectedBitrixDifference.bitrix24Id && !selectedBitrixDifference.suggestedEmployeeIds?.length);
+  const canUpdateSelectedBitrixEmployee = Boolean(mayInspectBitrix24 && mayUpdateEmployees && selectedBitrixDifference?.kind === "changed" && selectedBitrixDifference.localEmployeeId && selectedBitrixDifference.bitrix24Id);
+  const canDeleteSelectedBitrixEmployee = Boolean(mayInspectBitrix24 && mayDeleteEmployees && selectedBitrixDifference && ["missing_in_bitrix", "dismissed_in_bitrix"].includes(selectedBitrixDifference.kind) && selectedBitrixDifference.localEmployeeId && selectedBitrixDifference.bitrix24Id);
+  const canAcknowledgeSelectedBitrixEmployee = Boolean(mayInspectBitrix24 && mayUpdateEmployees && selectedBitrixDifference?.localEmployeeId && selectedBitrixDifference.kind !== "missing_locally" && !selectedBitrixDifference.acknowledged);
   const selectedBitrixDifferenceDetails = selectedBitrixDifference?.kind === "missing_locally"
     ? selectedBitrixDifference.suggestedEmployeeIds?.length ? "Выберите подходящего сотрудника из справочника." : "Такого сотрудника нет в справочнике нашей системы."
     : selectedBitrixDifference?.details ?? "";
@@ -2113,7 +2124,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={sidebarOpen ? "m14 7-5 5 5 5" : "m10 7 5 5-5 5"}/></svg>
     </button>
     <aside className="sidebar" id="primary-sidebar">
-      <div className="brand-project-row"><button type="button" className="brand" onClick={() => { setEquipmentOpen(true); setPersonnelOpen(true); navigateTo(fallbackView); }} aria-label="Открыть доступный раздел" title="Открыть доступный раздел"><img src="/tps-logo.svg" alt="" /></button>{mayViewAllProjects ? <ProjectSwitcher sites={data?.sites ?? []} value={siteId} onChange={changeSite} /> : <div className="project-fixed-card top-project-select" title={activeSite?.name ?? "Объект"}>{activeSite?.name ?? "Объект"}</div>}</div>
+      <div className="brand-project-row"><button type="button" className="brand" onClick={() => { setEquipmentOpen(true); setPersonnelOpen(true); navigateTo(fallbackView); }} aria-label="Открыть доступный раздел" title="Открыть доступный раздел"><img src="/tps-logo.svg" alt="" /></button>{mayViewAllProjects ? <ProjectSwitcher sites={visibleSites} value={siteId} onChange={changeSite} /> : <div className="project-fixed-card top-project-select" title={activeSite?.name ?? "Нет доступа к проектам"}>{activeSite?.name ?? "Нет доступа к проектам"}</div>}</div>
       <div className="sidebar-product-title">Ресурсный отчёт</div>
       <nav aria-label="Основная навигация">
         {(mayViewEquipmentReport || mayViewEquipmentTimesheet) && <div className="nav-group">
@@ -2205,12 +2216,12 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
 
       {mayViewWorkersTimesheet && view === "timesheet" && <TimesheetView siteId={siteId} initialMonth={selectedMonth} today={initialToday} onMonthChange={changeTimesheetMonth} />}
       {mayViewEquipmentReport && view === "equipment" && <Suspense fallback={<p role="status">Загружаем отчёты техники…</p>}><EquipmentReportPage key={`equipment-report-${siteId}-${currentUser.id}`} siteId={siteId} siteName={activeSite?.name ?? "Проект"} today={initialToday} currentUser={currentUser} permissions={{ create: may("equipment_report", "create"), update: may("equipment_report", "update"), delete: may("equipment_report", "delete") }} onDirtyChange={setEquipmentReportDirty} /></Suspense>}
-      {mayViewEquipmentTimesheet && view === "equipmentTimesheet" && <EquipmentAccountingView key={`equipment-timesheet-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} mode="month" onMonthChange={changeTimesheetMonth} />}
+      {mayViewEquipmentTimesheet && view === "equipmentTimesheet" && <EquipmentAccountingView key={`equipment-timesheet-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="month" onMonthChange={changeTimesheetMonth} />}
 
       {canDeleteReportDate && deleteConfirmationOpen && <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setDeleteConfirmationOpen(false); }}><section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-confirmation-title"><h2 id="delete-confirmation-title">Удалить выбранные строки?</h2><p>Вы точно хотите удалить строки ({pendingDeletes.length})? Это действие нельзя отменить.</p><div><button type="button" className="secondary-button" onClick={() => setDeleteConfirmationOpen(false)} disabled={saving}>Отмена</button><button type="button" className="delete-rows-button" onClick={() => void deletePendingEntries()} disabled={saving}>{saving ? "Удаляем…" : "Удалить"}</button></div></section></div>}
 
-      {view === "equipmentRegistry" && may("equipment_registry") && <section className="users-settings admin-section equipment-settings-section"><div className="settings-toolbar"><button type="button" className="back-button" onClick={() => navigateTo("settings")}>← К общим настройкам</button><div className="toolbar-actions" id="equipment-registry-actions" /></div><EquipmentAccountingView key={`equipment-registry-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} mode="registry" /></section>}
-      {view === "projectEquipment" && may("project_equipment") && <section className="users-settings admin-section equipment-settings-section"><div className="settings-toolbar"><button type="button" className="back-button" onClick={() => navigateTo("projectSettings")}>← К настройкам проекта</button><div className="toolbar-actions" id="project-equipment-actions" /></div><EquipmentAccountingView key={`project-equipment-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} mode="project" /></section>}
+      {view === "equipmentRegistry" && may("equipment_registry") && <section className="users-settings admin-section equipment-settings-section"><div className="settings-toolbar"><button type="button" className="back-button" onClick={() => navigateTo("settings")}>← К общим настройкам</button><div className="toolbar-actions" id="equipment-registry-actions" /></div><EquipmentAccountingView key={`equipment-registry-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="registry" /></section>}
+      {view === "projectEquipment" && may("project_equipment") && <section className="users-settings admin-section equipment-settings-section"><div className="settings-toolbar"><button type="button" className="back-button" onClick={() => navigateTo("projectSettings")}>← К настройкам проекта</button><div className="toolbar-actions" id="project-equipment-actions" /></div><EquipmentAccountingView key={`project-equipment-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="project" /></section>}
 
       {view === "settings" && mayAccessGeneralSettings && <section className="settings-home general-settings-home"><p className="settings-scope-description">Общие данные используются во всей системе и не зависят от выбранного проекта.</p><div className="settings-list">{generalSettingsCards.filter((card) => may(card.resource)).map((card) => <button type="button" className="settings-list-item" key={card.title} onClick={() => { setError(""); setNotice(""); setUserDrafts([]); setUserFullRowEditIds([]); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setPositionDrafts([]); setPositionFullRowEditIds([]); setDirectoryDrafts([]); setSiteDrafts([]); setSiteFullRowEditIds([]); setInvitationResults([]); setEmployeePendingDeletes([]); setPositionPendingDeletes([]); setUserPendingDeletes([]); setSitePendingDeletes([]); setEmployeeDeleteConfirmationOpen(false); setEmployeeBulkEditOpen(false); setPositionDeleteConfirmationOpen(false); setUserDeleteConfirmationOpen(false); setSiteDeleteConfirmationOpen(false); if (card.focus) navigateTo("directories", card.focus); else if (card.view) navigateTo(card.view); }}><span className="settings-card-icon">{card.icon}</span><span className="settings-row-copy"><strong>{card.title}</strong><span>{card.description}</span></span><span className="settings-list-arrow" aria-hidden="true">›</span></button>)}</div></section>}
 
@@ -2237,11 +2248,11 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
           <button type="button" className="back-button" onClick={() => { navigateTo("settings"); setBitrixCheckResult(null); setEmployeeDrafts([]); setEmployeeFullRowEditIds([]); setEmployeePendingDeletes([]); setEmployeeDeleteConfirmationOpen(false); setEmployeeBulkEditOpen(false); }}>← К настройкам</button>
           <div className="toolbar-actions">{mayInspectBitrix24 && <span className="cooldown-button-wrapper" title={inspectBitrix24Title}><button type="button" className="bitrix-check-button" onClick={() => void inspectBitrix24Connection()} disabled={syncingBitrix24 || linkingBitrix24 || importing || inspectBitrix24Remaining > 0}>{syncingBitrix24 ? "Проверяем…" : "Проверить с Битрикс24"}</button></span>}<ExcelActionsMenu actions={[
             { label: "Экспорт в Excel", onSelect: exportEmployees },
-            ...(mayCreateEmployees || mayUpdateEmployees ? [
+            ...(mayUseGlobalImports && (mayCreateEmployees || mayUpdateEmployees) ? [
               { label: importing ? "Импортируем…" : "Импорт из Excel", onSelect: () => employeeFileInput.current?.click(), disabled: importing || syncingBitrix24 || linkingBitrix24 },
               { label: "Скачать шаблон", onSelect: () => downloadSettingsTemplate("employees"), disabled: loading },
             ] : []),
-          ]} />{(mayCreateEmployees || mayUpdateEmployees) && <><input ref={employeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importEmployees(file); }} /></>}</div>
+          ]} />{mayUseGlobalImports && (mayCreateEmployees || mayUpdateEmployees) && <><input ref={employeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importEmployees(file); }} /></>}</div>
         </div>
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}
         {notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
@@ -2251,7 +2262,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
           employmentTypes={data?.employmentTypes ?? []}
           departments={data?.departments ?? []}
           positions={data?.positions ?? []}
-          sites={data?.sites ?? []}
+          sites={visibleSites}
+          requiredSiteId={accessibleProjectIds(currentUser) ?? undefined}
           selectedIds={employeePendingDeletes}
           fullRowEditIds={employeeFullRowEditIds}
           readOnly={!mayUpdateEmployees}
@@ -2270,13 +2282,13 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
           onValidationError={(message) => { setError(message); setNotice(""); }}
           onReorder={reorderEmployees}
         />
-        {mayEditGlobalEmployees && <AdminGridFooter addLabel="Добавить сотрудника" countLabel="Всего сотрудников" count={visibleEmployees.length} deletingCount={employeePendingDeletes.length} deletingLabel="Удалить сотрудников" editSelectionLabel="Редактировать" bulkEditSelectionLabel="Массовое редактирование" uniformActions editorOpen={Boolean(employeeDrafts.length)} editingExisting={employeeDrafts.some((draft) => Boolean(draft.id))} pendingCount={employeeDrafts.length} saving={saving || processingBitrixEmployee} allowMultiple canCreate={mayCreateEmployees} canUpdate={mayUpdateEmployees} canDelete={mayDeleteEmployees} selectionActions={mayUpdateEmployees ? [
+        {mayEditGlobalEmployees && <AdminGridFooter addLabel="Добавить сотрудника" countLabel="Всего сотрудников" count={visibleEmployees.length} deletingCount={employeePendingDeletes.length} deletingLabel="Удалить сотрудников" editSelectionLabel="Редактировать" bulkEditSelectionLabel="Массовое редактирование" uniformActions editorOpen={Boolean(employeeDrafts.length)} editingExisting={employeeDrafts.some((draft) => Boolean(draft.id))} pendingCount={employeeDrafts.length} saving={saving || processingBitrixEmployee} allowMultiple canCreate={mayCreateEmployees} canUpdate={mayUpdateEmployees} canDelete={mayDeleteEmployees} selectionActions={mayInspectBitrix24 && mayUpdateEmployees ? [
           { key: "bitrix-update", label: `Актуализировать с Битрикс24 (${selectedBitrixUpdatableEmployees.length})`, className: "bitrix-selection-update-button", disabled: !mayUpdateEmployees || selectedBitrixUpdatableEmployees.length === 0, title: selectedBitrixUpdatableEmployees.length ? "Каждый выбранный сотрудник будет обновлён по своей связанной карточке Битрикс24." : "Среди выбранных строк нет неподтверждённых расхождений, которые можно актуализировать.", onClick: () => void updateSelectedEmployeesFromBitrix() },
           { key: "bitrix-acknowledge", label: `Подтвердить предупреждение (${selectedBitrixWarningEmployees.length})`, className: "bitrix-selection-acknowledge-button", disabled: !mayUpdateEmployees || selectedBitrixWarningEmployees.length === 0, title: selectedBitrixWarningEmployees.length ? "Отметить выбранные расхождения как допустимые и снять выделение." : "Среди выбранных строк нет активных предупреждений.", onClick: () => void acknowledgeSelectedBitrixWarnings() },
-        ] : []} onAdd={() => { setEmployeeDrafts((current) => current.some((draft) => draft.id) ? current : [...current, { key: newKey(), fullName: "", employmentType: "", department: "", position: "", projectSiteId: "" }]); setNotice(""); }} onDelete={() => setEmployeeDeleteConfirmationOpen(true)} onEditSelection={editSelectedEmployeeRows} onBulkEditSelection={openEmployeeBulkEdit} onClearSelection={() => { setEmployeePendingDeletes([]); setEmployeeBulkEditOpen(false); setEmployeeBulkEditError(""); setNotice(""); }} onCancelEditing={cancelEmployeeEditing} onSave={() => void saveEmployees()} />}
+        ] : []} onAdd={() => { setEmployeeDrafts((current) => current.some((draft) => draft.id) ? current : [...current, { key: newKey(), fullName: "", employmentType: "", department: "", position: "", projectSiteId: hasRestrictedProjectAccess(currentUser) ? String(siteId) : "" }]); setNotice(""); }} onDelete={() => setEmployeeDeleteConfirmationOpen(true)} onEditSelection={editSelectedEmployeeRows} onBulkEditSelection={openEmployeeBulkEdit} onClearSelection={() => { setEmployeePendingDeletes([]); setEmployeeBulkEditOpen(false); setEmployeeBulkEditError(""); setNotice(""); }} onCancelEditing={cancelEmployeeEditing} onSave={() => void saveEmployees()} />}
       </section>}
 
-      {bitrixCheckResult && <div className="bitrix-check-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !linkingBitrix24 && !creatingBitrixEmployee && !processingBitrixEmployee && !bitrixEmployeeCreateDraft && !bitrixEmployeeAction) setBitrixCheckResult(null); }}><section className={`bitrix-check-dialog ${bitrixCheckResult.status}`} role="dialog" aria-modal="true" aria-labelledby="bitrix-check-title">
+      {mayInspectBitrix24 && bitrixCheckResult && <div className="bitrix-check-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !linkingBitrix24 && !creatingBitrixEmployee && !processingBitrixEmployee && !bitrixEmployeeCreateDraft && !bitrixEmployeeAction) setBitrixCheckResult(null); }}><section className={`bitrix-check-dialog ${bitrixCheckResult.status}`} role="dialog" aria-modal="true" aria-labelledby="bitrix-check-title">
         <div className="bitrix-check-heading"><span className="bitrix-check-icon" aria-hidden="true">{bitrixCheckResult.status === "ok" ? "✓" : "!"}</span><div><small>{bitrixCheckResult.linked ? "СОПОСТАВЛЕНИЕ ЗАВЕРШЕНО" : "ДАННЫЕ НЕ ИЗМЕНЕНЫ"}</small><h2 id="bitrix-check-title">{bitrixCheckResult.status === "ok" ? "Всё в порядке" : "Нужно проверить сотрудников"}</h2><p>{bitrixCheckResult.linked ? `Связано сотрудников: ${bitrixCheckResult.linked}.` : bitrixCheckResult.status === "ok" ? "Активных расхождений с Битрикс24 нет." : `Требуют внимания: ${bitrixCheckResult.totalDifferences}. Выберите действие в нужной строке.`}</p></div><button type="button" className="bitrix-check-close" aria-label="Закрыть результат проверки" onClick={() => setBitrixCheckResult(null)} disabled={linkingBitrix24 || creatingBitrixEmployee || processingBitrixEmployee || Boolean(bitrixEmployeeCreateDraft) || Boolean(bitrixEmployeeAction)}>×</button></div>
         <div className="bitrix-check-summary"><div className="matched"><span>Совпадают</span><strong>{bitrixCheckResult.matched}</strong></div><div className="attention"><span>Требуют внимания</span><strong>{bitrixCheckResult.totalDifferences}</strong></div>{Boolean(bitrixCheckResult.acknowledgedDifferences) && <div className="accepted"><span>Подтверждено</span><strong>{bitrixCheckResult.acknowledgedDifferences}</strong></div>}</div>
         {bitrixCheckResult.differenceCounts && <div className="bitrix-check-breakdown">{(Object.entries(bitrixCheckResult.differenceCounts) as [BitrixCheckDifference["kind"], number][]).flatMap(([kind, count]) => count > 0 ? [<span className={kind} key={kind}>{BITRIX_DIFFERENCE_SUMMARY_LABELS[kind]}: <strong>{count}</strong></span>] : [])}</div>}
@@ -2288,19 +2300,19 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         <div className="bitrix-check-footer"><span>{bitrixCheckResult.autoLinkable > 0 ? `Можно автоматически сопоставить: ${bitrixCheckResult.autoLinkable}` : bitrixCheckResult.totalDifferences ? "Изменения применяются только после выбора действия." : "Проверка завершена."}</span><div>{mayUpdateEmployees && bitrixCheckResult.autoLinkable > 0 && <button type="button" className="bitrix-auto-link-button" onClick={() => void linkBitrix24Employees()} disabled={linkingBitrix24 || creatingBitrixEmployee || processingBitrixEmployee}>{linkingBitrix24 ? "Сопоставляем…" : `Сопоставить автоматически: ${bitrixCheckResult.autoLinkable}`}</button>}<button type="button" onClick={() => setBitrixCheckResult(null)} disabled={linkingBitrix24 || creatingBitrixEmployee || processingBitrixEmployee || Boolean(bitrixEmployeeCreateDraft) || Boolean(bitrixEmployeeAction)}>Закрыть</button></div></div>
       </section></div>}
 
-      {mayCreateEmployees && bitrixEmployeeCreateDraft && <div className="confirmation-backdrop bitrix-employee-create-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !creatingBitrixEmployee) setBitrixEmployeeCreateDraft(null); }}><form className="bitrix-employee-create-dialog" role="dialog" aria-modal="true" aria-labelledby="bitrix-employee-create-title" onSubmit={(event) => void createBitrix24Employee(event)}>
+      {mayInspectBitrix24 && mayCreateEmployees && bitrixEmployeeCreateDraft && <div className="confirmation-backdrop bitrix-employee-create-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !creatingBitrixEmployee) setBitrixEmployeeCreateDraft(null); }}><form className="bitrix-employee-create-dialog" role="dialog" aria-modal="true" aria-labelledby="bitrix-employee-create-title" onSubmit={(event) => void createBitrix24Employee(event)}>
         <div className="bitrix-employee-create-heading"><div><small>НОВАЯ КАРТОЧКА СОТРУДНИКА</small><h2 id="bitrix-employee-create-title">Добавить из Битрикс24</h2><p>ФИО и связь с Битрикс24 заполнятся автоматически. Выберите данные, которые будут использоваться в нашей системе.</p></div><button type="button" className="bulk-edit-close" aria-label="Закрыть добавление сотрудника" onClick={() => setBitrixEmployeeCreateDraft(null)} disabled={creatingBitrixEmployee}>×</button></div>
         <div className="bitrix-employee-source-card"><span>Сотрудник</span><strong>{bitrixEmployeeCreateDraft.fullName}</strong><p>{[bitrixEmployeeCreateDraft.sourceEmploymentType, bitrixEmployeeCreateDraft.sourceDepartment, bitrixEmployeeCreateDraft.sourcePosition].filter(Boolean).join(" · ") || "Кадровые данные в Битрикс24 не заполнены полностью"}</p></div>
         <div className="bitrix-employee-create-fields">
           <div><span>Должность в системе</span><CustomSelect searchable value={bitrixEmployeeCreateDraft.positionId} ariaLabel="Должность нового сотрудника" onChange={(positionId) => { setBitrixEmployeeCreateDraft((current) => current ? { ...current, positionId } : current); setBitrixEmployeeCreateError(""); }} options={[{ value: "", label: "Выберите должность" }, ...(data?.positionCatalog ?? []).map((position) => ({ value: String(position.id), label: `${position.employmentType} · ${position.department} · ${position.position}` }))]} /></div>
-          <div><span>Объект</span><CustomSelect searchable value={bitrixEmployeeCreateDraft.projectSiteId} ariaLabel="Объект нового сотрудника" onChange={(projectSiteId) => { setBitrixEmployeeCreateDraft((current) => current ? { ...current, projectSiteId } : current); setBitrixEmployeeCreateError(""); }} options={[{ value: "", label: "Выберите объект" }, { value: "__unassigned__", label: "Без объекта" }, ...(data?.sites ?? []).map((site) => ({ value: String(site.id), label: site.name }))]} /></div>
+          <div><span>Объект</span><CustomSelect searchable value={bitrixEmployeeCreateDraft.projectSiteId} ariaLabel="Объект нового сотрудника" onChange={(projectSiteId) => { setBitrixEmployeeCreateDraft((current) => current ? { ...current, projectSiteId } : current); setBitrixEmployeeCreateError(""); }} options={[{ value: "", label: "Выберите объект" }, { value: "__unassigned__", label: "Без объекта" }, ...visibleSites.map((site) => ({ value: String(site.id), label: site.name }))]} /></div>
         </div>
         {bitrixEmployeeCreateDraft.sourceProjectKeys.length > 0 && <p className="bitrix-employee-project-hint">В карточке Битрикс24: {bitrixEmployeeCreateDraft.sourceProjectKeys.join(", ")}</p>}
         {bitrixEmployeeCreateError && <div className="bulk-edit-error" role="alert">{bitrixEmployeeCreateError}</div>}
         <div className="bitrix-employee-create-actions"><button type="button" className="secondary-button" onClick={() => setBitrixEmployeeCreateDraft(null)} disabled={creatingBitrixEmployee}>Отмена</button><button type="submit" className="save-edits-button" disabled={creatingBitrixEmployee || !bitrixEmployeeCreateDraft.positionId || !bitrixEmployeeCreateDraft.projectSiteId}>{creatingBitrixEmployee ? "Добавляем…" : "Добавить сотрудника"}</button></div>
       </form></div>}
 
-      {(bitrixEmployeeAction?.kind === "delete" ? mayDeleteEmployees : mayUpdateEmployees) && bitrixEmployeeAction && <div className="confirmation-backdrop bitrix-employee-action-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !processingBitrixEmployee) setBitrixEmployeeAction(null); }}><section className="confirmation-dialog bitrix-employee-action-dialog" role="dialog" aria-modal="true" aria-labelledby="bitrix-employee-action-title">
+      {mayInspectBitrix24 && (bitrixEmployeeAction?.kind === "delete" ? mayDeleteEmployees : mayUpdateEmployees) && bitrixEmployeeAction && <div className="confirmation-backdrop bitrix-employee-action-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !processingBitrixEmployee) setBitrixEmployeeAction(null); }}><section className="confirmation-dialog bitrix-employee-action-dialog" role="dialog" aria-modal="true" aria-labelledby="bitrix-employee-action-title">
         <h2 id="bitrix-employee-action-title">{bitrixEmployeeAction.kind === "update" ? "Применить изменения из Битрикс24?" : "Удалить сотрудника из справочника?"}</h2>
         <strong>{bitrixEmployeeAction.difference.employeeName}</strong>
         <p>{bitrixEmployeeAction.kind === "update" ? bitrixEmployeeAction.difference.details : "Карточка больше не найдена в Битрикс24. Сотрудник исчезнет из активного справочника и текущих проектов, но ранее заполненные отчёты и табели сохранятся без изменений."}</p>
@@ -2314,7 +2326,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
           <div className="employee-bulk-edit-field"><span>Тип</span><CustomSelect value={employeeBulkChanges.employmentType} ariaLabel="Новый тип для выбранных сотрудников" onChange={(employmentType) => { setEmployeeBulkChanges((current) => ({ ...current, employmentType })); setEmployeeBulkEditError(""); }} options={[{ value: "", label: "Не изменять" }, ...(data?.employmentTypes ?? []).map((option) => ({ value: option.name, label: option.name }))]} /></div>
           <div className="employee-bulk-edit-field"><span>Отдел</span><CustomSelect value={employeeBulkChanges.department} ariaLabel="Новый отдел для выбранных сотрудников" onChange={(department) => { setEmployeeBulkChanges((current) => ({ ...current, department })); setEmployeeBulkEditError(""); }} options={[{ value: "", label: "Не изменять" }, ...(data?.departments ?? []).map((option) => ({ value: option.name, label: option.name }))]} /></div>
           <div className="employee-bulk-edit-field"><span>Должность</span><CustomSelect value={employeeBulkChanges.position} ariaLabel="Новая должность для выбранных сотрудников" onChange={(position) => { setEmployeeBulkChanges((current) => ({ ...current, position })); setEmployeeBulkEditError(""); }} options={[{ value: "", label: "Не изменять" }, ...(data?.positions ?? []).map((option) => ({ value: option.name, label: option.name }))]} /></div>
-          <div className="employee-bulk-edit-field"><span>Проект</span><CustomSelect value={employeeBulkChanges.projectSiteId} ariaLabel="Новый проект для выбранных сотрудников" onChange={(projectSiteId) => { setEmployeeBulkChanges((current) => ({ ...current, projectSiteId })); setEmployeeBulkEditError(""); }} options={[{ value: "", label: "Не изменять" }, { value: "__unassigned__", label: "Без объекта" }, ...(data?.sites ?? []).map((option) => ({ value: String(option.id), label: option.name }))]} /></div>
+          <div className="employee-bulk-edit-field"><span>Проект</span><CustomSelect value={employeeBulkChanges.projectSiteId} ariaLabel="Новый проект для выбранных сотрудников" onChange={(projectSiteId) => { setEmployeeBulkChanges((current) => ({ ...current, projectSiteId })); setEmployeeBulkEditError(""); }} options={[{ value: "", label: "Не изменять" }, ...(!hasRestrictedProjectAccess(currentUser) ? [{ value: "__unassigned__", label: "Без объекта" }] : []), ...visibleSites.map((option) => ({ value: String(option.id), label: option.name }))]} /></div>
         </div>
         <div className="bulk-edit-selection-summary"><strong>Выбрано:</strong><span>{visibleEmployees.filter((employee) => employeePendingDeletes.includes(employee.id)).slice(0, 4).map((employee) => employee.fullName).join(", ")}{employeePendingDeletes.length > 4 ? ` и ещё ${employeePendingDeletes.length - 4}` : ""}</span></div>
         <div className="employee-bulk-edit-actions"><button type="button" className="secondary-button" onClick={() => setEmployeeBulkEditOpen(false)}>Отмена</button><button type="button" className="save-edits-button" onClick={applyEmployeeBulkEdit}>Применить к таблице</button></div>
@@ -2350,8 +2362,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
         {invitationResults.map((invitation) => <div className="invitation-result" key={invitation.email}><strong>Приглашение для {invitation.email}</strong><span>Передайте эту ссылку пользователю. После настройки почты она будет отправляться автоматически.</span><a href={invitation.url}>{invitation.url}</a></div>)}
         {useUserAccessCardLayout
-          ? <UserAccessCards rows={visibleUsers} drafts={userDrafts} sites={data?.sites ?? []} selectedIds={userPendingDeletes} readOnly={!mayManageSystemUsers} canCreate={mayCreateSystemUsers} canUpdate={mayUpdateSystemUsers} canDelete={mayDeleteSystemUsers} onEdit={editUserRow} onSelectionChange={changeUserSelection} onPatchDraft={patchUserDraft} onCancelEditing={cancelUserEditing} onSave={() => void saveUsers()} saving={saving} />
-          : <UserAgGrid onVisibleIdsChange={ids => referenceExportOrder.current.set("users", ids)} rows={visibleUsers} drafts={userDrafts} sites={data?.sites ?? []} pendingDeletes={userPendingDeletes} fullRowEditIds={userFullRowEditIds} onEdit={editUserRow} onSelectionChange={changeUserSelection} onPatchDraft={patchUserDraft} />}
+          ? <UserAccessCards rows={visibleUsers} drafts={userDrafts} sites={visibleSites} selectedIds={userPendingDeletes} readOnly={!mayManageSystemUsers} canCreate={mayCreateSystemUsers} canUpdate={mayUpdateSystemUsers} canDelete={mayDeleteSystemUsers} onEdit={editUserRow} onSelectionChange={changeUserSelection} onPatchDraft={patchUserDraft} onCancelEditing={cancelUserEditing} onSave={() => void saveUsers()} saving={saving} />
+          : <UserAgGrid onVisibleIdsChange={ids => referenceExportOrder.current.set("users", ids)} rows={visibleUsers} drafts={userDrafts} sites={visibleSites} pendingDeletes={userPendingDeletes} fullRowEditIds={userFullRowEditIds} onEdit={editUserRow} onSelectionChange={changeUserSelection} onPatchDraft={patchUserDraft} />}
         {mayManageSystemUsers && <AdminGridFooter addLabel="Добавить пользователя" countLabel="Всего пользователей" count={visibleUsers.length} deletingCount={userPendingDeletes.length} deletingLabel="Удалить пользователей" editSelectionLabel="Редактировать" uniformActions editorOpen={Boolean(userDrafts.length)} editingExisting={userDrafts.some((draft) => Boolean(draft.id))} pendingCount={userDrafts.length} saving={saving} canCreate={mayCreateSystemUsers} canUpdate={mayUpdateSystemUsers} canDelete={mayDeleteSystemUsers} onAdd={() => { setUserDrafts((current) => current.length ? current : [...current, { key: newKey(), fullName: "", email: "", role: "foreman", assignedSiteId: String(siteId) }]); setNotice(""); }} onDelete={() => setUserDeleteConfirmationOpen(true)} onEditSelection={editSelectedUserRows} onClearSelection={() => { setUserPendingDeletes([]); setNotice(""); }} onCancelEditing={cancelUserEditing} onSave={() => void saveUsers()} />}
       </section>}
       {mayDeleteSystemUsers && userDeleteConfirmationOpen && <AdminDeleteConfirmation title="Удалить выбранных пользователей?" text={`Вы точно хотите удалить пользователей (${userPendingDeletes.length})? Это действие нельзя отменить.`} saving={saving} onCancel={() => setUserDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingUsers()} />}
@@ -2369,12 +2381,12 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         {mayManageProjectDirectories && <AdminGridFooter addLabel={`Добавить: ${focusedDirectoryTitle.toLocaleLowerCase("ru-RU")}`} countLabel="Всего" count={visibleDirectoryItems.length} deletingCount={directoryPendingDeletes.length} deletingLabel="Удалить" editSelectionLabel="Редактировать" uniformActions editorOpen={Boolean(directoryDrafts.length)} editingExisting={directoryDrafts.some((draft) => Boolean(draft.id))} pendingCount={directoryDrafts.length} saving={saving} allowMultiple canCreate={mayCreateProjectDirectories} canUpdate={mayUpdateProjectDirectories} canDelete={mayDeleteProjectDirectories} onAdd={addDirectoryItem} onDelete={() => setDirectoryDeleteConfirmationOpen(true)} onEditSelection={editSelectedDirectoryItems} onClearSelection={() => { setDirectoryPendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={cancelDirectoryEditing} onSave={() => void saveDirectoryItems()} />}
       </section>}
       {mayDeleteProjectDirectories && directoryDeleteConfirmationOpen && activeDirectoryGroup && <AdminDeleteConfirmation title="Удалить выбранные значения?" text={`Вы точно хотите удалить значения (${directoryPendingDeletes.length}) из справочника «${focusedDirectoryTitle}» проекта «${activeSite?.name ?? ""}»?`} saving={saving} onCancel={() => setDirectoryDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingDirectoryItems(activeDirectoryGroup.entity)} />}
-      </div> : <div className="page-content"><h1>Нет доступных разделов</h1><p>Обратитесь к администратору для настройки доступа.</p></div>}
+      </div> : <div className="page-content"><h1>{missingAssignedProject ? "Нет доступа к проектам" : "Нет доступных разделов"}</h1><p>{missingAssignedProject ? "Обратитесь к супер-администратору, чтобы открыть доступ к нужным проектам." : "Обратитесь к администратору для настройки доступа."}</p></div>}
     </section>
     {profileOpen && <div className="profile-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !profileSaving) setProfileOpen(false); }}>
       <section className="profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-title">
         <div className="profile-dialog-heading"><div className="profile-avatar"><AppIcon name="user" /></div><div><span>Профиль пользователя</span><h2 id="profile-title">{currentUser.fullName}</h2></div><button type="button" className="profile-close" onClick={() => setProfileOpen(false)} disabled={profileSaving} aria-label="Закрыть профиль">×</button></div>
-        <dl className="profile-details"><div><dt>Email</dt><dd>{currentUser.email}</dd></div><div><dt>Роль</dt><dd>{ROLE_LABELS[role]}</dd></div>{role === "foreman" && <div><dt>Проект</dt><dd>{activeSite?.name ?? "Не назначен"}</dd></div>}</dl>
+        <dl className="profile-details"><div><dt>Email</dt><dd>{currentUser.email}</dd></div><div><dt>Роль</dt><dd>{ROLE_LABELS[role]}</dd></div><div><dt>Проекты</dt><dd>{userProjectLabel(role, currentUser.assignedSiteId, visibleSites, currentUser.projectAccess)}</dd></div></dl>
         <form className="profile-password-form" onSubmit={(event) => void changePassword(event)}><h3>Изменить пароль</h3><label><span>Текущий пароль</span><input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label><label><span>Новый пароль</span><input type="password" autoComplete="new-password" minLength={10} maxLength={128} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required /></label><label><span>Повторите новый пароль</span><input type="password" autoComplete="new-password" minLength={10} maxLength={128} value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} required /></label>{profileError && <div className="profile-message error" role="alert">{profileError}</div>}{profileNotice && <div className="profile-message success" role="status">{profileNotice}</div>}<button type="submit" className="profile-save" disabled={profileSaving}>{profileSaving ? "Сохраняем…" : "Изменить пароль"}</button></form>
         <button type="button" className="profile-logout" onClick={() => void logout()} disabled={profileSaving}>Выйти из системы</button>
       </section>

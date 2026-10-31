@@ -99,13 +99,14 @@ function valueFor(row: PersonnelReportGridRow, field: string, props: PersonnelRe
     case "employmentType": case "department": case "position": {
       const employee = draft ? props.employees.find((item) => item.id === Number(draft.employeeId)) : undefined;
       const sameEmployee = !draft || Number(draft.employeeId) === entry?.employeeId;
-      if (field === "position") return employee?.position ?? (sameEmployee ? entry?.positionSnapshot : "") ?? "";
-      return employee?.[field] ?? (sameEmployee ? entry?.[field] : "") ?? "";
+      if (field === "position") return sameEmployee && entry ? entry.positionSnapshot : employee?.position ?? "";
+      return sameEmployee && entry ? entry[field] : employee?.[field] ?? "";
     }
     case "shift": case "zone": case "mainWork": case "subwork": case "master": {
       const config = optionFields[field];
       const fallback = { shift: entry?.shiftName, zone: entry?.zoneName, mainWork: entry?.mainWorkTypeName, subwork: entry?.subworkTypeName, master: entry?.masterName };
       if (!draft) return fallback[field] ?? "";
+      if (field === "master" && entry && Number(draft.masterId) === entry.masterId) return entry.masterName;
       const option = props[config.options].find((option) => option.id === Number(draft[config.draft]));
       return option?.name ?? (Number(draft[config.draft]) === entry?.[config.draft] ? fallback[field] : "") ?? "";
     }

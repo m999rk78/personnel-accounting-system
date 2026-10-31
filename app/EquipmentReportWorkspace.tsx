@@ -12,7 +12,7 @@ import { freezeEquipmentReportSessions, mergeEquipmentReportSessions, equipmentR
 import { defaultPersonnelReportSubmissions as defaultEquipmentReportSubmissions, selectPersonnelReportSubmissions as selectEquipmentReportSubmissions, personnelReportReviewIssue as equipmentReportReviewIssue } from "./personnelReportActions";
 import { mergeEquipmentSubmissionIssues, equipmentSubmissionCanSend, equipmentSubmissionCellIssues, equipmentSubmissionToken, type EquipmentSubmissionValidationState } from "./equipmentReportSubmissionValidation";
 import { buildEquipmentReportCrew, equipmentReportCrewSource, equipmentReportYesterday } from "./equipmentReportCarryOver";
-import type { UserRole } from "./roles";
+import { canViewPendingReportsFor, type UserRole } from "./roles";
 import { equipmentExcelName } from "./equipmentExcel";
 import { openExcelExportPreview } from "./excelExportPreviewStore";
 import { ExcelActionsMenu } from "./ExcelActionsMenu";
@@ -51,7 +51,7 @@ function toPayload(row: GridDraftRow): EquipmentReportDraftRow {
 
 export type EquipmentReportWorkspaceProps = {
   siteId: number; siteName: string; today: string;
-  currentUser: { id: number; fullName: string; role: UserRole };
+  currentUser: { id: number; fullName: string; role: UserRole; canViewPendingReports?: boolean };
   permissions: { create: boolean; update: boolean; delete: boolean };
   units: GridEquipmentUnit[]; shifts: GridOption[]; zones: GridOption[]; mainWorkTypes: GridOption[]; subworkTypes: GridOption[];
   loading: boolean;
@@ -59,7 +59,9 @@ export type EquipmentReportWorkspaceProps = {
 };
 
 export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
-  const { siteId, today, currentUser, permissions, onDirtyChange } = props;
+  const { siteId, today, currentUser, permissions: grantedPermissions, onDirtyChange } = props;
+  const permissions = useMemo(() => currentUser.role === "viewer" ? { create: false, update: false, delete: false } : grantedPermissions, [currentUser.role, grantedPermissions]);
+  const showPendingReports = canViewPendingReportsFor(currentUser);
   const rowOrder = useWorkspaceTableOrder();
   const [data, setData] = useState<EquipmentReportData | null>(null);
   type Edits = Record<string, GridDraftRow[]>;
@@ -530,8 +532,8 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
   const workflowControls = <div className="personnel-report-workflow-bar">
     <div className="personnel-report-views" role="group" aria-label="Показать отчёты">
       <button type="button" aria-pressed={workflowView === "all"} onClick={() => changeWorkflow("all")}>Все записи</button>
-      <button type="button" aria-pressed={workflowView === "draft"} onClick={() => changeWorkflow("draft")}>Черновики <span>{draftItems.length}</span></button>
-      <button type="button" className={submittedCount ? "has-pending" : ""} aria-pressed={workflowView === "submitted"} onClick={() => changeWorkflow("submitted")}>На проверке <span>{submittedCount}</span></button>
+      {showPendingReports && <button type="button" aria-pressed={workflowView === "draft"} onClick={() => changeWorkflow("draft")}>Черновики <span>{draftItems.length}</span></button>}
+      {showPendingReports && <button type="button" className={submittedCount ? "has-pending" : ""} aria-pressed={workflowView === "submitted"} onClick={() => changeWorkflow("submitted")}>На проверке <span>{submittedCount}</span></button>}
     </div>
     {dirty && <span className="personnel-report-dirty-caption"><i aria-hidden="true" />Есть несохранённые изменения</span>}
   </div>;
@@ -561,7 +563,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
     {viewsTarget ? createPortal(workflowControls, viewsTarget) : workflowControls}
     {carryOverNotice && rows.some(row => row.workDate === today && row.draft?.carriedFromPreviousDay) && <div className="personnel-report-carry-notice" role="status"><span><strong>Ваша техника на сегодня</strong> Из отчёта за {displayDate(equipmentReportYesterday(today))} перенесено строк: {carryOverNotice.count}. Проверьте технику, работы и часы перед отправкой.{carryOverNotice.skipped > 0 && ` Не перенесено строк: ${carryOverNotice.skipped} — техника снята с проекта или недоступна по табелю.`}</span><button type="button" aria-label="Закрыть подсказку о технике" onClick={() => setCarryOverNotice(null)}>×</button></div>}
     {activeReview?.report && <section className="personnel-report-review-focus" aria-label={canReview ? "Проверка отчёта" : "Отчёт на проверке"}>
-      <div className="personnel-report-review-focus-title"><span className="personnel-report-step" aria-hidden="true">✓</span><div><strong>{canReview ? "Проверка отчёта" : "Отчёт на проверке"}</strong><p>{canReview ? "Выберите прораба и дату. Можно исправить данные прямо в таблице и сохранить перед подтверждением." : "Выберите отчёт по дате. Свой отчёт можно снять с проверки и вернуть в черновики."}</p></div><span className="personnel-report-status submitted">На проверке: {submittedCount}</span></div>
+      <div className="personnel-report-review-focus-title"><span className="personnel-report-step" aria-hidden="true">✓</span><div><strong>{canReview ? "Проверка отчёта" : "Отчёт на проверке"}</strong><p>{canReview ? "Выберите прораба и дату. Можно исправить данные прямо в таблице и сохранить перед подтверждением." : currentUser.role === "viewer" ? "Выберите прораба и дату для просмотра отчёта." : "Выберите отчёт по дате. Свой отчёт можно снять с проверки и вернуть в черновики."}</p></div><span className="personnel-report-status submitted">На проверке: {submittedCount}</span></div>
       <div className="personnel-report-review-focus-controls">
         <CustomSelect ariaLabel={canReview ? "Отчёт для проверки" : "Отчёт на проверке"} value={activeReview.key} onChange={key => changeWorkflow("submitted", key)} options={reviewItems.map(item => ({ value: item.key, label: `${displayDate(item.workDate)} · ${item.ownerName} · строк: ${item.rowCount} · ${item.hours} ч` }))} />
         <div className="toolbar-actions">{canReview && <>{edits[activeReview.key] && <button type="button" className="secondary-button" disabled={locked || fetching} onClick={() => void saveDrafts(undefined, [activeReview.key])}>Сохранить исправления</button>}<button type="button" className="save-edits-button" disabled={locked || fetching || Boolean(equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits)))} onClick={() => beginReview(activeReview.report!, "approve")}>Подтвердить отчёт</button><button type="button" className="secondary-button" disabled={locked || fetching || Boolean(equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits)))} onClick={() => beginReview(activeReview.report!, "reject")}>Вернуть на доработку</button></>}{permissions.update && activeReview.ownerUserId === currentUser.id && <button type="button" className="secondary-button" disabled={locked || fetching || Boolean(equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits)))} onClick={() => void transition(activeReview.report!, "reopen")}>Снять с проверки</button>}</div>

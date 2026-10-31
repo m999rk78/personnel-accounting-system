@@ -74,7 +74,7 @@ try {
     refs[field] = await insert(`INSERT INTO ${table}(site_id,name) VALUES ($1,$2) RETURNING id`, [siteId, marker]);
   }
   await connection.query("UPDATE subwork_types SET main_work_type_id=$1 WHERE id=$2", [refs.mainWorkTypeId, refs.subworkTypeId]);
-  const actor = (id, role) => ({ id, role, fullName: marker, assignedSiteId: role === "foreman" ? siteId : null, permissions: rolePermissionTemplate(role) });
+  const actor = (id, role) => ({ id, role, fullName: marker, assignedSiteId: role === "foreman" || role === "engineer" ? siteId : null, permissions: rolePermissionTemplate(role) });
   const foreman = actor(foremanId, "foreman");
   const engineer = actor(engineerId, "engineer");
   const secondForeman = actor(secondForemanId, "foreman");

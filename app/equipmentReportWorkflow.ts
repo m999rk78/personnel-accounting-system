@@ -1,4 +1,6 @@
 import type { AuthUser } from "./auth";
+import { canAccessProject, canViewPendingReportsFor } from "./roles.ts";
+export { canViewPendingReportsFor };
 import type { EquipmentReportDraftRow, EquipmentReportRowValidationIssue, EquipmentReportStatus, EquipmentReportTransitionRequest } from "./equipmentReportTypes";
 
 export class EquipmentReportError extends Error {
@@ -15,7 +17,7 @@ export class EquipmentReportError extends Error {
   }
 }
 
-type Actor = Pick<AuthUser, "id" | "role" | "assignedSiteId" | "permissions">;
+type Actor = Pick<AuthUser, "id" | "role" | "assignedSiteId" | "permissions"> & Partial<Pick<AuthUser, "projectAccess" | "canViewPendingReports">>;
 type ReportIdentity = { siteId: number; ownerUserId: number; status: EquipmentReportStatus; revision: number };
 
 /** The old daily endpoint published rows immediately, bypassing review. */
@@ -30,11 +32,11 @@ export function validEquipmentReportDate(value: unknown): value is string {
 }
 
 export function canReviewEquipmentReport(user: Actor) {
-  return user.role !== "foreman" && Boolean(user.permissions.equipment_report?.update);
+  return (user.role === "engineer" || user.role === "superadmin") && Boolean(user.permissions.equipment_report?.update);
 }
 
 export function assertEquipmentReportSiteAccess(user: Actor, siteId: number) {
-  if (!user.permissions.equipment_report?.view || (user.role === "foreman" && user.assignedSiteId !== siteId)) {
+  if (!user.permissions.equipment_report?.view || !canAccessProject(user, siteId)) {
     throw new EquipmentReportError("Нет доступа к отчётам этого проекта.", 403, "REPORT_FORBIDDEN");
   }
 }
@@ -56,6 +58,7 @@ export function assertEquipmentReportRevision(actual: number, expected: unknown)
 }
 
 export function assertCanSaveEquipmentReport(user: Actor, report?: ReportIdentity) {
+  if (user.role === "viewer") throw new EquipmentReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   if (!report) {
     if (!user.permissions.equipment_report?.create) throw new EquipmentReportError("Нет права создавать отчёты.", 403, "REPORT_FORBIDDEN");
     return;
@@ -68,6 +71,7 @@ export function assertCanSaveEquipmentReport(user: Actor, report?: ReportIdentit
 }
 
 export function nextEquipmentReportStatus(user: Actor, report: ReportIdentity, action: EquipmentReportTransitionRequest["action"], comment = ""): EquipmentReportStatus {
+  if (user.role === "viewer") throw new EquipmentReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   assertEquipmentReportOwner(user, report);
   if (!user.permissions.equipment_report?.update) throw new EquipmentReportError("Нет права изменять отчёты.", 403, "REPORT_FORBIDDEN");
   if ((action === "approve" || action === "reject") && !canReviewEquipmentReport(user)) {

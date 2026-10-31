@@ -25,6 +25,19 @@ export const appUsers = pgTable("app_users", {
   active: integer("active").notNull().default(1),
 });
 
+export const userProjectAccess = pgTable("user_project_access", {
+  userId: integer("user_id").primaryKey().references(() => appUsers.id, { onDelete: "cascade" }),
+  allProjects: integer("all_projects").notNull().default(0),
+  canViewPendingReports: integer("can_view_pending_reports").notNull().default(0),
+  updatedByUserId: integer("updated_by_user_id").references(() => appUsers.id, { onDelete: "set null" }),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+}, table => [check("user_project_access_all_projects_check", sql`${table.allProjects} IN (0, 1)`), check("user_project_access_can_view_pending_reports_check", sql`${table.canViewPendingReports} IN (0, 1)`)]);
+
+export const userProjectAccessSites = pgTable("user_project_access_sites", {
+  userId: integer("user_id").notNull().references(() => userProjectAccess.userId, { onDelete: "cascade" }),
+  siteId: integer("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+}, table => [primaryKey({ columns: [table.userId, table.siteId] }), index("idx_user_project_access_sites_site").on(table.siteId, table.userId)]);
+
 export const userInvitations = pgTable("user_invitations", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => appUsers.id),

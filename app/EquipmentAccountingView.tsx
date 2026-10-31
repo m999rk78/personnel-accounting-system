@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { accessibleProjectIds, hasRestrictedProjectAccess, type ProjectAccess, type UserRole } from "./roles";
+import { profileProjectChangeAllowed, userVisibleProjects } from "./userAccessModel";
 import { useWorkspaceAccess } from "./TableAccessContext";
 import { useNativeRowMoves, useWorkspaceTableOrder } from "./TableRowMoves";
 import { useTableViewport } from "./useTableViewport";
@@ -81,7 +83,7 @@ type EquipmentPayload = {
   canCreateAssignments: boolean;
   canUpdateAssignments: boolean;
   canDeleteAssignments: boolean;
-  currentUserRole: "foreman" | "engineer" | "superadmin";
+  currentUserRole: UserRole;
   currentUserName: string;
   reportSubmitted: boolean;
   foremanProgress: EquipmentForemanProgress[];
@@ -376,7 +378,7 @@ function EquipmentDeleteConfirmation({ title, description, saving, onCancel, onC
   </div>;
 }
 
-export function EquipmentAccountingView({ siteId, initialDate, initialMonth, today, mode, onDateChange, onMonthChange }: { siteId: number; initialDate: string; initialMonth?: string; today: string; mode: EquipmentSection; onDateChange?: (date: string) => void; onMonthChange?: (month: string) => void }) {
+export function EquipmentAccountingView({ siteId, initialDate, initialMonth, today, mode, currentUserRole, currentUserProjectAccess, onDateChange, onMonthChange }: { siteId: number; initialDate: string; initialMonth?: string; today: string; mode: EquipmentSection; currentUserRole?: UserRole; currentUserProjectAccess?: ProjectAccess; onDateChange?: (date: string) => void; onMonthChange?: (month: string) => void }) {
   const section = mode;
   const [workDate, setWorkDate] = useState(initialDate);
   const [reportRangeEnd, setReportRangeEnd] = useState(initialDate);
@@ -384,13 +386,18 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   const access = useWorkspaceAccess();
   const [loadedPayload, setPayload] = useState<EquipmentPayload | null>(null);
   const payload = useMemo(() => {
-    if (!loadedPayload || !access) return loadedPayload;
+    if (!loadedPayload || currentUserRole && loadedPayload.currentUserRole !== currentUserRole) return null;
+    const actorRole = currentUserRole ?? loadedPayload.currentUserRole;
+    const actor = { role: actorRole, assignedSiteId: siteId, projectAccess: currentUserProjectAccess };
+    const scopedPayload = { ...loadedPayload, currentUserRole: actorRole, sites: userVisibleProjects(actor, loadedPayload.sites) };
+    if (actorRole === "viewer") return { ...scopedPayload, canCreateDaily: false, canUpdateDaily: false, canDeleteDaily: false, canEditDaily: false, canCreateTimesheet: false, canUpdateTimesheet: false, canDeleteTimesheet: false, canEditTimesheet: false, canCreateRegistry: false, canUpdateRegistry: false, canDeleteRegistry: false, canManageRegistry: false, canCreateAssignments: false, canUpdateAssignments: false, canDeleteAssignments: false, canManageAssignments: false };
+    if (!access) return scopedPayload;
     const capabilities = section === "daily" ? { canCreateDaily: access.create, canUpdateDaily: access.update, canDeleteDaily: access.delete, canEditDaily: access.select }
       : section === "month" ? { canCreateTimesheet: access.create, canUpdateTimesheet: access.update, canDeleteTimesheet: access.delete, canEditTimesheet: access.select }
         : section === "registry" ? { canCreateRegistry: access.create, canUpdateRegistry: access.update, canDeleteRegistry: access.delete, canManageRegistry: access.select }
           : { canCreateAssignments: access.create, canUpdateAssignments: access.update, canDeleteAssignments: access.delete, canManageAssignments: access.select };
-    return { ...loadedPayload, ...capabilities };
-  }, [loadedPayload, access, section]);
+    return { ...scopedPayload, ...capabilities };
+  }, [loadedPayload, access, section, currentUserRole, currentUserProjectAccess, siteId]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -495,7 +502,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
       window.clearTimeout(task);
       controller.abort();
     };
-  }, [month, recentDates, reloadKey, reportRangeEnd, section, siteId, workDate]);
+  }, [month, recentDates, reloadKey, reportRangeEnd, section, siteId, workDate, currentUserRole, currentUserProjectAccess]);
 
   useEffect(() => {
     if (section !== "daily" || workDate !== today || payload?.workDate !== workDate || payload.currentUserRole !== "foreman" || !payload.canCreateDaily) return;
@@ -717,6 +724,11 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
       setError(`Строка ${invalidIndex + 1}: заполните организацию, тип техники и модель.`);
       return;
     }
+    const invalidProjectIndex = unitDrafts.findIndex(draft => !profileProjectChangeAllowed(payload ? accessibleProjectIds({ role: payload.currentUserRole, assignedSiteId: siteId, projectAccess: currentUserProjectAccess }) ?? undefined : undefined, draft.projectSiteId));
+    if (invalidProjectIndex >= 0) {
+      setError(`Строка ${invalidProjectIndex + 1}: техника должна относиться к назначенному проекту. Для снятия с проекта используйте настройки проекта.`);
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -815,6 +827,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }
 
   async function importRegistry(file: File) {
+    if (!payload || hasRestrictedProjectAccess({ role: payload.currentUserRole, assignedSiteId: siteId, projectAccess: currentUserProjectAccess })) return;
     setImporting(true);
     setError("");
     setNotice("");
@@ -1392,6 +1405,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }
 
   function downloadRegistryTemplate() {
+    if (!payload || hasRestrictedProjectAccess({ role: payload.currentUserRole, assignedSiteId: siteId, projectAccess: currentUserProjectAccess })) return;
     const rows = Array.from({ length: 25 }, () => ["", "", "", "", "", "", ""]);
     setError("");
     try {
@@ -1419,12 +1433,12 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     {section === "registry" && headerActionsTarget && createPortal(<div className="toolbar-actions" aria-label="Действия с Excel для реестра техники">
       <ExcelActionsMenu actions={[
         { label: "Экспорт в Excel", onSelect: openRegistryExportPreview, disabled: loading || !(visibleUnitIds?.length ?? registryUnits.length) },
-        ...(payload?.canCreateRegistry ? [
+        ...(payload?.canCreateRegistry && !hasRestrictedProjectAccess({ role: payload.currentUserRole, assignedSiteId: siteId, projectAccess: currentUserProjectAccess }) ? [
           { label: importing ? "Загружаем…" : "Импорт из Excel", onSelect: () => fileInput.current?.click(), disabled: importing },
           { label: "Скачать шаблон", onSelect: downloadRegistryTemplate },
         ] : []),
       ]} />
-      {payload?.canCreateRegistry && <input ref={fileInput} hidden type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importRegistry(file); }} />}
+      {payload?.canCreateRegistry && !hasRestrictedProjectAccess({ role: payload.currentUserRole, assignedSiteId: siteId, projectAccess: currentUserProjectAccess }) && <input ref={fileInput} hidden type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importRegistry(file); }} />}
     </div>, headerActionsTarget)}
     {section === "project" && headerActionsTarget && createPortal(<div className="toolbar-actions" aria-label="Действия с Excel для техники проекта">
       <ExcelActionsMenu actions={[
@@ -1593,6 +1607,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         rows={registryUnits}
         drafts={unitDrafts}
         sites={payload?.sites ?? []}
+        requiredSiteId={payload ? accessibleProjectIds({ role: payload.currentUserRole, assignedSiteId: siteId, projectAccess: currentUserProjectAccess }) ?? undefined : undefined}
         selectedIds={selectedUnitIds}
         fullRowEditIds={unitFullRowEditIds}
         loading={loading}
@@ -1608,7 +1623,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
       {payload?.canManageRegistry && <div className="table-edit-footer employee-table-footer uniform-footer-actions equipment-registry-footer">
         {selectedUnitIds.length > 0 && <div className="employee-selection-bar"><div className="employee-selection-summary"><span aria-hidden="true">✓</span><span>Выбрано: <strong>{selectedUnitIds.length}</strong></span></div><div className="employee-selection-actions">{payload.canUpdateRegistry && <button type="button" className="employee-action-button employee-action-primary" onClick={editSelectedUnits} disabled={saving}>Редактировать</button>}{payload.canDeleteRegistry && <button type="button" className="employee-action-button employee-action-danger" onClick={() => setDeleteConfirmationTarget("registry")} disabled={saving}>Удалить технику</button>}<button type="button" className="employee-action-button clear-selection-button" onClick={() => { setSelectedUnitIds([]); setNotice(""); setError(""); }} disabled={saving}>Снять выделение</button></div></div>}
         {unitDrafts.length > 0 && <div className="employee-editing-bar"><div className="employee-editing-summary"><span aria-hidden="true">✎</span><span>Редактируется: <strong>{unitDrafts.length}</strong></span></div><div className="employee-selection-actions"><button type="button" className="employee-action-button cancel-editing-button" onClick={cancelUnitEditing} disabled={saving}>Отменить редактирование</button><button type="button" className="employee-action-button employee-save-button" onClick={() => void saveUnits()} disabled={saving}>{saving ? "Сохраняем…" : "Сохранить изменения"}</button></div></div>}
-        {unitDrafts.length === 0 && selectedUnitIds.length === 0 && <div className="employee-footer-base">{payload.canCreateRegistry && <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={() => { setUnitDrafts((current) => [...current, emptyUnit()]); setNotice(""); setError(""); }}>Добавить технику</button>}<span className="employee-total-count">Всего техники: <strong>{visibleUnitIds?.length ?? registryUnits.length}</strong></span></div>}
+        {unitDrafts.length === 0 && selectedUnitIds.length === 0 && <div className="employee-footer-base">{payload.canCreateRegistry && <button type="button" className="secondary-button footer-action-button employee-add-button" onClick={() => { setUnitDrafts((current) => [...current, { ...emptyUnit(), projectSiteId: hasRestrictedProjectAccess({ role: payload.currentUserRole, assignedSiteId: siteId, projectAccess: currentUserProjectAccess }) ? String(siteId) : "" }]); setNotice(""); setError(""); }}>Добавить технику</button>}<span className="employee-total-count">Всего техники: <strong>{visibleUnitIds?.length ?? registryUnits.length}</strong></span></div>}
       </div>}
     </>}
 

@@ -82,6 +82,6 @@ test("keeps create, update, and delete independent across every editable table",
   assert.match(dataApi, /action === "create-employee" \|\| action === "create-bitrix24-employee"/);
   assert.match(dataApi, /action === "delete-bitrix24-employee"\) return hasPermission\(user\.permissions, "employees", "delete"\)/);
   assert.match(dataApi, /action === "update-bitrix24-employee"/);
-  assert.match(timesheetApi, /if \(!existingMark\) return Response\.json\(\{ deleted: false, employeeId, workDate: payload\.workDate \}\)/);
-  assert.match(equipmentApi, /if \(!existingMark\) return Response\.json\(\{ deleted: false, equipmentId, workDate: payload\.workDate \}\)/);
+  assert.match(timesheetApi, /if \(!existingMark\) return Response\.json\(\{ deleted: false, employeeId, workDate \}\)/);
+  assert.match(equipmentApi, /if \(!existingMark\) return Response\.json\(\{ deleted: false, equipmentId, workDate \}\)/);
 });

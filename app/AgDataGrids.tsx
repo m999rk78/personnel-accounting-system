@@ -18,7 +18,8 @@ import { subworkOptions } from "./workTypeHierarchy";
 import { CustomSelect } from "./CustomSelect";
 import { choiceMenuPosition, choiceMenuWidth, type ChoiceMenuPosition } from "./choiceMenuLayout";
 import { GridTextEditor } from "./GridTextEditor";
-import type { UserRole } from "./roles";
+import { ROLE_LABELS, type ProjectAccess, type UserRole } from "./roles";
+import { pastedUserRole, profileProjectChangeAllowed, userDraftProjectAccess, userProjectLabel, userRoleChanges } from "./userAccessModel";
 
 // LocalizedGrid wraps AgGridReact with shared Russian filters and their summary.
 import { LocalizedGrid, personnelColumnFilter, personnelFilterParams, type SpreadsheetContextPayload, type SpreadsheetPastePayload } from "./GridFilters";
@@ -61,8 +62,8 @@ export type GridProjectEmployeeDraft = { key: string; employeeId: string; employ
 export type GridDirectoryDraft = { key: string; id?: number; name: string; employeeId?: string };
 export type GridPosition = { id: number; employmentType: string; department: string; position: string };
 export type GridPositionDraft = { key: string; id?: number; employmentType: string; department: string; position: string };
-export type GridUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; status?: "active" | "invited" };
-export type GridUserDraft = { key: string; id?: number; fullName: string; email: string; role: UserRole; assignedSiteId: string };
+export type GridUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; projectAccess?: ProjectAccess; projectAccessLimitedToViewer?: boolean; canViewPendingReports?: boolean; status?: "active" | "invited" };
+export type GridUserDraft = { key: string; id?: number; fullName: string; email: string; role: UserRole; assignedSiteId: string; projectAccess?: ProjectAccess; canViewPendingReports?: boolean };
 export type GridSite = GridOption & { code: string; timezone: string };
 export type GridSiteDraft = { key: string; id?: number; name: string; code: string; timezone: string };
 export type GridEntry = {
@@ -290,8 +291,8 @@ const TIMESHEET_CODE_LABELS: Record<string, string> = {
   "ПР": "Прогул",
 };
 
-function DraftSelect({ value, options, placeholder, onChange, autoOpen = false, disabled = false }: { value: string; options: GridOption[]; placeholder: string; onChange: (value: string) => void; autoOpen?: boolean; disabled?: boolean }) {
-  return <CustomSelect disabled={disabled} className="ag-custom-select" value={value} ariaLabel={placeholder} onChange={onChange} autoOpen={autoOpen} searchable options={[{ value: "", label: placeholder }, ...options.map((option) => ({ value: String(option.id), label: option.name }))]} />;
+function DraftSelect({ value, options, placeholder, onChange, autoOpen = false, disabled = false, required = false }: { value: string; options: GridOption[]; placeholder: string; onChange: (value: string) => void; autoOpen?: boolean; disabled?: boolean; required?: boolean }) {
+  return <CustomSelect disabled={disabled} className="ag-custom-select" value={value} ariaLabel={placeholder} onChange={onChange} autoOpen={autoOpen} searchable options={[{ value: "", label: placeholder, disabled: required }, ...options.map((option) => ({ value: String(option.id), label: option.name }))]} />;
 }
 
 function DraftNameSelect({ value, options, placeholder, onChange, autoOpen = false }: { value: string; options: GridOption[]; placeholder: string; onChange: (value: string) => void; autoOpen?: boolean }) {
@@ -1267,6 +1268,7 @@ type EquipmentRegistryGridProps = {
   rows: GridEquipmentUnit[];
   drafts: GridEquipmentRegistryDraft[];
   sites: GridOption[];
+  requiredSiteId?: number | readonly number[];
   selectedIds: number[];
   fullRowEditIds: number[];
   loading: boolean;
@@ -1360,7 +1362,7 @@ export function EquipmentRegistryAgGrid(props: EquipmentRegistryGridProps) {
         : <span title={String(value)}>{value}</span>;
     }
     const draft = currentProps.drafts.find((candidate) => candidate.key === row.draft?.key) ?? row.draft!;
-    if (field === "siteName") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.projectSiteId} options={currentProps.sites} placeholder="Не назначена" onChange={(projectSiteId) => { currentProps.onPatchDraft(draft.key, { projectSiteId }); setActiveEditor(null); }} /></div>;
+    if (field === "siteName") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.projectSiteId} options={currentProps.sites} required={currentProps.requiredSiteId !== undefined} placeholder={currentProps.requiredSiteId !== undefined ? "Проект" : "Не назначена"} onChange={(projectSiteId) => { currentProps.onPatchDraft(draft.key, { projectSiteId }); setActiveEditor(null); }} /></div>;
     const placeholders: Record<EquipmentRegistryTextField, string> = {
       organization: "Организация",
       equipmentType: "Тип техники",
@@ -1390,6 +1392,10 @@ export function EquipmentRegistryAgGrid(props: EquipmentRegistryGridProps) {
       const pasted = values.siteName.trim();
       const unassigned = !pasted || ["не назначена", "не назначен", "без проекта", "—", "-"].includes(normalizeSearch(pasted));
       const projectSiteId = unassigned ? "" : pastedOptionId(currentProps.sites, pasted);
+      if (!profileProjectChangeAllowed(currentProps.requiredSiteId, projectSiteId)) {
+        currentProps.onValidationError("В общем справочнике техника должна оставаться в назначенном проекте. Убрать её из проекта можно в настройках проекта.");
+        return false;
+      }
       if (!unassigned && !projectSiteId) {
         currentProps.onValidationError(`Значение «${pasted}» нельзя вставить в столбец «Проект». Выберите существующий проект.`);
         return false;
@@ -1602,6 +1608,7 @@ type EmployeeGridProps = {
   departments: GridOption[];
   positions: GridOption[];
   sites: GridOption[];
+  requiredSiteId?: number | readonly number[];
   selectedIds: number[];
   fullRowEditIds: number[];
   readOnly?: boolean;
@@ -1684,7 +1691,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     if (field === "employmentType") return <div className="ag-cell-editor-host"><DraftNameSelect autoOpen value={draft.employmentType} options={currentProps.employmentTypes} placeholder="Тип" onChange={(employmentType) => { currentProps.onPatchDraft(draft.key, { employmentType }); setActiveEditor(null); }} /></div>;
     if (field === "department") return <div className="ag-cell-editor-host"><DraftNameSelect autoOpen value={draft.department} options={currentProps.departments} placeholder="Отдел" onChange={(department) => { currentProps.onPatchDraft(draft.key, { department }); setActiveEditor(null); }} /></div>;
     if (field === "position") return <div className="ag-cell-editor-host"><DraftNameSelect autoOpen value={draft.position} options={currentProps.positions} placeholder="Должность" onChange={(position) => { currentProps.onPatchDraft(draft.key, { position }); setActiveEditor(null); }} /></div>;
-    if (field === "siteName") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.projectSiteId} options={currentProps.sites} placeholder="Без объекта" onChange={(projectSiteId) => { currentProps.onPatchDraft(draft.key, { projectSiteId }); setActiveEditor(null); }} /></div>;
+    if (field === "siteName") return <div className="ag-cell-editor-host"><DraftSelect autoOpen value={draft.projectSiteId} options={currentProps.sites} required={currentProps.requiredSiteId !== undefined} placeholder={currentProps.requiredSiteId !== undefined ? "Проект" : "Без объекта"} onChange={(projectSiteId) => { currentProps.onPatchDraft(draft.key, { projectSiteId }); setActiveEditor(null); }} /></div>;
     return <span>{params.value}</span>;
   }, [activeEditor, openCellEditor, propsRef]);
 
@@ -1723,6 +1730,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
       const pasted = values.siteName.trim();
       const unassigned = !pasted || ["без объекта", "не назначен", "не назначена", "без проекта", "—", "-"].includes(normalizeSearch(pasted));
       const projectSiteId = unassigned ? "" : pastedOptionId(currentProps.sites, pasted);
+      if (!profileProjectChangeAllowed(currentProps.requiredSiteId, projectSiteId)) { currentProps.onValidationError("В общем справочнике сотрудник должен относиться к одному из разрешённых проектов. Убрать его из проекта можно в настройках проекта."); return false; }
       if (!unassigned && !projectSiteId) { currentProps.onValidationError(`Значение «${pasted}» нельзя вставить в столбец «Проект». Выберите существующий проект или «Без объекта».`); return false; }
       changes.projectSiteId = projectSiteId;
     }
@@ -2185,8 +2193,8 @@ export function UserAgGrid(props: UserGridProps) {
     const row = params.data; if (!row) return ""; if (field === "number") return row.number;
     if (field === "status") return row.kind === "entry" ? row.user?.status === "active" ? "Активен" : "Приглашён" : "После сохранения";
     const source = row.kind === "entry" ? row.user : propsRef.current.drafts.find((candidate) => candidate.key === row.draft?.key) ?? row.draft; if (!source) return "";
-    if (field === "role") return source.role === "foreman" ? "Прораб" : source.role === "engineer" ? "Инженер" : "Супер-админ";
-    if (field === "site") { const assigned = row.kind === "entry" ? row.user?.assignedSiteId : Number(source.assignedSiteId); return source.role !== "foreman" ? "Все проекты" : propsRef.current.sites.find((site) => site.id === assigned)?.name ?? "Не назначен"; }
+    if (field === "role") return ROLE_LABELS[source.role];
+    if (field === "site") { const assigned = row.kind === "entry" ? row.user?.assignedSiteId : Number(source.assignedSiteId); return userProjectLabel(source.role, assigned, propsRef.current.sites, source.projectAccess, row.kind === "entry" && row.user?.projectAccessLimitedToViewer); }
     return source[field] ?? "";
   }, [propsRef]);
   const openCellEditor = useCallback((row: UserTableRow, columnId: string) => {
@@ -2194,7 +2202,7 @@ export function UserAgGrid(props: UserGridProps) {
     if (!["fullName", "email", "role", "site"].includes(columnId)) return false;
     const draft = currentProps.drafts.find((candidate) => candidate.key === row.draft?.key) ?? row.draft;
     const role = draft?.role ?? row.user?.role;
-    if (columnId === "site" && role !== "foreman") return false;
+    if (columnId === "site" && (!role || role === "superadmin")) return false;
     if (row.kind === "entry") {
       if (currentProps.drafts.some((candidate) => !candidate.id) || !row.user) return false;
       currentProps.onEdit(row.user);
@@ -2210,12 +2218,13 @@ export function UserAgGrid(props: UserGridProps) {
     if (!row.draft) return <span title={String(params.value ?? "")}>{params.value}</span>;
     const draft = currentProps.drafts.find((candidate) => candidate.key === row.draft?.key) ?? row.draft!;
     if (field === "status") return <span className="ag-autofill-value">{draft.id ? "Без изменений" : "Приглашение"}</span>;
-    if (!activeCellEditor) return <EditableCellDisplay value={params.value ?? ""} menuLabel={field === "role" ? "роль" : field === "site" && draft.role === "foreman" ? "проект" : undefined} onOpen={field === "role" || (field === "site" && draft.role === "foreman") ? () => openCellEditor(row, field!) : undefined} />;
+    if (!activeCellEditor) return <EditableCellDisplay value={params.value ?? ""} menuLabel={field === "role" ? "роль" : field === "site" && draft.role !== "superadmin" ? "проект" : undefined} onOpen={field === "role" || (field === "site" && draft.role !== "superadmin") ? () => openCellEditor(row, field!) : undefined} />;
     if (field === "fullName") return <GridTextEditor value={draft.fullName} placeholder="ФИО" onBlur={() => setActiveEditor(null)} onChange={(fullName) => currentProps.onPatchDraft(draft.key, { fullName })} />;
     if (field === "email") return <GridTextEditor value={draft.email} placeholder="email@company.ru" onBlur={() => setActiveEditor(null)} onChange={(email) => currentProps.onPatchDraft(draft.key, { email })} />;
-    if (field === "role") return <CustomSelect className="ag-custom-select" value={draft.role} ariaLabel="Роль" autoOpen onChange={(role) => { currentProps.onPatchDraft(draft.key, { role: role as UserRole, assignedSiteId: role !== "foreman" ? "" : draft.assignedSiteId }); setActiveEditor(null); }} options={[{ value: "foreman", label: "Прораб" }, { value: "engineer", label: "Инженер" }, { value: "superadmin", label: "Супер-админ" }]} />;
-    if (draft.role !== "foreman") return <span className="ag-autofill-value">Все проекты</span>;
-    return <DraftSelect autoOpen value={draft.assignedSiteId} options={currentProps.sites} placeholder="Проект" onChange={(assignedSiteId) => { currentProps.onPatchDraft(draft.key, { assignedSiteId }); setActiveEditor(null); }} />;
+    if (field === "role") return <CustomSelect className="ag-custom-select" value={draft.role} ariaLabel="Роль" autoOpen onChange={(role) => { currentProps.onPatchDraft(draft.key, userRoleChanges(role as UserRole, draft.assignedSiteId, draft.projectAccess)); setActiveEditor(null); }} options={[{ value: "foreman", label: "Прораб" }, { value: "engineer", label: "Инженер" }, { value: "viewer", label: "Просмотр" }, { value: "superadmin", label: "Супер-админ" }]} />;
+    if (draft.role === "superadmin") return <span className="ag-autofill-value">Все проекты</span>;
+    const projectAccess = userDraftProjectAccess(draft);
+    return <CustomSelect className="ag-custom-select" autoOpen ariaLabel="Доступ пользователя к проектам" value={projectAccess.mode === "all" ? "__all__" : projectAccess.siteIds.length === 1 ? String(projectAccess.siteIds[0]) : "__selected__"} options={[{ value: "__all__", label: "Все проекты" }, { value: "__selected__", label: projectAccess.siteIds.length > 1 ? `Выбрано проектов: ${projectAccess.siteIds.length} — настройте в правах доступа` : "Выберите проект" }, ...currentProps.sites.map(site => ({ value: String(site.id), label: site.name }))]} onChange={value => { if (value === "__selected__") { setActiveEditor(null); return; } const projectAccess: ProjectAccess = value === "__all__" ? { mode: "all", siteIds: [] } : { mode: "selected", siteIds: [Number(value)] }; currentProps.onPatchDraft(draft.key, { projectAccess, assignedSiteId: value === "__all__" ? "" : value }); setActiveEditor(null); }} />;
   }, [activeEditor, openCellEditor, propsRef]);
   const pasteIntoRow = useCallback(({ row, values }: SpreadsheetPastePayload<UserTableRow>) => {
     const currentProps = propsRef.current;
@@ -2224,15 +2233,17 @@ export function UserAgGrid(props: UserGridProps) {
     if (values.fullName !== undefined) changes.fullName = values.fullName;
     if (values.email !== undefined) changes.email = values.email;
     if (values.role !== undefined) {
-      const pastedRole = normalizeSearch(values.role);
-      const role: UserRole | null = pastedRole === "прораб" || pastedRole === "foreman" ? "foreman" : pastedRole === "инженер" || pastedRole === "engineer" ? "engineer" : pastedRole === "супер-админ" || pastedRole === "superadmin" || pastedRole === "администратор" ? "superadmin" : null;
+      const role = pastedUserRole(values.role);
       if (!role) return false;
       changes.role = role;
-      if (role !== "foreman") changes.assignedSiteId = "";
+      Object.assign(changes, userRoleChanges(role, row.draft?.assignedSiteId ?? String(row.user?.assignedSiteId ?? ""), row.draft?.projectAccess ?? row.user?.projectAccess));
     }
     const draft = currentProps.drafts.find((candidate) => candidate.key === row.draft?.key) ?? row.draft;
     const currentRole = changes.role ?? draft?.role ?? row.user?.role;
-    if (values.site !== undefined && currentRole === "foreman") changes.assignedSiteId = pastedOptionId(currentProps.sites, values.site);
+    if (values.site !== undefined && currentRole && currentRole !== "superadmin") {
+      if (values.site.trim().toLocaleLowerCase("ru-RU") === "все проекты") { changes.projectAccess = { mode: "all", siteIds: [] }; changes.assignedSiteId = ""; }
+      else { const id = pastedOptionId(currentProps.sites, values.site); if (!id) return false; changes.projectAccess = { mode: "selected", siteIds: [Number(id)] }; changes.assignedSiteId = id; }
+    }
     if (!Object.keys(changes).length) return false;
     if (row.kind === "entry" && row.user) currentProps.onEdit(row.user, changes);
     else if (draft) currentProps.onPatchDraft(draft.key, changes);

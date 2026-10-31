@@ -1,4 +1,6 @@
 import type { AuthUser } from "./auth";
+import { canAccessProject, canViewPendingReportsFor } from "./roles.ts";
+export { canViewPendingReportsFor };
 import type { PersonnelReportDraftRow, PersonnelReportRowValidationIssue, PersonnelReportStatus, PersonnelReportTransitionRequest } from "./personnelReportTypes";
 
 export class PersonnelReportError extends Error {
@@ -15,7 +17,7 @@ export class PersonnelReportError extends Error {
   }
 }
 
-type Actor = Pick<AuthUser, "id" | "role" | "assignedSiteId" | "permissions">;
+type Actor = Pick<AuthUser, "id" | "role" | "assignedSiteId" | "permissions"> & Partial<Pick<AuthUser, "projectAccess" | "canViewPendingReports">>;
 type ReportIdentity = { siteId: number; ownerUserId: number; status: PersonnelReportStatus; revision: number };
 
 export function validPersonnelReportDate(value: unknown): value is string {
@@ -25,11 +27,11 @@ export function validPersonnelReportDate(value: unknown): value is string {
 }
 
 export function canReviewPersonnelReport(user: Actor) {
-  return user.role !== "foreman" && Boolean(user.permissions.workers_report?.update);
+  return (user.role === "engineer" || user.role === "superadmin") && Boolean(user.permissions.workers_report?.update);
 }
 
 export function assertPersonnelReportSiteAccess(user: Actor, siteId: number) {
-  if (!user.permissions.workers_report?.view || (user.role === "foreman" && user.assignedSiteId !== siteId)) {
+  if (!user.permissions.workers_report?.view || !canAccessProject(user, siteId)) {
     throw new PersonnelReportError("Нет доступа к отчётам этого проекта.", 403, "REPORT_FORBIDDEN");
   }
 }
@@ -51,6 +53,7 @@ export function assertPersonnelReportRevision(actual: number, expected: unknown)
 }
 
 export function assertCanSavePersonnelReport(user: Actor, report?: ReportIdentity) {
+  if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   if (!report) {
     if (!user.permissions.workers_report?.create) throw new PersonnelReportError("Нет права создавать отчёты.", 403, "REPORT_FORBIDDEN");
     return;
@@ -63,6 +66,7 @@ export function assertCanSavePersonnelReport(user: Actor, report?: ReportIdentit
 }
 
 export function nextPersonnelReportStatus(user: Actor, report: ReportIdentity, action: PersonnelReportTransitionRequest["action"], comment = ""): PersonnelReportStatus {
+  if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   assertPersonnelReportOwner(user, report);
   if (!user.permissions.workers_report?.update) throw new PersonnelReportError("Нет права изменять отчёты.", 403, "REPORT_FORBIDDEN");
   if ((action === "approve" || action === "reject") && !canReviewPersonnelReport(user)) {

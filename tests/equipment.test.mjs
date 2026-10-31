@@ -143,7 +143,7 @@ test("builds equipment accounting from a shared registry and daily entries", asy
 
   assert.match(api, /getAuthUser\(request\)/);
   assert.match(api, /viewMode === "timesheet"[\s\S]*"equipment_timesheet"/);
-  assert.match(api, /canEditTimesheet: hasPermission\(authUser\.permissions, "equipment_timesheet", "create"\)/);
+  assert.match(api, /canEditTimesheet: may\("equipment_timesheet", "create"\)/);
   assert.match(api, /authUser\.role === "foreman"/);
   assert.doesNotMatch(api, /workDate\s*(?:===|!==|>=|<=|>|<)\s*todayInMoscow\(\)/);
   assert.match(api, /validateReferenceIds/);
@@ -334,10 +334,10 @@ test("separates the daily equipment report into foreman contributions", async ()
   assert.match(schema, /export const equipmentReportContributions = pgTable\("equipment_report_contributions"/);
   assert.match(schema, /equipmentEntries[\s\S]*responsibleUserId: integer\("responsible_user_id"\)/);
   assert.match(migration, /CREATE TABLE IF NOT EXISTS "equipment_report_contributions"/);
-  assert.match(api, /const siteId = authUser\.role === "foreman" \? authUser\.assignedSiteId! : requestedSiteId/);
-  assert.match(api, /canCreateDaily: hasPermission\(authUser\.permissions, "equipment_report", "create"\)/);
-  assert.match(api, /canUpdateDaily: hasPermission\(authUser\.permissions, "equipment_report", "update"\)/);
-  assert.match(api, /canDeleteDaily: hasPermission\(authUser\.permissions, "equipment_report", "delete"\)/);
+  assert.match(api, /!canAccessProject\(authUser, requestedSiteId\)/);
+  assert.match(api, /canCreateDaily: may\("equipment_report", "create"\)/);
+  assert.match(api, /canUpdateDaily: may\("equipment_report", "update"\)/);
+  assert.match(api, /canDeleteDaily: may\("equipment_report", "delete"\)/);
   assert.match(api, /hasPermission\(authUser\.permissions, "equipment_report", entryId \? "update" : "create"\)/);
   assert.match(api, /payload\.action === "delete-entry"[\s\S]*hasPermission\(authUser\.permissions, "equipment_report", "delete"\)/);
   assert.doesNotMatch(api, /Прораб[^\n]*(?:сегодняшн|только сегодня)/i);

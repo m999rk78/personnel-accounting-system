@@ -176,6 +176,13 @@
       "when": 1793548800000,
       "tag": "0024_equipment_report_approval",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1793635200000,
+      "tag": "0025_user_project_access",
+      "breakpoints": true
     }
   ]
 }

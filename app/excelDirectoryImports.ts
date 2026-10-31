@@ -13,7 +13,7 @@ function importSiteId(siteId: number) {
 }
 
 /** Validate and assign the complete workbook in one transaction, preserving other projects. */
-export async function importProjectEmployeesExcel(database: PostgresDatabase, siteId: number, inputIds: unknown) {
+export async function importProjectEmployeesExcel(database: PostgresDatabase, siteId: number, inputIds: unknown, beforeAssign?: (db: Pick<PostgresDatabase, "prepare">, employeeIds: number[]) => Promise<void>) {
   importSiteId(siteId);
   const employeeIds = importIds(inputIds);
   return database.transaction(async db => {
@@ -21,6 +21,7 @@ export async function importProjectEmployeesExcel(database: PostgresDatabase, si
     if (!site) throw new Error("Проект не найден или закрыт.");
     const employees = await db.prepare("SELECT id FROM employees WHERE id = ANY(?::integer[]) AND active = 1 ORDER BY id FOR UPDATE").bind(employeeIds).all<{ id: number }>();
     if (employees.results.length !== employeeIds.length) throw new Error("Один из сотрудников не найден или уже архивирован. Обновите справочник и повторите импорт.");
+    await beforeAssign?.(db, employeeIds);
     const assigned = await db.prepare("SELECT employee_id AS employeeId FROM employee_project_assignments WHERE employee_id = ANY(?::integer[]) AND site_id = ? AND active = 1 FOR UPDATE").bind(employeeIds, siteId).all<{ employeeId: number }>();
     const existing = new Set(assigned.results.map(row => row.employeeId));
     const added = employeeIds.filter(id => !existing.has(id));

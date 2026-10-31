@@ -9,7 +9,7 @@ import {
 } from "../app/equipmentReportWorkflow.ts";
 
 const foreman = { id: 7, role: "foreman", assignedSiteId: 1, permissions: rolePermissionTemplate("foreman") };
-const engineer = { id: 8, role: "engineer", assignedSiteId: null, permissions: rolePermissionTemplate("engineer") };
+const engineer = { id: 8, role: "engineer", assignedSiteId: 1, projectAccess: { mode: "selected", siteIds: [1] }, permissions: rolePermissionTemplate("engineer") };
 const report = { siteId: 1, ownerUserId: foreman.id, status: "draft", revision: 2 };
 const completeRow = { equipmentId: 11, shiftId: 1, zoneId: 1, mainWorkTypeId: 1, subworkTypeId: 1, hours: 6, note: "" };
 const code = (value) => (error) => error.code === value;
@@ -128,4 +128,27 @@ test("only the author can reopen submitted equipment reports, including reviewin
 test("legacy entry publishing endpoints are blocked without blocking catalog or timesheet writes", () => {
   for (const action of ["save-entry", "delete-entry", "import-entries", "submit-daily-report"]) assert.equal(isLegacyEquipmentReportMutation(action), true);
   for (const action of ["save-timesheet-mark", "save-unit", "delete-unit", "import-units", "assign-unit-project", "remove-unit-project", undefined, null, 10]) assert.equal(isLegacyEquipmentReportMutation(action), false);
+});
+
+
+test("equipment engineers review every owner in their assigned project, while all-project engineers can review all projects", () => {
+  const ownProject = { ...report, status: "submitted", ownerUserId: 99 };
+  assert.doesNotThrow(() => assertEquipmentReportSiteAccess(engineer, 1));
+  assert.equal(nextEquipmentReportStatus(engineer, ownProject, "approve"), "approved");
+  assert.doesNotThrow(() => assertCanSaveEquipmentReport(engineer, { ...ownProject, status: "approved" }));
+  const foreign = { ...ownProject, siteId: 2 };
+  // Even fully enabled resource overrides never remove a role's project boundary.
+  const enabled = { ...engineer, permissions: rolePermissionTemplate("superadmin") };
+  for (const action of ["submit", "approve", "reject", "reopen"]) {
+    assert.throws(() => nextEquipmentReportStatus(enabled, foreign, action, "Причина"), code("REPORT_FORBIDDEN"));
+  }
+  for (const status of ["draft", "submitted", "approved", "rejected"]) {
+    assert.throws(() => assertCanSaveEquipmentReport(enabled, { ...foreign, status }), code("REPORT_FORBIDDEN"));
+  }
+  assert.throws(() => assertEquipmentReportSiteAccess({ ...engineer, projectAccess: { mode: "selected", siteIds: [] } }, 1), code("REPORT_FORBIDDEN"));
+  const allProjectEngineer = { ...engineer, assignedSiteId: null, projectAccess: { mode: "all", siteIds: [] } };
+  assert.doesNotThrow(() => assertEquipmentReportSiteAccess(allProjectEngineer, 2));
+  assert.equal(nextEquipmentReportStatus(allProjectEngineer, foreign, "approve"), "approved");
+  assert.equal(nextEquipmentReportStatus(allProjectEngineer, foreign, "reject", "Уточните работы"), "rejected");
+  assert.doesNotThrow(() => assertCanSaveEquipmentReport(allProjectEngineer, { ...foreign, status: "approved" }));
 });

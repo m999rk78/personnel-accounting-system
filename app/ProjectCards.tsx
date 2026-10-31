@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { UserRole } from "./roles";
+import type { ProjectAccessUser } from "./roles";
+import { projectForemanCounts } from "./projectUserUsage";
 
 type Project = { id: number; name: string; code: string; timezone: string };
 type ProjectDraft = { key: string; id?: number; name: string; code: string; timezone: string };
 type ProjectEmployee = { siteId: number | null };
-type ProjectUser = { role: UserRole; assignedSiteId: number | null };
+type ProjectUser = ProjectAccessUser;
 
 type ProjectCardsProps = {
   rows: Project[];
@@ -91,13 +92,11 @@ export function ProjectCards({ rows, drafts, employees, users, projectStats, cur
   }, [employees, projectStats]);
   const foremanCounts = useMemo(() => {
     if (projectStats) return new Map(projectStats.map(stats => [stats.siteId, stats.foremanCount]));
-    const counts = new Map<number, number>();
-    users.forEach((user) => { if (user.role === "foreman" && user.assignedSiteId) counts.set(user.assignedSiteId, (counts.get(user.assignedSiteId) ?? 0) + 1); });
-    return counts;
-  }, [users, projectStats]);
+    return projectForemanCounts(rows, users);
+  }, [rows, users, projectStats]);
   const visibleRows = useMemo(() => rows.filter((project) => !search || normalize(project.name).includes(search)), [rows, search]);
-  const assignedEmployees = employees.filter((employee) => employee.siteId && rows.some((project) => project.id === employee.siteId)).length;
-  const assignedForemen = users.filter((user) => user.role === "foreman" && user.assignedSiteId && rows.some((project) => project.id === user.assignedSiteId)).length;
+  const assignedEmployees = rows.reduce((sum, project) => sum + (employeeCounts.get(project.id) ?? 0), 0);
+  const assignedForemen = rows.reduce((sum, project) => sum + (foremanCounts.get(project.id) ?? 0), 0);
 
   function toggleProject(id: number) {
     if (!mayDelete || editorOpen) return;
@@ -106,7 +105,7 @@ export function ProjectCards({ rows, drafts, employees, users, projectStats, cur
 
   return <section className="project-cards-shell" aria-label="Портфель проектов">
     <div className="project-cards-overview">
-      <div className="project-cards-caption"><strong>Объекты компании</strong><span><b>{rows.length}</b> проекта · <b>{assignedEmployees}</b> сотрудников · <b>{assignedForemen}</b> прораба</span></div>
+      <div className="project-cards-caption"><strong>Объекты компании</strong><span><b>{rows.length}</b> проекта · <b>{assignedEmployees}</b> назначений сотрудников · <b>{assignedForemen}</b> назначений прорабов</span></div>
       <label className="project-cards-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Найти проект…" aria-label="Найти проект" />{query && <button type="button" onClick={() => setQuery("")} aria-label="Очистить поиск">×</button>}</label>
     </div>
 

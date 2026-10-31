@@ -5,7 +5,7 @@ import { equipmentUnavailableReason } from "./equipmentAvailability";
 import type { EquipmentReport, EquipmentReportApprovedEntry, EquipmentReportAvailabilityMark, EquipmentReportData, EquipmentReportEntrySaveRequest, EquipmentReportRequest, EquipmentReportRow, EquipmentReportRowValidationIssue, EquipmentReportValidationIssue, EquipmentReportValidationRequest, EquipmentReportValidationResult } from "./equipmentReportTypes";
 import {
   assertCanSaveEquipmentReport, assertEquipmentReportHours, assertEquipmentReportOwner,
-  assertEquipmentReportRevision, assertEquipmentReportSiteAccess, canReviewEquipmentReport,
+  assertEquipmentReportRevision, assertEquipmentReportSiteAccess, canReviewEquipmentReport, canViewPendingReportsFor,
   completeEquipmentReportRows, nextEquipmentReportStatus, normalizeEquipmentReportRows,
   EquipmentReportError, validEquipmentReportDate, equipmentReportRowChanged, inspectEquipmentReportRows,
   collectEquipmentReportHourIssues, type NormalizedEquipmentReportRow,
@@ -110,10 +110,13 @@ export async function listEquipmentReports(db: Executor, user: AuthUser, siteId:
   }
   const rangeFilter = `${from ? " AND report.work_date >= ?" : ""}${to ? " AND report.work_date <= ?" : ""}`;
   const ownFilter = user.role === "foreman" ? " AND report.owner_user_id = ?" : "";
+  const hidePending = !canViewPendingReportsFor(user);
+  const statusFilter = hidePending ? " AND report.status = 'approved'" : "";
   const parameters = [siteId, ...(from ? [from] : []), ...(to ? [to] : []), ...(user.role === "foreman" ? [user.id] : [])];
-  const headers = await db.prepare(`${HEADER_SELECT} WHERE report.site_id = ? ${rangeFilter} ${ownFilter}
+  const headers = await db.prepare(`${HEADER_SELECT} WHERE report.site_id = ? ${rangeFilter} ${ownFilter} ${statusFilter}
     ORDER BY report.work_date DESC, report.id DESC LIMIT 5001`).bind(...parameters).all<Header>();
-  if (headers.results.length > 5000) throw new EquipmentReportError("В выбранном периоде слишком много отчётов. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
+  const visibleHeaders = hidePending ? headers.results.filter(report => report.status === "approved") : headers.results;
+  if (visibleHeaders.length > 5000) throw new EquipmentReportError("В выбранном периоде слишком много отчётов. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
   const entryFilter = `${from ? " AND entry.work_date >= ?" : ""}${to ? " AND entry.work_date <= ?" : ""}${user.role === "foreman" ? " AND entry.responsible_user_id = ?" : ""}`;
   const entries = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
     entry.equipment_id AS equipmentId, entry.shift_id AS shiftId, entry.zone_id AS zoneId,
@@ -139,19 +142,19 @@ export async function listEquipmentReports(db: Executor, user: AuthUser, siteId:
     .bind(...parameters).all<EquipmentReportApprovedEntry>();
   for (const entry of entries.results) if (!entry.equipmentName) entry.equipmentName = equipmentExcelName(entry);
   if (entries.results.length > 20000) throw new EquipmentReportError("В выбранном периоде больше 20 000 строк. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
-  const rows = headers.results.length ? await reportRowsStatement(db, headers.results.map((report) => report.id)).all<EquipmentReportRow>() : { results: [] as EquipmentReportRow[] };
+  const rows = visibleHeaders.length ? await reportRowsStatement(db, visibleHeaders.map((report) => report.id)).all<EquipmentReportRow>() : { results: [] as EquipmentReportRow[] };
   if (rows.results.length > 20000) throw new EquipmentReportError("В выбранном периоде больше 20 000 строк черновиков. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
   const byReport = new Map<number, EquipmentReportRow[]>();
   for (const row of rows.results) {
     if (!byReport.has(row.reportId)) byReport.set(row.reportId, []);
     byReport.get(row.reportId)!.push(row);
   }
-  const availabilityMarks = await db.prepare(`SELECT equipment_id AS equipmentId, work_date AS workDate,
+  const availabilityMarks = user.role === "viewer" && !user.permissions.equipment_timesheet?.view ? { results: [] as EquipmentReportAvailabilityMark[] } : await db.prepare(`SELECT equipment_id AS equipmentId, work_date AS workDate,
       productive_hours AS productiveHours, downtime_hours AS downtimeHours, note
     FROM equipment_timesheet_marks WHERE site_id = ? ${from ? "AND work_date >= ?" : ""} ${to ? "AND work_date <= ?" : ""}
     ORDER BY work_date DESC, equipment_id LIMIT 20001`).bind(siteId, ...(from ? [from] : []), ...(to ? [to] : [])).all<EquipmentReportAvailabilityMark>();
   if (availabilityMarks.results.length > 20000) throw new EquipmentReportError("В выбранном периоде слишком много отметок техники. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
-  return { reports: headers.results.map((report) => ({ ...report, rows: byReport.get(report.id) ?? [] })), entries: entries.results, availabilityMarks: availabilityMarks.results, canReview: canReviewEquipmentReport(user), from, to };
+  return { reports: visibleHeaders.map((report) => ({ ...report, ...(hidePending ? { reviewComment: "" } : {}), rows: byReport.get(report.id) ?? [] })), entries: entries.results, availabilityMarks: availabilityMarks.results, canReview: canReviewEquipmentReport(user), from, to };
 }
 
 async function inspectReferences(db: Executor, siteId: number, rows: NormalizedEquipmentReportRow[], historical: ReadonlyMap<number, EquipmentReportRow> = new Map()) {
@@ -224,6 +227,7 @@ async function checkHours(db: Executor, siteId: number, workDate: string, rows: 
 
 /** A read-only preview; authoritative mutations always run the same final guards again. */
 export async function validateEquipmentReportSubmissions(db: Executor, user: AuthUser, payload: EquipmentReportValidationRequest): Promise<EquipmentReportValidationResult> {
+  if (user.role === "viewer") throw new EquipmentReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   if (!positiveId(payload.siteId) || !Array.isArray(payload.reports) || !payload.reports.length || payload.reports.length > 100) throw new EquipmentReportError("Укажите проект и от 1 до 100 отчётов для проверки.");
   const keys = new Set<string>(); const reportIds = new Set<number>(); const newDates = new Set<string>();
   let total = 0;
@@ -380,6 +384,7 @@ async function publishEquipmentReportRows(db: Executor, user: AuthUser, report: 
 
 /** Older approved entries have no draft header. Correct them with their own optimistic revision. */
 export async function mutateEquipmentReportEntry(database: PostgresDatabase, user: AuthUser, payload: EquipmentReportEntrySaveRequest): Promise<EquipmentReportApprovedEntry> {
+  if (user.role === "viewer") throw new EquipmentReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   return database.transaction(async db => {
     if (!canReviewEquipmentReport(user)) throw new EquipmentReportError("Исправлять подтверждённые записи может только инженер.", 403, "REPORT_FORBIDDEN");
     if (!positiveId(payload.entryId) || !positiveId(payload.siteId) || !validEquipmentReportDate(payload.workDate)) throw new EquipmentReportError("Укажите запись, проект и дату отчёта.");
@@ -409,6 +414,7 @@ export async function mutateEquipmentReportEntry(database: PostgresDatabase, use
 }
 
 export async function mutateEquipmentReport(database: PostgresDatabase, user: AuthUser, payload: Exclude<EquipmentReportRequest, EquipmentReportEntrySaveRequest | EquipmentReportValidationRequest>): Promise<EquipmentReport> {
+  if (user.role === "viewer") throw new EquipmentReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   return database.transaction(async (db) => {
     if (payload.action === "save") {
       if (!positiveId(payload.siteId) || !validEquipmentReportDate(payload.workDate)) throw new EquipmentReportError("Укажите проект и корректную дату отчёта.");

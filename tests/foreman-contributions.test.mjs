@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import ts from "typescript";
+import { hasPermission, rolePermissionTemplate } from "../app/permissionModel.ts";
+import { canAccessProject, hasRestrictedProjectAccess } from "../app/roles.ts";
 
 const root = new URL("../", import.meta.url);
 
@@ -54,13 +57,13 @@ test("returns ownership, revision, shared usage, and foreman progress with repor
 
   assert.match(api, /pe\.responsible_user_id AS responsibleUserId, responsible\.full_name AS responsibleUserName, pe\.revision/);
   assert.match(api, /const responsibleUserId = authUser\.role === "foreman" \? authUser\.id : undefined/);
-  assert.match(api, /function employeeUsageStatement\(workDate: string, siteId: number\)/);
+  assert.match(api, /function employeeUsageStatement\(workDate: string, siteId: number, user: AuthUser\)/);
+  assert.match(api, /employeeUsageStatement\(workDate, siteId, authUser\)/);
   assert.match(api, /assignment\.site_id = \? AND assignment\.active = 1[\s\S]*UNION[\s\S]*historical\.site_id = \?/);
-  assert.match(api, /GROUP BY pe\.employee_id, pe\.responsible_user_id, responsible\.full_name/);
   assert.match(api, /function foremanProgressStatement\(siteId: number, workDate: string\)/);
   assert.match(api, /contribution\.status = 'submitted' THEN 'submitted'[\s\S]*contribution\.status = 'draft' THEN 'draft' ELSE 'not_started'/);
   assert.match(api, /employeeUsage: employeeUsage\.results/);
-  assert.match(api, /foremanProgress: foremanProgress\.results/);
+  assert.match(api, /foremanProgress:.*foremanProgress\.results/);
 
   const ownership = section(api, "function assertPlacementOwnership", "function assertEntryRevisions");
   assert.match(ownership, /entry\.responsibleUserId !== user\.id/);
@@ -80,7 +83,7 @@ test("allows permitted historical report actions without weakening foreman scope
 
   const permissionGuard = section(api, "function canManagePlacement", "function canRunAction");
   assert.match(permissionGuard, /hasPermission\(user\.permissions, "workers_report", action\)/);
-  assert.match(permissionGuard, /user\.role !== "foreman" \|\| user\.assignedSiteId === siteId/);
+  assert.match(permissionGuard, /canAccessProject\(user, siteId\)/);
   assert.doesNotMatch(permissionGuard, /todayInMoscow|workDate\s*[!=]==?\s*today/);
 
   assert.match(api, /canManagePlacement\(authUser, asPositiveInteger\(row\.siteId\) \?\? undefined, row\.workDate, "create"\)/);
@@ -96,6 +99,44 @@ test("allows permitted historical report actions without weakening foreman scope
   assert.match(clientPermissions, /const canDeleteReportDate = mayDeleteWorkersReport/);
   assert.match(clientPermissions, /const rosterMode = useDailyRosterReport && workDate === initialToday && canEditDate/);
   assert.match(app, /<ReportGridFooter[\s\S]*canCreate=\{canCreateReportDate\}[\s\S]*canUpdate=\{canUpdateReportDate\}[\s\S]*canDelete=\{canDeleteReportDate\}/);
+});
+
+test("historical placement actions keep engineer project limits independent of resource overrides", async () => {
+  const api = await source("app/api/data/route.ts");
+  const guard = section(api, "function canManagePlacement", "function canRunAction");
+  const code = ts.transpileModule(guard, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const canManagePlacement = new Function("hasPermission", "validDate", "canAccessProject", `${code}\nreturn canManagePlacement;`)(hasPermission, value => /^\d{4}-\d{2}-\d{2}$/.test(value), canAccessProject);
+  const actor = role => ({ role, assignedSiteId: role === "foreman" ? 1 : null, projectAccess: { mode: "selected", siteIds: [1] }, permissions: rolePermissionTemplate("superadmin") });
+  for (const role of ["engineer", "foreman"]) for (const action of ["view", "create", "update", "delete"]) {
+    assert.equal(canManagePlacement(actor(role), 1, "2026-09-01", action), true);
+    assert.equal(canManagePlacement(actor(role), 2, "2026-09-01", action), false);
+    assert.equal(canManagePlacement({ ...actor(role), assignedSiteId: null, projectAccess: { mode: "selected", siteIds: [] } }, 1, "2026-09-01", action), false);
+  }
+  for (const role of ["engineer", "superadmin"]) assert.equal(canManagePlacement({ ...actor(role), projectAccess: { mode: "all", siteIds: [] } }, 2, "2026-09-01"), true);
+  const restricted = actor("engineer");
+  restricted.permissions.workers_report.update = false;
+  assert.equal(canManagePlacement(restricted, 1, "2026-09-01"), false);
+  assert.equal(canManagePlacement(actor("engineer"), 1, "invalid"), false);
+});
+
+test("shared hour warnings anonymize owners from other projects for scoped roles", async () => {
+  const api = await source("app/api/data/route.ts");
+  const statement = section(api, "function employeeUsageStatement", "function reportTimesheetMarksStatement");
+  const code = ts.transpileModule(statement, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const env = { DB: { prepare(sql) { return { bind(...values) { return { sql, values }; } }; } } };
+  const employeeUsageStatement = new Function("env", "hasRestrictedProjectAccess", `${code}\nreturn employeeUsageStatement;`)(env, hasRestrictedProjectAccess);
+  for (const actor of [{ role: "foreman", assignedSiteId: 1 }, { role: "engineer", projectAccess: { mode: "selected", siteIds: [1] } }, { role: "viewer", projectAccess: { mode: "selected", siteIds: [1] } }, { role: "engineer" }, { role: "superadmin" }]) {
+    const { sql, values } = employeeUsageStatement("2026-10-30", 1, actor);
+    assert.deepEqual(values, ["2026-10-30", 1, 1, "2026-10-30"]);
+    if (hasRestrictedProjectAccess(actor)) {
+      assert.match(sql, /CASE WHEN pe\.site_id = 1 THEN pe\.responsible_user_id ELSE NULL END/);
+      assert.match(sql, /CASE WHEN pe\.site_id = 1 THEN COALESCE\(responsible\.full_name, 'Без ответственного'\) ELSE 'Другой проект' END/);
+    } else {
+      assert.match(sql, /CASE WHEN TRUE THEN pe\.responsible_user_id ELSE NULL END/);
+    }
+    assert.match(sql, /SUM\(pe\.hours\) AS hours/);
+    assert.match(sql, /GROUP BY pe\.employee_id, CASE WHEN/);
+  }
 });
 
 test("serializes daily-hour mutations and reports a conflict instead of overspending 10 hours", async () => {

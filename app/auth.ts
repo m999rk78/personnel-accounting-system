@@ -2,7 +2,8 @@ import { getDatabase } from "../db/client";
 import nodemailer from "nodemailer";
 import { loadEffectivePermissions } from "./permissions";
 import type { PermissionSet } from "./permissionModel";
-import type { UserRole } from "./roles";
+import { isUserRole, type ProjectAccess, type UserRole } from "./roles";
+import { ensureUserProjectAccessSchema, loadUserProjectAccess } from "./projectAccessServer";
 
 export type AuthUser = {
   id: number;
@@ -10,6 +11,8 @@ export type AuthUser = {
   email: string;
   role: UserRole;
   assignedSiteId: number | null;
+  projectAccess?: ProjectAccess;
+  canViewPendingReports?: boolean;
   permissions: PermissionSet;
   permissionsCustomized: boolean;
 };
@@ -96,6 +99,7 @@ async function initializeAuthSchema() {
     db.prepare("CREATE INDEX IF NOT EXISTS idx_login_attempts_key_time ON login_attempts(attempt_key, created_at)"),
   ]);
   await db.prepare("UPDATE app_users SET role = 'superadmin', assigned_site_id = NULL WHERE role = 'office'").run();
+  await ensureUserProjectAccessSchema(db);
 }
 
 type AuthGlobals = typeof globalThis & {
@@ -153,16 +157,18 @@ function cookieValue(request: Request, name: string) {
 
 export async function getAuthUser(request: Request): Promise<AuthUser | null> {
   await ensureAuthSchema();
+  await ensureUserProjectAccessSchema();
   const token = cookieValue(request, SESSION_COOKIE);
   if (!token) return null;
   const tokenHash = await sha256(token);
-  const user = await database().prepare(`SELECT u.id, u.full_name AS fullName, u.email, CASE WHEN u.role = 'office' THEN 'superadmin' ELSE u.role END AS role, u.assigned_site_id AS assignedSiteId
+  const user = await database().prepare(`SELECT u.id, u.full_name AS fullName, u.email, CASE WHEN u.role = 'office' THEN 'superadmin' WHEN u.role = 'admin' THEN 'engineer' ELSE u.role END AS role, u.assigned_site_id AS assignedSiteId
     FROM user_sessions s JOIN app_users u ON u.id = s.user_id
     WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > CURRENT_TIMESTAMP AND u.active = 1`)
     .bind(tokenHash).first<Omit<AuthUser, "permissions" | "permissionsCustomized">>();
-  if (!user) return null;
-  const access = await loadEffectivePermissions(user.id, user.role);
-  return { ...user, ...access };
+  if (!user || !isUserRole(user.role)) return null;
+  const projectSettings = await loadUserProjectAccess(user);
+  const access = await loadEffectivePermissions(user.id, user.role, projectSettings.projectAccess);
+  return { ...user, ...access, ...projectSettings };
 }
 
 export async function createSession(userId: number, request: Request) {

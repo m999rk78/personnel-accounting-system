@@ -1,4 +1,4 @@
-import type { UserRole } from "./roles";
+import { requiresAssignedProject, type ProjectAccess, type UserRole } from "./roles.ts";
 
 export const PERMISSION_ACTIONS = ["view", "create", "update", "delete"] as const;
 export type PermissionAction = typeof PERMISSION_ACTIONS[number];
@@ -84,6 +84,10 @@ export function rolePermissionTemplate(role: UserRole): PermissionSet {
     grant(set, "project_directories", ["view"]);
     return set;
   }
+  if (role === "viewer") {
+    for (const resource of ["workers_report", "equipment_report", "workers_timesheet", "equipment_timesheet"] as PermissionResource[]) grant(set, resource, ["view"]);
+    return set;
+  }
   if (role === "engineer") {
     for (const resource of ["workers_report", "equipment_report", "workers_timesheet", "equipment_timesheet", "employees", "equipment_registry", "project_employees", "project_equipment", "project_directories"] as PermissionResource[]) grant(set, resource);
     for (const resource of ["positions", "system_users", "projects", "audit_log", "access_rights"] as PermissionResource[]) grant(set, resource, ["view"]);
@@ -112,6 +116,21 @@ export function normalizePermissionSet(input: Partial<Record<PermissionResource,
 
 export function hasPermission(permissions: PermissionSet, resource: PermissionResource, action: PermissionAction) {
   return Boolean(permissions[resource]?.[action]);
+}
+
+/** A project role cannot turn a global setting or another account into a scope bypass. */
+export function roleAllowsPermission(role: UserRole, resource: PermissionResource, action: PermissionAction, projectAccess?: ProjectAccess) {
+  if (role === "viewer") return action === "view";
+  return role === "superadmin" || !(requiresAssignedProject(role) || projectAccess?.mode === "selected") || action === "view"
+    || !(["positions", "projects", "system_users", "access_rights"] as PermissionResource[]).includes(resource);
+}
+
+export function limitPermissionsToRole(role: UserRole, permissions: PermissionSet, projectAccess?: ProjectAccess): PermissionSet {
+  const result = normalizePermissionSet(permissions);
+  for (const resource of PERMISSION_RESOURCES) for (const action of PERMISSION_ACTIONS) {
+    if (!roleAllowsPermission(role, resource, action, projectAccess)) result[resource][action] = false;
+  }
+  return result;
 }
 
 export function permissionSetsEqual(left: PermissionSet, right: PermissionSet) {

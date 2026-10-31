@@ -17,7 +17,15 @@ const { PostgresDatabase, PostgresStatement } = await import(await load("../db/c
 const pool = new pg.Pool({ ...(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : {}), ssl: false, max: 1, connectionTimeoutMillis: 5000 });
 const connection = await pool.connect();
 const database = new PostgresDatabase(pool);
-const executor = { prepare: (sql) => new PostgresStatement(database, sql, [], connection) };
+// Production parallel reads use a pool. This rollback fixture deliberately has
+// one connection, so serialize them instead of relying on pg's deprecated queue.
+let fixtureQueue = Promise.resolve();
+const serializedConnection = { query(...args) {
+  const result = fixtureQueue.then(() => connection.query(...args));
+  fixtureQueue = result.catch(() => undefined);
+  return result;
+} };
+const executor = { prepare: (sql) => new PostgresStatement(database, sql, [], serializedConnection) };
 const scoped = { ...executor, async transaction(callback) {
   await connection.query("SAVEPOINT reorder_operation");
   try { const result = await callback(executor); await connection.query("RELEASE SAVEPOINT reorder_operation"); return result; }
@@ -25,7 +33,7 @@ const scoped = { ...executor, async transaction(callback) {
 } };
 globalThis.tableOrderTestDatabase = scoped;
 const dbModule = `data:text/javascript,${encodeURIComponent("export const getDatabase = () => globalThis.tableOrderTestDatabase;")}`;
-const server = await load("../app/tableRowOrderServer.ts", { "../db/client": dbModule, "./permissionModel": new URL("../app/permissionModel.ts", import.meta.url).href, "./workTypesRowOrder": new URL("../app/workTypesRowOrder.ts", import.meta.url).href, "./personnelReportRowOrder": new URL("../app/personnelReportRowOrder.ts", import.meta.url).href, "./equipmentReportRowOrder": new URL("../app/equipmentReportRowOrder.ts", import.meta.url).href, "./tableRowOrder": new URL("../app/tableRowOrder.ts", import.meta.url).href });
+const server = await load("../app/tableRowOrderServer.ts", { "../db/client": dbModule, "./roles.ts": new URL("../app/roles.ts", import.meta.url).href, "./permissionModel": new URL("../app/permissionModel.ts", import.meta.url).href, "./workTypesRowOrder": new URL("../app/workTypesRowOrder.ts", import.meta.url).href, "./personnelReportRowOrder": new URL("../app/personnelReportRowOrder.ts", import.meta.url).href, "./equipmentReportRowOrder": new URL("../app/equipmentReportRowOrder.ts", import.meta.url).href, "./tableRowOrder": new URL("../app/tableRowOrder.ts", import.meta.url).href });
 const auth = `data:text/javascript,${encodeURIComponent("export const getAuthUser = async () => globalThis.tableOrderTestUser; export function assertSameOrigin(request) { if (request.headers.get('origin') !== new URL(request.url).origin) throw new Error('Invalid origin'); }")}`;
 const audit = `data:text/javascript,${encodeURIComponent("export const withAuditTrail = (request, handler) => handler(request);")}`;
 // This existing suite covers legacy/project/personnel scopes. The dedicated
@@ -142,7 +150,7 @@ try {
   globalThis.tableOrderTestUser = user("engineer");
   assert.equal((await move("positions", sites[0], [1], "start")).status, 403);
   globalThis.tableOrderTestUser = user("foreman", sites[0]);
-  assert.equal((await move("project-personnel", sites[1], [employees[0]], "start")).status, 400);
+  assert.equal((await move("project-personnel", sites[1], [employees[0]], "start")).status, 403);
   assert.equal((await move("employees", sites[0], [employees[0]], "start")).status, 403);
   assert.equal((await move("project-personnel", sites[0], employees, "end")).status, 200);
   console.log("Row order integration passed: persistence, multi-row moves, project isolation, all scopes, validation, and permissions.");

@@ -1,3 +1,5 @@
+import { projectEntitiesAllowed, scopedDataActionAllowed } from "../../projectScopedData";
+import { loadUserProjectAccess, saveUserProjectAccess } from "../../projectAccessServer";
 import { ensureProjectMastersSchema, syncProjectMasters } from "../../projectMasters";
 import { settingsReadPolicy } from "../../settingsReadPolicy";
 import { readOptionalBatch } from "../../readOptionalBatch";
@@ -10,7 +12,7 @@ import { assertSameOrigin, createInvitation, ensureAuthSchema, getAuthUser, send
 import { bitrix24ActionCooldown, type Bitrix24Action, type Bitrix24Cooldowns } from "../../bitrix24Cooldown";
 import { compareBitrixEmployees, fetchBitrixEmployeeSnapshot, normalizeBitrixText, selectBitrixEmployeesForImport, suggestBitrixEmployeeLinks, type BitrixEmployeeSnapshot, type BitrixLinkLocalEmployee, type EmployeeAvailabilityStatus } from "../../bitrix24Sync";
 import { hasPermission, type PermissionAction, type PermissionResource } from "../../permissionModel";
-import { canViewAllProjects, isUserRole, type UserRole } from "../../roles";
+import { accessibleProjectIds, canAccessProject, canViewAllProjects, hasRestrictedProjectAccess, requiresAssignedProject, isUserRole, visibleUserProjectAccess, type UserRole } from "../../roles";
 
 const env = { get DB() { return getDatabase(); } };
 type DatabaseExecutor = Pick<ReturnType<typeof getDatabase>, "prepare" | "batch" | "readBatch">;
@@ -79,6 +81,8 @@ type UserPayload = {
   email?: string;
   role?: UserRole;
   assignedSiteId?: number | null;
+  projectAccess?: unknown;
+  canViewPendingReports?: unknown;
   employmentType?: string;
   department?: string;
   position?: string;
@@ -619,7 +623,7 @@ function todayInMoscow() {
 function canManagePlacement(user: AuthUser, siteId: number | undefined, workDate: string | undefined, action: PermissionAction = "update") {
   if (!hasPermission(user.permissions, "workers_report", action)) return false;
   if (!workDate || !validDate(workDate)) return false;
-  return user.role !== "foreman" || user.assignedSiteId === siteId;
+  return canAccessProject(user, siteId);
 }
 
 function canRunAction(user: AuthUser, payload: UserPayload) {
@@ -764,9 +768,14 @@ function reportSubmissionStatement(siteId: number, workDate: string, responsible
   ) AS submitted`).bind(siteId, workDate);
 }
 
-function employeeUsageStatement(workDate: string, siteId: number) {
-  return env.DB.prepare(`SELECT pe.employee_id AS employeeId, pe.responsible_user_id AS responsibleUserId,
-    COALESCE(responsible.full_name, 'Без ответственного') AS responsibleUserName, SUM(pe.hours) AS hours
+function employeeUsageStatement(workDate: string, siteId: number, user: AuthUser) {
+  // Keep cross-project hour totals for conflict warnings without exposing other
+  // projects' responsible users to a project-scoped engineer or foreman.
+  const visibleOwner = hasRestrictedProjectAccess(user) ? `pe.site_id = ${siteId}` : "TRUE";
+  const ownerId = `CASE WHEN ${visibleOwner} THEN pe.responsible_user_id ELSE NULL END`;
+  const ownerName = `CASE WHEN ${visibleOwner} THEN COALESCE(responsible.full_name, 'Без ответственного') ELSE 'Другой проект' END`;
+  return env.DB.prepare(`SELECT pe.employee_id AS employeeId, ${ownerId} AS responsibleUserId,
+    ${ownerName} AS responsibleUserName, SUM(pe.hours) AS hours
     FROM placement_entries pe
     LEFT JOIN app_users responsible ON responsible.id = pe.responsible_user_id
     WHERE pe.work_date = ? AND pe.deleted_at IS NULL
@@ -778,8 +787,8 @@ function employeeUsageStatement(workDate: string, siteId: number) {
         SELECT historical.employee_id FROM placement_entries historical
         WHERE historical.site_id = ? AND historical.work_date = ? AND historical.deleted_at IS NULL
       )
-    GROUP BY pe.employee_id, pe.responsible_user_id, responsible.full_name
-    ORDER BY pe.employee_id, responsible.full_name`).bind(workDate, siteId, siteId, workDate);
+    GROUP BY pe.employee_id, ${ownerId}, ${ownerName}
+    ORDER BY pe.employee_id, ${ownerName}`).bind(workDate, siteId, siteId, workDate);
 }
 
 function reportTimesheetMarksStatement(siteId: number, workDate: string) {
@@ -802,10 +811,13 @@ function foremanProgressStatement(siteId: number, workDate: string) {
     LEFT JOIN placement_entries entry
       ON entry.responsible_user_id = foreman.id AND entry.site_id = ? AND entry.work_date = ? AND entry.deleted_at IS NULL
       AND UPPER(TRIM(entry.employment_type_snapshot)) = 'ОПР'
-    WHERE (foreman.active = 1 AND foreman.role = 'foreman' AND foreman.assigned_site_id = ?)
+    WHERE (foreman.active = 1 AND foreman.role = 'foreman' AND (
+      EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = foreman.id AND access.all_projects = 1)
+      OR EXISTS (SELECT 1 FROM user_project_access_sites grant_site WHERE grant_site.user_id = foreman.id AND grant_site.site_id = ?)
+      OR (NOT EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = foreman.id) AND foreman.assigned_site_id = ?)))
       OR contribution.foreman_id IS NOT NULL
     GROUP BY foreman.id, foreman.full_name, contribution.status, contribution.submitted_at
-    ORDER BY foreman.full_name`).bind(siteId, workDate, siteId, workDate, siteId);
+    ORDER BY foreman.full_name`).bind(siteId, workDate, siteId, workDate, siteId, siteId);
 }
 
 function reportEmployeesStatement(siteId: number) {
@@ -984,9 +996,8 @@ function existingPlacementEntriesStatement(db: DatabaseExecutor, ids: number[], 
 }
 
 function assertPlacementOwnership(user: AuthUser, entries: ExistingPlacementEntry[]) {
-  if (user.role !== "foreman") return;
-  if (entries.some((entry) => !canManagePlacement(user, entry.siteId, entry.workDate) || entry.responsibleUserId !== user.id)) {
-    throw new PlacementRequestError("Прораб может изменять только собственные строки отчёта назначенного проекта.", 403, "ENTRY_OWNERSHIP_FORBIDDEN");
+  if (entries.some((entry) => !canManagePlacement(user, entry.siteId, entry.workDate) || user.role === "foreman" && entry.responsibleUserId !== user.id)) {
+    throw new PlacementRequestError("Нет доступа к строкам отчёта. Прораб изменяет свои строки, инженер — строки назначенного проекта.", 403, "ENTRY_OWNERSHIP_FORBIDDEN");
   }
 }
 
@@ -1033,10 +1044,11 @@ async function resolveResponsibleUsers(
     .map((payload) => asPositiveInteger(payload.responsibleUserId))
     .filter((id): id is number => id !== null))];
   const responsibleUsers = requestedIds.length
-    ? await db.prepare("SELECT id, assigned_site_id AS assignedSiteId FROM app_users WHERE id = ANY(?) AND role = 'foreman' AND active = 1")
-      .bind(requestedIds).all<{ id: number; assignedSiteId: number | null }>()
-    : { results: [] as Array<{ id: number; assignedSiteId: number | null }> };
-  const usersById = new Map(responsibleUsers.results.map((item) => [item.id, item]));
+    ? await db.prepare("SELECT id, role, assigned_site_id AS assignedSiteId FROM app_users WHERE id = ANY(?) AND role = 'foreman' AND active = 1")
+      .bind(requestedIds).all<{ id: number; role: UserRole; assignedSiteId: number | null }>()
+    : { results: [] as Array<{ id: number; role: UserRole; assignedSiteId: number | null }> };
+  const resolvedUsers = await Promise.all(responsibleUsers.results.map(async item => ({ ...item, ...await loadUserProjectAccess(item, db) })));
+  const usersById = new Map(resolvedUsers.map((item) => [item.id, item]));
   return payloads.map((payload, index) => {
     const existing = payload.id ? existingById.get(payload.id) : undefined;
     if (payload.responsibleUserId === undefined) return existing?.responsibleUserId ?? null;
@@ -1044,7 +1056,7 @@ async function resolveResponsibleUsers(
     const requestedId = asPositiveInteger(payload.responsibleUserId);
     const targetSiteId = asPositiveInteger(payload.siteId);
     const responsible = requestedId ? usersById.get(requestedId) : undefined;
-    if (!responsible || !targetSiteId || responsible.assignedSiteId !== targetSiteId) {
+    if (!responsible || !targetSiteId || !canAccessProject(responsible, targetSiteId)) {
       throw new Error(`Строка ${index + 1}: ответственный прораб не назначен на выбранный объект.`);
     }
     return responsible.id;
@@ -1100,15 +1112,15 @@ async function finalizeGlobalReport(db: DatabaseExecutor, user: AuthUser, siteId
     RETURNING site_id`).bind(siteId, workDate, user.id).all();
 }
 
-async function validateEmployeeDirectoryValues(employmentType: string, department: string, position: string, projectSiteId: number | null) {
+async function validateEmployeeDirectoryValues(employmentType: string, department: string, position: string, projectSiteId: number | null, db: DatabaseExecutor = env.DB) {
   const statements = [
-    env.DB.prepare("SELECT id FROM personnel_options WHERE kind = 'employmentType' AND name = ? AND active = 1").bind(employmentType),
-    env.DB.prepare("SELECT id FROM personnel_options WHERE kind = 'department' AND name = ? AND active = 1").bind(department),
-    env.DB.prepare("SELECT id FROM personnel_options WHERE kind = 'position' AND name = ? AND active = 1").bind(position),
-    env.DB.prepare("SELECT id FROM position_catalog WHERE employment_type = ? AND department = ? AND position = ? AND active = 1").bind(employmentType, department, position),
+    db.prepare("SELECT id FROM personnel_options WHERE kind = 'employmentType' AND name = ? AND active = 1").bind(employmentType),
+    db.prepare("SELECT id FROM personnel_options WHERE kind = 'department' AND name = ? AND active = 1").bind(department),
+    db.prepare("SELECT id FROM personnel_options WHERE kind = 'position' AND name = ? AND active = 1").bind(position),
+    db.prepare("SELECT id FROM position_catalog WHERE employment_type = ? AND department = ? AND position = ? AND active = 1").bind(employmentType, department, position),
   ];
-  if (projectSiteId) statements.push(env.DB.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(projectSiteId));
-  const refs = await env.DB.batch(statements);
+  if (projectSiteId) statements.push(db.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(projectSiteId));
+  const refs = await db.batch(statements);
   if (!refs[0].results.length) throw new Error(`Значение «${employmentType}» не относится к столбцу «Тип».`);
   if (!refs[1].results.length) throw new Error(`Значение «${department}» не относится к столбцу «Отдел».`);
   if (!refs[2].results.length) throw new Error(`Значение «${position}» не относится к столбцу «Должность».`);
@@ -1741,32 +1753,76 @@ async function linkBitrixEmployees(sourceSnapshot: BitrixEmployeeSnapshot[], req
   return { ...updated.response, linked };
 }
 
+function employeeCatalogStatement(user: AuthUser, includeFormer = false) {
+  const siteIds = accessibleProjectIds(user);
+  const scoped = siteIds !== null;
+  const statement = env.DB.prepare(`SELECT e.id, e.bitrix24_id AS bitrix24Id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
+          e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError, e.last_synced_at AS lastSyncedAt,
+          check_state.status AS bitrixCheckStatus, check_state.details AS bitrixCheckDetails,
+          CASE WHEN check_state.acknowledged_at IS NOT NULL THEN 1 ELSE 0 END AS bitrixCheckAcknowledged,
+          MIN(epa.site_id) AS siteId, STRING_AGG(assigned_site.name, ', ' ORDER BY assigned_site.name) AS siteName,
+          STRING_AGG(assigned_site.code, '; ' ORDER BY assigned_site.name) AS projectCodes
+          FROM employees e
+          LEFT JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1
+          LEFT JOIN sites assigned_site ON assigned_site.id = epa.site_id AND assigned_site.active = 1
+          LEFT JOIN bitrix24_employee_check_states check_state ON check_state.employee_id = e.id
+          WHERE e.active = 1${scoped ? includeFormer
+            ? ` AND (epa.site_id = ANY(?::integer[]) OR (epa.site_id IS NULL AND EXISTS (
+                SELECT 1 FROM employee_project_assignments former_assignment
+                WHERE former_assignment.employee_id = e.id AND former_assignment.site_id = ANY(?::integer[]))))`
+            : " AND epa.site_id = ANY(?::integer[])" : ""}
+          GROUP BY e.id, e.bitrix24_id, e.full_name, e.employment_type, e.department, e.position, e.source, e.sort_order, e.bitrix24_stage, e.availability_status, e.sync_error, e.last_synced_at,
+            check_state.status, check_state.details, check_state.acknowledged_at
+          ORDER BY e.sort_order, e.full_name, e.id`);
+  return scoped ? statement.bind(siteIds, ...(includeFormer ? [siteIds] : [])) : statement;
+}
+
+function userCatalogStatement(user: AuthUser) {
+  const siteIds = accessibleProjectIds(user);
+  const scoped = siteIds !== null;
+  const statement = env.DB.prepare(`SELECT id, full_name AS fullName, email, CASE WHEN role = 'office' THEN 'superadmin' WHEN role = 'admin' THEN 'engineer' ELSE role END AS role,
+    assigned_site_id AS assignedSiteId, CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END AS status
+    FROM app_users target WHERE active = 1${scoped ? ` AND (
+      EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = target.id AND access.all_projects = 1)
+      OR EXISTS (SELECT 1 FROM user_project_access_sites grant_site WHERE grant_site.user_id = target.id AND grant_site.site_id = ANY(?::integer[]))
+      OR (NOT EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = target.id)
+        AND (target.role IN ('engineer', 'superadmin', 'office', 'admin') OR target.assigned_site_id = ANY(?::integer[]))))` : ""} ORDER BY full_name`);
+  return scoped ? statement.bind(siteIds, siteIds) : statement;
+}
+
+async function usersWithProjectAccess(rows: Record<string, unknown>[], observer: AuthUser) {
+  return Promise.all(rows.map(async row => {
+    if (!isUserRole(row.role)) return null;
+    const user = { ...row, role: row.role, assignedSiteId: asPositiveInteger(row.assignedSiteId),
+      ...await loadUserProjectAccess({ id: Number(row.id), role: row.role, assignedSiteId: asPositiveInteger(row.assignedSiteId) }) };
+    return visibleUserProjectAccess(user, observer);
+  }));
+}
+
 async function handleGET(request: Request) {
   try {
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
     await ensureDatabaseInitialized();
     const url = new URL(request.url);
-    const requestedSiteId = asPositiveInteger(url.searchParams.get("siteId")) ?? 1;
-    const siteId = authUser.role === "foreman" ? authUser.assignedSiteId ?? requestedSiteId : requestedSiteId;
+    const requestedSiteId = asPositiveInteger(url.searchParams.get("siteId"));
+    const allowedSiteIds = accessibleProjectIds(authUser);
+    const siteId = requestedSiteId ?? allowedSiteIds?.[0] ?? (canAccessProject(authUser, authUser.assignedSiteId) ? authUser.assignedSiteId : null) ?? 1;
+    const scope = url.searchParams.get("scope");
+    if (scope === "navigation") {
+      const sites = await env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id").all();
+      return Response.json({ sites: sites.results.filter(site => canAccessProject(authUser, Number(site.id))) });
+    }
+    if (!canAccessProject(authUser, siteId)) return forbidden();
     const responsibleUserId = authUser.role === "foreman" ? authUser.id : undefined;
     const workDate = url.searchParams.get("date") ?? todayInMoscow();
     if (!validDate(workDate)) throw new Error("Некорректная дата отчёта.");
     const rangeStart = url.searchParams.get("rangeStart") ?? workDate;
     const rangeEnd = url.searchParams.get("rangeEnd") ?? workDate;
     if (!validDate(rangeStart) || !validDate(rangeEnd) || rangeStart > rangeEnd) throw new Error("Некорректный диапазон дат отчёта.");
-    const scope = url.searchParams.get("scope");
-    if (scope === "navigation") {
-      const sites = await env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id").all();
-      const canViewAllSites = canViewAllProjects(authUser.role)
-        || (["projects", "system_users", "employees", "equipment_registry"] as PermissionResource[])
-          .some((resource) => hasPermission(authUser.permissions, resource, "view"));
-      return Response.json({
-        sites: canViewAllSites ? sites.results : sites.results.filter((site) => (site as { id: number }).id === siteId),
-      });
-    }
     if (scope && scope !== "settings" && !hasPermission(authUser.permissions, "workers_report", "view")) return forbidden();
     if (scope === "carryover") {
+      if (authUser.role === "viewer" && !authUser.canViewPendingReports) return Response.json({ sourceDate: null, entries: [] });
       const previous = authUser.role === "foreman"
         ? await env.DB.prepare(`SELECT work_date AS workDate
           FROM placement_report_contributions
@@ -1785,16 +1841,16 @@ async function handleGET(request: Request) {
         placementEntriesStatement(siteId, workDate, responsibleUserId),
         filledDatesStatement(siteId, rangeStart, rangeEnd, responsibleUserId),
         reportSubmissionStatement(siteId, workDate, responsibleUserId),
-        employeeUsageStatement(workDate, siteId),
+        employeeUsageStatement(workDate, siteId, authUser),
         foremanProgressStatement(siteId, workDate),
         reportTimesheetMarksStatement(siteId, workDate),
       ]);
       return Response.json({
         entries: entries.results,
         filledDates: filledDates.results.map((row) => (row as { workDate: string }).workDate),
-        reportSubmitted: Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
+        reportSubmitted: (authUser.role !== "viewer" || Boolean(authUser.canViewPendingReports)) && Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
         employeeUsage: employeeUsage.results,
-        foremanProgress: foremanProgress.results,
+        foremanProgress: authUser.role === "viewer" && !authUser.canViewPendingReports ? [] : foremanProgress.results,
         timesheetMarks: timesheetMarks.results,
       });
     }
@@ -1805,7 +1861,7 @@ async function handleGET(request: Request) {
       return Response.json({ entries: entries.results });
     }
     if (scope === "workspace") {
-      await syncProjectMasters(env.DB, siteId);
+      if (authUser.role !== "viewer") await syncProjectMasters(env.DB, siteId);
       const [sites, reportEmployees, placementEmployees, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, reportSubmission, employeeUsage, foremanProgress, timesheetMarks] = await env.DB.readBatch([
         env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
         reportEmployeesStatement(siteId),
@@ -1822,12 +1878,12 @@ async function handleGET(request: Request) {
         placementEntriesStatement(siteId, workDate, responsibleUserId),
         filledDatesStatement(siteId, rangeStart, rangeEnd, responsibleUserId),
         reportSubmissionStatement(siteId, workDate, responsibleUserId),
-        employeeUsageStatement(workDate, siteId),
+        employeeUsageStatement(workDate, siteId, authUser),
         foremanProgressStatement(siteId, workDate),
         reportTimesheetMarksStatement(siteId, workDate),
       ]);
       return Response.json({
-        sites: canViewAllProjects(authUser.role) ? sites.results : sites.results.filter((site) => (site as { id: number }).id === siteId),
+        sites: canViewAllProjects(authUser) ? sites.results : sites.results.filter((site) => canAccessProject(authUser, Number(site.id))),
         employees: reportEmployees.results,
         reportEmployees: reportEmployees.results,
         placementEmployees: placementEmployees.results,
@@ -1843,9 +1899,9 @@ async function handleGET(request: Request) {
         masters: masters.results,
         entries: entries.results,
         filledDates: filledDates.results.map((row) => (row as { workDate: string }).workDate),
-        reportSubmitted: Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
+        reportSubmitted: (authUser.role !== "viewer" || Boolean(authUser.canViewPendingReports)) && Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
         employeeUsage: employeeUsage.results,
-        foremanProgress: foremanProgress.results,
+        foremanProgress: authUser.role === "viewer" && !authUser.canViewPendingReports ? [] : foremanProgress.results,
         timesheetMarks: timesheetMarks.results,
         users: [],
       });
@@ -1856,24 +1912,12 @@ async function handleGET(request: Request) {
       ];
       if (!settingsResources.some((resource) => hasPermission(authUser.permissions, resource, "view"))) return forbidden();
       const reads = settingsReadPolicy(authUser.permissions, url.searchParams.get("section"));
+      if (hasRestrictedProjectAccess(authUser)) reads.sync = false;
       if (!reads.allowed) return forbidden();
-      if (reads.directories) await syncProjectMasters(env.DB, siteId);
+      if (reads.directories) if (authUser.role !== "viewer") await syncProjectMasters(env.DB, siteId);
       const [sites, employees, projectEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, users, syncStatus, bitrix24ActionLimits, projectStats] = await readOptionalBatch(env.DB, [
         env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
-        reads.employees ? env.DB.prepare(`SELECT e.id, e.bitrix24_id AS bitrix24Id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
-          e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError, e.last_synced_at AS lastSyncedAt,
-          check_state.status AS bitrixCheckStatus, check_state.details AS bitrixCheckDetails,
-          CASE WHEN check_state.acknowledged_at IS NOT NULL THEN 1 ELSE 0 END AS bitrixCheckAcknowledged,
-          MIN(epa.site_id) AS siteId, STRING_AGG(assigned_site.name, ', ' ORDER BY assigned_site.name) AS siteName,
-          STRING_AGG(assigned_site.code, '; ' ORDER BY assigned_site.name) AS projectCodes
-          FROM employees e
-          LEFT JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1
-          LEFT JOIN sites assigned_site ON assigned_site.id = epa.site_id AND assigned_site.active = 1
-          LEFT JOIN bitrix24_employee_check_states check_state ON check_state.employee_id = e.id
-          WHERE e.active = 1
-          GROUP BY e.id, e.bitrix24_id, e.full_name, e.employment_type, e.department, e.position, e.source, e.sort_order, e.bitrix24_stage, e.availability_status, e.sync_error, e.last_synced_at,
-            check_state.status, check_state.details, check_state.acknowledged_at
-          ORDER BY e.sort_order, e.full_name, e.id`) : null,
+        reads.employees ? employeeCatalogStatement(authUser, url.searchParams.get("section") === "projectEmployees") : null,
         reads.projectEmployees ? env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
           e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
           epa.site_id AS siteId, s.name AS siteName
@@ -1888,19 +1932,23 @@ async function handleGET(request: Request) {
         reads.directories ? env.DB.prepare("SELECT id, name FROM main_work_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId) : null,
         reads.directories ? env.DB.prepare("SELECT id, name, main_work_type_id AS mainWorkTypeId FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId) : null,
         reads.directories ? env.DB.prepare("SELECT id, name, employee_id AS employeeId FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId) : null,
-        reads.users ? env.DB.prepare("SELECT id, full_name AS fullName, email, CASE WHEN role = 'office' THEN 'superadmin' ELSE role END AS role, assigned_site_id AS assignedSiteId, CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END AS status FROM app_users WHERE active = 1 ORDER BY full_name") : null,
+        reads.users ? userCatalogStatement(authUser) : null,
         reads.sync ? env.DB.prepare("SELECT id, status, started_at AS startedAt, completed_at AS completedAt, summary, error_text AS errorText FROM employee_sync_runs ORDER BY id DESC LIMIT 1") : null,
         reads.sync ? env.DB.prepare("SELECT action_key AS actionKey, last_started_at AS lastStartedAt FROM bitrix24_action_limits WHERE action_key IN ('inspect-bitrix24', 'sync-bitrix24')") : null,
         reads.projectStats ? env.DB.prepare(`SELECT project.id AS siteId,
-            COALESCE(staff.employee_count, 0)::int AS employeeCount, COALESCE(foremen.foreman_count, 0)::int AS foremanCount
+            COALESCE(staff.employee_count, 0)::int AS employeeCount,
+            (SELECT COUNT(*)::int FROM app_users foreman WHERE foreman.active = 1 AND foreman.role = 'foreman' AND ?::boolean AND (
+              EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = foreman.id AND access.all_projects = 1)
+              OR EXISTS (SELECT 1 FROM user_project_access access JOIN user_project_access_sites grant_site ON grant_site.user_id = access.user_id
+                WHERE access.user_id = foreman.id AND access.all_projects = 0 AND grant_site.site_id = project.id)
+              OR (NOT EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = foreman.id) AND foreman.assigned_site_id = project.id)
+            )) AS foremanCount
           FROM sites project
           LEFT JOIN (SELECT assignment.site_id, COUNT(DISTINCT employee.id) AS employee_count
             FROM employee_project_assignments assignment JOIN employees employee ON employee.id = assignment.employee_id
             WHERE assignment.active = 1 AND employee.active = 1 AND ?::boolean GROUP BY assignment.site_id) staff ON staff.site_id = project.id
-          LEFT JOIN (SELECT assigned_site_id, COUNT(*) AS foreman_count FROM app_users
-            WHERE active = 1 AND role = 'foreman' AND ?::boolean GROUP BY assigned_site_id) foremen ON foremen.assigned_site_id = project.id
           WHERE project.active = 1 ORDER BY project.id`)
-          .bind(hasPermission(authUser.permissions, "employees", "view"), hasPermission(authUser.permissions, "system_users", "view")) : null,
+          .bind(hasPermission(authUser.permissions, "system_users", "view"), hasPermission(authUser.permissions, "employees", "view")) : null,
       ]);
       const canViewEmployees = hasPermission(authUser.permissions, "employees", "view");
       const canManageEmployees = hasPermission(authUser.permissions, "employees", "create") || hasPermission(authUser.permissions, "employees", "update");
@@ -1909,11 +1957,9 @@ async function handleGET(request: Request) {
       const canViewPositions = hasPermission(authUser.permissions, "positions", "view") || canManageEmployees;
       const canViewProjectDirectories = hasPermission(authUser.permissions, "project_directories", "view");
       const canViewSystemUsers = hasPermission(authUser.permissions, "system_users", "view");
-      const canViewAllSites = canViewAllProjects(authUser.role)
-        || hasPermission(authUser.permissions, "projects", "view")
-        || canViewSystemUsers || canViewEmployees;
+      const canViewAllSites = canViewAllProjects(authUser);
       return Response.json({
-        sites: canViewAllSites ? sites.results : sites.results.filter((site) => (site as { id: number }).id === siteId),
+        sites: canViewAllSites ? sites.results : sites.results.filter((site) => canAccessProject(authUser, Number(site.id))),
         employees: canViewEmployees || canChooseProjectEmployees ? employees.results : [],
         reportEmployees: [],
         placementEmployees: canViewProjectEmployees ? projectEmployees.results : [],
@@ -1933,29 +1979,16 @@ async function handleGET(request: Request) {
         employeeUsage: [],
         foremanProgress: [],
         timesheetMarks: [],
-        users: canViewSystemUsers ? users.results : [],
-        syncStatus: canViewEmployees ? syncStatus.results[0] ?? null : null,
-        bitrix24Cooldowns: canViewEmployees ? mapBitrix24Cooldowns(bitrix24ActionLimits.results as Bitrix24ActionLimitRow[]) : undefined,
-        projectStats: reads.projectStats ? projectStats.results.filter(row => canViewAllSites || row.siteId === siteId) : undefined,
+        users: canViewSystemUsers ? (await usersWithProjectAccess(users.results, authUser)).filter(Boolean) : [],
+        syncStatus: canViewEmployees && !hasRestrictedProjectAccess(authUser) ? syncStatus.results[0] ?? null : null,
+        bitrix24Cooldowns: canViewEmployees && !hasRestrictedProjectAccess(authUser) ? mapBitrix24Cooldowns(bitrix24ActionLimits.results as Bitrix24ActionLimitRow[]) : undefined,
+        projectStats: reads.projectStats ? projectStats.results.filter(row => canViewAllSites || canAccessProject(authUser, Number(row.siteId))) : undefined,
       });
     }
-    if (hasPermission(authUser.permissions, "project_directories", "view") || hasPermission(authUser.permissions, "workers_report", "view")) await syncProjectMasters(env.DB, siteId);
+    if (hasPermission(authUser.permissions, "project_directories", "view") || hasPermission(authUser.permissions, "workers_report", "view")) if (authUser.role !== "viewer") await syncProjectMasters(env.DB, siteId);
     const [sites, employees, reportEmployees, placementEmployees, projectEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, reportSubmission, users, syncStatus, bitrix24ActionLimits, employeeUsage, foremanProgress, timesheetMarks] = await env.DB.readBatch([
       env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
-      env.DB.prepare(`SELECT e.id, e.bitrix24_id AS bitrix24Id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
-        e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError, e.last_synced_at AS lastSyncedAt,
-        check_state.status AS bitrixCheckStatus, check_state.details AS bitrixCheckDetails,
-        CASE WHEN check_state.acknowledged_at IS NOT NULL THEN 1 ELSE 0 END AS bitrixCheckAcknowledged,
-        MIN(epa.site_id) AS siteId, STRING_AGG(assigned_site.name, ', ' ORDER BY assigned_site.name) AS siteName,
-          STRING_AGG(assigned_site.code, '; ' ORDER BY assigned_site.name) AS projectCodes
-        FROM employees e
-        LEFT JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1
-        LEFT JOIN sites assigned_site ON assigned_site.id = epa.site_id AND assigned_site.active = 1
-        LEFT JOIN bitrix24_employee_check_states check_state ON check_state.employee_id = e.id
-        WHERE e.active = 1
-        GROUP BY e.id, e.bitrix24_id, e.full_name, e.employment_type, e.department, e.position, e.source, e.sort_order, e.bitrix24_stage, e.availability_status, e.sync_error, e.last_synced_at,
-          check_state.status, check_state.details, check_state.acknowledged_at
-        ORDER BY e.sort_order, e.full_name, e.id`),
+      employeeCatalogStatement(authUser),
       reportEmployeesStatement(siteId),
       env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
         e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
@@ -1979,10 +2012,10 @@ async function handleGET(request: Request) {
       placementEntriesStatement(siteId, workDate, responsibleUserId),
       filledDatesStatement(siteId, rangeStart, rangeEnd, responsibleUserId),
       reportSubmissionStatement(siteId, workDate, responsibleUserId),
-      env.DB.prepare("SELECT id, full_name AS fullName, email, CASE WHEN role = 'office' THEN 'superadmin' ELSE role END AS role, assigned_site_id AS assignedSiteId, CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END AS status FROM app_users WHERE active = 1 ORDER BY full_name"),
+      userCatalogStatement(authUser),
       env.DB.prepare("SELECT id, status, started_at AS startedAt, completed_at AS completedAt, summary, error_text AS errorText FROM employee_sync_runs ORDER BY id DESC LIMIT 1"),
       env.DB.prepare("SELECT action_key AS actionKey, last_started_at AS lastStartedAt FROM bitrix24_action_limits WHERE action_key IN ('inspect-bitrix24', 'sync-bitrix24')"),
-      employeeUsageStatement(workDate, siteId),
+      employeeUsageStatement(workDate, siteId, authUser),
       foremanProgressStatement(siteId, workDate),
       reportTimesheetMarksStatement(siteId, workDate),
     ]);
@@ -1994,13 +2027,9 @@ async function handleGET(request: Request) {
     const canViewPositions = hasPermission(authUser.permissions, "positions", "view") || canManageEmployees;
     const canViewProjectDirectories = hasPermission(authUser.permissions, "project_directories", "view") || canViewWorkerReports;
     const canViewSystemUsers = hasPermission(authUser.permissions, "system_users", "view");
-    const canViewAllSites = canViewAllProjects(authUser.role)
-      || hasPermission(authUser.permissions, "projects", "view")
-      || canViewSystemUsers
-      || canViewEmployees
-      || hasPermission(authUser.permissions, "equipment_registry", "view");
+    const canViewAllSites = canViewAllProjects(authUser);
     return Response.json({
-      sites: canViewAllSites ? sites.results : sites.results.filter((site) => (site as { id: number }).id === siteId),
+      sites: canViewAllSites ? sites.results : sites.results.filter((site) => canAccessProject(authUser, Number(site.id))),
       employees: canViewEmployees || canChooseProjectEmployees
         ? employees.results
         : [],
@@ -2018,12 +2047,12 @@ async function handleGET(request: Request) {
       masters: canViewProjectDirectories ? masters.results : [],
       entries: canViewWorkerReports ? entries.results : [],
       filledDates: canViewWorkerReports ? filledDates.results.map((row) => (row as { workDate: string }).workDate) : [],
-      reportSubmitted: canViewWorkerReports && Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
+      reportSubmitted: canViewWorkerReports && (authUser.role !== "viewer" || Boolean(authUser.canViewPendingReports)) && Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
       employeeUsage: canViewWorkerReports ? employeeUsage.results : [],
-      foremanProgress: canViewWorkerReports ? foremanProgress.results : [],
+      foremanProgress: canViewWorkerReports && (authUser.role !== "viewer" || authUser.canViewPendingReports) ? foremanProgress.results : [],
       timesheetMarks: canViewWorkerReports ? timesheetMarks.results : [],
-      users: canViewSystemUsers ? users.results : [],
-      syncStatus: canViewEmployees ? syncStatus.results[0] ?? null : null,
+      users: canViewSystemUsers ? (await usersWithProjectAccess(users.results, authUser)).filter(Boolean) : [],
+      syncStatus: canViewEmployees && !hasRestrictedProjectAccess(authUser) ? syncStatus.results[0] ?? null : null,
       bitrix24Cooldowns: hasPermission(authUser.permissions, "employees", "view") ? mapBitrix24Cooldowns(bitrix24ActionLimits.results as Bitrix24ActionLimitRow[]) : undefined,
     });
   } catch (error) {
@@ -2036,9 +2065,10 @@ async function handlePOST(request: Request) {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
+    if (authUser.role === "viewer") return forbidden();
     await ensureDatabaseInitialized();
     const payload = (await request.json()) as EntryPayload & UserPayload & { entries?: EntryPayload[] };
-    if (payload.action && !canRunAction(authUser, payload)) return forbidden();
+    if (payload.action && (!canRunAction(authUser, payload) || !scopedDataActionAllowed(authUser, payload))) return forbidden();
     if (!payload.action) {
       const placementRows = payload.entries?.length ? payload.entries : [payload];
       if (placementRows.some((row) => !canManagePlacement(authUser, asPositiveInteger(row.siteId) ?? undefined, row.workDate, "create"))) return forbidden();
@@ -2099,12 +2129,19 @@ async function handlePOST(request: Request) {
       const fullName = payload.fullName?.trim() ?? "";
       const email = payload.email?.trim().toLocaleLowerCase() ?? "";
       const role = isUserRole(payload.role) ? payload.role : null;
-      const assignedSiteId = role === "foreman" ? asPositiveInteger(payload.assignedSiteId) : null;
-      if (!fullName || !/^\S+@\S+\.\S+$/.test(email) || !role || (role === "foreman" && !assignedSiteId)) throw new Error("Заполните ФИО, корректный email, роль и объект прораба.");
+      const assignedSiteId = role && requiresAssignedProject(role) ? asPositiveInteger(payload.assignedSiteId) : null;
+      if (!fullName || !/^\S+@\S+\.\S+$/.test(email) || !role || (role && requiresAssignedProject(role) && !assignedSiteId && payload.projectAccess === undefined)) throw new Error("Заполните ФИО, корректный email, роль и доступ к проектам.");
+      if (assignedSiteId && !await env.DB.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(assignedSiteId).first()) throw new Error("Выбранный проект не найден или архивирован.");
       const duplicate = await env.DB.prepare("SELECT id FROM app_users WHERE email = ? AND active = 1").bind(email).first();
       if (duplicate) throw new Error("Пользователь с таким email уже существует.");
-      const result = await env.DB.prepare("INSERT INTO app_users (full_name, email, role, assigned_site_id) VALUES (?, ?, ?, ?)").bind(fullName, email, role, assignedSiteId).run();
-      const userId = Number(result.meta.last_row_id);
+      const userId = await env.DB.transaction(async db => {
+        const result = await db.prepare("INSERT INTO app_users (full_name, email, role, assigned_site_id) VALUES (?, ?, ?, ?)").bind(fullName, email, role, assignedSiteId).run();
+        const id = Number(result.meta.last_row_id);
+        if (payload.projectAccess !== undefined || payload.canViewPendingReports !== undefined || role === "viewer") {
+          await saveUserProjectAccess(id, { projectAccess: payload.projectAccess, canViewPendingReports: payload.canViewPendingReports }, authUser.id, db);
+        }
+        return id;
+      });
       const invitationUrl = await createInvitation(userId, request);
       const delivery = await sendInvitationEmail({ to: email, fullName, invitationUrl, userId });
       return Response.json({ id: userId, invitationUrl, emailSent: delivery.sent }, { status: 201 });
@@ -2149,18 +2186,18 @@ async function handlePOST(request: Request) {
       const employeeId = asPositiveInteger(payload.employeeId);
       const siteId = asPositiveInteger(payload.siteId);
       if (!employeeId || !siteId) throw new Error("Выберите сотрудника и проект.");
-      const [employee, site] = await env.DB.batch([
-        env.DB.prepare("SELECT id FROM employees WHERE id = ? AND active = 1").bind(employeeId),
-        env.DB.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(siteId),
-      ]);
-      if (!employee.results.length || !site.results.length) throw new Error("Сотрудник или проект не найден.");
-      const active = await env.DB.prepare("SELECT id FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 1").bind(employeeId, siteId).first();
-      if (active) throw new Error("Сотрудник уже добавлен в этот проект.");
-      await env.DB.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source, start_date) VALUES (?, ?, 'manual', CURRENT_DATE)").bind(employeeId, siteId).run();
-      await env.DB.prepare(`UPDATE employees SET site_id = COALESCE(site_id, ?),
-        availability_status = CASE WHEN source = 'bitrix24' THEN availability_status ELSE 'on_site' END
-        WHERE id = ?`).bind(siteId, employeeId).run();
-      return Response.json({ ok: true }, { status: 201 });
+      return await env.DB.transaction(async db => {
+        const employee = await db.prepare("SELECT id FROM employees WHERE id = ? AND active = 1 FOR UPDATE").bind(employeeId).first();
+        if (!employee || !await db.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(siteId).first()) throw new Error("Сотрудник или проект не найден.");
+        if (!await projectEntitiesAllowed(db, authUser, "employee", [employeeId], false, true)) return forbidden();
+        const active = await db.prepare("SELECT id FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 1").bind(employeeId, siteId).first();
+        if (active) throw new Error("Сотрудник уже добавлен в этот проект.");
+        await db.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source, start_date) VALUES (?, ?, 'manual', CURRENT_DATE)").bind(employeeId, siteId).run();
+        await db.prepare(`UPDATE employees SET site_id = COALESCE(site_id, ?),
+          availability_status = CASE WHEN source = 'bitrix24' THEN availability_status ELSE 'on_site' END
+          WHERE id = ?`).bind(siteId, employeeId).run();
+        return Response.json({ ok: true }, { status: 201 });
+      });
     }
     if (payload.action === "create-position") {
       const employmentType = payload.employmentType?.trim() ?? "";
@@ -2173,10 +2210,14 @@ async function handlePOST(request: Request) {
       return Response.json({ id: result.meta.last_row_id }, { status: 201 });
     }
     if (payload.action === "import-project-employees") {
-      const result = await importProjectEmployeesExcel(env.DB, Number(payload.siteId), payload.employeeIds);
+      if (!await projectEntitiesAllowed(env.DB, authUser, "employee", (payload.employeeIds ?? []).map(Number), false, true)) return forbidden();
+      const result = await importProjectEmployeesExcel(env.DB, Number(payload.siteId), payload.employeeIds, async (db, employeeIds) => {
+        if (!await projectEntitiesAllowed(db, authUser, "employee", employeeIds, false, true)) throw new PlacementRequestError("Нет доступа к сотрудникам другого проекта.", 403, "PROJECT_MEMBERSHIP_FORBIDDEN");
+      });
       return Response.json(result, { status: 201 });
     }
     if (payload.action === "import-project-directory") {
+      if (payload.employeeIds?.length && !await projectEntitiesAllowed(env.DB, authUser, "employee", payload.employeeIds.map(Number))) return forbidden();
       const result = await importProjectDirectoryExcel(env.DB, Number(payload.siteId), payload.entity, { names: payload.names, employeeIds: payload.employeeIds });
       return Response.json(result, { status: 201 });
     }
@@ -2352,6 +2393,7 @@ async function handlePATCH(request: Request) {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
+    if (authUser.role === "viewer") return forbidden();
     await ensureDatabaseInitialized();
     const payload = (await request.json()) as EntryPayload & UserPayload & {
       entries?: EntryPayload[];
@@ -2367,7 +2409,7 @@ async function handlePATCH(request: Request) {
     const ownSubmissionWorkDate = ownSubmission?.workDate;
     const finalizationSiteId = finalization ? asPositiveInteger(finalization.siteId) : null;
     const finalizationWorkDate = finalization?.workDate;
-    if (payload.action && !canRunAction(authUser, payload)) return forbidden();
+    if (payload.action && (!canRunAction(authUser, payload) || !scopedDataActionAllowed(authUser, payload))) return forbidden();
     if (!payload.action) {
       const placementRows = placementUpdates || placementCreates ? [] : ownSubmission || finalization ? [] : [payload];
       if ((placementUpdates ?? []).some((entry) => !canManagePlacement(authUser, asPositiveInteger(entry.siteId) ?? undefined, entry.workDate, "update"))) return forbidden();
@@ -2385,8 +2427,9 @@ async function handlePATCH(request: Request) {
       const fullName = payload.fullName?.trim() ?? "";
       const email = payload.email?.trim().toLocaleLowerCase() ?? "";
       const role = isUserRole(payload.role) ? payload.role : null;
-      const assignedSiteId = role === "foreman" ? asPositiveInteger(payload.assignedSiteId) : null;
-      if (!userId || !fullName || !/^\S+@\S+\.\S+$/.test(email) || !role || (role === "foreman" && !assignedSiteId)) throw new Error("Заполните ФИО, корректный email, роль и объект прораба.");
+      const assignedSiteId = role && requiresAssignedProject(role) ? asPositiveInteger(payload.assignedSiteId) : null;
+      if (!userId || !fullName || !/^\S+@\S+\.\S+$/.test(email) || !role || (role && requiresAssignedProject(role) && !assignedSiteId && payload.projectAccess === undefined)) throw new Error("Заполните ФИО, корректный email, роль и доступ к проектам.");
+      if (assignedSiteId && !await env.DB.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(assignedSiteId).first()) throw new Error("Выбранный проект не найден или архивирован.");
       const duplicate = await env.DB.prepare("SELECT id FROM app_users WHERE email = ? AND id <> ? AND active = 1").bind(email, userId).first();
       if (duplicate) throw new Error("Пользователь с таким email уже существует.");
       const currentUserRecord = await env.DB.prepare("SELECT role, password_hash AS passwordHash FROM app_users WHERE id = ? AND active = 1").bind(userId).first<{ role: string; passwordHash: string | null }>();
@@ -2394,8 +2437,13 @@ async function handlePATCH(request: Request) {
         const adminCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM app_users WHERE role IN ('superadmin', 'office') AND active = 1").first<{ count: number }>();
         if (Number(adminCount?.count ?? 0) <= 1) throw new Error("Нельзя убрать роль «Супер-админ» у последнего администратора.");
       }
-      const result = await env.DB.prepare("UPDATE app_users SET full_name = ?, email = ?, role = ?, assigned_site_id = ? WHERE id = ? AND active = 1").bind(fullName, email, role, assignedSiteId, userId).run();
-      if (!result.meta.changes) throw new Error("Пользователь не найден.");
+      await env.DB.transaction(async db => {
+        const result = await db.prepare("UPDATE app_users SET full_name = ?, email = ?, role = ?, assigned_site_id = ? WHERE id = ? AND active = 1").bind(fullName, email, role, assignedSiteId, userId).run();
+        if (!result.meta.changes) throw new Error("Пользователь не найден.");
+        if (payload.projectAccess !== undefined || payload.canViewPendingReports !== undefined || role === "viewer" && currentUserRecord?.role !== "viewer") {
+          await saveUserProjectAccess(userId, { projectAccess: payload.projectAccess ?? (role === "viewer" && currentUserRecord?.role !== "viewer" ? { mode: "selected", siteIds: [] } : undefined), canViewPendingReports: payload.canViewPendingReports ?? (role === "viewer" && currentUserRecord?.role !== "viewer" ? false : undefined) }, authUser.id, db);
+        }
+      });
       if (!currentUserRecord?.passwordHash) {
         const invitationUrl = await createInvitation(userId, request);
         const delivery = await sendInvitationEmail({ to: email, fullName, invitationUrl, userId });
@@ -2410,28 +2458,35 @@ async function handlePATCH(request: Request) {
       const department = payload.department?.trim() ?? "";
       const position = payload.position?.trim() ?? "";
       const projectSiteId = asPositiveInteger(payload.projectSiteId);
+      if (employeeId && !await projectEntitiesAllowed(env.DB, authUser, "employee", [employeeId], true)) return forbidden();
       if (!employeeId || !fullName || !employmentType || !department || !position) throw new Error("Заполните ФИО, тип, отдел и должность сотрудника.");
-      await validateEmployeeDirectoryValues(employmentType, department, position, projectSiteId);
-      const duplicate = await env.DB.prepare("SELECT id FROM employees WHERE full_name = ? AND id <> ? AND active = 1").bind(fullName, employeeId).first();
-      if (duplicate) throw new Error("Рабочий с таким ФИО уже существует.");
-      const result = await env.DB.prepare(`UPDATE employees SET full_name = ?, employment_type = ?, department = ?, position = ?, site_id = ?,
-        availability_status = CASE WHEN source = 'bitrix24' THEN availability_status ELSE ? END
-        WHERE id = ? AND active = 1`)
-        .bind(fullName, employmentType, department, position, projectSiteId, projectSiteId ? "on_site" : "unassigned", employeeId).run();
-      if (!result.meta.changes) throw new Error("Рабочий не найден.");
-      if (projectSiteId) {
-        await env.DB.prepare("UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, CURRENT_DATE) WHERE employee_id = ? AND active = 1 AND site_id <> ?")
-          .bind(employeeId, projectSiteId).run();
-        const activeAssignment = await env.DB.prepare("SELECT id FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 1").bind(employeeId, projectSiteId).first();
-        if (!activeAssignment) {
-          await env.DB.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source, start_date) VALUES (?, ?, 'manual', CURRENT_DATE)")
-            .bind(employeeId, projectSiteId).run();
+      return await env.DB.transaction(async db => {
+        if (hasRestrictedProjectAccess(authUser)) {
+          await db.prepare("SELECT id FROM employees WHERE id = ? AND active = 1 FOR UPDATE").bind(employeeId).first();
+          if (!await projectEntitiesAllowed(db, authUser, "employee", [employeeId], true)) return forbidden();
         }
-      } else {
-        await env.DB.prepare("UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, CURRENT_DATE) WHERE employee_id = ? AND active = 1")
-          .bind(employeeId).run();
-      }
-      return Response.json({ ok: true });
+        await validateEmployeeDirectoryValues(employmentType, department, position, projectSiteId, db);
+        const duplicate = await db.prepare("SELECT id FROM employees WHERE full_name = ? AND id <> ? AND active = 1").bind(fullName, employeeId).first();
+        if (duplicate) throw new Error("Рабочий с таким ФИО уже существует.");
+        const result = await db.prepare(`UPDATE employees SET full_name = ?, employment_type = ?, department = ?, position = ?, site_id = ?,
+          availability_status = CASE WHEN source = 'bitrix24' THEN availability_status ELSE ? END
+          WHERE id = ? AND active = 1`)
+          .bind(fullName, employmentType, department, position, projectSiteId, projectSiteId ? "on_site" : "unassigned", employeeId).run();
+        if (!result.meta.changes) throw new Error("Рабочий не найден.");
+        if (projectSiteId) {
+          await db.prepare("UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, CURRENT_DATE) WHERE employee_id = ? AND active = 1 AND site_id <> ?")
+            .bind(employeeId, projectSiteId).run();
+          const activeAssignment = await db.prepare("SELECT id FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 1").bind(employeeId, projectSiteId).first();
+          if (!activeAssignment) {
+            await db.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source, start_date) VALUES (?, ?, 'manual', CURRENT_DATE)")
+              .bind(employeeId, projectSiteId).run();
+          }
+        } else {
+          await db.prepare("UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, CURRENT_DATE) WHERE employee_id = ? AND active = 1")
+            .bind(employeeId).run();
+        }
+        return Response.json({ ok: true });
+      });
     }
     if (payload.action === "update-position") {
       const positionId = asPositiveInteger(payload.positionId);
@@ -2506,8 +2561,11 @@ async function handlePATCH(request: Request) {
       if (!userId || !assignedSiteId) throw new Error("Не указан пользователь или объект.");
       const site = await env.DB.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(assignedSiteId).first();
       if (!site) throw new Error("Объект не найден.");
-      const result = await env.DB.prepare("UPDATE app_users SET assigned_site_id = ? WHERE id = ? AND role = 'foreman' AND active = 1").bind(assignedSiteId, userId).run();
-      if (!result.meta.changes) throw new Error("Прораб не найден.");
+      await env.DB.transaction(async db => {
+        const result = await db.prepare("UPDATE app_users SET assigned_site_id = ? WHERE id = ? AND role IN ('foreman', 'engineer') AND active = 1").bind(assignedSiteId, userId).run();
+        if (!result.meta.changes) throw new Error("Прораб или инженер не найден.");
+        await saveUserProjectAccess(userId, { projectAccess: { mode: "selected", siteIds: [assignedSiteId] } }, authUser.id, db);
+      });
       return Response.json({ ok: true });
     }
     if (payload.action) return Response.json({ error: "Это действие недоступно для данного запроса." }, { status: 400 });
@@ -2649,10 +2707,17 @@ async function handleDELETE(request: Request) {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
+    if (authUser.role === "viewer") return forbidden();
     await ensureDatabaseInitialized();
     const url = new URL(request.url);
     const entity = url.searchParams.get("entity");
     if (!canDeleteEntity(authUser, entity, url.searchParams.get("kind"))) return forbidden();
+    if (hasRestrictedProjectAccess(authUser)) {
+      if (!accessibleProjectIds(authUser)?.length || ["user", "site", "position"].includes(entity ?? "")) return forbidden();
+      const requestedSiteId = url.searchParams.get("siteId");
+      if (requestedSiteId !== null && !canAccessProject(authUser, asPositiveInteger(requestedSiteId))) return forbidden();
+      if (entity === "directory" && directoryTable(url.searchParams.get("kind"))?.global) return forbidden();
+    }
     if (!entity) {
       if (authUser.role === "foreman") return approvalRequired();
       const body = request.headers.get("content-type")?.includes("application/json")
@@ -2686,19 +2751,26 @@ async function handleDELETE(request: Request) {
       const ids = [...new Set((body?.ids ?? [url.searchParams.get("id")]).map(asPositiveInteger).filter((value): value is number => value !== null))];
       if (!ids.length) throw new Error("Выберите хотя бы одного сотрудника.");
       if (ids.length > 5_000) throw new Error("За один раз можно удалить не более 5000 сотрудников.");
-      const employeesResult = await env.DB.prepare("SELECT id, full_name AS fullName FROM employees WHERE id = ANY(?) AND active = 1").bind(ids).all<{ id: number; fullName: string }>();
-      const employees = employeesResult.results as Array<{ id: number; fullName: string }>;
-      if (employees.length !== ids.length) {
-        const existingIds = new Set(employees.map((employee) => employee.id));
-        const missingCount = ids.filter((id) => !existingIds.has(id)).length;
-        throw new Error(`${missingCount === 1 ? "Один сотрудник уже удалён" : `Сотрудники уже удалены (${missingCount})`}. Таблица обновлена — выберите строки заново.`);
-      }
-      const results = await env.DB.batch([
-        env.DB.prepare("UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, DATE('now')) WHERE employee_id = ANY(?) AND active = 1").bind(ids),
-        env.DB.prepare("UPDATE masters SET active = 0 WHERE active = 1 AND name IN (SELECT full_name FROM employees WHERE id = ANY(?))").bind(ids),
-        env.DB.prepare("UPDATE employees SET active = 0, site_id = NULL WHERE id = ANY(?) AND active = 1").bind(ids),
-      ]);
-      return Response.json({ ok: true, count: results[2].meta.changes });
+      if (!await projectEntitiesAllowed(env.DB, authUser, "employee", ids, true)) return forbidden();
+      return await env.DB.transaction(async db => {
+        if (hasRestrictedProjectAccess(authUser)) {
+          await db.prepare("SELECT id FROM employees WHERE id = ANY(?) AND active = 1 ORDER BY id FOR UPDATE").bind(ids).all();
+          if (!await projectEntitiesAllowed(db, authUser, "employee", ids, true)) return forbidden();
+        }
+        const employeesResult = await db.prepare("SELECT id, full_name AS fullName FROM employees WHERE id = ANY(?) AND active = 1").bind(ids).all<{ id: number; fullName: string }>();
+        const employees = employeesResult.results as Array<{ id: number; fullName: string }>;
+        if (employees.length !== ids.length) {
+          const existingIds = new Set(employees.map((employee) => employee.id));
+          const missingCount = ids.filter((id) => !existingIds.has(id)).length;
+          throw new Error(`${missingCount === 1 ? "Один сотрудник уже удалён" : `Сотрудники уже удалены (${missingCount})`}. Таблица обновлена — выберите строки заново.`);
+        }
+        const results = await db.batch([
+          db.prepare("UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, DATE('now')) WHERE employee_id = ANY(?) AND active = 1").bind(ids),
+          db.prepare(`UPDATE masters SET active = 0 WHERE active = 1 AND name IN (SELECT full_name FROM employees WHERE id = ANY(?))${hasRestrictedProjectAccess(authUser) ? " AND site_id = ANY(?::integer[])" : ""}`).bind(ids, ...(hasRestrictedProjectAccess(authUser) ? [accessibleProjectIds(authUser)] : [])),
+          db.prepare("UPDATE employees SET active = 0, site_id = NULL WHERE id = ANY(?) AND active = 1").bind(ids),
+        ]);
+        return Response.json({ ok: true, count: results[2].meta.changes });
+      });
     }
     const id = asPositiveInteger(url.searchParams.get("id"));
     if (!id) throw new Error("Не указана строка для удаления.");
@@ -2721,6 +2793,7 @@ async function handleDELETE(request: Request) {
     if (url.searchParams.get("entity") === "employee-assignment") {
       const siteId = asPositiveInteger(url.searchParams.get("siteId"));
       if (!siteId) throw new Error("Не указан проект сотрудника.");
+      if (!canAccessProject(authUser, siteId)) return forbidden();
       const result = await env.DB.prepare(`UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, DATE('now'))
         WHERE employee_id = ? AND site_id = ? AND active = 1
           AND EXISTS (SELECT 1 FROM employees WHERE id = ? AND active = 1)`).bind(id, siteId, id).run();
@@ -2739,7 +2812,12 @@ async function handleDELETE(request: Request) {
       const [activeSites, employees, users, entries] = await env.DB.batch([
         env.DB.prepare("SELECT COUNT(*) AS count FROM sites WHERE active = 1"),
         env.DB.prepare("SELECT id FROM employee_project_assignments WHERE site_id = ? AND active = 1 LIMIT 1").bind(id),
-        env.DB.prepare("SELECT id FROM app_users WHERE assigned_site_id = ? AND active = 1 LIMIT 1").bind(id),
+        env.DB.prepare(`SELECT target.id FROM app_users target WHERE target.active = 1 AND (
+          EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = target.id AND access.all_projects = 1)
+          OR EXISTS (SELECT 1 FROM user_project_access access JOIN user_project_access_sites grant_site ON grant_site.user_id = access.user_id
+            WHERE access.user_id = target.id AND access.all_projects = 0 AND grant_site.site_id = ?)
+          OR (NOT EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = target.id) AND target.assigned_site_id = ?)
+        ) LIMIT 1`).bind(id, id),
         env.DB.prepare("SELECT id FROM placement_entries WHERE site_id = ? AND deleted_at IS NULL LIMIT 1").bind(id),
       ]);
       const count = Number((activeSites.results[0] as { count?: number } | undefined)?.count ?? 0);
@@ -2766,6 +2844,7 @@ async function handleDELETE(request: Request) {
       const directory = directoryTable(url.searchParams.get("kind"));
       const siteId = asPositiveInteger(url.searchParams.get("siteId"));
       if (!directory || (!directory.global && !siteId)) throw new Error("Не указан справочник или объект.");
+      if (!directory.global && !canAccessProject(authUser, siteId)) return forbidden();
       if (directory.key === "shift") throw new Error("Смены фиксированы для всех проектов: день и ночь.");
       let result;
       if (directory.global) {

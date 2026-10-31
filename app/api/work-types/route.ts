@@ -2,7 +2,7 @@ import { getDatabase } from "../../../db/client";
 import { assertSameOrigin, getAuthUser } from "../../auth";
 import { withAuditTrail } from "../../auditLog";
 import { hasPermission } from "../../permissionModel";
-import { canViewAllProjects } from "../../roles";
+import { canAccessProject } from "../../roles";
 import { assignWorkTypeChildren, importWorkTypeDirectory } from "../../workTypeHierarchyServer";
 import { archiveWorkTypesDirectory, saveWorkTypesDirectory, type WorkTypeParentInput, type WorkTypeChildInput } from "../../workTypesEditingServer";
 
@@ -12,9 +12,10 @@ export async function POST(request: Request) {
       assertSameOrigin(request);
       const user = await getAuthUser(request);
       if (!user) return Response.json({ error: "Войдите в систему." }, { status: 401 });
+      if (user.role === "viewer") return Response.json({ error: "Роль «Просмотр» не может изменять справочники." }, { status: 403 });
       const payload = await request.json() as { action?: string; siteId: number; mainWorkTypeId?: number; ids?: number[]; entries?: Array<{ name: string; subworkName: string }>; parents?: unknown[]; children?: unknown[] };
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Укажите данные справочника работ.");
-      if (!canViewAllProjects(user.role) && payload.siteId !== user.assignedSiteId) return Response.json({ error: "Нет доступа к этому проекту." }, { status: 403 });
+      if (!canAccessProject(user, payload.siteId)) return Response.json({ error: "Нет доступа к этому проекту." }, { status: 403 });
       if (!hasPermission(user.permissions, "project_directories", "view")) return Response.json({ error: "Нет доступа к справочникам проекта." }, { status: 403 });
       if (payload.action === "save") {
         if (!Array.isArray(payload.parents) || !Array.isArray(payload.children) || [...payload.parents, ...payload.children].some(row => !row || typeof row !== "object" || Array.isArray(row))) throw new Error("Укажите строки справочника.");

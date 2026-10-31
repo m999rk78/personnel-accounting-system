@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import {
   EquipmentReportError, assertCanSaveEquipmentReport, assertEquipmentReportOwner,
   assertEquipmentReportRevision, assertEquipmentReportSiteAccess, canReviewEquipmentReport,
+  canViewPendingReportsFor,
   collectEquipmentReportHourIssues, equipmentReportRowChanged, inspectEquipmentReportRows,
   nextEquipmentReportStatus, validEquipmentReportDate,
 } from "../app/equipmentReportWorkflow.ts";
@@ -52,7 +53,11 @@ const directories = {
 const actors = Object.fromEntries([
   ["foreman", 10, "Алексей Тестовый", "foreman"], ["foreman2", 11, "Борис Другая Бригада", "foreman"],
   ["engineer", 20, "Ирина Проверяющая", "engineer"], ["superadmin", 30, "Администратор Проверки", "superadmin"],
-].map(([key, id, fullName, role]) => [key, { id, fullName, role, assignedSiteId: site.id, permissions: { equipment_report: { view: true, create: true, update: true, delete: true } } }]));
+  ["viewer", 40, "Виктор Наблюдатель", "viewer"], ["viewer_pending", 41, "Вера Расширенный Просмотр", "viewer"],
+].map(([key, id, fullName, role]) => {
+  const permission = { view: true, create: role !== "viewer", update: role !== "viewer", delete: role !== "viewer" };
+  return [key, { id, fullName, role, assignedSiteId: site.id, projectAccess: { mode: "selected", siteIds: [site.id] }, canViewPendingReports: role !== "viewer" || key === "viewer_pending", permissions: { equipment_report: { ...permission }, equipment_timesheet: { ...permission } } }];
+}));
 const reports = new Map();
 const entries = new Map();
 const orders = new Map();
@@ -64,6 +69,7 @@ let nextEntryId = 3000;
 const equipmentName = id => { const unit = units.find(item => item.id === id); return unit ? `${unit.equipmentType} ${unit.brand} ${unit.model} • ${unit.registrationNumber}` : ""; };
 const equipmentNames = new Map(units.map(unit => [unit.id, equipmentName(unit.id)]));
 const fail = (message, status = 400, code = "INVALID_REPORT", details) => { throw new EquipmentReportError(message, status, code, details); };
+const assertWritable = actor => { if (actor.role === "viewer") fail("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN"); };
 const rowInput = (equipmentId, hours = 8, extra = {}) => ({ equipmentId, hours, shiftId: 1, zoneId: 1, mainWorkTypeId: 1, subworkTypeId: 1, note: "Учебная запись", ...extra });
 function enrichRow(input, report, previous, rowOrder = 0) {
   const unit = units.find(item => item.id === input.equipmentId);
@@ -154,6 +160,7 @@ function checkMaterialization(rows, date, excluded = []) {
   if (issues.length) fail(issues[0].message, 409, issues[0].code, { issues });
 }
 function validateSubmissions(body, actor) {
+  assertWritable(actor);
   assertEquipmentReportSiteAccess(actor, body.siteId);
   if (body.siteId !== site.id || !Array.isArray(body.reports) || !body.reports.length || body.reports.length > 100) fail("Укажите проект и от 1 до 100 отчётов.");
   const targets = body.reports;
@@ -187,6 +194,7 @@ function validateSubmissions(body, actor) {
   return { issues };
 }
 function mutateReport(body, actor) {
+  assertWritable(actor);
   const now = new Date().toISOString();
   if (body.action === "save-approved-entry") {
     assertEquipmentReportSiteAccess(actor, body.siteId);
@@ -264,7 +272,11 @@ function balancesByDate() {
 }
 function json(response, payload, status = 200) { response.statusCode = status; response.setHeader("Content-Type", "application/json; charset=utf-8"); response.setHeader("Cache-Control", "no-store"); response.end(JSON.stringify(payload)); }
 function requestActor(request) { return actors[/(?:^|;\s*)equipment_smoke_role=([^;]+)/.exec(request.headers.cookie ?? "")?.[1]] ?? actors.foreman; }
-function visibleReports(actor) { return [...reports.values()].filter(report => actor.role !== "foreman" || report.ownerUserId === actor.id); }
+function visibleReports(actor) {
+  const showPending = canViewPendingReportsFor(actor);
+  return [...reports.values()].filter(report => (actor.role !== "foreman" || report.ownerUserId === actor.id) && (showPending || report.status === "approved"))
+    .map(report => showPending ? report : { ...report, reviewComment: "" });
+}
 function availableOrderIds(actor) {
   const visible = visibleReports(actor);
   return [...visible.flatMap(report => report.rows.map(row => `${report.workDate}/report-${report.id}-${row.id}`)), ...[...entries.values()].filter(entry => !entry.orderReportId && (actor.role !== "foreman" || entry.responsibleUserId === actor.id)).map(entry => `${entry.workDate}/approved-${entry.id}`)];
@@ -302,8 +314,27 @@ if (selfTest) {
   const edited = mutateReport({ action: "save-approved-entry", siteId: 1, workDate: legacy.workDate, entryId: legacy.id, revision: legacy.revision, row: rowInput(3, 5) }, actors.engineer).entry;
   assert.equal(edited.revision, 2); assert.equal(edited.hours, 5);
   assert.throws(() => mutateReport({ action: "save-approved-entry", siteId: 1, workDate: legacy.workDate, entryId: legacy.id, revision: edited.revision, row: rowInput(3, 6) }, actors.foreman), { code: "REVIEW_FORBIDDEN" });
+  scenario = "workflow"; resetFixture();
+  const pending = [...reports.values()].find(report => report.status === "draft");
+  const confirmed = [...reports.values()].find(report => report.status === "approved");
+  confirmed.reviewComment = "Внутренний комментарий проверки";
+  assert.ok(visibleReports(actors.viewer).every(report => report.status === "approved" && report.reviewComment === ""));
+  assert.ok(visibleReports(actors.viewer_pending).some(report => report.status === "draft"));
+  assert.equal(visibleReports(actors.viewer_pending).find(report => report.id === confirmed.id).reviewComment, confirmed.reviewComment);
+  assert.equal(canReviewEquipmentReport(actors.viewer_pending), false);
+  assert.ok(!availableOrderIds(actors.viewer).some(id => id.includes(`/report-${pending.id}-`)));
+  const snapshot = () => JSON.stringify({ reports: [...reports], entries: [...entries], orders: [...orders], requestCounts });
+  const unchanged = snapshot();
+  for (const actor of [actors.viewer, actors.viewer_pending, { ...actors.viewer, permissions: actors.engineer.permissions }]) {
+    for (const action of ["save", "submit", "approve", "reject", "reopen", "save-approved-entry"]) {
+      assert.throws(() => mutateReport({ action, siteId: site.id, reportId: pending.id, revision: pending.revision, workDate: TODAY, rows: pending.rows }, actor), { status: 403, code: "REPORT_FORBIDDEN" });
+    }
+    assert.throws(() => validateSubmissions({ siteId: site.id, reports: [] }, actor), { status: 403, code: "REPORT_FORBIDDEN" });
+    assert.throws(() => assertWritable(actor), { status: 403, code: "REPORT_FORBIDDEN" });
+  }
+  assert.equal(snapshot(), unchanged, "Viewer requests must leave all in-memory state unchanged");
   scenario = savedScenario; resetFixture();
-  console.log("Equipment smoke self-test passed: lifecycle, ownership, approved edits, hours cap, marks and publish isolation.");
+  console.log("Equipment smoke self-test passed: lifecycle, ownership, approved edits, hours cap, marks, publish isolation and viewer read/write boundaries.");
   process.exit(0);
 }
 const config = {
@@ -328,6 +359,7 @@ const config = {
           const key = String(actor.id); let ids = orders.get(key) ?? [];
           if ((body.scope ?? url.searchParams.get("scope")) !== equipmentReportOrderScope || Number(body.siteId ?? url.searchParams.get("siteId")) !== site.id) fail("Некорректный справочник порядка строк.");
           if (request.method === "POST") {
+            assertWritable(actor);
             const allowed = new Set(availableOrderIds(actor));
             if (body.action === "remap") ids = remapEquipmentReportOrder(ids, body.aliases, allowed);
             else {
@@ -337,10 +369,12 @@ const config = {
             }
             orders.set(key, ids);
           }
-          return json(response, { ids, canWrite: true, hasSavedOrder: orders.has(key) });
+          if (actor.role === "viewer") { const allowed = new Set(availableOrderIds(actor)); ids = ids.filter(id => allowed.has(id)); }
+          return json(response, { ids, canWrite: actor.role !== "viewer", hasSavedOrder: orders.has(key) });
         }
         assertEquipmentReportSiteAccess(actor, Number(body.siteId ?? url.searchParams.get("siteId")) || site.id);
         if (request.method === "POST") {
+          assertWritable(actor);
           if (body.action === "validate-submissions") { requestCounts.validation++; return json(response, validateSubmissions(body, actor)); }
           if (body.action === "save") requestCounts.save++;
           if (body.action === "submit") requestCounts.submit++;

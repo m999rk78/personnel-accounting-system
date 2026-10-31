@@ -1,8 +1,9 @@
 import { getDatabase } from "../db/client";
-import { normalizePermissionSet, rolePermissionTemplate, type PermissionResource, type PermissionSet, type ResourcePermission } from "./permissionModel";
-import type { UserRole } from "./roles";
+import { limitPermissionsToRole, normalizePermissionSet, rolePermissionTemplate, type PermissionResource, type PermissionSet, type ResourcePermission } from "./permissionModel";
+import type { ProjectAccess, UserRole } from "./roles";
 
 let permissionSchemaPromise: Promise<void> | null = null;
+type PermissionExecutor = Pick<ReturnType<typeof getDatabase>, "prepare">;
 
 export function ensurePermissionSchema() {
   if (!permissionSchemaPromise) {
@@ -41,21 +42,21 @@ type PermissionRow = {
   canDelete: number | boolean;
 };
 
-export async function loadEffectivePermissions(userId: number, role: UserRole): Promise<{ permissions: PermissionSet; permissionsCustomized: boolean }> {
+export async function loadEffectivePermissions(userId: number, role: UserRole, projectAccess?: ProjectAccess, executor: PermissionExecutor = getDatabase()): Promise<{ permissions: PermissionSet; permissionsCustomized: boolean }> {
   await ensurePermissionSchema();
-  const result = await getDatabase().prepare(`SELECT resource, can_view AS "canView", can_create AS "canCreate",
+  const result = await executor.prepare(`SELECT resource, can_view AS "canView", can_create AS "canCreate",
       can_update AS "canUpdate", can_delete AS "canDelete"
     FROM user_permissions WHERE user_id = ?`).bind(userId).all<PermissionRow>();
   const overrides = Object.fromEntries(result.results.map((row) => [row.resource, {
     view: Boolean(row.canView), create: Boolean(row.canCreate), update: Boolean(row.canUpdate), delete: Boolean(row.canDelete),
   }])) as Partial<Record<PermissionResource, ResourcePermission>>;
-  return { permissions: normalizePermissionSet(overrides, rolePermissionTemplate(role)), permissionsCustomized: result.results.length > 0 };
+  return { permissions: limitPermissionsToRole(role, normalizePermissionSet(overrides, rolePermissionTemplate(role)), projectAccess), permissionsCustomized: result.results.length > 0 };
 }
 
-export async function saveUserPermissions(userId: number, permissions: PermissionSet, updatedByUserId: number) {
+export async function saveUserPermissions(userId: number, permissions: PermissionSet, updatedByUserId: number, executor?: PermissionExecutor) {
   await ensurePermissionSchema();
   const normalized = normalizePermissionSet(permissions);
-  await getDatabase().transaction(async (db) => {
+  const persist = async (db: PermissionExecutor) => {
     await db.prepare("DELETE FROM user_permissions WHERE user_id = ?").bind(userId).run();
     for (const [resource, row] of Object.entries(normalized)) {
       await db.prepare(`INSERT INTO user_permissions
@@ -66,11 +67,12 @@ export async function saveUserPermissions(userId: number, permissions: Permissio
         // an inserted `id`, so execute this insert without that implicit clause.
         .bind(userId, resource, row.view ? 1 : 0, row.create ? 1 : 0, row.update ? 1 : 0, row.delete ? 1 : 0, updatedByUserId).all();
     }
-  });
+  };
+  if (executor) await persist(executor); else await getDatabase().transaction(persist);
   return normalized;
 }
 
-export async function resetUserPermissions(userId: number) {
+export async function resetUserPermissions(userId: number, executor: PermissionExecutor = getDatabase()) {
   await ensurePermissionSchema();
-  await getDatabase().prepare("DELETE FROM user_permissions WHERE user_id = ?").bind(userId).run();
+  await executor.prepare("DELETE FROM user_permissions WHERE user_id = ?").bind(userId).run();
 }

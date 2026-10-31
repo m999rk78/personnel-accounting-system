@@ -3,7 +3,7 @@ import type { AuthUser } from "./auth";
 import type { PersonnelReport, PersonnelReportApprovedEntry, PersonnelReportData, PersonnelReportEntrySaveRequest, PersonnelReportRequest, PersonnelReportRow, PersonnelReportRowValidationIssue, PersonnelReportValidationIssue, PersonnelReportValidationRequest, PersonnelReportValidationResult } from "./personnelReportTypes";
 import {
   assertCanSavePersonnelReport, assertPersonnelReportHours, assertPersonnelReportOwner,
-  assertPersonnelReportRevision, assertPersonnelReportSiteAccess, canReviewPersonnelReport,
+  assertPersonnelReportRevision, assertPersonnelReportSiteAccess, canReviewPersonnelReport, canViewPendingReportsFor,
   completePersonnelReportRows, nextPersonnelReportStatus, normalizePersonnelReportRows,
   PersonnelReportError, validPersonnelReportDate, personnelReportRowChanged, inspectPersonnelReportRows,
   collectPersonnelReportHourIssues, type NormalizedPersonnelReportRow,
@@ -114,10 +114,13 @@ export async function listPersonnelReports(db: Executor, user: AuthUser, siteId:
   }
   const rangeFilter = `${from ? " AND report.work_date >= ?" : ""}${to ? " AND report.work_date <= ?" : ""}`;
   const ownFilter = user.role === "foreman" ? " AND report.owner_user_id = ?" : "";
+  const hidePending = !canViewPendingReportsFor(user);
+  const statusFilter = hidePending ? " AND report.status = 'approved'" : "";
   const parameters = [siteId, ...(from ? [from] : []), ...(to ? [to] : []), ...(user.role === "foreman" ? [user.id] : [])];
-  const headers = await db.prepare(`${HEADER_SELECT} WHERE report.site_id = ? ${rangeFilter} ${ownFilter}
+  const headers = await db.prepare(`${HEADER_SELECT} WHERE report.site_id = ? ${rangeFilter} ${ownFilter} ${statusFilter}
     ORDER BY report.work_date DESC, report.id DESC LIMIT 5001`).bind(...parameters).all<Header>();
-  if (headers.results.length > 5000) throw new PersonnelReportError("В выбранном периоде слишком много отчётов. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
+  const visibleHeaders = hidePending ? headers.results.filter(report => report.status === "approved") : headers.results;
+  if (visibleHeaders.length > 5000) throw new PersonnelReportError("В выбранном периоде слишком много отчётов. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
   const entryFilter = `${from ? " AND entry.work_date >= ?" : ""}${to ? " AND entry.work_date <= ?" : ""}${user.role === "foreman" ? " AND entry.responsible_user_id = ?" : ""}`;
   const entries = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
     entry.employee_id AS employeeId, entry.shift_id AS shiftId, entry.zone_id AS zoneId,
@@ -141,17 +144,17 @@ export async function listPersonnelReports(db: Executor, user: AuthUser, siteId:
     ORDER BY entry.created_at DESC, origin.row_order, entry.id DESC LIMIT 20001`)
     .bind(...parameters).all<PersonnelReportApprovedEntry>();
   if (entries.results.length > 20000) throw new PersonnelReportError("В выбранном периоде больше 20 000 строк. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
-  const rows = headers.results.length ? await reportRowsStatement(db, headers.results.map((report) => report.id)).all<PersonnelReportRow>() : { results: [] as PersonnelReportRow[] };
+  const rows = visibleHeaders.length ? await reportRowsStatement(db, visibleHeaders.map((report) => report.id)).all<PersonnelReportRow>() : { results: [] as PersonnelReportRow[] };
   if (rows.results.length > 20000) throw new PersonnelReportError("В выбранном периоде больше 20 000 строк черновиков. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
   const byReport = new Map<number, PersonnelReportRow[]>();
   for (const row of rows.results) {
     if (!byReport.has(row.reportId)) byReport.set(row.reportId, []);
     byReport.get(row.reportId)!.push(row);
   }
-  return { reports: headers.results.map((report) => ({ ...report, rows: byReport.get(report.id) ?? [] })), entries: entries.results, canReview: canReviewPersonnelReport(user), from, to };
+  return { reports: visibleHeaders.map((report) => ({ ...report, ...(hidePending ? { reviewComment: "" } : {}), rows: byReport.get(report.id) ?? [] })), entries: entries.results, canReview: canReviewPersonnelReport(user), from, to };
 }
 
-async function inspectReferences(db: Executor, siteId: number, rows: NormalizedPersonnelReportRow[]) {
+async function inspectReferences(db: Executor, siteId: number, rows: NormalizedPersonnelReportRow[], historical: ReadonlyMap<number, PersonnelReportRow> = new Map()) {
   const employeeIds = [...new Set(rows.flatMap((row) => row.employeeId ? [row.employeeId] : []))];
   const employees = await db.prepare(`SELECT employee.id, employee.full_name AS fullName, employee.position,
     employee.employment_type AS employmentType, employee.department FROM employees employee
@@ -167,24 +170,31 @@ async function inspectReferences(db: Executor, siteId: number, rows: NormalizedP
   const subworkParents = new Map((results[3].results as Array<{ id: number; mainWorkTypeId: number | null }>).map(child => [child.id, child.mainWorkTypeId]));
   const issues: PersonnelReportRowValidationIssue[] = [];
   const snapshots = rows.map((row, index) => {
+    const previous = historical.get(index);
+    const sameEmployee = Boolean(previous?.employeeId && previous.employeeId === row.employeeId);
+    const sameMaster = Boolean(previous?.masterId && previous.masterId === row.masterId);
+    const sameWorkPair = Boolean(previous?.mainWorkTypeId && previous.mainWorkTypeId === row.mainWorkTypeId && previous.subworkTypeId === row.subworkTypeId);
     const employee = row.employeeId ? byEmployee.get(row.employeeId) : null;
     const add = (code: string, message: string) => issues.push({ code, message: `Строка ${index + 1}: ${message}`, rowNumbers: [index + 1], ...(row.employeeId ? { employeeId: row.employeeId } : {}), ...(employee ? { employeeName: employee.fullName } : {}) });
-    if (row.subworkTypeId && (!row.mainWorkTypeId || subworkParents.get(row.subworkTypeId) !== row.mainWorkTypeId)) add("INVALID_WORK_HIERARCHY", "подвид не относится к выбранному виду работы.");
-    if (row.employeeId && (!employee || !employee.position || employee.employmentType.trim().toLocaleUpperCase("ru-RU") !== "ОПР")) {
+    if (row.subworkTypeId && !sameWorkPair && (!row.mainWorkTypeId || subworkParents.get(row.subworkTypeId) !== row.mainWorkTypeId)) add("INVALID_WORK_HIERARCHY", "подвид не относится к выбранному виду работы.");
+    if (row.employeeId && !sameEmployee && (!employee || !employee.position || employee.employmentType.trim().toLocaleUpperCase("ru-RU") !== "ОПР")) {
       add("INVALID_EMPLOYEE", "выберите действующего сотрудника ОПР с должностью, назначенного на проект.");
     }
     const labels = ["Смена", "Зона", "Вид работы", "Подвид работы", "Мастер"];
     for (let fieldIndex = 0; fieldIndex < fields.length; fieldIndex += 1) {
       const id = row[fields[fieldIndex]];
-      if (id && !references[fieldIndex].has(id)) add("INVALID_REFERENCE", `значение поля «${labels[fieldIndex]}» отсутствует в справочнике проекта.`);
+      const unchanged = fields[fieldIndex] === "subworkTypeId" ? sameWorkPair : Boolean(previous?.[fields[fieldIndex]] && previous[fields[fieldIndex]] === id);
+      if (id && !references[fieldIndex].has(id) && !unchanged) add("INVALID_REFERENCE", `значение поля «${labels[fieldIndex]}» отсутствует в справочнике проекта.`);
     }
-    return { position: employee?.position ?? "", employeeName: employee?.fullName ?? "", employmentType: employee?.employmentType ?? "", department: employee?.department ?? "", masterName: row.masterId ? references[4].get(row.masterId) ?? "" : "" };
+    return { position: sameEmployee ? previous!.positionSnapshot : employee?.position ?? "", employeeName: sameEmployee ? previous!.employeeName : employee?.fullName ?? "",
+      employmentType: sameEmployee ? previous!.employmentType : employee?.employmentType ?? "", department: sameEmployee ? previous!.department : employee?.department ?? "",
+      masterName: sameMaster ? previous!.masterName : row.masterId ? references[4].get(row.masterId) ?? "" : "" };
   });
   return { snapshots, issues };
 }
 
-async function validateReferences(db: Executor, siteId: number, rows: NormalizedPersonnelReportRow[]): Promise<RowSnapshots[]> {
-  const result = await inspectReferences(db, siteId, rows);
+async function validateReferences(db: Executor, siteId: number, rows: NormalizedPersonnelReportRow[], historical: ReadonlyMap<number, PersonnelReportRow> = new Map()): Promise<RowSnapshots[]> {
+  const result = await inspectReferences(db, siteId, rows, historical);
   if (result.issues.length) throw new PersonnelReportError(result.issues[0].message, 400, result.issues[0].code, { issues: result.issues });
   return result.snapshots;
 }
@@ -209,6 +219,7 @@ async function checkHours(db: Executor, workDate: string, rows: ReturnType<typeo
 
 /** A read-only preview; authoritative mutations always run the same final guards again. */
 export async function validatePersonnelReportSubmissions(db: Executor, user: AuthUser, payload: PersonnelReportValidationRequest): Promise<PersonnelReportValidationResult> {
+  if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   if (!positiveId(payload.siteId) || !Array.isArray(payload.reports) || !payload.reports.length || payload.reports.length > 100) throw new PersonnelReportError("Укажите проект и от 1 до 100 отчётов для проверки.");
   const keys = new Set<string>(); const reportIds = new Set<number>(); const newDates = new Set<string>();
   let total = 0;
@@ -369,6 +380,7 @@ async function publishPersonnelReportRows(db: Executor, user: AuthUser, report: 
 
 /** Older approved entries have no draft header. Correct them with their own optimistic revision. */
 export async function mutatePersonnelReportEntry(database: PostgresDatabase, user: AuthUser, payload: PersonnelReportEntrySaveRequest): Promise<PersonnelReportApprovedEntry> {
+  if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   return database.transaction(async db => {
     if (!canReviewPersonnelReport(user)) throw new PersonnelReportError("Исправлять подтверждённые записи может только инженер.", 403, "REPORT_FORBIDDEN");
     if (!positiveId(payload.entryId) || !positiveId(payload.siteId) || !validPersonnelReportDate(payload.workDate)) throw new PersonnelReportError("Укажите запись, проект и дату отчёта.");
@@ -387,7 +399,9 @@ export async function mutatePersonnelReportEntry(database: PostgresDatabase, use
     assertPersonnelReportRevision(previous.revision, payload.revision);
     const rows = normalizePersonnelReportRows([payload.row]);
     const complete = completePersonnelReportRows(rows);
-    const snapshots = await validateReferences(db, payload.siteId, rows);
+    const original = (await listPersonnelReports(db, user, payload.siteId, payload.workDate, payload.workDate)).entries.find(entry => entry.id === previous.id);
+    if (!original) throw new PersonnelReportError("Запись уже изменена. Обновите таблицу.", 409, "STALE_REPORT");
+    const snapshots = await validateReferences(db, payload.siteId, rows, new Map([[0, { ...original, reportId: 0, approvedEntryId: original.id }]]));
     await checkHours(db, payload.workDate, complete, true, new Map([[complete[0].employeeId, snapshots[0].employeeName]]), [previous.id], [previous.employeeId]);
     await updatePublishedEntry(db, user, previous.id, rows[0], snapshots[0]);
     const result = await listPersonnelReports(db, user, payload.siteId, payload.workDate, payload.workDate);
@@ -398,12 +412,13 @@ export async function mutatePersonnelReportEntry(database: PostgresDatabase, use
 }
 
 export async function mutatePersonnelReport(database: PostgresDatabase, user: AuthUser, payload: Exclude<PersonnelReportRequest, PersonnelReportEntrySaveRequest | PersonnelReportValidationRequest>): Promise<PersonnelReport> {
+  if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   return database.transaction(async (db) => {
     if (payload.action === "save") {
       if (!positiveId(payload.siteId) || !validPersonnelReportDate(payload.workDate)) throw new PersonnelReportError("Укажите проект и корректную дату отчёта.");
       await assertActiveSite(db, user, payload.siteId);
       const rows = normalizePersonnelReportRows(payload.rows);
-      const snapshots = await validateReferences(db, payload.siteId, rows);
+      let snapshots: RowSnapshots[] = [];
       let reportId = payload.reportId;
       let previousRows: PersonnelReportRow[] = [];
       let approvedReport: PersonnelReport | undefined;
@@ -421,6 +436,12 @@ export async function mutatePersonnelReport(database: PostgresDatabase, user: Au
         if (rows.some(row => !row.id) && !user.permissions.workers_report.create) throw new PersonnelReportError("Нет права добавлять строки отчёта.", 403, "REPORT_FORBIDDEN");
         if (current.rows.some(previous => !rows.some(row => row.id === previous.id)) && !user.permissions.workers_report.delete) throw new PersonnelReportError("Нет права удалять строки отчёта.", 403, "REPORT_FORBIDDEN");
         previousRows = current.rows;
+        const historical = new Map<number, PersonnelReportRow>();
+        if (current.status === "approved") rows.forEach((row, index) => {
+          const previous = current.rows.find(previous => previous.id === row.id);
+          if (previous) historical.set(index, previous);
+        });
+        snapshots = await validateReferences(db, payload.siteId, rows, historical);
         if (current.status === "submitted" || current.status === "approved") {
           const complete = completePersonnelReportRows(rows);
           if (current.status === "approved") {
@@ -439,6 +460,7 @@ export async function mutatePersonnelReport(database: PostgresDatabase, user: Au
           .bind(user.id, reportId).run();
       } else {
         assertCanSavePersonnelReport(user);
+        snapshots = await validateReferences(db, payload.siteId, rows);
         // Serializes two tabs trying to create the same owner's active report.
         await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(`personnel-report:${payload.siteId}:${payload.workDate}:${user.id}`).first();
         const existing = await db.prepare("SELECT id FROM personnel_reports WHERE site_id = ? AND work_date = ? AND owner_user_id = ? AND status <> 'approved'")
