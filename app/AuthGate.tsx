@@ -12,6 +12,9 @@ export type CurrentUser = {
   fullName: string;
   email: string;
   role: UserRole;
+  customRoleId?: number | null;
+  customRoleName?: string | null;
+  roleTemplate?: PermissionSet;
   assignedSiteId: number | null;
   projectAccess?: ProjectAccess;
   canViewPendingReports?: boolean;
@@ -68,6 +71,8 @@ export default function AuthGate({ initialToday, initialUser }: { initialToday: 
         if (!result.authenticated || !result.user) { window.location.replace("/login"); return; }
         const next = result.user;
         setUser(current => current && current.id === next.id && current.role === next.role && current.assignedSiteId === next.assignedSiteId
+          && current.customRoleId === next.customRoleId && current.customRoleName === next.customRoleName
+          && JSON.stringify(current.roleTemplate) === JSON.stringify(next.roleTemplate)
           && JSON.stringify(current.projectAccess) === JSON.stringify(next.projectAccess) && current.canViewPendingReports === next.canViewPendingReports
           && current.fullName === next.fullName && current.email === next.email && current.permissionsCustomized === next.permissionsCustomized
           && permissionSetsEqual(current.permissions, next.permissions) ? current : next);
@@ -87,6 +92,6 @@ export default function AuthGate({ initialToday, initialUser }: { initialToday: 
   if (!hydrated || checking || !user) return <main className="auth-loading"><div className="auth-spinner" /><p>Проверяем доступ…</p></main>;
   // Permission changes update controls in place, preserving unfinished drafts.
   // Only an identity/project change starts a separate workspace session.
-  const accessKey = JSON.stringify([user.id, user.role, user.assignedSiteId, user.projectAccess, user.canViewPendingReports]);
+  const accessKey = JSON.stringify([user.id, user.role, user.customRoleId, user.assignedSiteId, user.projectAccess, user.canViewPendingReports]);
   return <PersonnelApp key={accessKey} initialToday={today} currentUser={user} />;
 }

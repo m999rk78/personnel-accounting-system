@@ -23,7 +23,7 @@ export function memoryProjectAccessDatabase() {
       [6, { id: 6, role: "admin", fullName: "Прежняя роль", email: "legacy@invalid.test", assignedSiteId: null }],
     ]),
     sites: new Map([[7, { id: 7, name: "Северный", active: true }], [8, { id: 8, name: "Южный", active: true }], [9, { id: 9, name: "Архив", active: false }]]),
-    settings: new Map(), grants: new Map(), permissions: new Map(),
+    settings: new Map(), grants: new Map(), permissions: new Map(), customRoles: new Map(), sessions: new Map(),
   };
   const queries = [], attemptedWrites = [];
   let failureResource = null;
@@ -33,12 +33,21 @@ export function memoryProjectAccessDatabase() {
     return saved ? { mode: saved.allProjects ? "all" : "selected", siteIds: [...(state.grants.get(user.id) ?? [])] } : effectiveProjectAccess(normalizedUser(user));
   };
   function select(sql, values) {
+    if (sql.includes("pg_advisory_xact_lock")) return [];
+    if (sql.includes("FROM custom_roles")) {
+      const roles = [...state.customRoles.values()].filter(role => role.active !== 0);
+      return sql.includes("WHERE id = ?") ? roles.filter(role => role.id === values[0]) : roles;
+    }
+    if (sql.includes("FROM user_sessions s JOIN app_users u")) {
+      const userId = state.sessions.get(values[0]);
+      return userId && state.users.has(userId) ? [normalizedUser(state.users.get(userId))] : [];
+    }
     if (sql.includes("FROM user_project_access WHERE user_id")) return state.settings.has(values[0]) ? [state.settings.get(values[0])] : [];
     if (sql.includes("FROM user_project_access_sites access")) return [...(state.grants.get(values[0]) ?? [])].filter(id => state.sites.get(id)?.active).sort((a,b)=>a-b).map(id=>({id}));
     if (sql.includes("FROM user_permissions WHERE user_id")) return [...(state.permissions.get(values[0])?.values() ?? [])];
     if (sql.includes("FROM sites WHERE id = ANY")) return values[0].filter(id=>state.sites.get(id)?.active).map(id=>({id}));
-    if (sql.includes("SELECT id, name FROM sites WHERE active")) return [...state.sites.values()].filter(site=>site.active && (!values.length || values[0].includes(site.id)));
-    if (sql.includes("FROM app_users u LEFT JOIN sites")) {
+    if (sql.includes("FROM sites WHERE active = 1")) return [...state.sites.values()].filter(site=>site.active && (!values.length || values[0].includes(site.id)));
+    if (sql.includes("FROM app_users u LEFT JOIN sites") || sql.includes("FROM app_users target WHERE active = 1")) {
       return [...state.users.values()].filter(user => {
         if (!values.length) return true;
         const access = accessFor(user);
@@ -46,11 +55,36 @@ export function memoryProjectAccessDatabase() {
       }).map(user=>({ ...normalizedUser(user), assignedSiteName: state.sites.get(user.assignedSiteId)?.name ?? null }));
     }
     if (sql.includes("FROM app_users WHERE id = ?")) return state.users.has(values[0]) ? [normalizedUser(state.users.get(values[0]))] : [];
+    if (sql.includes("SELECT role, password_hash")) return state.users.has(values[0]) ? [{ ...normalizedUser(state.users.get(values[0])), passwordHash: "fixture-already-activated" }] : [];
+    if (sql.includes("FROM app_users WHERE email = ?")) return [...state.users.values()].filter(user => user.active !== 0 && user.email === values[0] && (values.length < 2 || user.id !== values[1])).map(user => ({ id: user.id }));
+    if (sql.includes("SELECT COUNT(*)") && sql.includes("FROM app_users")) return [{ count: [...state.users.values()].filter(user => user.active !== 0 && user.role === "superadmin").length }];
+    if (sql.includes("FROM sites WHERE id = ?")) return state.sites.get(values[0])?.active ? [state.sites.get(values[0])] : [];
     throw new Error(`Unexpected SELECT in project access test: ${sql.slice(0,120)}`);
   }
   function mutate(sql, values) {
     attemptedWrites.push({sql,values:structuredClone(values)});
-    if (/^CREATE\b/.test(sql)) return;
+    if (/^(CREATE|ALTER)\b/.test(sql)) return;
+    if (sql.startsWith("INSERT INTO app_users")) {
+      const id = Math.max(...state.users.keys()) + 1;
+      const columns = sql.match(/app_users\s*\(([^)]+)\)/)[1].split(",").map(column => column.trim());
+      const names = { full_name: "fullName", assigned_site_id: "assignedSiteId", custom_role_id: "customRoleId" };
+      const user = { id, active: 1, assignedSiteId: null, customRoleId: null };
+      columns.forEach((column, index) => { user[names[column] ?? column] = values[index]; });
+      state.users.set(id, user);
+      return { changes: 1, last_row_id: id };
+    }
+    if (sql.startsWith("UPDATE app_users SET full_name")) {
+      const id = values.at(-1), user = state.users.get(id);
+      if (!user) return { changes: 0, last_row_id: null };
+      const assignments = sql.slice(sql.indexOf("SET ") + 4, sql.indexOf(" WHERE")).split(",");
+      const names = { full_name: "fullName", assigned_site_id: "assignedSiteId", custom_role_id: "customRoleId" };
+      let index = 0;
+      for (const assignment of assignments) {
+        const column = assignment.trim().split(/\s*=/)[0];
+        if (assignment.includes("?")) user[names[column] ?? column] = values[index++];
+      }
+      return { changes: 1, last_row_id: null };
+    }
     if (sql.startsWith("INSERT INTO user_project_access(")) {
       for (const user of state.users.values()) if (user.role === "admin" && !state.settings.has(user.id)) state.settings.set(user.id,{allProjects:1,canViewPendingReports:1});
     } else if (sql.startsWith("UPDATE app_users SET role = 'engineer'")) {
@@ -73,10 +107,13 @@ export function memoryProjectAccessDatabase() {
     prepare(sql){let values=[]; const execute=()=>{
       assert.equal((sql.match(/\?/g)??[]).length,values.length,`Wrong bind count: ${sql}`);
       queries.push({sql,values:structuredClone(values)});
-      const rows=/^SELECT\b/.test(sql.trim()) ? select(sql.trim(),values) : (mutate(sql.trim(),values),[]);
-      return {results:structuredClone(rows),success:true,meta:{changes:rows.length||1,last_row_id:null}};
+      const reading=/^SELECT\b/.test(sql.trim());
+      const changed=reading ? null : mutate(sql.trim(),values);
+      const rows=reading ? select(sql.trim(),values) : [];
+      return {results:structuredClone(rows),success:true,meta:{changes:rows.length||1,last_row_id:null,...changed}};
     };return {bind(...next){values=next;return this;},async all(){return execute();},async first(){return execute().results[0]??null;},async run(){return execute();}};},
     async batch(statements){const result=[];for(const statement of statements)result.push(await statement.run());return result;},
+    async readBatch(statements){const result=[];for(const statement of statements)result.push(await statement.all());return result;},
     async transaction(callback){const snapshot=structuredClone(state);try{return await callback(db);}catch(error){state=snapshot;throw error;}},
   };
   return db;
@@ -84,24 +121,50 @@ export function memoryProjectAccessDatabase() {
 
 export async function projectAccessHarness() {
   const db=memoryProjectAccessDatabase();
-  const boundaryUrl=sourceUrl(`export let user,db; export function configure(nextUser,nextDb){user=nextUser;db=nextDb;} export function getDatabase(){return db;} export async function getAuthUser(){return user;} export function assertSameOrigin(){}`);
+  const boundaryUrl=sourceUrl(`export let user,db; export const invitations=[]; export function configure(nextUser,nextDb){user=nextUser;db=nextDb;} export function getDatabase(){return db;} export async function getAuthUser(){return user;} export function assertSameOrigin(){} export async function ensureAuthSchema(){} export async function createInvitation(userId){invitations.push(userId);return 'https://invalid.test/invitation/'+userId;} export async function sendInvitationEmail(){return {sent:false};}`);
   const boundary=await import(boundaryUrl);
   boundary.configure(null,db);
   const settingsUrl=await compile("app/projectAccessServer.ts", {"../db/client":boundaryUrl,"./roles.ts":appUrl("roles")});
   const permissionsUrl=await compile("app/permissions.ts", {"../db/client":boundaryUrl,"./permissionModel":appUrl("permissionModel")});
+  const customRolesUrl=await compile("app/customRolesServer.ts", {"../db/client":boundaryUrl,"./customRoles":appUrl("customRoles"),"./customRoles.ts":appUrl("customRoles"),"./permissionModel":appUrl("permissionModel"),"./permissionModel.ts":appUrl("permissionModel"),"./roles.ts":appUrl("roles")});
+  const customRoles=await import(customRolesUrl);
   const settings=await import(settingsUrl), permissions=await import(permissionsUrl);
   const route=await import(await compile("app/api/access-rights/route.ts", {
     "../../../db/client":boundaryUrl,"../../auth":boundaryUrl,
     "../../auditLog":sourceUrl("export async function withAuditTrail(request,handler){return handler(request);}"),
     "../../permissions":permissionsUrl,"../../projectAccessServer":settingsUrl,
+    "../../customRolesServer":customRolesUrl,
     "../../permissionModel":appUrl("permissionModel"),"../../roles":appUrl("roles"),
   }));
-  return {db,settings,permissions,route,
+  const services = {"../../../db/client":boundaryUrl,"../../auth":boundaryUrl,"../../permissions":permissionsUrl,"../../projectAccessServer":settingsUrl,"../../customRolesServer":customRolesUrl,"../../roles":appUrl("roles"),"../../permissionModel":appUrl("permissionModel")};
+  return {db,settings,permissions,customRoles,route,boundary,
+    async loadRolesRoute() { return import(await compile("app/api/roles/route.ts", {...services,
+      "../../customRoles":appUrl("customRoles"),
+      "../../auditLog":sourceUrl("export async function withAuditTrail(request,handler){return handler(request);}"),
+    })); },
+    async loadAuth() { return import(await compile("app/auth.ts", {
+      "../db/client":boundaryUrl, "nodemailer":import.meta.resolve("nodemailer"), "./permissions":permissionsUrl,
+      "./permissionModel":appUrl("permissionModel"), "./roles":appUrl("roles"),
+      "./projectAccessServer":settingsUrl, "./customRolesServer":customRolesUrl,
+    })); },
+    async loadDataRoute() {
+      const noop=names=>sourceUrl(names.map(name=>`export async function ${name}(){return {};}`).join("\n"));
+      return import(await compile("app/api/data/route.ts", {...services,
+        "../../auditLog":sourceUrl("export async function withAuditTrail(request,handler){return handler(request);}"),
+        "../../compressJsonResponse":sourceUrl("export async function compressJsonResponse(request,response){return response;}"),
+        ...Object.fromEntries(["projectScopedData","readOptionalBatch","settingsReadPolicy","bitrix24Cooldown","equipmentAvailability","equipmentImport","equipmentTimesheetUnits","equipmentReportWorkflow"].map(name=>[`../../${name}`,appUrl(name)])),
+        "../../projectMasters":noop(["ensureProjectMastersSchema","syncProjectMasters"]),
+        "../../workTypeHierarchyServer":noop(["saveSubworkDirectory"]),
+        "../../excelDirectoryImports":noop(["importProjectDirectoryExcel","importProjectEmployeesExcel","normalizeExcelDirectoryName","prepareEmployeeExcelImport"]),
+        "../../bitrix24Sync":noop(["compareBitrixEmployees","fetchBitrixEmployeeSnapshot","normalizeBitrixText","selectBitrixEmployeesForImport","suggestBitrixEmployeeLinks"]),
+      }));
+    },
     async asUser(id,override={}){
       const row=db.state.users.get(id), user={...row,role:row.role==="admin"?"engineer":row.role};
       const scope=await settings.loadUserProjectAccess(user,db);
-      const access=await permissions.loadEffectivePermissions(id,user.role,scope.projectAccess,db);
-      boundary.configure({...user,...scope,...access,...override},db);
+      const customRole=user.customRoleId ? await customRoles.loadCustomRole(user.customRoleId,db) : null;
+      const access=await permissions.loadEffectivePermissions(id,user.role,scope.projectAccess,db,customRole);
+      boundary.configure({...user,...scope,...access,...(customRole?{customRoleName:customRole.name,roleTemplate:customRole.permissions}:{}),...override},db);
     },
   };
 }

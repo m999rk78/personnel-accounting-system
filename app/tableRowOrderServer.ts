@@ -84,7 +84,7 @@ export async function canonicalRowIds(scope: string, siteId: number | null, exec
       users: `SELECT id FROM app_users WHERE active = 1 AND (
         EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = app_users.id AND access.all_projects = 1)
         OR EXISTS (SELECT 1 FROM user_project_access_sites grants WHERE grants.user_id = app_users.id AND grants.site_id = ANY(?::integer[]))
-        OR (NOT EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = app_users.id)
+        OR (custom_role_id IS NULL AND NOT EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = app_users.id)
           AND (role IN ('engineer', 'superadmin', 'office', 'admin') OR assigned_site_id = ANY(?::integer[])))
       ) ORDER BY full_name, id`,
       projects: "SELECT id FROM sites WHERE active = 1 AND id = ANY(?::integer[]) ORDER BY id",

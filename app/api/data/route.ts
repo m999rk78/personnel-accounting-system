@@ -1,5 +1,7 @@
 import { projectEntitiesAllowed, scopedDataActionAllowed } from "../../projectScopedData";
 import { loadUserProjectAccess, saveUserProjectAccess } from "../../projectAccessServer";
+import { ensureCustomRolesSchema, loadCustomRole } from "../../customRolesServer";
+import { ensurePermissionSchema, resetUserPermissions } from "../../permissions";
 import { ensureProjectMastersSchema, syncProjectMasters } from "../../projectMasters";
 import { settingsReadPolicy } from "../../settingsReadPolicy";
 import { readOptionalBatch } from "../../readOptionalBatch";
@@ -80,6 +82,7 @@ type UserPayload = {
   fullName?: string;
   email?: string;
   role?: UserRole;
+  customRoleId?: number | null;
   assignedSiteId?: number | null;
   projectAccess?: unknown;
   canViewPendingReports?: unknown;
@@ -1781,22 +1784,39 @@ function userCatalogStatement(user: AuthUser) {
   const siteIds = accessibleProjectIds(user);
   const scoped = siteIds !== null;
   const statement = env.DB.prepare(`SELECT id, full_name AS fullName, email, CASE WHEN role = 'office' THEN 'superadmin' WHEN role = 'admin' THEN 'engineer' ELSE role END AS role,
-    assigned_site_id AS assignedSiteId, CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END AS status
+    assigned_site_id AS assignedSiteId, custom_role_id AS customRoleId, CASE WHEN password_hash IS NULL THEN 'invited' ELSE 'active' END AS status
     FROM app_users target WHERE active = 1${scoped ? ` AND (
       EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = target.id AND access.all_projects = 1)
       OR EXISTS (SELECT 1 FROM user_project_access_sites grant_site WHERE grant_site.user_id = target.id AND grant_site.site_id = ANY(?::integer[]))
       OR (NOT EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = target.id)
-        AND (target.role IN ('engineer', 'superadmin', 'office', 'admin') OR target.assigned_site_id = ANY(?::integer[]))))` : ""} ORDER BY full_name`);
+        AND target.custom_role_id IS NULL AND (target.role IN ('engineer', 'superadmin', 'office', 'admin') OR target.role = 'foreman' AND target.assigned_site_id = ANY(?::integer[]))))` : ""} ORDER BY full_name`);
   return scoped ? statement.bind(siteIds, siteIds) : statement;
 }
 
 async function usersWithProjectAccess(rows: Record<string, unknown>[], observer: AuthUser) {
   return Promise.all(rows.map(async row => {
     if (!isUserRole(row.role)) return null;
-    const user = { ...row, role: row.role, assignedSiteId: asPositiveInteger(row.assignedSiteId),
-      ...await loadUserProjectAccess({ id: Number(row.id), role: row.role, assignedSiteId: asPositiveInteger(row.assignedSiteId) }) };
+    const customRoleId = asPositiveInteger(row.customRoleId);
+    const customRole = customRoleId ? await loadCustomRole(customRoleId) : null;
+    if (customRoleId && (!customRole || customRole.baseRole !== row.role)) throw new Error("Пользовательская роль недоступна.");
+    const user = { ...row, role: row.role, assignedSiteId: asPositiveInteger(row.assignedSiteId), customRoleId,
+      customRoleName: customRole?.name ?? null,
+      ...await loadUserProjectAccess({ id: Number(row.id), role: row.role, assignedSiteId: asPositiveInteger(row.assignedSiteId), customRoleId }) };
     return visibleUserProjectAccess(user, observer);
   }));
+}
+
+async function resolveUserRole(payload: UserPayload, db: Pick<ReturnType<typeof getDatabase>, "prepare">, previous?: { role: string; customRoleId?: number | null }) {
+  const preserve = payload.customRoleId === undefined && previous && (payload.role === undefined || payload.role === previous.role);
+  const requestedId = preserve ? previous.customRoleId : payload.customRoleId;
+  const customRoleId = requestedId === undefined || requestedId === null ? null : asPositiveInteger(requestedId);
+  if (requestedId !== undefined && requestedId !== null && (!customRoleId || customRoleId > 2147483647)) throw new Error("Выберите роль из списка.");
+  const customRole = customRoleId ? await loadCustomRole(customRoleId, db) : null;
+  if (customRoleId && !customRole) throw new Error("Выбранная роль не найдена. Обновите список ролей.");
+  if (customRole && payload.role !== undefined && payload.role !== customRole.baseRole) throw new Error("Настройки выбранной роли изменились. Выберите роль повторно.");
+  const role = customRole?.baseRole ?? payload.role ?? previous?.role;
+  if (!isUserRole(role)) throw new Error("Выберите роль из списка.");
+  return { role, customRoleId };
 }
 
 async function handleGET(request: Request) {
@@ -2128,16 +2148,18 @@ async function handlePOST(request: Request) {
     if (payload.action === "create-user") {
       const fullName = payload.fullName?.trim() ?? "";
       const email = payload.email?.trim().toLocaleLowerCase() ?? "";
-      const role = isUserRole(payload.role) ? payload.role : null;
+      await ensureCustomRolesSchema();
+      const { role, customRoleId } = await resolveUserRole(payload, env.DB);
       const assignedSiteId = role && requiresAssignedProject(role) ? asPositiveInteger(payload.assignedSiteId) : null;
       if (!fullName || !/^\S+@\S+\.\S+$/.test(email) || !role || (role && requiresAssignedProject(role) && !assignedSiteId && payload.projectAccess === undefined)) throw new Error("Заполните ФИО, корректный email, роль и доступ к проектам.");
+      if (customRoleId && payload.projectAccess === undefined) throw new Error("Укажите доступ пользователя к проектам.");
       if (assignedSiteId && !await env.DB.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(assignedSiteId).first()) throw new Error("Выбранный проект не найден или архивирован.");
       const duplicate = await env.DB.prepare("SELECT id FROM app_users WHERE email = ? AND active = 1").bind(email).first();
       if (duplicate) throw new Error("Пользователь с таким email уже существует.");
       const userId = await env.DB.transaction(async db => {
-        const result = await db.prepare("INSERT INTO app_users (full_name, email, role, assigned_site_id) VALUES (?, ?, ?, ?)").bind(fullName, email, role, assignedSiteId).run();
+        const result = await db.prepare("INSERT INTO app_users (full_name, email, role, assigned_site_id, custom_role_id) VALUES (?, ?, ?, ?, ?)").bind(fullName, email, role, assignedSiteId, customRoleId).run();
         const id = Number(result.meta.last_row_id);
-        if (payload.projectAccess !== undefined || payload.canViewPendingReports !== undefined || role === "viewer") {
+        if (payload.projectAccess !== undefined || payload.canViewPendingReports !== undefined || role === "viewer" || customRoleId) {
           await saveUserProjectAccess(id, { projectAccess: payload.projectAccess, canViewPendingReports: payload.canViewPendingReports }, authUser.id, db);
         }
         return id;
@@ -2426,23 +2448,32 @@ async function handlePATCH(request: Request) {
       const userId = asPositiveInteger(payload.userId);
       const fullName = payload.fullName?.trim() ?? "";
       const email = payload.email?.trim().toLocaleLowerCase() ?? "";
-      const role = isUserRole(payload.role) ? payload.role : null;
-      const assignedSiteId = role && requiresAssignedProject(role) ? asPositiveInteger(payload.assignedSiteId) : null;
-      if (!userId || !fullName || !/^\S+@\S+\.\S+$/.test(email) || !role || (role && requiresAssignedProject(role) && !assignedSiteId && payload.projectAccess === undefined)) throw new Error("Заполните ФИО, корректный email, роль и доступ к проектам.");
-      if (assignedSiteId && !await env.DB.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(assignedSiteId).first()) throw new Error("Выбранный проект не найден или архивирован.");
+      if (!userId || !fullName || !/^\S+@\S+\.\S+$/.test(email)) throw new Error("Заполните ФИО и корректный email.");
       const duplicate = await env.DB.prepare("SELECT id FROM app_users WHERE email = ? AND id <> ? AND active = 1").bind(email, userId).first();
       if (duplicate) throw new Error("Пользователь с таким email уже существует.");
-      const currentUserRecord = await env.DB.prepare("SELECT role, password_hash AS passwordHash FROM app_users WHERE id = ? AND active = 1").bind(userId).first<{ role: string; passwordHash: string | null }>();
-      if ((currentUserRecord?.role === "superadmin" || currentUserRecord?.role === "office") && role !== "superadmin") {
-        const adminCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM app_users WHERE role IN ('superadmin', 'office') AND active = 1").first<{ count: number }>();
-        if (Number(adminCount?.count ?? 0) <= 1) throw new Error("Нельзя убрать роль «Супер-админ» у последнего администратора.");
-      }
-      await env.DB.transaction(async db => {
-        const result = await db.prepare("UPDATE app_users SET full_name = ?, email = ?, role = ?, assigned_site_id = ? WHERE id = ? AND active = 1").bind(fullName, email, role, assignedSiteId, userId).run();
-        if (!result.meta.changes) throw new Error("Пользователь не найден.");
-        if (payload.projectAccess !== undefined || payload.canViewPendingReports !== undefined || role === "viewer" && currentUserRecord?.role !== "viewer") {
-          await saveUserProjectAccess(userId, { projectAccess: payload.projectAccess ?? (role === "viewer" && currentUserRecord?.role !== "viewer" ? { mode: "selected", siteIds: [] } : undefined), canViewPendingReports: payload.canViewPendingReports ?? (role === "viewer" && currentUserRecord?.role !== "viewer" ? false : undefined) }, authUser.id, db);
+      await ensureCustomRolesSchema();
+      await ensurePermissionSchema();
+      const currentUserRecord = await env.DB.transaction(async db => {
+        await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind("user-role-management").first();
+        const previous = await db.prepare("SELECT role, password_hash AS passwordHash, custom_role_id AS customRoleId FROM app_users WHERE id = ? AND active = 1 FOR UPDATE").bind(userId).first<{ role: string; passwordHash: string | null; customRoleId?: number | null }>();
+        if (!previous) throw new Error("Пользователь не найден.");
+        const { role, customRoleId } = await resolveUserRole(payload, db, previous);
+        const assignedSiteId = requiresAssignedProject(role) ? asPositiveInteger(payload.assignedSiteId) : null;
+        if (requiresAssignedProject(role) && !assignedSiteId && payload.projectAccess === undefined) throw new Error("Укажите доступ пользователя к проектам.");
+        if (assignedSiteId && !await db.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(assignedSiteId).first()) throw new Error("Выбранный проект не найден или архивирован.");
+        if ((previous.role === "superadmin" || previous.role === "office") && role !== "superadmin") {
+          const adminCount = await db.prepare("SELECT COUNT(*) AS count FROM app_users WHERE role IN ('superadmin', 'office') AND active = 1").first<{ count: number }>();
+          if (Number(adminCount?.count ?? 0) <= 1) throw new Error("Нельзя убрать роль «Супер-админ» у последнего администратора.");
         }
+        const result = await db.prepare("UPDATE app_users SET full_name = ?, email = ?, role = ?, assigned_site_id = ?, custom_role_id = ? WHERE id = ? AND active = 1").bind(fullName, email, role, assignedSiteId, customRoleId, userId).run();
+        if (!result.meta.changes) throw new Error("Пользователь не найден.");
+        const identityChanged = role !== previous.role || customRoleId !== (previous.customRoleId ?? null);
+        if (identityChanged) await resetUserPermissions(userId, db);
+        const closeProjectsByDefault = identityChanged && (role === "viewer" || Boolean(customRoleId));
+        if (payload.projectAccess !== undefined || payload.canViewPendingReports !== undefined || closeProjectsByDefault) {
+          await saveUserProjectAccess(userId, { projectAccess: payload.projectAccess ?? (closeProjectsByDefault ? { mode: "selected", siteIds: [] } : undefined), canViewPendingReports: payload.canViewPendingReports ?? (role === "viewer" && identityChanged ? false : undefined) }, authUser.id, db);
+        }
+        return previous;
       });
       if (!currentUserRecord?.passwordHash) {
         const invitationUrl = await createInvitation(userId, request);
@@ -2776,19 +2807,23 @@ async function handleDELETE(request: Request) {
     if (!id) throw new Error("Не указана строка для удаления.");
     if (url.searchParams.get("entity") === "user") {
       if (id === authUser.id) throw new Error("Нельзя удалить собственную учётную запись.");
-      const deletingUser = await env.DB.prepare("SELECT role FROM app_users WHERE id = ? AND active = 1").bind(id).first<{ role: string }>();
-      if (deletingUser?.role === "superadmin" || deletingUser?.role === "office") {
-        const adminCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM app_users WHERE role IN ('superadmin', 'office') AND active = 1").first<{ count: number }>();
-        if (Number(adminCount?.count ?? 0) <= 1) throw new Error("Нельзя удалить последнего администратора.");
-      }
-      const results = await env.DB.batch([
-        env.DB.prepare("UPDATE app_users SET active = 0 WHERE id = ? AND active = 1").bind(id),
-        env.DB.prepare("UPDATE user_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL").bind(id),
-        env.DB.prepare("UPDATE user_invitations SET used_at = CURRENT_TIMESTAMP WHERE user_id = ? AND used_at IS NULL").bind(id),
-      ]);
-      const result = results[0];
-      if (!result.meta.changes) throw new Error("Пользователь не найден.");
-      return Response.json({ ok: true });
+      return await env.DB.transaction(async db => {
+        // Role replacement and deletion must protect the same last-admin count.
+        await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind("user-role-management").first();
+        const deletingUser = await db.prepare("SELECT role FROM app_users WHERE id = ? AND active = 1 FOR UPDATE").bind(id).first<{ role: string }>();
+        if (!deletingUser) throw new Error("Пользователь не найден.");
+        if (deletingUser.role === "superadmin" || deletingUser.role === "office") {
+          const adminCount = await db.prepare("SELECT COUNT(*) AS count FROM app_users WHERE role IN ('superadmin', 'office') AND active = 1").first<{ count: number }>();
+          if (Number(adminCount?.count ?? 0) <= 1) throw new Error("Нельзя удалить последнего администратора.");
+        }
+        const results = await db.batch([
+          db.prepare("UPDATE app_users SET active = 0 WHERE id = ? AND active = 1").bind(id),
+          db.prepare("UPDATE user_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL").bind(id),
+          db.prepare("UPDATE user_invitations SET used_at = CURRENT_TIMESTAMP WHERE user_id = ? AND used_at IS NULL").bind(id),
+        ]);
+        if (!results[0].meta.changes) throw new Error("Пользователь не найден.");
+        return Response.json({ ok: true });
+      });
     }
     if (url.searchParams.get("entity") === "employee-assignment") {
       const siteId = asPositiveInteger(url.searchParams.get("siteId"));

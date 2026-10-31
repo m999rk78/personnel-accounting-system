@@ -68,30 +68,67 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey }: { 
     api.hideColumnFilter(); anchor.current = { columnId, trigger };
     api.showColumnFilter(columnId);
   }, []);
+  const updatePopupPosition = useCallback(() => {
+    const target = anchor.current;
+    const ePopup = popup.current;
+    if (!target || !ePopup) return;
+    const rect = target.trigger.getBoundingClientRect();
+    const width = Math.max(0, Math.min(400, window.innerWidth - 24));
+    if (ePopup.style.position !== "fixed") ePopup.style.position = "fixed";
+    if (ePopup.style.width !== `${width}px`) ePopup.style.width = `${width}px`;
+    const height = ePopup.getBoundingClientRect().height;
+    const left = `${Math.round(Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)))}px`;
+    const top = `${Math.round(Math.max(12, Math.min(rect.bottom + 6, window.innerHeight - height - 12)))}px`;
+    if (ePopup.style.left !== left) ePopup.style.left = left;
+    if (ePopup.style.top !== top) ePopup.style.top = top;
+    if (ePopup.style.zIndex !== "1200") ePopup.style.zIndex = "1200";
+  }, []);
   const positionPopup = useCallback(({ ePopup }: PostProcessPopupParams<T>) => {
     const target = anchor.current;
     if (!target || !ePopup.classList.contains("ag-filter-menu")) return;
     popup.current = ePopup;
-    const rect = target.trigger.getBoundingClientRect();
-    const width = Math.min(400, window.innerWidth - 24);
-    ePopup.style.position = "fixed";
-    ePopup.style.width = `${width}px`;
-    ePopup.style.left = `${Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))}px`;
-    ePopup.style.top = `${rect.bottom + 6}px`;
-    ePopup.style.zIndex = "1200";
+    updatePopupPosition();
     setOpenColumnId(target.columnId);
-  }, []);
+  }, [updatePopupPosition]);
   useEffect(() => {
     if (!openColumnId) return;
-    const closeOnScroll = (event: Event) => {
-      if (event.target instanceof Node && popup.current?.contains(event.target) || event.target instanceof Element && event.target.closest(".timesheet-filter-engine,.ag-popup,.custom-select-menu")) return;
-      const api = apiRef.current;
-      if (api && !api.isDestroyed()) api.hideColumnFilter();
-      setOpenColumnId(null);
+    let frame = 0;
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(() => { frame = 0; updatePopupPosition(); });
     };
-    window.addEventListener("scroll", closeOnScroll, true);
-    return () => window.removeEventListener("scroll", closeOnScroll, true);
-  }, [openColumnId]);
+    const repositionOnScroll = (event: Event) => {
+      if (event.target instanceof Node && popup.current?.contains(event.target) || event.target instanceof Element && event.target.closest(".timesheet-filter-engine,.ag-popup,.custom-select-menu")) return;
+      schedule();
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (event.target instanceof Element && event.target.closest(".custom-select-menu")) return;
+      const api = apiRef.current;
+      if (!api || api.isDestroyed()) return;
+      api.doFilterAction({ colId: openColumnId, action: "cancel" });
+      api.hideColumnFilter();
+    };
+    // AG Grid also repositions menus after scrolling/rendering; keep the external
+    // table header as the anchor, including when new conditions change the height.
+    const positioning = new MutationObserver(schedule);
+    const resize = new ResizeObserver(schedule);
+    if (popup.current) {
+      positioning.observe(popup.current, { attributes: true, attributeFilter: ["style"] });
+      resize.observe(popup.current);
+    }
+    schedule();
+    window.addEventListener("scroll", repositionOnScroll, true);
+    window.addEventListener("resize", schedule);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      cancelAnimationFrame(frame);
+      positioning.disconnect();
+      resize.disconnect();
+      window.removeEventListener("scroll", repositionOnScroll, true);
+      window.removeEventListener("resize", schedule);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [openColumnId, updatePopupPosition]);
   const byId = useMemo(() => new Map(rows.map(row => [getRowId(row), row])), [rows, getRowId]);
   const visibleRows = snapshot.keys === null ? [...rows] : snapshot.keys.flatMap(key => { const row = byId.get(key); return row ? [row] : []; });
   const context = useMemo<TimesheetFiltersContextValue>(() => ({

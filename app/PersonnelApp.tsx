@@ -23,8 +23,8 @@ import { ProjectCards } from "./ProjectCards";
 import { TimesheetView } from "./TimesheetView";
 import { UserAccessCards } from "./UserAccessCards";
 import { parseWorkspaceLocation, workspaceDocumentTitle, workspaceUrl, type WorkspaceDirectoryFocus, type WorkspaceView } from "./appRoutes";
-import { ROLE_LABELS, accessibleProjectIds, canAccessProject, canInspectBitrix24, canViewAllProjects, hasRestrictedProjectAccess, type ProjectAccess, type UserRole } from "./roles";
-import { profileProjectChangeAllowed, userDraftProjectAccess, userProjectAccessValid, userProjectLabel, userVisibleProjects } from "./userAccessModel";
+import { accessibleProjectIds, canAccessProject, canInspectBitrix24, canViewAllProjects, hasRestrictedProjectAccess, type ProjectAccess, type UserRole } from "./roles";
+import { profileProjectChangeAllowed, userDraftProjectAccess, userProjectAccessValid, userProjectLabel, userRoleLabel, userVisibleProjects } from "./userAccessModel";
 import { createLatestRequest } from "./latestRequest";
 import { WorkspaceAccessProvider } from "./TableAccessContext";
 import { GENERAL_SETTINGS_RESOURCES, PROJECT_SETTINGS_RESOURCES, workspaceTableAccess, workspaceViewAllowed } from "./workspaceAccess";
@@ -33,8 +33,8 @@ type Option = { id: number; name: string; mainWorkTypeId?: number | null; employ
 type Site = Option & { code: string; timezone: string };
 type Employee = { id: number; sortOrder?: number; bitrix24Id?: string | null; fullName: string; employmentType: string; department: string; position: string; source: string; bitrix24Stage: string; availabilityStatus: string; syncError: string | null; lastSyncedAt?: string | null; siteId: number | null; siteName: string | null; projectCodes?: string | null; bitrixCheckStatus?: "mismatch" | "missing_in_bitrix" | "dismissed_in_bitrix" | null; bitrixCheckDetails?: string | null; bitrixCheckAcknowledged?: number | boolean };
 type PositionRecord = { id: number; employmentType: string; department: string; position: string };
-type AppUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; projectAccess?: ProjectAccess; projectAccessLimitedToViewer?: boolean; canViewPendingReports?: boolean; status?: "active" | "invited" };
-type CurrentUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; projectAccess?: ProjectAccess; canViewPendingReports?: boolean; permissions: PermissionSet; permissionsCustomized: boolean };
+type AppUser = { id: number; fullName: string; email: string; role: UserRole; customRoleId?: number | null; customRoleName?: string | null; assignedSiteId: number | null; projectAccess?: ProjectAccess; projectAccessLimitedToViewer?: boolean; canViewPendingReports?: boolean; status?: "active" | "invited" };
+type CurrentUser = { id: number; fullName: string; email: string; role: UserRole; customRoleId?: number | null; customRoleName?: string | null; assignedSiteId: number | null; projectAccess?: ProjectAccess; canViewPendingReports?: boolean; permissions: PermissionSet; permissionsCustomized: boolean };
 type Entry = {
   id: number; siteId: number; workDate: string; employeeId: number; shiftId: number; zoneId: number;
   mainWorkTypeId: number; subworkTypeId: number; note: string; masterId: number; hours: number;
@@ -112,7 +112,7 @@ type ReportDraftSession = {
   pendingDeletes: number[];
 };
 type View = WorkspaceView;
-type UserDraft = { key: string; id?: number; fullName: string; email: string; role: UserRole; assignedSiteId: string; projectAccess?: ProjectAccess; canViewPendingReports?: boolean };
+type UserDraft = { key: string; id?: number; fullName: string; email: string; role: UserRole; customRoleId?: number | null; customRoleName?: string | null; assignedSiteId: string; projectAccess?: ProjectAccess; canViewPendingReports?: boolean };
 type EmployeeDraft = { key: string; id?: number; fullName: string; employmentType: string; department: string; position: string; projectSiteId: string };
 type EmployeeBulkChanges = { employmentType: string; department: string; position: string; projectSiteId: string };
 type ProjectEmployeeDraft = { key: string; employeeId: string; employeeQuery: string };
@@ -1138,7 +1138,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       if (current.some((draft) => !draft.id)) return current;
       const existing = current.find((draft) => draft.id === user.id);
       if (existing) return current.map((draft) => draft.id === user.id ? { ...draft, ...changes } : draft);
-      return [...current, { key: `user-${user.id}`, id: user.id, fullName: user.fullName, email: user.email, role: user.role, assignedSiteId: user.assignedSiteId ? String(user.assignedSiteId) : "", projectAccess: user.projectAccess, canViewPendingReports: user.canViewPendingReports, ...changes }];
+      return [...current, { key: `user-${user.id}`, id: user.id, fullName: user.fullName, email: user.email, role: user.role, customRoleId: user.customRoleId ?? null, customRoleName: user.customRoleName ?? null, assignedSiteId: user.assignedSiteId ? String(user.assignedSiteId) : "", projectAccess: user.projectAccess, canViewPendingReports: user.canViewPendingReports, ...changes }];
     });
     setNotice("");
   }
@@ -1182,7 +1182,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       const invitations: Array<{ email: string; url: string }> = [];
       for (let index = 0; index < userDrafts.length; index += 1) {
         const draft = userDrafts[index];
-        const response = await fetch("/api/data", { method: draft.id ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: draft.id ? "update-user" : "create-user", userId: draft.id, fullName: draft.fullName, email: draft.email, role: draft.role, assignedSiteId: userDraftProjectAccess(draft).mode === "selected" ? userDraftProjectAccess(draft).siteIds[0] ?? null : null, projectAccess: userDraftProjectAccess(draft), canViewPendingReports: draft.canViewPendingReports ?? draft.role !== "viewer" }) });
+        const response = await fetch("/api/data", { method: draft.id ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: draft.id ? "update-user" : "create-user", userId: draft.id, fullName: draft.fullName, email: draft.email, role: draft.role, customRoleId: draft.customRoleId ?? null, assignedSiteId: userDraftProjectAccess(draft).mode === "selected" ? userDraftProjectAccess(draft).siteIds[0] ?? null : null, projectAccess: userDraftProjectAccess(draft), canViewPendingReports: draft.canViewPendingReports ?? draft.role !== "viewer" }) });
         const result = await response.json() as { error?: string; invitationUrl?: string; emailSent?: boolean };
         if (!response.ok) throw new Error(`Строка ${index + 1}: ${result.error ?? "не удалось сохранить пользователя"}.`);
         if (result.invitationUrl && !result.emailSent) {
@@ -1759,7 +1759,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   function exportUsers() {
     if (!requireSavedExcelRows(userDrafts.length + userFullRowEditIds.length)) return;
     const headers = ["ФИО", "Email", "Роль", "Проект", "Статус"];
-    const rows = excelRowsInOrder(visibleUsers, useUserAccessCardLayout ? null : referenceExportOrder.current.get("users") ?? null).map((user) => [user.fullName, user.email, ROLE_LABELS[user.role], userProjectLabel(user.role, user.assignedSiteId, visibleSites, user.projectAccess, user.projectAccessLimitedToViewer), user.status === "invited" ? "Приглашён" : "Активен"]);
+    const rows = excelRowsInOrder(visibleUsers, useUserAccessCardLayout ? null : referenceExportOrder.current.get("users") ?? null).map((user) => [user.fullName, user.email, userRoleLabel(user), userProjectLabel(user.role, user.assignedSiteId, visibleSites, user.projectAccess, user.projectAccessLimitedToViewer), user.status === "invited" ? "Приглашён" : "Активен"]);
     openSettingsExportPreview({ title: "Пользователи системы", description: `Строк в выгрузке: ${rows.length}`, fileName: "Пользователи_системы.xlsx", sheetName: "Пользователи", workbookTitle: "Пользователи системы", headers, rows });
   }
   async function downloadProjectDirectoryTemplate() {
@@ -2143,7 +2143,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
           {mayAccessProjectSettings && <button className={view === "projectSettings" || view === "projectEmployees" || view === "projectEquipment" || view === "directories" ? "nav-item active" : "nav-item"} onClick={() => { navigateTo("projectSettings"); setDirectoryDrafts([]); setDirectoryPendingDeletes([]); setDirectoryDeleteConfirmationOpen(false); setProjectEmployeeDrafts([]); }} aria-label="Настройки проекта" title="Настройки проекта"><span className="nav-item-icon"><AppIcon name="projectSettings" /></span>Настройки проекта</button>}
         </div>}
       </div>}
-        <div className="sidebar-user"><div><strong>{currentUser.fullName}</strong><small>{ROLE_LABELS[role]}</small></div><button className="profile-button" onClick={openProfile} title="Профиль" aria-label="Открыть профиль пользователя"><AppIcon name="user" /></button></div>
+        <div className="sidebar-user"><div><strong>{currentUser.fullName}</strong><small>{userRoleLabel(currentUser)}</small></div><button className="profile-button" onClick={openProfile} title="Профиль" aria-label="Открыть профиль пользователя"><AppIcon name="user" /></button></div>
       </div>
     </aside>
     <section className="workspace">
@@ -2386,7 +2386,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     {profileOpen && <div className="profile-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !profileSaving) setProfileOpen(false); }}>
       <section className="profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-title">
         <div className="profile-dialog-heading"><div className="profile-avatar"><AppIcon name="user" /></div><div><span>Профиль пользователя</span><h2 id="profile-title">{currentUser.fullName}</h2></div><button type="button" className="profile-close" onClick={() => setProfileOpen(false)} disabled={profileSaving} aria-label="Закрыть профиль">×</button></div>
-        <dl className="profile-details"><div><dt>Email</dt><dd>{currentUser.email}</dd></div><div><dt>Роль</dt><dd>{ROLE_LABELS[role]}</dd></div><div><dt>Проекты</dt><dd>{userProjectLabel(role, currentUser.assignedSiteId, visibleSites, currentUser.projectAccess)}</dd></div></dl>
+        <dl className="profile-details"><div><dt>Email</dt><dd>{currentUser.email}</dd></div><div><dt>Роль</dt><dd>{userRoleLabel(currentUser)}</dd></div><div><dt>Проекты</dt><dd>{userProjectLabel(role, currentUser.assignedSiteId, visibleSites, currentUser.projectAccess)}</dd></div></dl>
         <form className="profile-password-form" onSubmit={(event) => void changePassword(event)}><h3>Изменить пароль</h3><label><span>Текущий пароль</span><input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label><label><span>Новый пароль</span><input type="password" autoComplete="new-password" minLength={10} maxLength={128} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required /></label><label><span>Повторите новый пароль</span><input type="password" autoComplete="new-password" minLength={10} maxLength={128} value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} required /></label>{profileError && <div className="profile-message error" role="alert">{profileError}</div>}{profileNotice && <div className="profile-message success" role="status">{profileNotice}</div>}<button type="submit" className="profile-save" disabled={profileSaving}>{profileSaving ? "Сохраняем…" : "Изменить пароль"}</button></form>
         <button type="button" className="profile-logout" onClick={() => void logout()} disabled={profileSaving}>Выйти из системы</button>
       </section>

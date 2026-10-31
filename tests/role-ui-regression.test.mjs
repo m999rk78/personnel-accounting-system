@@ -9,12 +9,13 @@ import { profileProjectChangeAllowed } from "../app/userAccessModel.ts";
 const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 async function compile(path,replacements={}) {
   let source=ts.transpileModule(await readFile(new URL(path,import.meta.url),"utf8"),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext,jsx:ts.JsxEmit.ReactJSX}}).outputText;
-  for(const [specifier,replacement] of Object.entries({react:import.meta.resolve("react"),"react/jsx-runtime":import.meta.resolve("react/jsx-runtime"),...replacements})) source=source.replaceAll(JSON.stringify(specifier),JSON.stringify(replacement));
+  for(const [specifier,replacement] of Object.entries({react:import.meta.resolve("react"),"react-dom":import.meta.resolve("react-dom"),"react/jsx-runtime":import.meta.resolve("react/jsx-runtime"),"./customRoles.css":moduleUrl(""),...replacements})) source=source.replaceAll(JSON.stringify(specifier),JSON.stringify(replacement));
   return moduleUrl(source);
 }
 const pickerUrl=await compile("../app/ProjectAccessPicker.tsx");
+const selectUrl=await compile("../app/CustomSelect.tsx",{"./choiceMenuLayout":new URL("../app/choiceMenuLayout.ts",import.meta.url).href});
 const {UserAccessCards}=await import(await compile("../app/UserAccessCards.tsx",{
-  "./ProjectAccessPicker":pickerUrl,"./roles":new URL("../app/roles.ts",import.meta.url).href,"./userAccessModel":new URL("../app/userAccessModel.ts",import.meta.url).href,
+  "./ProjectAccessPicker":pickerUrl,"./CustomSelect":selectUrl,"./roles":new URL("../app/roles.ts",import.meta.url).href,"./userAccessModel":new URL("../app/userAccessModel.ts",import.meta.url).href,
 }));
 const sites=[{id:7,name:"Северный объект"},{id:8,name:"Южный объект"}];
 const draft=patch=>({key:"existing-user",id:1,fullName:"Проверяемый пользователь",email:"qa@invalid.test",role:"engineer",assignedSiteId:"",...patch});

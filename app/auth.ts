@@ -4,12 +4,16 @@ import { loadEffectivePermissions } from "./permissions";
 import type { PermissionSet } from "./permissionModel";
 import { isUserRole, type ProjectAccess, type UserRole } from "./roles";
 import { ensureUserProjectAccessSchema, loadUserProjectAccess } from "./projectAccessServer";
+import { ensureCustomRolesSchema, loadCustomRole } from "./customRolesServer";
 
 export type AuthUser = {
   id: number;
   fullName: string;
   email: string;
   role: UserRole;
+  customRoleId?: number | null;
+  customRoleName?: string | null;
+  roleTemplate?: PermissionSet;
   assignedSiteId: number | null;
   projectAccess?: ProjectAccess;
   canViewPendingReports?: boolean;
@@ -99,6 +103,7 @@ async function initializeAuthSchema() {
     db.prepare("CREATE INDEX IF NOT EXISTS idx_login_attempts_key_time ON login_attempts(attempt_key, created_at)"),
   ]);
   await db.prepare("UPDATE app_users SET role = 'superadmin', assigned_site_id = NULL WHERE role = 'office'").run();
+  await ensureCustomRolesSchema(db);
   await ensureUserProjectAccessSchema(db);
 }
 
@@ -157,18 +162,22 @@ function cookieValue(request: Request, name: string) {
 
 export async function getAuthUser(request: Request): Promise<AuthUser | null> {
   await ensureAuthSchema();
+  await ensureCustomRolesSchema();
   await ensureUserProjectAccessSchema();
   const token = cookieValue(request, SESSION_COOKIE);
   if (!token) return null;
   const tokenHash = await sha256(token);
-  const user = await database().prepare(`SELECT u.id, u.full_name AS fullName, u.email, CASE WHEN u.role = 'office' THEN 'superadmin' WHEN u.role = 'admin' THEN 'engineer' ELSE u.role END AS role, u.assigned_site_id AS assignedSiteId
+  const user = await database().prepare(`SELECT u.id, u.full_name AS fullName, u.email, CASE WHEN u.role = 'office' THEN 'superadmin' WHEN u.role = 'admin' THEN 'engineer' ELSE u.role END AS role, u.assigned_site_id AS assignedSiteId,
+      u.custom_role_id AS customRoleId
     FROM user_sessions s JOIN app_users u ON u.id = s.user_id
     WHERE s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > CURRENT_TIMESTAMP AND u.active = 1`)
     .bind(tokenHash).first<Omit<AuthUser, "permissions" | "permissionsCustomized">>();
   if (!user || !isUserRole(user.role)) return null;
+  const customRole = user.customRoleId === undefined || user.customRoleId === null ? null : await loadCustomRole(user.customRoleId);
+  if (user.customRoleId !== undefined && user.customRoleId !== null && (!customRole || customRole.baseRole !== user.role)) return null;
   const projectSettings = await loadUserProjectAccess(user);
-  const access = await loadEffectivePermissions(user.id, user.role, projectSettings.projectAccess);
-  return { ...user, ...access, ...projectSettings };
+  const access = await loadEffectivePermissions(user.id, user.role, projectSettings.projectAccess, undefined, customRole);
+  return { ...user, ...access, ...projectSettings, ...(customRole ? { customRoleName: customRole.name, roleTemplate: customRole.permissions } : { customRoleName: null }) };
 }
 
 export async function createSession(userId: number, request: Request) {

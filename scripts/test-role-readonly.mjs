@@ -40,7 +40,7 @@ const replacements = {
   "../../workTypeHierarchyServer": disabled(["saveSubworkDirectory"]),
   "../../excelDirectoryImports": disabled(["importProjectDirectoryExcel", "importProjectEmployeesExcel", "normalizeExcelDirectoryName", "prepareEmployeeExcelImport"]),
   "../../bitrix24Sync": disabled(["compareBitrixEmployees", "fetchBitrixEmployeeSnapshot", "normalizeBitrixText", "selectBitrixEmployeesForImport", "suggestBitrixEmployeeLinks"]),
-  ...Object.fromEntries(["compressJsonResponse", "roles", "permissionModel", "projectScopedData", "readOptionalBatch", "settingsReadPolicy", "bitrix24Cooldown", "equipmentAvailability", "equipmentImport", "equipmentTimesheetUnits", "equipmentReportWorkflow", "personnelReportWorkflow", "tableRowOrder", "personnelReportRowOrder", "equipmentReportRowOrder", "workTypesRowOrder"].map(name => [`../../${name}`, fileUrl(name)])),
+  ...Object.fromEntries(["compressJsonResponse", "roles", "customRoles", "permissionModel", "projectScopedData", "readOptionalBatch", "settingsReadPolicy", "bitrix24Cooldown", "equipmentAvailability", "equipmentImport", "equipmentTimesheetUnits", "equipmentReportWorkflow", "personnelReportWorkflow", "tableRowOrder", "personnelReportRowOrder", "equipmentReportRowOrder", "workTypesRowOrder"].map(name => [`../../${name}`, fileUrl(name)])),
   "../../equipmentImportServer": disabled(["importEquipmentEntries"]),
 };
 const originalError = console.error;
@@ -56,6 +56,7 @@ try {
   const boundary = await import(boundaryUrl);
   const permissionsUrl = await compile("../app/permissions.ts", { "../db/client": boundaryUrl, "./permissionModel": fileUrl("permissionModel") });
   const projectAccessUrl = await compile("../app/projectAccessServer.ts", { "../db/client": boundaryUrl, "./roles.ts": fileUrl("roles") });
+  const customRolesUrl = await compile("../app/customRolesServer.ts", { "../db/client": boundaryUrl, "./customRoles.ts": fileUrl("customRoles") });
   const tableOrderUrl = moduleUrl(ts.transpileModule(await readFile(new URL("../app/tableRowOrderServer.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
     .replaceAll('"../db/client"', JSON.stringify(boundaryUrl))
     .replace(/"\.\/(permissionModel|roles|tableRowOrder|personnelReportRowOrder|equipmentReportRowOrder|workTypesRowOrder)(?:\.ts)?"/g, (_whole, name) => JSON.stringify(fileUrl(name))));
@@ -65,9 +66,9 @@ try {
     stores[domain] = moduleUrl(source.replace(/"\.\/([A-Za-z]+)"/g, (_whole,name)=>JSON.stringify(fileUrl(name))));
   }
   const routes = {};
-  for (const name of ["data", "equipment", "timesheet", "audit-log", "access-rights", "personnel-report", "equipment-report", "table-order"]) {
+  for (const name of ["data", "equipment", "timesheet", "audit-log", "access-rights", "personnel-report", "equipment-report", "table-order", "roles"]) {
     routes[name] = await load(`../app/api/${name}/route.ts`, { ...replacements, "../../permissions": permissionsUrl, "../../projectAccessServer": projectAccessUrl,
-      "../../tableRowOrderServer": tableOrderUrl, "../../personnelReportStore": stores.personnel, "../../equipmentReportStore": stores.equipment });
+      "../../customRolesServer": customRolesUrl, "../../tableRowOrderServer": tableOrderUrl, "../../personnelReportStore": stores.personnel, "../../equipmentReportStore": stores.equipment });
   }
   if (modulesOnly) {
     console.log("PASS: read-only diagnostic modules load without connecting to PostgreSQL.");
@@ -83,7 +84,7 @@ try {
     ["equipment",`view=timesheet&section=month&scope=project&date=${date}&month=${month}`,"equipment_timesheet"],
     ["equipment",`view=registry&section=registry&scope=global&date=${date}&month=${month}`,"equipment_registry"],
     ["equipment",`view=project&section=project&scope=assignments&date=${date}&month=${month}`,"project_equipment"],
-    ["audit-log","limit=2","audit_log"], ["access-rights","","access_rights"],
+    ["audit-log","limit=2","audit_log"], ["access-rights","","access_rights"], ["roles","","access_rights"],
     ...[["personnel-report-rows","workers_report"],["equipment-report-rows","equipment_report"],["employees","employees"],["equipment","equipment_registry"],["users","system_users"],["projects","projects"],["directory-work-types","project_directories"]].map(([scope,resource])=>["table-order",`scope=${scope}`,resource]),
   ];
   const selected = {mode:"selected",siteIds:sites.slice(0,2)}, single = {mode:"selected",siteIds:sites.slice(0,1)}, none = {mode:"selected",siteIds:[]}, all = {mode:"all",siteIds:[]};
@@ -102,10 +103,11 @@ try {
     boundary.configure(actor, readonly);
     for (const [name,params,resource] of cases) {
       const navigation = name === "data" && params === "scope=navigation";
-      const globalSettings = name === "audit-log" || name === "access-rights";
+      const globalSettings = name === "audit-log" || name === "access-rights" || name === "roles";
+      const roleCatalogAllowed = name !== "roles" || accessibleProjectIds(actor) === null || accessibleProjectIds(actor).length > 0;
       const projectAllowed = navigation || globalSettings || canAccessProject(actor,siteId);
       const auditAllowed = name !== "audit-log" || accessibleProjectIds(actor) === null || accessibleProjectIds(actor).length > 0;
-      const expected = projectAllowed && auditAllowed && (!resource || actor.permissions[resource].view) ? 200 : 403;
+      const expected = projectAllowed && auditAllowed && roleCatalogAllowed && (!resource || actor.permissions[resource].view) ? 200 : 403;
       const response = await routes[name].GET(new Request(`http://localhost/api/${name}?siteId=${siteId}&${params}`));
       const body = await response.json();
       assert.equal(response.status, expected, `${role}/${label} project ${siteId} ${name} ${params}: ${body.error ?? response.status}`);

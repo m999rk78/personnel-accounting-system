@@ -662,6 +662,7 @@ button,input,select { font:inherit; } button { cursor:pointer; }
 .access-rights-toolbar { margin:0; justify-content:space-between; }
 .access-rights-layout { display:grid; grid-template-columns:280px minmax(0,1fr); align-items:start; gap:16px; min-width:0; }
 .access-user-panel,.access-matrix-panel { min-width:0; border:1px solid #e0e1e5; border-radius:14px; background:#fff; box-shadow:0 1px 2px rgba(18,24,40,.03); overflow:hidden; }
+.access-matrix-panel { overflow-x:auto; }
 .access-user-panel { position:sticky; top:16px; }
 .access-user-search { display:flex; flex-direction:column; gap:8px; padding:16px; border-bottom:1px solid #ececef; }
 .access-user-search > span { font-size:12px; font-weight:800; color:#4b4d55; }
@@ -686,10 +687,10 @@ button,input,select { font:inherit; } button { cursor:pointer; }
 .access-preset-bar strong { font-size:12px; }
 .access-preset-bar > div:last-child { display:flex; flex-wrap:wrap; gap:7px; }
 .access-preset-bar button { height:32px; padding:0 10px; border:1px solid #d9dadf; border-radius:8px; background:#fff; font-size:11px; font-weight:700; cursor:pointer; }
-.permission-matrix { min-width:690px; }
+.permission-matrix { min-width:622px; }
 .permission-matrix-header,.permission-row { display:grid; grid-template-columns:minmax(270px,1fr) repeat(4,88px); align-items:stretch; }
 .permission-matrix-header { position:sticky; top:0; z-index:2; min-height:42px; border-bottom:1px solid #dedfe3; background:#f7f7f8; }
-.permission-matrix-header > span { display:grid; place-items:center; padding:8px; border-left:1px solid #e5e6e9; color:#686a73; font-size:10px; font-weight:800; text-align:center; }
+.permission-matrix-header > span { display:grid; place-items:center; min-width:0; padding:8px; border-left:1px solid #e5e6e9; color:#686a73; font-size:10px; font-weight:800; line-height:1.3; text-align:center; white-space:normal; overflow-wrap:anywhere; hyphens:auto; }
 .permission-matrix-header > span:first-child { place-items:center start; border-left:0; padding-left:22px; }
 .permission-group h3 { margin:0; padding:9px 22px; border-bottom:1px solid #e7e8eb; background:#fffaf0; color:#8b5a00; font-size:11px; letter-spacing:.02em; }
 .permission-row { min-height:62px; border-bottom:1px solid #ececef; }

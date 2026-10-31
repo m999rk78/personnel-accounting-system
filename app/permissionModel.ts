@@ -93,7 +93,7 @@ export function rolePermissionTemplate(role: UserRole): PermissionSet {
     for (const resource of ["positions", "system_users", "projects", "audit_log", "access_rights"] as PermissionResource[]) grant(set, resource, ["view"]);
     return set;
   }
-  for (const definition of PERMISSION_CATALOG) grant(set, definition.key, definition.actions);
+  if (role === "superadmin") for (const definition of PERMISSION_CATALOG) grant(set, definition.key, definition.actions);
   return set;
 }
 

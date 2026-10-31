@@ -2,13 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CustomSelect } from "./CustomSelect";
-import { ROLE_LABELS, type UserRole } from "./roles";
+import { isUserRole, ROLE_LABELS } from "./roles";
 
 type AuditEvent = {
   id: number;
   actorUserId: number | null;
   actorName: string;
-  actorRole: UserRole;
+  actorRole: string;
   category: string;
   actionKey: string;
   entityType: string;
@@ -106,7 +106,7 @@ export function AuditLogView({ onBack }: { onBack: () => void }) {
       return <article className="audit-log-event" key={event.id}>
         <div className={`audit-log-marker ${event.category}`} aria-hidden="true" />
         <div className="audit-log-main">
-          <div className="audit-log-event-heading"><div><strong>{event.summary}</strong><span>{event.actorName} · {ROLE_LABELS[event.actorRole] ?? event.actorRole}</span></div><time dateTime={event.createdAt}>{DATE_TIME.format(new Date(event.createdAt))}</time></div>
+          <div className="audit-log-event-heading"><div><strong>{event.summary}</strong><span>{event.actorName} · {isUserRole(event.actorRole) ? ROLE_LABELS[event.actorRole] : event.actorRole}</span></div><time dateTime={event.createdAt}>{DATE_TIME.format(new Date(event.createdAt))}</time></div>
           <div className="audit-log-meta"><span>{CATEGORY_LABELS[event.category] ?? event.category}</span>{event.siteName && <span>{event.siteName}</span>}{event.entityId && <span>ID {event.entityId}</span>}</div>
           {(event.beforeData !== null || event.afterData !== null) && <button type="button" className="audit-log-details-button" onClick={() => setExpanded((current) => { const next = new Set(current); if (next.has(event.id)) next.delete(event.id); else next.add(event.id); return next; })}>{isExpanded ? "Скрыть подробности" : "Показать подробности"}</button>}
           {isExpanded && <div className="audit-log-details">{event.beforeData !== null && <section><h3>До изменения</h3><pre>{detailText(event.beforeData)}</pre></section>}<section><h3>Сохранённое действие</h3><pre>{detailText(event.afterData)}</pre></section></div>}

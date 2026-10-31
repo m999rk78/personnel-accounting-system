@@ -2,7 +2,7 @@ import { getDatabase, type PostgresDatabase } from "../db/client";
 import { defaultProjectAccess, isUserRole, type ProjectAccess, type UserRole } from "./roles.ts";
 
 type Executor = Pick<PostgresDatabase, "prepare" | "batch">;
-type ProjectUser = { id: number; role: UserRole; assignedSiteId?: number | null };
+type ProjectUser = { id: number; role: UserRole; assignedSiteId?: number | null; customRoleId?: number | null };
 export type UserProjectAccessSettings = { projectAccess: ProjectAccess; canViewPendingReports: boolean };
 export type UserProjectAccessInput = { projectAccess?: unknown; canViewPendingReports?: unknown };
 const schemaTasks = new WeakMap<PostgresDatabase, Promise<void>>();
@@ -55,7 +55,7 @@ export async function loadUserProjectAccess(user: ProjectUser, executor: Executo
   const saved = await executor.prepare(`SELECT all_projects AS allProjects, can_view_pending_reports AS canViewPendingReports
     FROM user_project_access WHERE user_id = ?`).bind(user.id).first<{ allProjects: number | boolean; canViewPendingReports: number | boolean }>();
   if (user.role === "superadmin") return { projectAccess: { mode: "all", siteIds: [] }, canViewPendingReports: true };
-  if (!saved) return { projectAccess: defaultProjectAccess(user.role, user.assignedSiteId), canViewPendingReports: user.role !== "viewer" };
+  if (!saved) return { projectAccess: defaultProjectAccess(user.role, user.assignedSiteId, user.customRoleId), canViewPendingReports: user.role !== "viewer" };
   const projects = saved.allProjects ? [] : (await executor.prepare(`SELECT access.site_id AS id FROM user_project_access_sites access
     JOIN sites site ON site.id = access.site_id WHERE access.user_id = ? AND site.active = 1 ORDER BY access.site_id`).bind(user.id).all<{ id: number }>()).results.map(row => row.id);
   return { projectAccess: { mode: saved.allProjects ? "all" : "selected", siteIds: projects },
@@ -67,7 +67,7 @@ export async function saveUserProjectAccess(userId: number, input: UserProjectAc
   await ensureUserProjectAccessSchema();
   const persist = async (db: Executor) => {
     const user = await db.prepare(`SELECT id, CASE WHEN role = 'admin' THEN 'engineer' WHEN role = 'office' THEN 'superadmin' ELSE role END AS role,
-      assigned_site_id AS assignedSiteId FROM app_users WHERE id = ? AND active = 1 FOR UPDATE`).bind(userId).first<ProjectUser>();
+      assigned_site_id AS assignedSiteId, custom_role_id AS customRoleId FROM app_users WHERE id = ? AND active = 1 FOR UPDATE`).bind(userId).first<ProjectUser>();
     if (!user || !isUserRole(user.role)) throw new Error("Пользователь не найден.");
     const previous = await loadUserProjectAccess(user, db);
     const projectAccess = user.role === "superadmin" ? { mode: "all" as const, siteIds: [] }

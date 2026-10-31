@@ -4,6 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 import { rolePermissionTemplate } from "../app/permissionModel.ts";
 import { scopedDataActionAllowed, projectEntitiesAllowed } from "../app/projectScopedData.ts";
+import { noCustomRolesUrl, noPermissionChangesUrl } from "./fixtures/custom-role-imports.mjs";
 
 const moduleUrl = code => `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 const boundaryUrl = moduleUrl(`export let actor; export let database;
@@ -21,6 +22,8 @@ const audit = moduleUrl("export async function withAuditTrail(request,handler){r
 const compression = moduleUrl("export async function compressJsonResponse(request,response){return response;}");
 const fileUrl = name => new URL(`../app/${name}.ts`, import.meta.url).href;
 const replacements = {
+  "../../customRolesServer": noCustomRolesUrl,
+  "../../permissions": noPermissionChangesUrl,
   "../../projectAccessServer": moduleUrl("export let saves=[]; export const projectAccessByUser=new Map(); export async function loadUserProjectAccess(user){return {projectAccess:projectAccessByUser.get(user.id)??user.projectAccess??{mode:user.role==='engineer'||user.role==='superadmin'?'all':'selected',siteIds:user.assignedSiteId?[user.assignedSiteId]:[]},canViewPendingReports:user.role!=='viewer'};} export async function saveUserProjectAccess(userId,settings,actorId){saves.push({userId,settings,actorId});if(settings.projectAccess?.siteIds?.includes(99))throw new Error('Unknown project');return settings;}"),
   "../../../db/client": boundaryUrl, "../../auth": boundaryUrl, "../../auditLog": audit,
   "../../compressJsonResponse": compression, "../../roles": fileUrl("roles"), "../../permissionModel": fileUrl("permissionModel"),
@@ -160,9 +163,9 @@ test("foremen retain legacy assignment validation and engineers use explicit acc
   assert.equal((await dataRoute.POST(request("/api/data", "POST", { action: "create-user", ...user, assignedSiteId: 99 }))).status, 400);
   assert.equal(database.writes.length, 0);
   assert.equal((await dataRoute.POST(request("/api/data", "POST", { action: "create-user", ...user, role: "engineer" }))).status, 201);
-  assert.deepEqual(database.writes.at(-1).values.slice(2), ["engineer", null]);
+  assert.deepEqual(database.writes.at(-1).values.slice(2), ["engineer", null, null]);
   assert.equal((await dataRoute.PATCH(request("/api/data", "PATCH", { action: "update-user", userId: 123, ...user, role: "engineer", assignedSiteId: null }))).status, 200);
-  assert.deepEqual(database.writes.at(-1).values.slice(2), ["engineer", null, 123]);
+  assert.deepEqual(database.writes.at(-1).values.slice(2), ["engineer", null, null, 123]);
   assert.equal((await dataRoute.POST(request("/api/data", "POST", { action: "create-user", ...user, role: "admin" }))).status, 400);
 });
 

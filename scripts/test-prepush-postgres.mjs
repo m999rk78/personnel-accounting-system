@@ -70,7 +70,7 @@ try {
     await migrate(drizzle(pool), { migrationsFolder: fileURLToPath(new URL("../drizzle-postgres", import.meta.url)) });
     await migrate(drizzle(pool), { migrationsFolder: fileURLToPath(new URL("../drizzle-postgres", import.meta.url)) });
     assert.equal((await pool.query("SELECT role FROM app_users WHERE id=$1", [users[0].id])).rows[0].role, "engineer");
-    assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM drizzle.__drizzle_migrations")).rows[0].count, 26);
+    assert.equal((await pool.query("SELECT COUNT(*)::int AS count FROM drizzle.__drizzle_migrations")).rows[0].count, journal.entries.length);
 
     const { PostgresDatabase } = await import(await compile("../db/client.ts", { pg: import.meta.resolve("pg") }));
     const database = new PostgresDatabase(pool);
@@ -105,6 +105,41 @@ try {
     await saveUserProjectAccess(superadmin.id, { projectAccess: { mode: "selected", siteIds: [] } }, superadmin.id);
     assert.deepEqual((await loadUserProjectAccess(superadmin)).projectAccess, { mode: "all", siteIds: [] });
     console.log("PASS: 0025 upgrade, repeat migrations, legacy role defaults, multi-project grants, rollback, revocation and super-admin protection on real PostgreSQL.");
+
+    const customRoles = await import(await compile("../app/customRolesServer.ts", {
+      "../db/client": dbBoundary, "./customRoles.ts": new URL("../app/customRoles.ts", import.meta.url).href,
+    }));
+    const permissionStore = await import(await compile("../app/permissions.ts", {
+      "../db/client": dbBoundary, "./permissionModel": new URL("../app/permissionModel.ts", import.meta.url).href,
+    }));
+    const { emptyPermissionSet, rolePermissionTemplate } = await import("../app/permissionModel.ts");
+    const readPermissions = emptyPermissionSet(); readPermissions.equipment_timesheet.view = true;
+    const readRole = await customRoles.createCustomRole({ name: "Контроль техники", permissions: readPermissions }, superadmin.id);
+    const workRole = await customRoles.createCustomRole({ name: "Инженер ПТО", permissions: { workers_report: { view: true, create: true, update: true, delete: false } } }, superadmin.id);
+    assert.equal(readRole.baseRole, "viewer"); assert.equal(workRole.baseRole, "engineer");
+    assert.deepEqual((await customRoles.listCustomRoles()).map(role => role.name), [workRole.name, readRole.name]);
+    await assert.rejects(customRoles.createCustomRole({ name: " контроль  ТЕХНИКИ ", permissions: readPermissions }, superadmin.id), error => error.status === 409);
+    const customUserId = (await pool.query("INSERT INTO app_users(full_name,email,role,custom_role_id) VALUES ('Custom QA','custom@invalid.test',$1,$2) RETURNING id", [readRole.baseRole, readRole.id])).rows[0].id;
+    const customUser = { id: customUserId, role: readRole.baseRole, customRoleId: readRole.id, assignedSiteId: null };
+    assert.deepEqual(await loadUserProjectAccess(customUser), { projectAccess: { mode: "selected", siteIds: [] }, canViewPendingReports: false });
+    let effective = await permissionStore.loadEffectivePermissions(customUser.id, customUser.role, undefined, database, readRole);
+    assert.equal(effective.permissions.equipment_timesheet.view, true);
+    assert.equal(effective.permissions.workers_report.view, false, "custom template cannot inherit the standard viewer's other reports");
+    await permissionStore.saveUserPermissions(customUser.id, rolePermissionTemplate("superadmin"), superadmin.id);
+    effective = await permissionStore.loadEffectivePermissions(customUser.id, customUser.role, undefined, database, readRole);
+    assert.equal(effective.permissions.equipment_timesheet.update, false, "custom read-only role rejects forged write overrides");
+    await database.transaction(async tx => {
+      await tx.prepare("UPDATE app_users SET role = ?, custom_role_id = ? WHERE id = ?").bind(workRole.baseRole, workRole.id, customUser.id).run();
+      await permissionStore.resetUserPermissions(customUser.id, tx);
+      await saveUserProjectAccess(customUser.id, { projectAccess: { mode: "selected", siteIds: [siteIds[0]] } }, superadmin.id, tx);
+    });
+    effective = await permissionStore.loadEffectivePermissions(customUser.id, workRole.baseRole, { mode: "selected", siteIds: [siteIds[0]] }, database, workRole);
+    assert.equal(effective.permissions.workers_report.update, true);
+    assert.equal(effective.permissions.equipment_report.view, false, "switching roles clears the old full permission override");
+    assert.equal(effective.permissionsCustomized, false);
+    await migrate(drizzle(pool), { migrationsFolder: fileURLToPath(new URL("../drizzle-postgres", import.meta.url)) });
+    assert.equal((await customRoles.loadCustomRole(readRole.id)).name, readRole.name);
+    console.log("PASS: 0026 custom roles, JSON permission templates, case-insensitive duplicates, assignment/default isolation, readonly ceiling, transactional role change and repeat migration on real PostgreSQL.");
 
     for (const script of ["scripts/test-personnel-report-integration.mjs", "scripts/test-equipment-report-integration.mjs", "scripts/test-table-order-integration.mjs"]) await run(script);
     console.log("PASS: all integration checks used the disposable database only.");

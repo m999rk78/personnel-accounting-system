@@ -1,6 +1,17 @@
-import { canAccessProject, defaultProjectAccess, effectiveProjectAccess, isUserRole, type ProjectAccess, type UserRole } from "./roles.ts";
+import { canAccessProject, defaultProjectAccess, effectiveProjectAccess, isUserRole, ROLE_LABELS, type ProjectAccess, type UserRole } from "./roles.ts";
+import type { CustomRole } from "./customRoles.ts";
 
-type ProjectUser = { role: UserRole; assignedSiteId: number | null; projectAccess?: ProjectAccess; projectAccessLimitedToViewer?: boolean };
+type ProjectUser = { role: UserRole; assignedSiteId: number | null; customRoleId?: number | null; projectAccess?: ProjectAccess; projectAccessLimitedToViewer?: boolean };
+
+export function userRoleLabel(user: { role: UserRole; customRoleName?: string | null }) {
+  return user.customRoleName?.trim() || ROLE_LABELS[user.role];
+}
+
+export function customUserRoleChanges(role: Pick<CustomRole, "id" | "name" | "baseRole">, projectAccess?: ProjectAccess) {
+  const access = role.baseRole === "viewer" ? { mode: "selected" as const, siteIds: [] } : projectAccess ?? { mode: "selected" as const, siteIds: [] };
+  return { role: role.baseRole, customRoleId: role.id, customRoleName: role.name, assignedSiteId: access.mode === "selected" ? String(access.siteIds[0] ?? "") : "",
+    projectAccess: access, canViewPendingReports: role.baseRole !== "viewer" };
+}
 
 /** List projections describe visible projects; they are never authorization actors. */
 export function displayedUserProjectAccess(user: ProjectUser): ProjectAccess {
@@ -32,8 +43,8 @@ export function userProjectLabel(role: UserRole, assignedSiteId: number | null |
   return names.length > 2 ? `${names.slice(0, 2).join(", ")} и ещё ${names.length - 2}` : names.join(", ");
 }
 
-export function userDraftProjectAccess(draft: { role: UserRole; assignedSiteId: string; projectAccess?: ProjectAccess }): ProjectAccess {
-  return effectiveProjectAccess({ role: draft.role, assignedSiteId: Number(draft.assignedSiteId) || null, projectAccess: draft.projectAccess });
+export function userDraftProjectAccess(draft: { role: UserRole; assignedSiteId: string; customRoleId?: number | null; projectAccess?: ProjectAccess }): ProjectAccess {
+  return effectiveProjectAccess({ role: draft.role, assignedSiteId: Number(draft.assignedSiteId) || null, customRoleId: draft.customRoleId, projectAccess: draft.projectAccess });
 }
 
 export function userProjectAccessValid(access: ProjectAccess, sites: readonly { id: number }[], allowEmpty = false) {

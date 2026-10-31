@@ -1,12 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useWorkspaceAccess } from "./TableAccessContext";
 import {
-  PERMISSION_ACTION_LABELS,
-  PERMISSION_ACTIONS,
   PERMISSION_CATALOG,
-  PERMISSION_GROUP_LABELS,
   emptyPermissionSet,
   limitPermissionsToRole,
   normalizePermissionSet,
@@ -20,12 +17,19 @@ import {
 import { ROLE_LABELS, type ProjectAccess, type UserRole } from "./roles";
 import { ProjectAccessPicker } from "./ProjectAccessPicker";
 import { displayedUserProjectAccess, userProjectLabel } from "./userAccessModel";
+import { PermissionMatrix } from "./PermissionMatrix";
+import { RoleEditorDialog } from "./RoleEditorDialog";
+import type { CustomRole } from "./customRoles";
+import "./customRoles.css";
 
 type AccessUser = {
   id: number;
   fullName: string;
   email: string;
   role: UserRole;
+  customRoleId?: number | null;
+  customRoleName?: string | null;
+  roleTemplate?: PermissionSet;
   assignedSiteId: number | null;
   assignedSiteName: string | null;
   projectAccess?: ProjectAccess;
@@ -37,13 +41,6 @@ type AccessUser = {
 };
 
 type AccessPayload = { sites?: { id: number; name: string }[]; users?: AccessUser[]; canManage?: boolean; currentUserId?: number; error?: string };
-
-const COMPACT_ACTION_LABELS: Record<PermissionAction, string> = {
-  view: "Видеть",
-  create: "Добавить",
-  update: "Изменить",
-  delete: "Удалить",
-};
 
 function clonePermissions(value: PermissionSet) {
   return normalizePermissionSet(value);
@@ -69,13 +66,18 @@ export function AccessRightsView({ onBack }: { onBack: () => void }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [roles, setRoles] = useState<CustomRole[]>([]);
+  const [rolesCanManage, setRolesCanManage] = useState(false);
+  const [roleEditor, setRoleEditor] = useState<"create" | CustomRole | null>(null);
+  const [showRoleCatalog, setShowRoleCatalog] = useState(false);
+  const rolesRequestSequence = useRef({ version: 0 });
 
   const selectedUser = users.find((user) => user.id === selectedUserId) ?? null;
-  const roleTemplate = selectedUser ? rolePermissionTemplate(selectedUser.role) : emptyPermissionSet();
+  const roleTemplate = selectedUser ? limitPermissionsToRole(selectedUser.role, selectedUser.roleTemplate ?? rolePermissionTemplate(selectedUser.role), projectAccess) : emptyPermissionSet();
   const changed = selectedUser ? !permissionSetsEqual(draft, selectedUser.permissions) || (projectAccess.mode !== displayedUserProjectAccess(selectedUser).mode || [...projectAccess.siteIds].sort((a,b) => a-b).join(",") !== displayedUserProjectAccess(selectedUser).siteIds.join(",")) || pendingReports !== (selectedUser.canViewPendingReports ?? selectedUser.role !== "viewer") : false;
   const visibleUsers = useMemo(() => {
     const query = search.trim().toLocaleLowerCase("ru-RU");
-    return users.filter((user) => !query || `${user.fullName} ${user.email} ${ROLE_LABELS[user.role]}`.toLocaleLowerCase("ru-RU").includes(query));
+    return users.filter((user) => !query || `${user.fullName} ${user.email} ${user.customRoleName ?? ROLE_LABELS[user.role]}`.toLocaleLowerCase("ru-RU").includes(query));
   }, [search, users]);
 
   async function load() {
@@ -103,10 +105,28 @@ export function AccessRightsView({ onBack }: { onBack: () => void }) {
     }
   }
 
+  async function loadRoles() {
+    const requestSequence = ++rolesRequestSequence.current.version;
+    try {
+      const response = await fetch("/api/roles", { cache: "no-store" });
+      const payload = await response.json() as { roles?: CustomRole[]; canManage?: boolean; error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить роли.");
+      if (requestSequence !== rolesRequestSequence.current.version) return;
+      setRoles(payload.roles ?? []);
+      setRolesCanManage(Boolean(payload.canManage));
+    } catch (loadError) {
+      if (requestSequence !== rolesRequestSequence.current.version) return;
+      setRolesCanManage(false);
+      setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить роли.");
+    }
+  }
+
   useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
+  useEffect(() => { const requests = rolesRequestSequence.current; void loadRoles(); return () => { requests.version++; }; }, []); // eslint-disable-line react-hooks/set-state-in-effect
 
   function selectUser(user: AccessUser) {
     if (saving) return;
+    if (changed && !window.confirm("Есть несохранённые изменения доступа. Переключить пользователя и отменить их?")) return;
     setSelectedUserId(user.id);
     setProjectAccess(displayedUserProjectAccess(user));
     setPendingReports(user.canViewPendingReports ?? user.role !== "viewer");
@@ -174,9 +194,10 @@ export function AccessRightsView({ onBack }: { onBack: () => void }) {
   }
 
   return <section className="access-rights-page">
-    <div className="settings-toolbar access-rights-toolbar"><button type="button" className="back-button" onClick={onBack}>← К общим настройкам</button><button type="button" className="back-button" onClick={() => void load()} disabled={loading || saving}>Обновить</button></div>
+    <div className="settings-toolbar access-rights-toolbar"><button type="button" className="back-button" onClick={onBack}>← К общим настройкам</button><div className="access-rights-toolbar-actions"><button type="button" className="back-button" onClick={() => { if (!changed || window.confirm("Есть несохранённые изменения доступа. Обновить страницу и отменить их?")) void Promise.all([load(), loadRoles()]); }} disabled={loading || saving}>Обновить</button>{canManage && rolesCanManage && <button type="button" className="primary-button" disabled={saving || loading} onClick={() => setRoleEditor("create")}><span aria-hidden="true">＋</span>Добавить роль</button>}</div></div>
     {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}
     {notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
+    {roles.length > 0 && <details className="access-role-catalog" open={showRoleCatalog} onToggle={event => setShowRoleCatalog(event.currentTarget.open)}><summary>Созданные роли<span>{roles.length}</span></summary><div className="access-role-list">{roles.map(role => <button type="button" key={role.id} onClick={() => setRoleEditor(role)}>{role.name}</button>)}</div></details>}
     <div className="access-rights-layout">
       <aside className="access-user-panel">
         <label className="access-user-search"><span>Пользователи</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Найти пользователя" /></label>
@@ -184,7 +205,7 @@ export function AccessRightsView({ onBack }: { onBack: () => void }) {
           {loading && <div className="access-user-empty">Загружаем пользователей…</div>}
           {!loading && visibleUsers.map((user) => <button type="button" key={user.id} className={user.id === selectedUserId ? "selected" : ""} onClick={() => selectUser(user)}>
             <span className="access-user-avatar">{initials(user.fullName)}</span>
-            <span className="access-user-copy"><strong>{user.fullName}</strong><small>{ROLE_LABELS[user.role]} · {userProjectLabel(user.role, user.assignedSiteId, sites, user.projectAccess, user.projectAccessLimitedToViewer)}</small></span>
+            <span className="access-user-copy"><strong>{user.fullName}</strong><small>{user.customRoleName ?? ROLE_LABELS[user.role]} · {userProjectLabel(user.role, user.assignedSiteId, sites, user.projectAccess, user.projectAccessLimitedToViewer)}</small></span>
             <span className={user.customized || user.permissionsCustomized ? "access-user-state custom" : "access-user-state"}>{user.customized || user.permissionsCustomized ? "Настроено" : "По роли"}</span>
           </button>)}
           {!loading && !visibleUsers.length && <div className="access-user-empty">Пользователи не найдены</div>}
@@ -198,26 +219,24 @@ export function AccessRightsView({ onBack }: { onBack: () => void }) {
             {selectedUser.role === "viewer" && <label className="access-pending-toggle" aria-label="Показывать черновики и отчёты на проверке"><input type="checkbox" checked={pendingReports} disabled={!canManage || saving} onChange={event => { setPendingReports(event.target.checked); setNotice(""); }} /><span><strong>Показывать черновики и отчёты на проверке</strong><small>По умолчанию пользователь видит подтверждённые отчёты и табели. Роль «Просмотр» не позволяет менять данные.</small></span></label>}
           </section>
           <div className="access-preset-bar"><div><span>Быстрые настройки</span><strong>{changed ? "Есть несохранённые изменения" : "Все изменения сохранены"}</strong></div>{canManage && <div><button type="button" onClick={() => setDraft(clonePermissions(roleTemplate))} disabled={saving}>Шаблон роли</button><button type="button" onClick={applyViewOnly} disabled={saving}>Только просмотр</button><button type="button" onClick={applyFullAccess} disabled={saving}>{selectedUser.role === "viewer" ? "Все разделы" : "Полный доступ"}</button></div>}</div>
-          <div className="permission-matrix" role="table" aria-label={`Права доступа: ${selectedUser.fullName}`}>
-            <div className="permission-matrix-header" role="row"><span role="columnheader">Раздел системы</span>{PERMISSION_ACTIONS.map((action) => <span role="columnheader" data-compact-label={COMPACT_ACTION_LABELS[action]} key={action}>{PERMISSION_ACTION_LABELS[action]}</span>)}</div>
-            {(["reports", "timesheets", "general", "project"] as const).map((group) => <section className="permission-group" key={group}><h3>{PERMISSION_GROUP_LABELS[group]}</h3>{PERMISSION_CATALOG.filter((item) => item.group === group).map((definition) => <div className="permission-row" role="row" key={definition.key}>
-              <div role="cell"><strong>{definition.title}</strong><span>{definition.description}</span></div>
-              {PERMISSION_ACTIONS.map((action) => {
-                const supported = definition.actions.includes(action);
-                const allowedByRole = selectedUser.projectAccessLimitedToViewer
-                  ? selectedUser.role !== "viewer" || action === "view"
-                  : roleAllowsPermission(selectedUser.role, definition.key, action, projectAccess);
-                const lockOwnAccess = selectedUser.id === currentUserId && definition.key === "access_rights" && (action === "view" || action === "update");
-                return <label key={action} className={["permission-cell", supported && allowedByRole ? "" : "unsupported"].filter(Boolean).join(" ")} title={!supported ? "Действие не применяется к этому разделу" : !allowedByRole ? selectedUser.role === "viewer" ? "Роль «Просмотр» не позволяет изменять данные" : "Доступ к выбранным проектам не позволяет менять общие настройки пользователей" : `${PERMISSION_ACTION_LABELS[action]}: ${definition.title}`}>
-                  <input type="checkbox" checked={supported && allowedByRole && draft[definition.key][action]} disabled={!canManage || !supported || !allowedByRole || saving || lockOwnAccess} onChange={(event) => patchPermission(definition.key, action, event.target.checked)} />
-                  <span aria-hidden="true">✓</span>
-                </label>;
-              })}
-            </div>)}</section>)}
-          </div>
+          <PermissionMatrix label={`Права доступа: ${selectedUser.fullName}`} value={draft} disabled={!canManage || saving} onChange={patchPermission} cellPolicy={(resource, action) => {
+            const allowed = selectedUser.projectAccessLimitedToViewer
+              ? selectedUser.role !== "viewer" || action === "view"
+              : roleAllowsPermission(selectedUser.role, resource, action, projectAccess);
+            const locked = selectedUser.id === currentUserId && resource === "access_rights" && (action === "view" || action === "update");
+            return { allowed, locked, ...(!allowed ? { title: selectedUser.role === "viewer" ? "Роль «Просмотр» не позволяет изменять данные" : "Доступ к выбранным проектам не позволяет менять общие настройки пользователей" } : {}) };
+          }} />
           <footer className="access-rights-footer"><span>{selectedUser.id === currentUserId ? "Собственные права управления доступом защищены от отключения." : "Права проверяются сервером для каждого действия."}</span>{canManage && <div><button type="button" className="back-button" onClick={() => void save(true)} disabled={saving || (!selectedUser.customized && permissionSetsEqual(draft, roleTemplate))}>Вернуть права роли</button><button type="button" className="primary-button" onClick={() => void save(false)} disabled={saving || !changed}>{saving ? "Сохраняем…" : "Сохранить доступ"}</button></div>}</footer>
         </> : <div className="access-matrix-empty">Выберите пользователя слева</div>}
       </div>
     </div>
+    {roleEditor && <RoleEditorDialog previewRole={roleEditor === "create" ? undefined : roleEditor} onClose={() => setRoleEditor(null)} onCreated={role => {
+      // A catalog read started before this POST must not remove the new role.
+      rolesRequestSequence.current.version++;
+      setRoles(current => [...current.filter(item => item.id !== role.id), role].sort((left, right) => left.name.localeCompare(right.name, "ru")));
+      setRoleEditor(null);
+      setShowRoleCatalog(true);
+      setNotice(`Роль «${role.name}» создана. Её можно выбрать при добавлении или редактировании пользователя.`);
+    }} />}
   </section>;
 }

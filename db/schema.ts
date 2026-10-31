@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, date, index, integer, jsonb, pgTable, primaryKey, serial, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { check, date, index, integer, jsonb, pgTable, primaryKey, serial, text, timestamp, uniqueIndex, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 const auditTimestamp = (name: string) => timestamp(name, { withTimezone: true, mode: "string" });
 
@@ -16,6 +16,7 @@ export const appUsers = pgTable("app_users", {
   fullName: text("full_name").notNull(),
   email: text("email").notNull().default(""),
   role: text("role").notNull(),
+  customRoleId: integer("custom_role_id").references((): AnyPgColumn => customRoles.id, { onDelete: "restrict" }),
   assignedSiteId: integer("assigned_site_id").references(() => sites.id),
   passwordHash: text("password_hash"),
   passwordSalt: text("password_salt"),
@@ -23,7 +24,20 @@ export const appUsers = pgTable("app_users", {
   invitedAt: auditTimestamp("invited_at"),
   activatedAt: auditTimestamp("activated_at"),
   active: integer("active").notNull().default(1),
-});
+}, table => [index("idx_app_users_custom_role").on(table.customRoleId)]);
+
+export const customRoles = pgTable("custom_roles", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  nameKey: text("name_key").notNull().unique(),
+  baseRole: text("base_role").notNull(),
+  permissions: jsonb("permissions").notNull(),
+  revision: integer("revision").notNull().default(1),
+  active: integer("active").notNull().default(1),
+  createdByUserId: integer("created_by_user_id").references(() => appUsers.id, { onDelete: "set null" }),
+  createdAt: auditTimestamp("created_at").notNull().defaultNow(),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+}, table => [check("custom_roles_base_role_check", sql`${table.baseRole} IN ('engineer', 'viewer')`), check("custom_roles_permissions_check", sql`jsonb_typeof(${table.permissions}) = 'object'`), check("custom_roles_revision_check", sql`${table.revision} > 0`), check("custom_roles_active_check", sql`${table.active} IN (0, 1)`)]);
 
 export const userProjectAccess = pgTable("user_project_access", {
   userId: integer("user_id").primaryKey().references(() => appUsers.id, { onDelete: "cascade" }),

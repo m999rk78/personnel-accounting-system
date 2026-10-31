@@ -183,6 +183,7 @@ function actionDescription(path: string, method: string, payload: Record<string,
     return { category: description[0], actionKey: description[1], entityType: action.includes("timesheet") ? "equipment_timesheet" : action.includes("entry") || action === "submit-daily-report" || action === "import-entries" ? "equipment_report" : "equipment", entityId: String(id ?? ""), summary: description[2] };
   }
   if (path === "/api/auth/password") return { category: "account" as const, actionKey: "account.password", entityType: "user", entityId: "", summary: "Изменил пароль своей учётной записи" };
+  if (path === "/api/roles" && method === "POST") return { category: "access" as const, actionKey: "roles.create", entityType: "custom_role", entityId: "", summary: `Добавил роль «${String(payload.name ?? "").trim().slice(0, 80)}»` };
   if (path === "/api/access-rights") return {
     category: "access" as const,
     actionKey: payload.reset === true ? "access_rights.reset" : "access_rights.update",
@@ -375,11 +376,12 @@ async function finishAuditEvent(draft: AuditDraft, response: Response) {
     const report = responseData.report;
     if (report && typeof report === "object" && "id" in report) draft.entityId = String(report.id);
   }
+  if (draft.entityType === "custom_role" && responseData && typeof responseData === "object" && "id" in responseData) draft.entityId = String(responseData.id);
   const afterData = safeAuditValue({ requested: draft.requestedData, result: responseData });
   await getDatabase().prepare(`INSERT INTO audit_events
     (actor_user_id, actor_name, actor_role, category, action_key, entity_type, entity_id, site_id, site_name, summary, before_data, after_data, request_path)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?)`)
-    .bind(draft.actor.id, draft.actor.fullName, draft.actor.role, draft.category, draft.actionKey, draft.entityType, draft.entityId,
+    .bind(draft.actor.id, draft.actor.fullName, draft.actor.customRoleName ?? draft.actor.role, draft.category, draft.actionKey, draft.entityType, draft.entityId,
       draft.siteId, draft.siteName, draft.summary, draft.beforeData === undefined ? null : JSON.stringify(draft.beforeData), JSON.stringify(afterData), draft.requestPath).run();
 }
 

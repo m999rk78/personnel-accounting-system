@@ -1,6 +1,7 @@
 import { getDatabase } from "../db/client";
 import { limitPermissionsToRole, normalizePermissionSet, rolePermissionTemplate, type PermissionResource, type PermissionSet, type ResourcePermission } from "./permissionModel";
 import type { ProjectAccess, UserRole } from "./roles";
+import type { CustomRole } from "./customRoles";
 
 let permissionSchemaPromise: Promise<void> | null = null;
 type PermissionExecutor = Pick<ReturnType<typeof getDatabase>, "prepare">;
@@ -42,7 +43,8 @@ type PermissionRow = {
   canDelete: number | boolean;
 };
 
-export async function loadEffectivePermissions(userId: number, role: UserRole, projectAccess?: ProjectAccess, executor: PermissionExecutor = getDatabase()): Promise<{ permissions: PermissionSet; permissionsCustomized: boolean }> {
+export async function loadEffectivePermissions(userId: number, role: UserRole, projectAccess?: ProjectAccess, executor: PermissionExecutor = getDatabase(), customRole?: Pick<CustomRole, "id" | "baseRole" | "permissions"> | null): Promise<{ permissions: PermissionSet; permissionsCustomized: boolean }> {
+  if (customRole && customRole.baseRole !== role) throw new Error("Пользовательская роль не соответствует учётной записи.");
   await ensurePermissionSchema();
   const result = await executor.prepare(`SELECT resource, can_view AS "canView", can_create AS "canCreate",
       can_update AS "canUpdate", can_delete AS "canDelete"
@@ -50,7 +52,7 @@ export async function loadEffectivePermissions(userId: number, role: UserRole, p
   const overrides = Object.fromEntries(result.results.map((row) => [row.resource, {
     view: Boolean(row.canView), create: Boolean(row.canCreate), update: Boolean(row.canUpdate), delete: Boolean(row.canDelete),
   }])) as Partial<Record<PermissionResource, ResourcePermission>>;
-  return { permissions: limitPermissionsToRole(role, normalizePermissionSet(overrides, rolePermissionTemplate(role)), projectAccess), permissionsCustomized: result.results.length > 0 };
+  return { permissions: limitPermissionsToRole(role, normalizePermissionSet(overrides, customRole?.permissions ?? rolePermissionTemplate(role)), projectAccess), permissionsCustomized: result.results.length > 0 };
 }
 
 export async function saveUserPermissions(userId: number, permissions: PermissionSet, updatedByUserId: number, executor?: PermissionExecutor) {

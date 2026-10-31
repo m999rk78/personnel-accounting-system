@@ -62,8 +62,8 @@ export type GridProjectEmployeeDraft = { key: string; employeeId: string; employ
 export type GridDirectoryDraft = { key: string; id?: number; name: string; employeeId?: string };
 export type GridPosition = { id: number; employmentType: string; department: string; position: string };
 export type GridPositionDraft = { key: string; id?: number; employmentType: string; department: string; position: string };
-export type GridUser = { id: number; fullName: string; email: string; role: UserRole; assignedSiteId: number | null; projectAccess?: ProjectAccess; projectAccessLimitedToViewer?: boolean; canViewPendingReports?: boolean; status?: "active" | "invited" };
-export type GridUserDraft = { key: string; id?: number; fullName: string; email: string; role: UserRole; assignedSiteId: string; projectAccess?: ProjectAccess; canViewPendingReports?: boolean };
+export type GridUser = { id: number; fullName: string; email: string; role: UserRole; customRoleId?: number | null; customRoleName?: string | null; assignedSiteId: number | null; projectAccess?: ProjectAccess; projectAccessLimitedToViewer?: boolean; canViewPendingReports?: boolean; status?: "active" | "invited" };
+export type GridUserDraft = { key: string; id?: number; fullName: string; email: string; role: UserRole; customRoleId?: number | null; customRoleName?: string | null; assignedSiteId: string; projectAccess?: ProjectAccess; canViewPendingReports?: boolean };
 export type GridSite = GridOption & { code: string; timezone: string };
 export type GridSiteDraft = { key: string; id?: number; name: string; code: string; timezone: string };
 export type GridEntry = {
@@ -2193,7 +2193,7 @@ export function UserAgGrid(props: UserGridProps) {
     const row = params.data; if (!row) return ""; if (field === "number") return row.number;
     if (field === "status") return row.kind === "entry" ? row.user?.status === "active" ? "Активен" : "Приглашён" : "После сохранения";
     const source = row.kind === "entry" ? row.user : propsRef.current.drafts.find((candidate) => candidate.key === row.draft?.key) ?? row.draft; if (!source) return "";
-    if (field === "role") return ROLE_LABELS[source.role];
+    if (field === "role") return source.customRoleName || ROLE_LABELS[source.role];
     if (field === "site") { const assigned = row.kind === "entry" ? row.user?.assignedSiteId : Number(source.assignedSiteId); return userProjectLabel(source.role, assigned, propsRef.current.sites, source.projectAccess, row.kind === "entry" && row.user?.projectAccessLimitedToViewer); }
     return source[field] ?? "";
   }, [propsRef]);
@@ -2221,7 +2221,7 @@ export function UserAgGrid(props: UserGridProps) {
     if (!activeCellEditor) return <EditableCellDisplay value={params.value ?? ""} menuLabel={field === "role" ? "роль" : field === "site" && draft.role !== "superadmin" ? "проект" : undefined} onOpen={field === "role" || (field === "site" && draft.role !== "superadmin") ? () => openCellEditor(row, field!) : undefined} />;
     if (field === "fullName") return <GridTextEditor value={draft.fullName} placeholder="ФИО" onBlur={() => setActiveEditor(null)} onChange={(fullName) => currentProps.onPatchDraft(draft.key, { fullName })} />;
     if (field === "email") return <GridTextEditor value={draft.email} placeholder="email@company.ru" onBlur={() => setActiveEditor(null)} onChange={(email) => currentProps.onPatchDraft(draft.key, { email })} />;
-    if (field === "role") return <CustomSelect className="ag-custom-select" value={draft.role} ariaLabel="Роль" autoOpen onChange={(role) => { currentProps.onPatchDraft(draft.key, userRoleChanges(role as UserRole, draft.assignedSiteId, draft.projectAccess)); setActiveEditor(null); }} options={[{ value: "foreman", label: "Прораб" }, { value: "engineer", label: "Инженер" }, { value: "viewer", label: "Просмотр" }, { value: "superadmin", label: "Супер-админ" }]} />;
+    if (field === "role") return <CustomSelect className="ag-custom-select" value={draft.role} ariaLabel="Роль" autoOpen onChange={(role) => { currentProps.onPatchDraft(draft.key, { ...userRoleChanges(role as UserRole, draft.assignedSiteId, draft.projectAccess), customRoleId: null, customRoleName: null }); setActiveEditor(null); }} options={[{ value: "foreman", label: "Прораб" }, { value: "engineer", label: "Инженер" }, { value: "viewer", label: "Просмотр" }, { value: "superadmin", label: "Супер-админ" }]} />;
     if (draft.role === "superadmin") return <span className="ag-autofill-value">Все проекты</span>;
     const projectAccess = userDraftProjectAccess(draft);
     return <CustomSelect className="ag-custom-select" autoOpen ariaLabel="Доступ пользователя к проектам" value={projectAccess.mode === "all" ? "__all__" : projectAccess.siteIds.length === 1 ? String(projectAccess.siteIds[0]) : "__selected__"} options={[{ value: "__all__", label: "Все проекты" }, { value: "__selected__", label: projectAccess.siteIds.length > 1 ? `Выбрано проектов: ${projectAccess.siteIds.length} — настройте в правах доступа` : "Выберите проект" }, ...currentProps.sites.map(site => ({ value: String(site.id), label: site.name }))]} onChange={value => { if (value === "__selected__") { setActiveEditor(null); return; } const projectAccess: ProjectAccess = value === "__all__" ? { mode: "all", siteIds: [] } : { mode: "selected", siteIds: [Number(value)] }; currentProps.onPatchDraft(draft.key, { projectAccess, assignedSiteId: value === "__all__" ? "" : value }); setActiveEditor(null); }} />;
@@ -2237,6 +2237,8 @@ export function UserAgGrid(props: UserGridProps) {
       if (!role) return false;
       changes.role = role;
       Object.assign(changes, userRoleChanges(role, row.draft?.assignedSiteId ?? String(row.user?.assignedSiteId ?? ""), row.draft?.projectAccess ?? row.user?.projectAccess));
+      changes.customRoleId = null;
+      changes.customRoleName = null;
     }
     const draft = currentProps.drafts.find((candidate) => candidate.key === row.draft?.key) ?? row.draft;
     const currentRole = changes.role ?? draft?.role ?? row.user?.role;

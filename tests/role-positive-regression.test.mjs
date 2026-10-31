@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { rolePermissionTemplate } from "../app/permissionModel.ts";
+import { noCustomRolesUrl, noPermissionChangesUrl } from "./fixtures/custom-role-imports.mjs";
 
 const moduleUrl = code => `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 const boundaryUrl = moduleUrl(`export let actor; export let database; export function configure(user,db){actor=user;database=db;}
@@ -14,6 +15,8 @@ const boundary = await import(boundaryUrl);
 const noop = names => moduleUrl(names.map(name => `export async function ${name}(){return {};}`).join("\n"));
 const file = name => new URL(`../app/${name}.ts`, import.meta.url).href;
 const replacements = {
+  "../../customRolesServer": noCustomRolesUrl,
+  "../../permissions": noPermissionChangesUrl,
   "../../projectAccessServer": moduleUrl("export let saves=[]; export async function loadUserProjectAccess(user){return {projectAccess:user.projectAccess??{mode:user.role==='engineer'||user.role==='superadmin'?'all':'selected',siteIds:user.assignedSiteId?[user.assignedSiteId]:[]},canViewPendingReports:user.role!=='viewer'};} export async function saveUserProjectAccess(userId,settings,actorId){saves.push({userId,settings,actorId});if(settings.projectAccess?.siteIds?.includes(99))throw new Error('Unknown project');return settings;}"),
   "../../../db/client": boundaryUrl, "../../auth": boundaryUrl,
   "../../auditLog": moduleUrl("export async function withAuditTrail(request,handler){return handler(request);}"),
