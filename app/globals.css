@@ -697,8 +697,8 @@ button,input,select { font:inherit; } button { cursor:pointer; }
 .permission-row > div:first-child { display:flex; flex-direction:column; justify-content:center; gap:4px; padding:10px 22px; min-width:0; }
 .permission-row > div:first-child strong { font-size:13px; }
 .permission-row > div:first-child span { color:#7b7d85; font-size:11px; line-height:1.35; }
-.permission-cell { display:grid; place-items:center; border-left:1px solid #ececef; cursor:pointer; }
-.permission-cell input { position:absolute; opacity:0; pointer-events:none; }
+.permission-cell { position:relative; display:grid; place-items:center; border-left:1px solid #ececef; cursor:pointer; }
+.permission-cell input { position:absolute; top:50%; left:50%; width:22px; height:22px; margin:0; transform:translate(-50%,-50%); opacity:0; pointer-events:none; }
 .permission-cell > span { display:grid; place-items:center; width:22px; height:22px; border:1px solid #cfd1d7; border-radius:6px; background:#fff; color:transparent; font-size:13px; font-weight:900; transition:.15s ease; }
 .permission-cell:hover > span { border-color:#e3a62b; }
 .permission-cell:has(input:checked) > span { border-color:#efa815; background:#efa815; color:#fff; }

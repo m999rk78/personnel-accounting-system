@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useConfirmationDialog } from "./useConfirmationDialog";
+import { requestTimesheetMonthChange } from "./timesheetNavigation";
 import { createIdlePageRefresh } from "./idlePageRefresh";
 import { useWorkspaceAccess } from "./TableAccessContext";
 import { useNativeRowMoves, useWorkspaceTableOrder } from "./TableRowMoves";
@@ -15,6 +17,7 @@ import { TimesheetCellPopover } from "./TimesheetCellPopover";
 import { TimesheetMonthPicker } from "./TimesheetMonthPicker";
 import { resetTimesheetHeaderScroll, syncTimesheetHeaderScroll } from "./timesheetHeaderScroll";
 import { useTimesheetClipboard, type TimesheetClipboardChange } from "./useTimesheetClipboard";
+import { createImportOrderRank } from "./importOrderSorting";
 
 type TimesheetEmployee = {
   id: number;
@@ -56,7 +59,7 @@ type TimesheetPayload = {
 };
 
 type EditorCell = { employeeId: number; workDate: string; anchor: HTMLElement };
-type InlineEditorCell = { employeeId: number; workDate: string; rowIndex: number; columnIndex: number; value: string; error: string; selectAll: boolean };
+type InlineEditorCell = { session: number; employeeId: number; workDate: string; rowIndex: number; columnIndex: number; value: string; error: string; selectAll: boolean };
 type InlineEditorMove = { row: number; column: number };
 const employeeFilterRowId = (employee: TimesheetEmployee) => String(employee.id);
 
@@ -233,7 +236,8 @@ function cellDetails(employee: TimesheetEmployee, entry: TimesheetEntry | undefi
   return details.join("\n");
 }
 
-export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { siteId: number; initialMonth: string; today: string; onMonthChange?: (month: string) => void }) {
+export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDirtyChange, onBusyChange }: { siteId: number; initialMonth: string; today: string; onMonthChange?: (month: string) => void; onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void }) {
+  const { confirm: confirmMonthChange, dialog: monthChangeDialog } = useConfirmationDialog();
   const [month, setMonth] = useState(initialMonth);
   const access = useWorkspaceAccess();
   const [loadedPayload, setPayload] = useState<TimesheetPayload | null>(null);
@@ -247,11 +251,16 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
   const [editor, setEditor] = useState<EditorCell | null>(null);
   const [inlineEditor, setInlineEditor] = useState<InlineEditorCell | null>(null);
   const inlineInputRef = useRef<HTMLInputElement>(null);
-  const inlineSaveInFlight = useRef(false);
+  const inlineSession = useRef(0);
+  const inlineSaveInFlight = useRef<{ session: number; promise: Promise<boolean> } | null>(null);
   const inlineCancelPending = useRef(false);
   const inlineGridFocusPending = useRef(false);
   const [savingMark, setSavingMark] = useState(false);
   const [savingBulkMarks, setSavingBulkMarks] = useState(false);
+  const navigationDirty = Boolean(editor || inlineEditor);
+  const navigationBusy = savingMark || savingBulkMarks;
+  useLayoutEffect(() => { onDirtyChange?.(navigationDirty); return () => onDirtyChange?.(false); }, [navigationDirty, onDirtyChange]);
+  useLayoutEffect(() => { onBusyChange?.(navigationBusy); return () => onBusyChange?.(false); }, [navigationBusy, onBusyChange]);
   const [refreshError, setRefreshError] = useState("");
   const refreshControl = useRef<ReturnType<typeof createIdlePageRefresh> | null>(null);
   const refreshBusy = useRef(true);
@@ -265,9 +274,11 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
   const inlineEditorSelectAll = inlineEditor?.selectAll ?? false;
   const currentMonth = today.slice(0, 7);
 
-  function changeMonth(nextMonth: string) {
-    setMonth(nextMonth);
-    onMonthChange?.(nextMonth);
+  async function changeMonth(nextMonth: string) {
+    await requestTimesheetMonthChange({ currentMonth: month, nextMonth, busy: navigationBusy, hasPendingEditor: navigationDirty,
+      confirmDiscard: () => confirmMonthChange({ title: "Сменить месяц без сохранения?", description: "В ячейке табеля есть несохранённые изменения. При смене месяца они будут отменены.", confirmLabel: "Сменить без сохранения" }),
+      commit: next => { setMonth(next); onMonthChange?.(next); },
+    });
   }
 
   useEffect(() => {
@@ -277,7 +288,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
 
   useLayoutEffect(() => {
     const scope = `${siteId}:${month}`;
-    if (activeScope.current !== scope) activeScopeVersion.current += 1;
+    if (activeScope.current !== scope) { activeScopeVersion.current += 1; inlineSession.current++; }
     activeScope.current = scope;
     refreshBusy.current = Boolean(editor || inlineEditor || savingMark || savingBulkMarks || loading);
     refreshControl.current?.flush();
@@ -412,7 +423,10 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     { colId: "difference", headerName: "Разница", kind: "number", getValue: employee => rowMetricsByEmployee.get(employee.id)?.difference ?? 0 },
   ], [days, entriesByCell, marksByCell, month, rowMetricsByEmployee]);
   const filterRows = useMemo(() => rowOrder?.order(payload?.employees ?? [], employee => employee.id) ?? payload?.employees ?? [], [payload?.employees, rowOrder]);
-  const filters = useTimesheetFilters({ rows: filterRows, columns: filterColumns, getRowId: employeeFilterRowId, resetKey: `${siteId}:${month}` });
+  const importRank = useMemo(() => createImportOrderRank(payload?.employees ?? [], rowOrder?.importIds ?? [], employee => employee.id), [payload?.employees, rowOrder?.importIds]);
+  const filters = useTimesheetFilters({ rows: filterRows, columns: filterColumns, getRowId: employeeFilterRowId, resetKey: `${siteId}:${month}`, importOrder: {
+    rank: importRank, activation: rowOrder?.importOrderRevision ?? 0, ready: rowOrder?.ready ?? false, defaultSort: Boolean(rowOrder?.hasImportOrder && !rowOrder.hasSavedOrder),
+  } });
   const visibleEmployees = filters.rows;
   const visibleEmployeeIds = useMemo(() => new Set(visibleEmployees.map((employee) => employee.id)), [visibleEmployees]);
   const visibleEntries = useMemo(() => (payload?.entries ?? []).filter((entry) => visibleEmployeeIds.has(entry.employeeId)), [payload?.entries, visibleEmployeeIds]);
@@ -542,32 +556,46 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     return () => cancelAnimationFrame(frame);
   }, [clipboardShellRef, inlineEditor]);
 
-  useEffect(() => {
-    if (!inlineEditor) return;
-    if (!clipboardActiveCell || clipboardActiveCell.rowIndex !== inlineEditor.rowIndex || clipboardActiveCell.columnIndex !== inlineEditor.columnIndex) setInlineEditor(null);
-  }, [clipboardActiveCell, inlineEditor]);
-
-  function openEditor(employeeId: number, workDate: string, anchor: HTMLElement) {
+  async function openEditor(employeeId: number, workDate: string, anchor: HTMLElement) {
     const existingMark = marksByCell.has(cellKey(employeeId, workDate));
     if (!payload || (existingMark ? !payload.canUpdate && !payload.canDelete : !payload.canCreate)) return;
     if (editor?.employeeId === employeeId && editor.workDate === workDate) {
       if (!savingMark) closeEditorAndRestoreGridFocus();
       return;
     }
-    if (savingMark) return;
+    if (savingMark && !inlineSaveInFlight.current) return;
+    const previousSession = inlineSession.current;
+    if (inlineEditor && !await saveInlineEditor(undefined, undefined, false)) {
+      inlineInputRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (inlineSession.current !== previousSession) return;
+    inlineSession.current++;
     setInlineEditor(null);
     setEditor({ employeeId, workDate, anchor });
     setEditorError("");
   }
 
-  function openInlineEditor(employeeId: number, workDate: string, rowIndex: number, columnIndex: number, typedValue?: string) {
+  async function openInlineEditor(employeeId: number, workDate: string, rowIndex: number, columnIndex: number, typedValue?: string) {
     const existingMark = marksByCell.has(cellKey(employeeId, workDate));
     if (!payload || (existingMark ? !payload.canUpdate : !payload.canCreate)) return;
+    if (savingMark && !inlineSaveInFlight.current) return;
+    if (inlineEditor?.employeeId === employeeId && inlineEditor.workDate === workDate) {
+      inlineInputRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    const previousSession = inlineSession.current;
+    if (inlineEditor && !await saveInlineEditor(undefined, undefined, false)) {
+      inlineInputRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (inlineSession.current !== previousSession) return;
     const entry = entriesByCell.get(cellKey(employeeId, workDate));
     const mark = marksByCell.get(cellKey(employeeId, workDate));
     inlineCancelPending.current = false;
     setEditor(null);
     setInlineEditor({
+      session: ++inlineSession.current,
       employeeId,
       workDate,
       rowIndex,
@@ -647,9 +675,11 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     }
   }
 
-  async function saveInlineEditor(move?: InlineEditorMove, valueOverride?: string, returnFocus = true) {
+  async function saveInlineEditor(move?: InlineEditorMove, valueOverride?: string, returnFocus = true): Promise<boolean> {
     const target = inlineEditor;
-    if (!target || inlineSaveInFlight.current) return;
+    if (!target || inlineCancelPending.current || target.session !== inlineSession.current) return false;
+    const pending = inlineSaveInFlight.current;
+    if (pending) return pending.session === target.session ? pending.promise : false;
     const editorScope = activeScope.current;
     const editorScopeVersion = activeScopeVersion.current;
     const normalizedValue = (valueOverride ?? target.value).trim().toLocaleUpperCase("ru-RU");
@@ -657,30 +687,32 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     if (!valid) {
       const validationMessage = "Недопустимое значение. Введите часы от 1 до 10 или табельный код.";
       if (move) {
-        inlineGridFocusPending.current = true;
-        setInlineEditor(null);
-        focusClipboardCell(target.rowIndex + move.row, target.columnIndex + move.column);
         notifyTimesheetClipboard("Изменение не сохранено: допустимы часы 1–10 или табельный код");
-        return;
       }
-      setInlineEditor((current) => current ? { ...current, value: normalizedValue, error: validationMessage } : current);
-      return;
+      setInlineEditor((current) => current?.session === target.session ? { ...current, value: normalizedValue, error: validationMessage } : current);
+      return false;
     }
-    inlineSaveInFlight.current = true;
-    try {
-      const currentMark = marksByCell.get(cellKey(target.employeeId, target.workDate));
-      if (!await persistMark(target, normalizedValue, currentMark?.note ?? "")) return;
-      if (returnFocus) inlineGridFocusPending.current = true;
-      setInlineEditor((current) => current?.employeeId === target.employeeId && current.workDate === target.workDate ? null : current);
-      if (move) focusClipboardCell(target.rowIndex + move.row, target.columnIndex + move.column);
-    } catch (saveError) {
-      if (activeScope.current !== editorScope || activeScopeVersion.current !== editorScopeVersion) return;
-      setInlineEditor((current) => current?.employeeId === target.employeeId && current.workDate === target.workDate
-        ? { ...current, error: saveError instanceof Error ? saveError.message : "Не удалось сохранить отметку" }
-        : current);
-    } finally {
-      inlineSaveInFlight.current = false;
-    }
+    const promise = (async () => {
+      try {
+        const currentMark = marksByCell.get(cellKey(target.employeeId, target.workDate));
+        if (!await persistMark(target, normalizedValue, currentMark?.note ?? "")) return false;
+        if (inlineSession.current !== target.session) return false;
+        if (returnFocus) inlineGridFocusPending.current = true;
+        setInlineEditor((current) => current?.session === target.session ? null : current);
+        if (move) focusClipboardCell(target.rowIndex + move.row, target.columnIndex + move.column);
+        return true;
+      } catch (saveError) {
+        if (activeScope.current !== editorScope || activeScopeVersion.current !== editorScopeVersion || inlineSession.current !== target.session) return false;
+        setInlineEditor((current) => current?.session === target.session
+          ? { ...current, value: normalizedValue, error: saveError instanceof Error ? saveError.message : "Не удалось сохранить отметку" }
+          : current);
+        return false;
+      }
+    })();
+    const operation = { session: target.session, promise };
+    inlineSaveInFlight.current = operation;
+    void promise.finally(() => { if (inlineSaveInFlight.current === operation) inlineSaveInFlight.current = null; });
+    return promise;
   }
 
   async function pasteTimesheetCells(changes: TimesheetClipboardChange[]) {
@@ -823,7 +855,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     }
   }
 
-  return <TimesheetFiltersProvider value={filters.context}><section className="timesheet-page" aria-label="Табель учёта рабочего времени">{filters.controller}{rowMoves.ui}
+  return <TimesheetFiltersProvider value={filters.context}><section className="timesheet-page" aria-label="Табель учёта рабочего времени">{monthChangeDialog}{filters.controller}{rowMoves.ui}
     {headerActionsTarget && createPortal(<div className="excel-actions personnel-timesheet-page-actions timesheet-heading-actions">
       {filters.isActive && <button type="button" className="timesheet-filter-reset timesheet-header-filter-reset" onClick={filters.reset}>Сбросить фильтры и сортировку{filters.activeCount > 0 && <span>{filters.activeCount}</span>}</button>}
       <ExcelActionsMenu actions={[
@@ -950,6 +982,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
                         } else if (event.key === "Escape") {
                           event.preventDefault();
                           inlineCancelPending.current = true;
+                          inlineSession.current++;
                           inlineGridFocusPending.current = true;
                           setInlineEditor(null);
                         }

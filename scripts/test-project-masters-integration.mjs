@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 import ts from "typescript";
-import { PROJECT_MASTER_POSITIONS, ensureProjectMastersSchema, syncProjectMasters } from "../app/projectMasters.ts";
+import { PROJECT_MASTER_DEPARTMENTS, ensureProjectMastersSchema, syncProjectMasters } from "../app/projectMasters.ts";
 
 const hostname = process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL).hostname : process.env.PGHOST;
 assert.ok(["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname), "Use a loopback PostgreSQL database.");
@@ -27,7 +27,7 @@ try {
   await connection.query(`CREATE SCHEMA ${schema}`);
   await connection.query(`SET LOCAL search_path TO ${schema}`);
   await connection.query(`CREATE TABLE sites(id integer PRIMARY KEY, active integer NOT NULL DEFAULT 1);
-    CREATE TABLE employees(id integer PRIMARY KEY, full_name text NOT NULL, position text NOT NULL, active integer NOT NULL DEFAULT 1);
+    CREATE TABLE employees(id integer PRIMARY KEY, full_name text NOT NULL, position text NOT NULL, active integer NOT NULL DEFAULT 1, employment_type text NOT NULL, department text NOT NULL);
     CREATE TABLE employee_project_assignments(id serial PRIMARY KEY, employee_id integer NOT NULL REFERENCES employees, site_id integer NOT NULL REFERENCES sites, active integer NOT NULL DEFAULT 1);
     CREATE TABLE masters(id serial PRIMARY KEY, site_id integer NOT NULL REFERENCES sites, name text NOT NULL, active integer NOT NULL DEFAULT 1);
     CREATE TABLE placement_entries(id serial PRIMARY KEY, master_id integer REFERENCES masters, master_name_snapshot text NOT NULL DEFAULT '');
@@ -35,18 +35,19 @@ try {
     CREATE TABLE personnel_report_rows(id serial PRIMARY KEY, report_id integer REFERENCES personnel_reports, master_id integer REFERENCES masters, master_name_snapshot text NOT NULL DEFAULT '');
     INSERT INTO sites VALUES (1,1),(2,1),(3,0);`);
   const employees = [
-    [1, "Первый мастер", PROJECT_MASTER_POSITIONS[0], 1],
-    [2, "Второй мастер", PROJECT_MASTER_POSITIONS[1], 1],
-    [3, "Другая должность", "Монтажник", 1],
-    [4, "Архивный сотрудник", PROJECT_MASTER_POSITIONS[0], 0],
-    [5, "Другой проект", PROJECT_MASTER_POSITIONS[0], 1],
-    [6, "Без назначения", PROJECT_MASTER_POSITIONS[0], 1],
-    [7, "Снятое назначение", PROJECT_MASTER_POSITIONS[0], 1],
-    [8, "Два проекта", PROJECT_MASTER_POSITIONS[1], 1],
-    [9, "Закрытый проект", PROJECT_MASTER_POSITIONS[0], 1],
+    [1, "Первый мастер", "Мастер участка строительных конструкций", 1, "ИТР", PROJECT_MASTER_DEPARTMENTS[0]],
+    [2, "Второй мастер", "Прораб", 1, "ИТР", PROJECT_MASTER_DEPARTMENTS[1]],
+    [3, "Неподходящий тип", "Мастер участка строительных конструкций", 1, "ОПР", "МУ"],
+    [4, "Архивный сотрудник", "Прораб", 0, "ИТР", "МУ"],
+    [5, "Другой проект", "Руководитель", 1, "ИТР", "МУТТ"],
+    [6, "Без назначения", "Прораб", 1, "ИТР", "МУ"],
+    [7, "Снятое назначение", "Прораб", 1, "ИТР", "МУ"],
+    [8, "Два проекта", "Руководитель", 1, "ИТР", PROJECT_MASTER_DEPARTMENTS[2]],
+    [9, "Закрытый проект", "Прораб", 1, "ИТР", "МУ"],
+    [10, "Неподходящий отдел", "Мастер участка технологических трубопроводов", 1, "ИТР", "УСР"],
   ];
-  for (const values of employees) await connection.query("INSERT INTO employees(id,full_name,position,active) VALUES ($1,$2,$3,$4)", values);
-  await connection.query(`INSERT INTO employee_project_assignments(employee_id,site_id,active) VALUES (1,1,1),(2,1,1),(3,1,1),(4,1,1),(5,2,1),(7,1,0),(8,1,1),(8,2,1),(9,3,1);
+  for (const values of employees) await connection.query("INSERT INTO employees(id,full_name,position,active,employment_type,department) VALUES ($1,$2,$3,$4,$5,$6)", values);
+  await connection.query(`INSERT INTO employee_project_assignments(employee_id,site_id,active) VALUES (1,1,1),(2,1,1),(3,1,1),(4,1,1),(5,2,1),(7,1,0),(8,1,1),(8,2,1),(9,3,1),(10,1,1);
     INSERT INTO masters(site_id,name) VALUES (1,'Первый мастер'),(1,'Ручной исторический мастер'),(2,'Ручной другого проекта');
     INSERT INTO placement_entries(master_id,master_name_snapshot) VALUES (1,''),(1,'Историческое имя');
     INSERT INTO personnel_reports VALUES (1,1);
@@ -63,7 +64,7 @@ try {
   const sourcesBefore = await sourceRows();
   await syncProjectMasters(scoped, 1);
   const first = await directory(1);
-  assert.deepEqual(first.filter(row => row.employee_id !== null).map(row => row.employee_id).sort((a, b) => a - b), [1, 2, 8], "both positions must follow active project assignments only");
+  assert.deepEqual(first.filter(row => row.employee_id !== null).map(row => row.employee_id).sort((a, b) => a - b), [1, 2, 8], "ITR in all three departments qualify regardless of position, within active project assignments only");
   assert.equal(first.find(row => row.employee_id === 1).id, 1, "an unambiguous legacy row keeps its historical ID");
   assert.equal(first.find(row => row.id === 2).active, 1, "manual legacy masters remain unchanged");
   assert.deepEqual(await sourceRows(), sourcesBefore, "automatic masters must never create or move employees or assignments");
@@ -88,13 +89,17 @@ try {
   assert.deepEqual((await historicalRows()).reports.map(row => row.master_name_snapshot), ["Первый мастер", "Утверждённое имя"]);
   assert.deepEqual(await directory(2), otherProjectBefore);
 
+  await connection.query("UPDATE employees SET position='Главный инженер' WHERE id=8");
+  await syncProjectMasters(scoped, 1);
+  assert.deepEqual(await directory(1), renamed, "changing position within an eligible type/department keeps the same master reference");
+
   await connection.query(`UPDATE employee_project_assignments SET active=0 WHERE employee_id=1 AND site_id=1;
     UPDATE employees SET active=0 WHERE id=2;
-    UPDATE employees SET position='Инженер' WHERE id=8;`);
+    UPDATE employees SET department='УСР' WHERE id=8;`);
   const historyBeforeArchive = await historicalRows();
   await syncProjectMasters(scoped, 1);
   const archived = await directory(1);
-  assert.ok(archived.filter(row => row.employee_id !== null).every(row => row.active === 0), "removal, employee archival and changed position all remove the automatic choice");
+  assert.ok(archived.filter(row => row.employee_id !== null).every(row => row.active === 0), "removal, employee archival and moving outside the eligible departments remove the automatic choice");
   assert.equal(archived.find(row => row.employee_id === null).active, 1);
   assert.deepEqual(await historicalRows(), historyBeforeArchive, "archival must not remove or rewrite historical reports");
   await syncProjectMasters(scoped, 1);
@@ -107,7 +112,7 @@ try {
   assert.equal((await directory(1)).length, first.length);
 
   await connection.query("ALTER TABLE masters ADD CONSTRAINT test_master_name CHECK(name <> '__FAIL__')");
-  await connection.query("INSERT INTO employees VALUES (99,'__FAIL__',$1,1)", [PROJECT_MASTER_POSITIONS[0]]);
+  await connection.query("INSERT INTO employees VALUES (99,'__FAIL__','Руководитель',1,'ИТР','МУ')");
   await connection.query("INSERT INTO employee_project_assignments(employee_id,site_id) VALUES (99,1)");
   await connection.query("INSERT INTO placement_entries(master_id) VALUES (1)");
   await connection.query("UPDATE employees SET full_name='Не сохранять при ошибке' WHERE id=1");
@@ -115,5 +120,5 @@ try {
   await assert.rejects(syncProjectMasters(scoped, 1), /check constraint/i);
   assert.deepEqual({ directory: await directory(1), history: await historicalRows() }, beforeFailure, "a failure must roll back renaming, snapshot backfill and all master changes together");
 
-  console.log("Project masters: both positions, project scoping, legacy ID adoption, idempotence, rename/history snapshots, archival, reactivation and atomic rollback passed. Employees and assignments were never changed by reconciliation. All data rolled back.");
+  console.log("Project masters: ITR in MU/MUTT/MUSK regardless of position, project scoping, legacy ID adoption, idempotence, rename/history snapshots, archival, reactivation and atomic rollback passed. Employees and assignments were never changed by reconciliation. All data rolled back.");
 } finally { await connection.query("ROLLBACK"); connection.release(); await pool.end(); }

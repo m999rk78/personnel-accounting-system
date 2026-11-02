@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { accessibleProjectIds, hasRestrictedProjectAccess, type ProjectAccess, type UserRole } from "./roles";
 import { profileProjectChangeAllowed, userVisibleProjects } from "./userAccessModel";
 import { useWorkspaceAccess } from "./TableAccessContext";
@@ -24,6 +24,8 @@ import { resetTimesheetHeaderScroll, syncTimesheetHeaderScroll } from "./timeshe
 import { useTimesheetClipboard, type TimesheetClipboardChange } from "./useTimesheetClipboard";
 import { equipmentUnavailableReason, isEquipmentUnavailable } from "./equipmentAvailability";
 import { buildEquipmentCarryoverDrafts } from "./equipmentCarryover";
+import { useConfirmationDialog } from "./useConfirmationDialog";
+import { requestTimesheetMonthChange } from "./timesheetNavigation";
 
 type Option = { id: number; name: string; mainWorkTypeId?: number | null };
 type EquipmentUnit = GridEquipmentUnit;
@@ -44,7 +46,7 @@ type EquipmentTimesheetEditor = {
   anchor: HTMLElement;
   mode: "list" | "advanced";
 };
-type EquipmentTimesheetInlineEditor = { equipmentId: number; workDate: string; rowIndex: number; columnIndex: number; value: string; error: string; selectAll: boolean };
+type EquipmentTimesheetInlineEditor = { session: number; equipmentId: number; workDate: string; rowIndex: number; columnIndex: number; value: string; error: string; selectAll: boolean };
 type EquipmentMonthCell = {
   productive: number;
   downtime: number;
@@ -378,7 +380,8 @@ function EquipmentDeleteConfirmation({ title, description, saving, onCancel, onC
   </div>;
 }
 
-export function EquipmentAccountingView({ siteId, initialDate, initialMonth, today, mode, currentUserRole, currentUserProjectAccess, onDateChange, onMonthChange }: { siteId: number; initialDate: string; initialMonth?: string; today: string; mode: EquipmentSection; currentUserRole?: UserRole; currentUserProjectAccess?: ProjectAccess; onDateChange?: (date: string) => void; onMonthChange?: (month: string) => void }) {
+export function EquipmentAccountingView({ siteId, initialDate, initialMonth, today, mode, currentUserRole, currentUserProjectAccess, onDateChange, onMonthChange, onDirtyChange, onBusyChange }: { siteId: number; initialDate: string; initialMonth?: string; today: string; mode: EquipmentSection; currentUserRole?: UserRole; currentUserProjectAccess?: ProjectAccess; onDateChange?: (date: string) => void; onMonthChange?: (month: string) => void; onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void }) {
+  const { confirm: confirmMonthChange, dialog: monthChangeDialog } = useConfirmationDialog();
   const section = mode;
   const [workDate, setWorkDate] = useState(initialDate);
   const [reportRangeEnd, setReportRangeEnd] = useState(initialDate);
@@ -425,11 +428,18 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   const [timesheetEditorError, setTimesheetEditorError] = useState("");
   const [timesheetInfoOpen, setTimesheetInfoOpen] = useState(false);
   const [importing, setImporting] = useState(false);
+  const dirty = Boolean(unitDrafts.length || unitFullRowEditIds.length || projectUnitDrafts.length || section === "daily" && entryDrafts.length || timesheetInlineEditor || timesheetEditor);
+  const navigationBusy = saving || importing || savingTimesheetMark;
+  useLayoutEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
+  useLayoutEffect(() => { onBusyChange?.(navigationBusy); return () => onBusyChange?.(false); }, [navigationBusy, onBusyChange]);
   const [headerActionsTarget, setHeaderActionsTarget] = useState<HTMLElement | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const dailyFileInput = useRef<HTMLInputElement>(null);
   const initializedCarryoverSession = useRef<string | null>(null);
   const timesheetInlineInput = useRef<HTMLInputElement>(null);
+  const timesheetInlineSession = useRef(0);
+  const timesheetInlineCancelPending = useRef(false);
+  const timesheetInlineSaveInFlight = useRef<{ session: number; promise: Promise<boolean> } | null>(null);
   const timesheetInlineEquipmentId = timesheetInlineEditor?.equipmentId;
   const timesheetInlineWorkDate = timesheetInlineEditor?.workDate;
   const timesheetInlineSelectAll = timesheetInlineEditor?.selectAll ?? false;
@@ -453,6 +463,8 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }, [savingTimesheetMark, timesheetEditor]);
 
   useEffect(() => {
+    timesheetInlineSession.current++;
+    timesheetInlineCancelPending.current = true;
     setTimesheetEditor(null);
     setTimesheetInlineEditor(null);
   }, [month, section]);
@@ -563,9 +575,18 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     setReportRangeEnd(nextEnd > today ? today : nextEnd);
   }
 
-  function changeMonth(nextMonth: string) {
-    setMonth(nextMonth);
-    onMonthChange?.(nextMonth);
+  async function changeMonth(nextMonth: string) {
+    await requestTimesheetMonthChange({
+      currentMonth: month,
+      nextMonth,
+      busy: saving || importing || savingTimesheetMark,
+      hasPendingEditor: Boolean(timesheetInlineEditor || timesheetEditor),
+      confirmDiscard: () => confirmMonthChange({ title: "Сменить месяц без сохранения?", description: "В ячейке табеля есть несохранённые изменения. При смене месяца они будут отменены.", confirmLabel: "Сменить без сохранения" }),
+      commit: (confirmedMonth) => {
+        setMonth(confirmedMonth);
+        onMonthChange?.(confirmedMonth);
+      },
+    });
   }
 
   function openEntry(entry?: EquipmentEntry, changes: Partial<EntryDraft> = {}) {
@@ -1082,21 +1103,21 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     return () => resetTimesheetHeaderScroll(workspace);
   }, [timesheetClipboardShellRef]);
 
-  useEffect(() => {
-    if (!timesheetInlineEditor) return;
-    if (!timesheetClipboardActiveCell
-      || timesheetClipboardActiveCell.rowIndex !== timesheetInlineEditor.rowIndex
-      || timesheetClipboardActiveCell.columnIndex !== timesheetInlineEditor.columnIndex) setTimesheetInlineEditor(null);
-  }, [timesheetClipboardActiveCell, timesheetInlineEditor]);
-
-  function openTimesheetEditor(equipmentId: number, editorWorkDate: string, anchor: HTMLElement) {
+  async function openTimesheetEditor(equipmentId: number, editorWorkDate: string, anchor: HTMLElement) {
     const existingMark = timesheetMarksByCell.has(equipmentCellKey(equipmentId, editorWorkDate));
     if (!payload || (existingMark ? !payload.canUpdateTimesheet && !payload.canDeleteTimesheet : !payload.canCreateTimesheet)) return;
     if (timesheetEditor?.equipmentId === equipmentId && timesheetEditor.workDate === editorWorkDate) {
       if (!savingTimesheetMark) closeTimesheetEditorAndRestoreFocus();
       return;
     }
-    if (savingTimesheetMark) return;
+    if (savingTimesheetMark && !timesheetInlineSaveInFlight.current) return;
+    const previousSession = timesheetInlineSession.current;
+    if (timesheetInlineEditor && !await saveTimesheetInlineValue(undefined, false)) {
+      timesheetInlineInput.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (timesheetInlineSession.current !== previousSession) return;
+    timesheetInlineSession.current++;
     const key = equipmentCellKey(equipmentId, editorWorkDate);
     const report = monthReportByCell.get(key) ?? { productive: 0, downtime: 0 };
     const mark = timesheetMarksByCell.get(key);
@@ -1108,13 +1129,26 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     setTimesheetEditorError("");
   }
 
-  function openTimesheetInlineEditor(equipmentId: number, editorWorkDate: string, rowIndex: number, columnIndex: number, typedValue?: string) {
+  async function openTimesheetInlineEditor(equipmentId: number, editorWorkDate: string, rowIndex: number, columnIndex: number, typedValue?: string) {
     const existingMark = timesheetMarksByCell.has(equipmentCellKey(equipmentId, editorWorkDate));
     if (!payload || (existingMark ? !payload.canUpdateTimesheet : !payload.canCreateTimesheet)) return;
+    if (savingTimesheetMark && !timesheetInlineSaveInFlight.current) return;
+    if (timesheetInlineEditor?.equipmentId === equipmentId && timesheetInlineEditor.workDate === editorWorkDate) {
+      timesheetInlineInput.current?.focus({ preventScroll: true });
+      return;
+    }
+    const previousSession = timesheetInlineSession.current;
+    if (timesheetInlineEditor && !await saveTimesheetInlineValue(undefined, false)) {
+      timesheetInlineInput.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (timesheetInlineSession.current !== previousSession) return;
     const row = monthRows.find((item) => item.unit.id === equipmentId);
     const value = row?.byDate.get(editorWorkDate);
+    timesheetInlineCancelPending.current = false;
     setTimesheetEditor(null);
     setTimesheetInlineEditor({
+      session: ++timesheetInlineSession.current,
       equipmentId,
       workDate: editorWorkDate,
       rowIndex,
@@ -1188,24 +1222,37 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     }
   }
 
-  async function saveTimesheetInlineValue() {
-    if (!timesheetInlineEditor) return;
-    const normalizedValue = timesheetInlineEditor.value.trim().toLocaleUpperCase("ru-RU");
+  async function saveTimesheetInlineValue(valueOverride?: string, returnFocus = true): Promise<boolean> {
+    const target = timesheetInlineEditor;
+    if (!target || timesheetInlineCancelPending.current || target.session !== timesheetInlineSession.current) return false;
+    const pending = timesheetInlineSaveInFlight.current;
+    if (pending) return pending.session === target.session ? pending.promise : false;
+    const normalizedValue = (valueOverride ?? target.value).trim().toLocaleUpperCase("ru-RU");
     let parsed: ReturnType<typeof parseEquipmentClipboardHours>;
     try {
       parsed = parseEquipmentClipboardHours(normalizedValue);
     } catch (validationError) {
-      setTimesheetInlineEditor((current) => current ? { ...current, value: normalizedValue, error: validationError instanceof Error ? validationError.message : "Недопустимое значение" } : current);
-      return;
+      setTimesheetInlineEditor((current) => current?.session === target.session ? { ...current, value: normalizedValue, error: validationError instanceof Error ? validationError.message : "Недопустимое значение" } : current);
+      return false;
     }
-    try {
-      const mark = timesheetMarksByCell.get(equipmentCellKey(timesheetInlineEditor.equipmentId, timesheetInlineEditor.workDate));
-      await persistEquipmentTimesheetMark(timesheetInlineEditor, { ...parsed, note: mark?.note ?? "" });
-      setTimesheetInlineEditor(null);
-      restoreEquipmentTimesheetFocus();
-    } catch (saveError) {
-      setTimesheetInlineEditor((current) => current ? { ...current, error: saveError instanceof Error ? saveError.message : "Не удалось сохранить отметку табеля" } : current);
-    }
+    const promise = (async () => {
+      try {
+        const mark = timesheetMarksByCell.get(equipmentCellKey(target.equipmentId, target.workDate));
+        await persistEquipmentTimesheetMark(target, { ...parsed, note: mark?.note ?? "" });
+        if (timesheetInlineSession.current !== target.session) return false;
+        setTimesheetInlineEditor((current) => current?.session === target.session ? null : current);
+        if (returnFocus) restoreEquipmentTimesheetFocus();
+        return true;
+      } catch (saveError) {
+        if (timesheetInlineSession.current !== target.session) return false;
+        setTimesheetInlineEditor((current) => current?.session === target.session ? { ...current, value: normalizedValue, error: saveError instanceof Error ? saveError.message : "Не удалось сохранить отметку табеля" } : current);
+        return false;
+      }
+    })();
+    const operation = { session: target.session, promise };
+    timesheetInlineSaveInFlight.current = operation;
+    void promise.finally(() => { if (timesheetInlineSaveInFlight.current === operation) timesheetInlineSaveInFlight.current = null; });
+    return promise;
   }
 
   async function pasteEquipmentTimesheetCells(changes: TimesheetClipboardChange[]) {
@@ -1415,10 +1462,11 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     }
   }
 
-  if (loading && !payload) return <>{monthFilters.controller}<section className="equipment-state"><span className="equipment-state-spinner" /><strong>Загружаем учёт техники…</strong></section></>;
+  if (loading && !payload) return <>{monthFilters.controller}{monthChangeDialog}<section className="equipment-state"><span className="equipment-state-spinner" /><strong>Загружаем учёт техники…</strong></section></>;
 
   return <section className={["equipment-page", section === "month" ? "timesheet-page" : "", section === "month" ? "equipment-timesheet-page" : ""].filter(Boolean).join(" ")}>
     {monthFilters.controller}
+    {monthChangeDialog}
     {section === "daily" && headerActionsTarget && createPortal(<div className="report-heading-controls">
       <div className="report-heading-date"><EquipmentReportDateNavigation dates={recentDates} value={workDate} today={today} filledDates={filledDates} onChange={changeWorkDate} onRangeChange={changeReportRange} /></div>
       <ExcelActionsMenu actions={[
@@ -1528,13 +1576,18 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
               onMouseDown={(event) => event.stopPropagation()}
               onDoubleClick={(event) => event.stopPropagation()}
               onChange={(event) => setTimesheetInlineEditor((current) => current ? { ...current, value: event.target.value, error: "", selectAll: false } : current)}
+              onBlur={(event) => {
+                if (!timesheetInlineCancelPending.current) void saveTimesheetInlineValue(event.currentTarget.value, false);
+              }}
               onKeyDown={(event) => {
                 event.stopPropagation();
                 if (event.key === "Enter") {
                   event.preventDefault();
-                  void saveTimesheetInlineValue();
+                  void saveTimesheetInlineValue(event.currentTarget.value);
                 } else if (event.key === "Escape") {
                   event.preventDefault();
+                  timesheetInlineCancelPending.current = true;
+                  timesheetInlineSession.current++;
                   setTimesheetInlineEditor(null);
                   restoreEquipmentTimesheetFocus();
                 }

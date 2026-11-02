@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useWorkspaceAccess } from "./TableAccessContext";
 import {
   PERMISSION_CATALOG,
@@ -19,7 +19,9 @@ import { ProjectAccessPicker } from "./ProjectAccessPicker";
 import { displayedUserProjectAccess, userProjectLabel } from "./userAccessModel";
 import { PermissionMatrix } from "./PermissionMatrix";
 import { RoleEditorDialog } from "./RoleEditorDialog";
+import { RoleCatalog } from "./RoleCatalog";
 import type { CustomRole } from "./customRoles";
+import { useConfirmationDialog } from "./useConfirmationDialog";
 import "./customRoles.css";
 
 type AccessUser = {
@@ -50,7 +52,8 @@ function initials(name: string) {
   return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toLocaleUpperCase("ru-RU")).join("") || "?";
 }
 
-export function AccessRightsView({ onBack }: { onBack: () => void }) {
+export function AccessRightsView({ onBack, onDirtyChange, onBusyChange }: { onBack: () => void; onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void }) {
+  const { confirm, dialog: confirmationDialog } = useConfirmationDialog();
   const [sites, setSites] = useState<{ id: number; name: string }[]>([]);
   const [projectAccess, setProjectAccess] = useState<ProjectAccess>({ mode: "selected", siteIds: [] });
   const [pendingReports, setPendingReports] = useState(false);
@@ -75,6 +78,8 @@ export function AccessRightsView({ onBack }: { onBack: () => void }) {
   const selectedUser = users.find((user) => user.id === selectedUserId) ?? null;
   const roleTemplate = selectedUser ? limitPermissionsToRole(selectedUser.role, selectedUser.roleTemplate ?? rolePermissionTemplate(selectedUser.role), projectAccess) : emptyPermissionSet();
   const changed = selectedUser ? !permissionSetsEqual(draft, selectedUser.permissions) || (projectAccess.mode !== displayedUserProjectAccess(selectedUser).mode || [...projectAccess.siteIds].sort((a,b) => a-b).join(",") !== displayedUserProjectAccess(selectedUser).siteIds.join(",")) || pendingReports !== (selectedUser.canViewPendingReports ?? selectedUser.role !== "viewer") : false;
+  useLayoutEffect(() => { onDirtyChange?.(changed); return () => onDirtyChange?.(false); }, [changed, onDirtyChange]);
+  useLayoutEffect(() => { onBusyChange?.(saving); return () => onBusyChange?.(false); }, [saving, onBusyChange]);
   const visibleUsers = useMemo(() => {
     const query = search.trim().toLocaleLowerCase("ru-RU");
     return users.filter((user) => !query || `${user.fullName} ${user.email} ${user.customRoleName ?? ROLE_LABELS[user.role]}`.toLocaleLowerCase("ru-RU").includes(query));
@@ -124,15 +129,52 @@ export function AccessRightsView({ onBack }: { onBack: () => void }) {
   useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
   useEffect(() => { const requests = rolesRequestSequence.current; void loadRoles(); return () => { requests.version++; }; }, []); // eslint-disable-line react-hooks/set-state-in-effect
 
-  function selectUser(user: AccessUser) {
-    if (saving) return;
-    if (changed && !window.confirm("Есть несохранённые изменения доступа. Переключить пользователя и отменить их?")) return;
+  async function selectUser(user: AccessUser) {
+    if (saving || user.id === selectedUserId) return;
+    if (changed && !await confirm({ title: "Переключить пользователя?", description: "Изменения прав доступа ещё не сохранены. При выборе другого пользователя они будут отменены.", confirmLabel: "Переключить без сохранения" })) return;
     setSelectedUserId(user.id);
     setProjectAccess(displayedUserProjectAccess(user));
     setPendingReports(user.canViewPendingReports ?? user.role !== "viewer");
     setDraft(clonePermissions(user.permissions));
     setError("");
     setNotice("");
+  }
+
+  async function refresh() {
+    if (loading || saving) return;
+    if (changed && !await confirm({ title: "Обновить данные?", description: "Изменения прав доступа ещё не сохранены. При обновлении загрузятся сохранённые настройки, а ваши правки будут отменены.", confirmLabel: "Обновить без сохранения" })) return;
+    await Promise.all([load(), loadRoles()]);
+  }
+
+  async function openRole(role: CustomRole) {
+    if (saving) return;
+    if (role.id > 0 && rolesCanManage && changed && !await confirm({ title: "Открыть редактирование роли?", description: "Несохранённые индивидуальные права пользователя будут отменены.", confirmLabel: "Продолжить", cancelLabel: "Остаться" })) return;
+    if (role.id > 0 && rolesCanManage && changed && selectedUser) {
+      setDraft(clonePermissions(selectedUser.permissions)); setProjectAccess(displayedUserProjectAccess(selectedUser)); setPendingReports(selectedUser.canViewPendingReports ?? selectedUser.role !== "viewer");
+    }
+    setRoleEditor(role);
+  }
+
+  async function removeRole(role: CustomRole) {
+    if (!canManage || !rolesCanManage || saving || role.id < 1) return;
+    if (!await confirm({ title: `Удалить роль «${role.name}»?`, description: "Удалить можно только роль, которая не назначена пользователям.", confirmLabel: "Удалить роль", cancelLabel: "Отмена" })) return;
+    setSaving(true); setError(""); setNotice("");
+    try {
+      const response = await fetch("/api/roles", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ roleId: role.id, revision: role.revision }) });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "Не удалось удалить роль.");
+      rolesRequestSequence.current.version++;
+      setRoles(current => current.filter(item => item.id !== role.id));
+      setNotice(`Роль «${role.name}» удалена.`);
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "Не удалось удалить роль."); }
+    finally { setSaving(false); }
+  }
+
+  async function back() {
+    if (saving) return;
+    if (changed && !await confirm({ title: "Выйти из настроек доступа?", description: "Изменения прав доступа ещё не сохранены. При переходе к общим настройкам они будут отменены.", confirmLabel: "Перейти без сохранения" })) return;
+    onDirtyChange?.(false);
+    onBack();
   }
 
   function patchPermission(resource: PermissionResource, action: PermissionAction, enabled: boolean) {
@@ -194,10 +236,10 @@ export function AccessRightsView({ onBack }: { onBack: () => void }) {
   }
 
   return <section className="access-rights-page">
-    <div className="settings-toolbar access-rights-toolbar"><button type="button" className="back-button" onClick={onBack}>← К общим настройкам</button><div className="access-rights-toolbar-actions"><button type="button" className="back-button" onClick={() => { if (!changed || window.confirm("Есть несохранённые изменения доступа. Обновить страницу и отменить их?")) void Promise.all([load(), loadRoles()]); }} disabled={loading || saving}>Обновить</button>{canManage && rolesCanManage && <button type="button" className="primary-button" disabled={saving || loading} onClick={() => setRoleEditor("create")}><span aria-hidden="true">＋</span>Добавить роль</button>}</div></div>
-    {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}
-    {notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
-    {roles.length > 0 && <details className="access-role-catalog" open={showRoleCatalog} onToggle={event => setShowRoleCatalog(event.currentTarget.open)}><summary>Созданные роли<span>{roles.length}</span></summary><div className="access-role-list">{roles.map(role => <button type="button" key={role.id} onClick={() => setRoleEditor(role)}>{role.name}</button>)}</div></details>}
+    <div className="settings-toolbar access-rights-toolbar"><button type="button" className="back-button" onClick={() => void back()} disabled={saving}>← К общим настройкам</button><div className="access-rights-toolbar-actions"><button type="button" className="back-button" onClick={() => void refresh()} disabled={loading || saving}>Обновить</button>{canManage && rolesCanManage && <button type="button" className="primary-button" disabled={saving || loading} onClick={() => setRoleEditor("create")}><span aria-hidden="true">＋</span>Добавить роль</button>}</div></div>
+    {error && <div className="message error inline-message" role="alert"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}
+    {notice && <div className="message success inline-message" role="status"><strong>Готово</strong><span>{notice}</span></div>}
+    <details className="access-role-catalog" open={showRoleCatalog} onToggle={event => setShowRoleCatalog(event.currentTarget.open)}><summary>Справочник ролей<span>{roles.length + 1}</span></summary><RoleCatalog roles={roles} canManage={canManage && rolesCanManage} busy={saving || loading} onOpen={role => void openRole(role)} onDelete={role => void removeRole(role)}/></details>
     <div className="access-rights-layout">
       <aside className="access-user-panel">
         <label className="access-user-search"><span>Пользователи</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Найти пользователя" /></label>
@@ -214,29 +256,32 @@ export function AccessRightsView({ onBack }: { onBack: () => void }) {
       <div className="access-matrix-panel">
         {selectedUser ? <>
           <section className="access-project-panel" aria-label="Доступ выбранного пользователя к проектам">
-            <header><h3>Доступ к проектам</h3><span>{selectedUser.projectAccessLimitedToViewer ? "Показаны только проекты в пределах вашего доступа" : selectedUser.role === "superadmin" ? "Супер-админ видит все проекты" : "Настраивается отдельно от роли"}</span></header>
+            <header><h3>Доступ к проектам</h3>{selectedUser.projectAccessLimitedToViewer && <span>В пределах вашего доступа</span>}</header>
             <ProjectAccessPicker key={selectedUser.id} value={projectAccess} sites={sites} disabled={!canManage || saving || selectedUser.role === "superadmin"} onChange={next => { setProjectAccess(next); setDraft(current => limitPermissionsToRole(selectedUser.role, current, next)); setNotice(""); }} />
             {selectedUser.role === "viewer" && <label className="access-pending-toggle" aria-label="Показывать черновики и отчёты на проверке"><input type="checkbox" checked={pendingReports} disabled={!canManage || saving} onChange={event => { setPendingReports(event.target.checked); setNotice(""); }} /><span><strong>Показывать черновики и отчёты на проверке</strong><small>По умолчанию пользователь видит подтверждённые отчёты и табели. Роль «Просмотр» не позволяет менять данные.</small></span></label>}
           </section>
-          <div className="access-preset-bar"><div><span>Быстрые настройки</span><strong>{changed ? "Есть несохранённые изменения" : "Все изменения сохранены"}</strong></div>{canManage && <div><button type="button" onClick={() => setDraft(clonePermissions(roleTemplate))} disabled={saving}>Шаблон роли</button><button type="button" onClick={applyViewOnly} disabled={saving}>Только просмотр</button><button type="button" onClick={applyFullAccess} disabled={saving}>{selectedUser.role === "viewer" ? "Все разделы" : "Полный доступ"}</button></div>}</div>
-          <PermissionMatrix label={`Права доступа: ${selectedUser.fullName}`} value={draft} disabled={!canManage || saving} onChange={patchPermission} cellPolicy={(resource, action) => {
+          <div className="access-preset-bar"><div><strong>{changed ? "Не сохранено" : "Сохранено"}</strong></div>{canManage && <div><button type="button" onClick={() => setDraft(clonePermissions(roleTemplate))} disabled={saving}>Шаблон роли</button><button type="button" onClick={applyViewOnly} disabled={saving}>Только просмотр</button><button type="button" onClick={applyFullAccess} disabled={saving}>{selectedUser.role === "viewer" ? "Все разделы" : "Полный доступ"}</button></div>}</div>
+          <PermissionMatrix compact label={`Права доступа: ${selectedUser.fullName}`} value={draft} disabled={!canManage || saving} onChange={patchPermission} cellPolicy={(resource, action) => {
             const allowed = selectedUser.projectAccessLimitedToViewer
               ? selectedUser.role !== "viewer" || action === "view"
               : roleAllowsPermission(selectedUser.role, resource, action, projectAccess);
             const locked = selectedUser.id === currentUserId && resource === "access_rights" && (action === "view" || action === "update");
             return { allowed, locked, ...(!allowed ? { title: selectedUser.role === "viewer" ? "Роль «Просмотр» не позволяет изменять данные" : "Доступ к выбранным проектам не позволяет менять общие настройки пользователей" } : {}) };
           }} />
-          <footer className="access-rights-footer"><span>{selectedUser.id === currentUserId ? "Собственные права управления доступом защищены от отключения." : "Права проверяются сервером для каждого действия."}</span>{canManage && <div><button type="button" className="back-button" onClick={() => void save(true)} disabled={saving || (!selectedUser.customized && permissionSetsEqual(draft, roleTemplate))}>Вернуть права роли</button><button type="button" className="primary-button" onClick={() => void save(false)} disabled={saving || !changed}>{saving ? "Сохраняем…" : "Сохранить доступ"}</button></div>}</footer>
+          <footer className="access-rights-footer">{selectedUser.id === currentUserId && <span>Собственное управление доступом защищено.</span>}{canManage && <div><button type="button" className="back-button" onClick={() => void save(true)} disabled={saving || (!selectedUser.customized && permissionSetsEqual(draft, roleTemplate))}>Вернуть права роли</button><button type="button" className="primary-button" onClick={() => void save(false)} disabled={saving || !changed}>{saving ? "Сохраняем…" : "Сохранить доступ"}</button></div>}</footer>
         </> : <div className="access-matrix-empty">Выберите пользователя слева</div>}
       </div>
     </div>
-    {roleEditor && <RoleEditorDialog previewRole={roleEditor === "create" ? undefined : roleEditor} onClose={() => setRoleEditor(null)} onCreated={role => {
+    {roleEditor && <RoleEditorDialog previewRole={roleEditor === "create" ? undefined : roleEditor} editable={canManage && rolesCanManage && roleEditor !== "create" && roleEditor.id > 0} onClose={() => setRoleEditor(null)} onCreated={role => {
       // A catalog read started before this POST must not remove the new role.
       rolesRequestSequence.current.version++;
       setRoles(current => [...current.filter(item => item.id !== role.id), role].sort((left, right) => left.name.localeCompare(right.name, "ru")));
+      const updated = roleEditor !== "create";
       setRoleEditor(null);
       setShowRoleCatalog(true);
-      setNotice(`Роль «${role.name}» создана. Её можно выбрать при добавлении или редактировании пользователя.`);
+      setNotice(`Роль «${role.name}» ${updated ? "обновлена" : "создана"}.`);
+      if (updated) void load();
     }} />}
+    {confirmationDialog}
   </section>;
 }

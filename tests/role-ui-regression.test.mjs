@@ -34,10 +34,12 @@ test("engineer no longer requires a single assigned project and viewer must sele
   const engineer=render([draft()]);
   assert.match(engineer,/Доступ ко всем текущим и новым проектам/);
   assert.doesNotMatch(engineer,/class="user-create-submit" disabled/);
-  const viewer=render([draft({id:undefined,role:"viewer",projectAccess:{mode:"selected",siteIds:[]}})]);
+  const viewer=render([draft({id:undefined,role:"viewer",customRoleId:10,customRoleName:"Аудитор",projectAccess:{mode:"selected",siteIds:[]}})]);
   assert.match(viewer,/Выберите хотя бы один доступный проект/);
   assert.match(viewer,/class="user-create-submit" disabled=""/);
-  assert.match(viewer,/<strong>Просмотр<\/strong>/);
+  assert.match(viewer,/aria-label="Роль пользователя"/);
+  assert.match(viewer,/<span class="custom-select-value">Аудитор<\/span>/);
+  assert.doesNotMatch(viewer,/class="user-role-card/);
   assert.doesNotMatch(viewer,/<strong>Админ<\/strong>/);
   assert.match(viewer,/По умолчанию доступны подтверждённые отчёты и табели/);
   const closed=render([draft({role:"viewer",projectAccess:{mode:"selected",siteIds:[]}})]);

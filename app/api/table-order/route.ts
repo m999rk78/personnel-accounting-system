@@ -7,6 +7,7 @@ import { equipmentReportOrderScope, isEquipmentReportOrderId, isUnsavedEquipment
 import { ensureEquipmentReportSchema } from "../../equipmentReportStore";
 import { canonicalRowIds, ensureTableOrderSchema, readTableOrder, rowOrderAccess, TableOrderAccessError } from "../../tableRowOrderServer";
 import { isWorkTypesOrderId, workTypesOrderScope } from "../../workTypesRowOrder";
+import { readPersonnelImportOrder } from "../../personnelImportOrderServer";
 
 const positiveId = (value: unknown) => Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : null;
 
@@ -24,7 +25,10 @@ export async function GET(request: Request) {
       readTableOrder(scope, siteId, user),
       ensureTableOrderSchema().then(() => getDatabase().prepare("SELECT id FROM table_row_orders WHERE id = ?").bind(access.key).first()),
     ]);
-    return Response.json({ ids, canWrite: access.canWrite, hasSavedOrder: Boolean(saved) }, { headers: { "Cache-Control": "no-store" } });
+    const importOrder = scope === "employees" || scope === "project-personnel"
+      ? await readPersonnelImportOrder(getDatabase(), scope, siteId, (await canonicalRowIds(scope, siteId, getDatabase(), user)).filter((id): id is number => typeof id === "number"))
+      : { importIds: [], hasImportOrder: false };
+    return Response.json({ ids, canWrite: access.canWrite, hasSavedOrder: Boolean(saved), ...importOrder }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Не удалось загрузить порядок строк." }, { status: error instanceof TableOrderAccessError ? error.status : 400 });
   }

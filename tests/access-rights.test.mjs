@@ -57,8 +57,12 @@ test("stores permissions, exposes a separate settings page, and enforces them in
   assert.match(timesheetApi, /existingMark \? "update" : "create"/);
   assert.match(app, /title: "Пользователи системы"/);
   assert.match(app, /title: "Права доступа"/);
-  assert.match(view, /Быстрые настройки/);
-  assert.match(view, /Права проверяются сервером для каждого действия/);
+  assert.match(view, /className="access-preset-bar"/);
+  assert.match(view, /onClick=\{applyViewOnly\}/);
+  assert.match(view, /onClick=\{applyFullAccess\}/);
+  assert.match(view, /Справочник ролей/);
+  assert.match(view, /<PermissionMatrix compact/);
+  assert.doesNotMatch(view, /Быстрые настройки|Права проверяются сервером для каждого действия/);
   assert.doesNotMatch(view, /Гибкие права поверх ролей|access-rights-intro|access-matrix-heading/);
 });
 

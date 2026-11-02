@@ -268,7 +268,7 @@ export function EquipmentReportGrid(props: EquipmentReportGridProps) {
       })),
       { ...column("equipment", "Техника", 250, 2), pinned: "left", width: 280, maxWidth: 380 },
       column("status", "Статус", 165),
-      column("responsibleUserName", "Ответственный прораб", 190),
+      column("responsibleUserName", "Ответственный", 190),
       column("organization", "Организация", 160),
       column("equipmentType", "Тип техники", 150),
       column("brand", "Марка", 130),

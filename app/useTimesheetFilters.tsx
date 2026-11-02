@@ -8,6 +8,7 @@ import { gridLocaleRu } from "./gridLocaleRu";
 import { compareGridValues } from "./gridFilterModel";
 import { enterpriseFilterParams } from "./GridEnterpriseFilters";
 import type { TimesheetFiltersContextValue } from "./TimesheetColumnFilter";
+import { IMPORT_ORDER_COLUMN, importOrderColumnState, shouldApplyImportOrder } from "./importOrderSorting";
 
 export type TimesheetFilterColumn<T> = {
   colId: string;
@@ -21,8 +22,9 @@ type Snapshot = { keys: string[] | null; filters: string[]; sorts: { id: string;
 const EMPTY: Snapshot = { keys: null, filters: [], sorts: [] };
 
 /** One native AG row model supplies filters/sorts to the existing spreadsheet cells. */
-export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey }: { rows: readonly T[]; columns: readonly TimesheetFilterColumn<T>[]; getRowId: (row: T) => string; resetKey: string }) {
+export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, importOrder }: { rows: readonly T[]; columns: readonly TimesheetFilterColumn<T>[]; getRowId: (row: T) => string; resetKey: string; importOrder?: { rank: (row: T) => number; activation: number; ready: boolean; defaultSort: boolean } }) {
   const apiRef = useRef<GridApi<T> | null>(null);
+  const [api, setApi] = useState<GridApi<T> | null>(null);
   const anchor = useRef<{ columnId: string; trigger: HTMLButtonElement } | null>(null);
   const popup = useRef<HTMLElement | null>(null);
   const [native, setNative] = useState(false);
@@ -38,7 +40,8 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey }: { 
     const next = { keys, filters, sorts };
     setSnapshot(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
   }, []);
-  const definitions = useMemo<ColDef<T>[]>(() => columns.map(column => ({
+  const importRank = importOrder?.rank;
+  const definitions = useMemo<ColDef<T>[]>(() => [...columns.map((column): ColDef<T> => ({
     colId: column.colId, headerName: column.headerName, sortable: true, cellDataType: false,
     valueGetter: params => params.data ? column.getValue(params.data) : null,
     valueFormatter: params => column.valueFormatter?.(params.value) ?? (params.value == null || params.value === "" ? "(Пустые)" : String(params.value)),
@@ -52,7 +55,24 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey }: { 
         getValue: (data: unknown) => data ? column.presets!.filter(preset => preset.matches(data as T)).map(preset => preset.value) : [],
       } } : {}),
     }) : { buttons: ["clear", "cancel", "apply"], closeOnApply: true, maxNumConditions: 4 },
-  })), [columns, native]);
+  })), ...(importRank ? [{
+    colId: IMPORT_ORDER_COLUMN, headerName: "Порядок импорта", hide: true, lockVisible: true, suppressColumnsToolPanel: true,
+    sortable: true, filter: false, valueGetter: (params: { data?: T }) => params.data ? importRank(params.data) : null,
+    comparator: (left: number, right: number) => left - right,
+  }] : [])], [columns, native, importRank]);
+  const previousImportActivation = useRef(0);
+  const defaultImportApplied = useRef<GridApi<T> | null>(null);
+  const importActivation = importOrder?.activation ?? 0;
+  const importReady = importOrder?.ready ?? false;
+  const importDefault = importOrder?.defaultSort ?? false;
+  useEffect(() => {
+    if (!api || api.isDestroyed() || !api.getColumn(IMPORT_ORDER_COLUMN)) return;
+    const activated = previousImportActivation.current !== importActivation;
+    previousImportActivation.current = importActivation;
+    const firstLoad = importReady && defaultImportApplied.current !== api;
+    if (firstLoad) defaultImportApplied.current = api;
+    if (shouldApplyImportOrder({ activated, firstLoad, defaultImport: importDefault, sorted: api.getColumnState().some(column => Boolean(column.sort)) })) api.applyColumnState(importOrderColumnState());
+  }, [api, importActivation, importReady, importDefault, definitions]);
   const reset = useCallback(() => {
     const api = apiRef.current;
     if (!api || api.isDestroyed()) return;
@@ -139,7 +159,7 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey }: { 
     theme={gridTheme} localeText={gridLocaleRu} rowData={rows as T[]} columnDefs={definitions} getRowId={({ data }) => getRowId(data)}
     headerHeight={0} rowHeight={1} rowBuffer={0} suppressCellFocus suppressHeaderFocus suppressColumnVirtualisation
     enableFilterHandlers animateRows={false} popupParent={typeof document === "undefined" ? undefined : document.body} postProcessPopup={positionPopup}
-    onGridReady={({ api }) => { apiRef.current = api; setNative(api.isModuleRegistered("MultiFilterModule") && api.isModuleRegistered("SetFilterModule")); setSnapshot(EMPTY); setOpenColumnId(null); publish(api); }}
+    onGridReady={({ api }) => { apiRef.current = api; setApi(api); setNative(api.isModuleRegistered("MultiFilterModule") && api.isModuleRegistered("SetFilterModule")); setSnapshot(EMPTY); setOpenColumnId(null); publish(api); }}
     onModelUpdated={({ api }) => publish(api)} onFilterChanged={({ api }) => publish(api)} onSortChanged={({ api }) => publish(api)}
     onColumnMenuVisibleChanged={({ visible, column }) => { if (!visible && column?.getColId() === anchor.current?.columnId) { setOpenColumnId(null); anchor.current?.trigger.focus({ preventScroll: true }); popup.current = null; } }}
     onGridPreDestroyed={() => { popup.current = null; anchor.current = null; apiRef.current = null; }}/></div>;

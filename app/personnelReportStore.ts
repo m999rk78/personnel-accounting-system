@@ -1,5 +1,6 @@
 import type { PostgresDatabase } from "../db/client";
 import type { AuthUser } from "./auth";
+import { rememberPersonnelImportOrder } from "./personnelImportOrderServer";
 import type { PersonnelReport, PersonnelReportApprovedEntry, PersonnelReportData, PersonnelReportDateRequest, PersonnelReportEntryDateRequest, PersonnelReportEntrySaveRequest, PersonnelReportRequest, PersonnelReportRow, PersonnelReportRowValidationIssue, PersonnelReportValidationIssue, PersonnelReportValidationRequest, PersonnelReportValidationResult } from "./personnelReportTypes";
 import {
   assertCanSavePersonnelReport, assertPersonnelReportHours, assertPersonnelReportOwner,
@@ -543,6 +544,18 @@ export async function mutatePersonnelReport(database: PostgresDatabase, user: Au
       if (!positiveId(payload.siteId) || !validPersonnelReportDate(payload.workDate)) throw new PersonnelReportError("Укажите проект и корректную дату отчёта.");
       await assertActiveSite(db, user, payload.siteId);
       const rows = normalizePersonnelReportRows(payload.rows);
+      const importOrder = payload.importEmployeeOrder;
+      if (importOrder !== undefined) {
+        if (!Array.isArray(importOrder) || importOrder.length > 5000 || importOrder.some(id => !positiveId(id)) || new Set(importOrder).size !== importOrder.length) {
+          throw new PersonnelReportError("Порядок импорта должен содержать не более 5000 уникальных сотрудников.", 400, "INVALID_IMPORT_ORDER");
+        }
+        const assigned = await db.prepare(`SELECT employee.id FROM employees employee
+          WHERE employee.id = ANY(?) AND employee.active = 1 AND EXISTS (
+            SELECT 1 FROM employee_project_assignments assignment
+            WHERE assignment.employee_id = employee.id AND assignment.site_id = ? AND assignment.active = 1
+          )`).bind(importOrder, payload.siteId).all<{ id: number }>();
+        if (assigned.results.length !== importOrder.length) throw new PersonnelReportError("Один из сотрудников порядка импорта не назначен на этот проект или архивирован.", 400, "INVALID_IMPORT_ORDER");
+      }
       let snapshots: RowSnapshots[] = [];
       let reportId = payload.reportId;
       let previousRows: PersonnelReportRow[] = [];
@@ -603,6 +616,7 @@ export async function mutatePersonnelReport(database: PostgresDatabase, user: Au
       }
       await saveDraftRows(db, reportId, rows, snapshots, previousRows);
       if (approvedReport) await publishPersonnelReportRows(db, user, approvedReport);
+      if (importOrder?.length) await rememberPersonnelImportOrder(db, "project-personnel", payload.siteId, importOrder);
       return readReport(db, reportId);
     }
     if (!["submit", "approve", "reject", "reopen"].includes(payload.action) || !positiveId(payload.reportId)) throw new PersonnelReportError("Некорректное действие с отчётом.");

@@ -1,8 +1,9 @@
-import { PERMISSION_ACTIONS, PERMISSION_CATALOG, normalizePermissionSet, type PermissionSet } from "./permissionModel.ts";
+import { PERMISSION_ACTIONS, PERMISSION_CATALOG, normalizePermissionSet, rolePermissionTemplate, type PermissionSet } from "./permissionModel.ts";
 import { ROLE_LABELS } from "./roles.ts";
 
-export type CustomRoleBaseRole = "engineer" | "viewer";
-export type CustomRole = { id: number; name: string; baseRole: CustomRoleBaseRole; permissions: PermissionSet; revision: number };
+export type CustomRoleBaseRole = "foreman" | "engineer" | "viewer";
+export type CustomRole = { id: number; name: string; baseRole: CustomRoleBaseRole; permissions: PermissionSet; revision: number; legacyRoleKey?: "foreman" | "engineer" | "viewer" };
+export const managedDefaultRoleSeeds = () => (["foreman", "engineer", "viewer"] as const).map(key => ({ key, name: ROLE_LABELS[key], permissions: rolePermissionTemplate(key) }));
 export type CustomRoleInput = { name?: unknown; permissions?: unknown };
 
 export class CustomRoleError extends Error {
@@ -24,7 +25,7 @@ export function normalizeCustomRoleName(value: unknown) {
   if (typeof value !== "string") throw new CustomRoleError("Укажите название роли.");
   const name = value.normalize("NFKC").trim().replace(/\s+/gu, " ");
   if (!name || name.length > 80 || /[\p{Cc}\p{Cf}]/u.test(name)) throw new CustomRoleError("Название роли должно содержать от 1 до 80 символов без управляющих знаков.");
-  const reserved = [...Object.values(ROLE_LABELS), "foreman", "engineer", "viewer", "superadmin", "office", "admin"];
+  const reserved = [ROLE_LABELS.superadmin, "superadmin", "office", "admin"];
   if (reserved.some(label => customRoleNameKey(label) === customRoleNameKey(name))) throw new CustomRoleError("Это название уже используется системной ролью. Выберите другое название.", 400, "ROLE_NAME_RESERVED");
   return name;
 }

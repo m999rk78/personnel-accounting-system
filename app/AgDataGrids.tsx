@@ -19,7 +19,8 @@ import { CustomSelect } from "./CustomSelect";
 import { choiceMenuPosition, choiceMenuWidth, type ChoiceMenuPosition } from "./choiceMenuLayout";
 import { GridTextEditor } from "./GridTextEditor";
 import { ROLE_LABELS, type ProjectAccess, type UserRole } from "./roles";
-import { pastedUserRole, profileProjectChangeAllowed, userDraftProjectAccess, userProjectLabel, userRoleChanges } from "./userAccessModel";
+import { customUserRoleChanges, pastedUserRole, profileProjectChangeAllowed, userDraftProjectAccess, userProjectLabel, userRoleChanges } from "./userAccessModel";
+import type { CustomRole } from "./customRoles";
 
 // LocalizedGrid wraps AgGridReact with shared Russian filters and their summary.
 import { LocalizedGrid, personnelColumnFilter, personnelFilterParams, type SpreadsheetContextPayload, type SpreadsheetPastePayload } from "./GridFilters";
@@ -665,7 +666,7 @@ export function PlacementAgGrid(props: PlacementGridProps) {
       { colId: "number", headerName: "№", width: 66, minWidth: 54, pinned: "left", lockPinned: true, lockPosition: "left", suppressMovable: true, suppressSizeToFit: true, sortable: false, filter: false, valueGetter: valueGetter("number") },
       { field: "employeeName", headerName: "ФИО", minWidth: 220, flex: 2.2, pinned: props.rosterMode ? "left" : undefined, lockPinned: props.rosterMode, lockPosition: props.rosterMode ? "left" : undefined, headerComponentParams: pinnableHeader, valueGetter: valueGetter("employeeName"), cellRenderer: editableRenderer },
     ];
-    if (props.showResponsibleUser) result.push({ field: "responsibleUserName", headerName: "Ответственный прораб", minWidth: 180, flex: 1.3, headerComponentParams: pinnableHeader, valueGetter: valueGetter("responsibleUserName"), cellRenderer: editableRenderer });
+    if (props.showResponsibleUser) result.push({ field: "responsibleUserName", headerName: "Ответственный", minWidth: 180, flex: 1.3, headerComponentParams: pinnableHeader, valueGetter: valueGetter("responsibleUserName"), cellRenderer: editableRenderer });
     result.push(
     { field: "employmentType", headerName: "Тип", minWidth: 116, flex: .7, headerComponentParams: pinnableHeader, valueGetter: valueGetter("employmentType"), cellRenderer: editableRenderer },
     { field: "department", headerName: "Отдел", minWidth: 129, flex: .8, headerComponentParams: pinnableHeader, valueGetter: valueGetter("department"), cellRenderer: editableRenderer },
@@ -1176,7 +1177,7 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
       { colId: "number", headerName: "№", width: 66, minWidth: 54, pinned: "left", lockPinned: true, lockPosition: "left", suppressMovable: true, suppressSizeToFit: true, sortable: false, filter: false, valueGetter: valueGetter("number") },
       { field: "equipment", headerName: "Техника", minWidth: 250, flex: 2.1, pinned: "left", lockPinned: true, lockPosition: "left", headerComponentParams: pinnableHeader, valueGetter: valueGetter("equipment"), cellRenderer: editableRenderer },
       { field: "organization", headerName: "Организация", minWidth: 145, flex: 1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("organization"), cellRenderer: editableRenderer },
-      ...(props.showResponsibleUser ? [{ field: "responsibleUserName", headerName: "Ответственный прораб", minWidth: 180, flex: 1.2, headerComponentParams: pinnableHeader, valueGetter: valueGetter("responsibleUserName"), cellRenderer: editableRenderer } satisfies ColDef<EquipmentTableRow>] : []),
+      ...(props.showResponsibleUser ? [{ field: "responsibleUserName", headerName: "Ответственный", minWidth: 180, flex: 1.2, headerComponentParams: pinnableHeader, valueGetter: valueGetter("responsibleUserName"), cellRenderer: editableRenderer } satisfies ColDef<EquipmentTableRow>] : []),
       { field: "shift", headerName: "Смена", minWidth: 115, flex: .75, headerComponentParams: pinnableHeader, valueGetter: valueGetter("shift"), cellRenderer: editableRenderer },
       { field: "zone", headerName: "Зона", minWidth: 140, flex: 1.1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("zone"), cellRenderer: editableRenderer },
       { field: "mainWork", headerName: "Вид работы", minWidth: 180, flex: 1.5, headerComponentParams: pinnableHeader, valueGetter: valueGetter("mainWork"), cellRenderer: editableRenderer },
@@ -2164,6 +2165,18 @@ export function UserAgGrid(props: UserGridProps) {
   const propsRef = useLatestRef(props);
   const gridApi = useRef<GridApi<UserTableRow> | null>(null);
   const [activeEditor, setActiveEditor] = useState<{ rowKey: string; field: string } | null>(null);
+  const [userRoles, setUserRoles] = useState<CustomRole[]>([]);
+  const roleEditorOpen = activeEditor?.field === "role";
+  useEffect(() => {
+    if (!roleEditorOpen) return;
+    const controller = new AbortController();
+    void fetch("/api/roles", { cache: "no-store", signal: controller.signal }).then(async response => {
+      if (!response.ok) return;
+      const payload = await response.json() as { roles?: CustomRole[] };
+      if (!controller.signal.aborted) setUserRoles(payload.roles ?? []);
+    }).catch(() => { /* The current role stays visible if the catalog is unavailable. */ });
+    return () => controller.abort();
+  }, [roleEditorOpen]);
   const draftStructureKey = props.drafts.map((draft) => draft.id ? `edit-${draft.id}` : draft.key).join("|");
   const draftValuesKey = JSON.stringify(props.drafts);
   const selectedIdsKey = props.pendingDeletes.join("|");
@@ -2221,11 +2234,20 @@ export function UserAgGrid(props: UserGridProps) {
     if (!activeCellEditor) return <EditableCellDisplay value={params.value ?? ""} menuLabel={field === "role" ? "роль" : field === "site" && draft.role !== "superadmin" ? "проект" : undefined} onOpen={field === "role" || (field === "site" && draft.role !== "superadmin") ? () => openCellEditor(row, field!) : undefined} />;
     if (field === "fullName") return <GridTextEditor value={draft.fullName} placeholder="ФИО" onBlur={() => setActiveEditor(null)} onChange={(fullName) => currentProps.onPatchDraft(draft.key, { fullName })} />;
     if (field === "email") return <GridTextEditor value={draft.email} placeholder="email@company.ru" onBlur={() => setActiveEditor(null)} onChange={(email) => currentProps.onPatchDraft(draft.key, { email })} />;
-    if (field === "role") return <CustomSelect className="ag-custom-select" value={draft.role} ariaLabel="Роль" autoOpen onChange={(role) => { currentProps.onPatchDraft(draft.key, { ...userRoleChanges(role as UserRole, draft.assignedSiteId, draft.projectAccess), customRoleId: null, customRoleName: null }); setActiveEditor(null); }} options={[{ value: "foreman", label: "Прораб" }, { value: "engineer", label: "Инженер" }, { value: "viewer", label: "Просмотр" }, { value: "superadmin", label: "Супер-админ" }]} />;
+    if (field === "role") {
+      const value = draft.customRoleId ? String(draft.customRoleId) : draft.role === "superadmin" ? "__superadmin__" : String(userRoles.find(role => role.legacyRoleKey === draft.role)?.id ?? "__current__");
+      const options = [{ value: "__superadmin__", label: "Супер-админ", disabled: false }, ...userRoles.map(role => ({ value: String(role.id), label: role.name, disabled: false }))];
+      if (!options.some(option => option.value === value)) options.push({ value, label: draft.customRoleName || ROLE_LABELS[draft.role], disabled: true });
+      return <CustomSelect className="ag-custom-select" value={value} ariaLabel="Роль" autoOpen onChange={next => {
+        if (next === "__superadmin__") currentProps.onPatchDraft(draft.key, { ...userRoleChanges("superadmin", draft.assignedSiteId, draft.projectAccess), customRoleId: null, customRoleName: null });
+        else { const role = userRoles.find(role => String(role.id) === next); if (!role) return; currentProps.onPatchDraft(draft.key, customUserRoleChanges(role, draft.projectAccess)); }
+        setActiveEditor(null);
+      }} options={options}/>;
+    }
     if (draft.role === "superadmin") return <span className="ag-autofill-value">Все проекты</span>;
     const projectAccess = userDraftProjectAccess(draft);
     return <CustomSelect className="ag-custom-select" autoOpen ariaLabel="Доступ пользователя к проектам" value={projectAccess.mode === "all" ? "__all__" : projectAccess.siteIds.length === 1 ? String(projectAccess.siteIds[0]) : "__selected__"} options={[{ value: "__all__", label: "Все проекты" }, { value: "__selected__", label: projectAccess.siteIds.length > 1 ? `Выбрано проектов: ${projectAccess.siteIds.length} — настройте в правах доступа` : "Выберите проект" }, ...currentProps.sites.map(site => ({ value: String(site.id), label: site.name }))]} onChange={value => { if (value === "__selected__") { setActiveEditor(null); return; } const projectAccess: ProjectAccess = value === "__all__" ? { mode: "all", siteIds: [] } : { mode: "selected", siteIds: [Number(value)] }; currentProps.onPatchDraft(draft.key, { projectAccess, assignedSiteId: value === "__all__" ? "" : value }); setActiveEditor(null); }} />;
-  }, [activeEditor, openCellEditor, propsRef]);
+  }, [activeEditor, openCellEditor, propsRef, userRoles]);
   const pasteIntoRow = useCallback(({ row, values }: SpreadsheetPastePayload<UserTableRow>) => {
     const currentProps = propsRef.current;
     if (row.kind === "entry" && currentProps.drafts.some((draft) => !draft.id)) return false;

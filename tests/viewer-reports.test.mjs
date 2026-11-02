@@ -48,6 +48,7 @@ for (const domain of ["personnel", "equipment"]) {
   const store = await load(`../app/${domain}ReportStore.ts`, {
     [`./${domain}ReportWorkflow`]: fileUrl(`${domain}ReportWorkflow`),
     "./equipmentExcel": fileUrl("equipmentExcel"), "./equipmentAvailability": fileUrl("equipmentAvailability"),
+    "./personnelImportOrderServer": fileUrl("personnelImportOrderServer"),
   });
   test(`${domain}: viewers receive approved data only and pending reports require an explicit grant`, async () => {
     const db = readonlyDatabase(domain, 7);

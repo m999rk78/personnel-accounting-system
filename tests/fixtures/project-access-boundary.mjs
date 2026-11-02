@@ -35,6 +35,7 @@ export function memoryProjectAccessDatabase() {
   function select(sql, values) {
     if (sql.includes("pg_advisory_xact_lock")) return [];
     if (sql.includes("FROM custom_roles")) {
+      if (sql.includes("legacy_role_key = ?")) return [...state.customRoles.values()].filter(role => role.legacyRoleKey === values[0]);
       const roles = [...state.customRoles.values()].filter(role => role.active !== 0);
       return sql.includes("WHERE id = ?") ? roles.filter(role => role.id === values[0]) : roles;
     }
@@ -152,10 +153,11 @@ export async function projectAccessHarness() {
       return import(await compile("app/api/data/route.ts", {...services,
         "../../auditLog":sourceUrl("export async function withAuditTrail(request,handler){return handler(request);}"),
         "../../compressJsonResponse":sourceUrl("export async function compressJsonResponse(request,response){return response;}"),
-        ...Object.fromEntries(["projectScopedData","readOptionalBatch","settingsReadPolicy","bitrix24Cooldown","equipmentAvailability","equipmentImport","equipmentTimesheetUnits","equipmentReportWorkflow"].map(name=>[`../../${name}`,appUrl(name)])),
+        ...Object.fromEntries(["projectScopedData","readOptionalBatch","settingsReadPolicy","bitrix24Cooldown","bitrixReviewSelection","equipmentAvailability","equipmentImport","equipmentTimesheetUnits","equipmentReportWorkflow"].map(name=>[`../../${name}`,appUrl(name)])),
         "../../projectMasters":noop(["ensureProjectMastersSchema","syncProjectMasters"]),
         "../../workTypeHierarchyServer":noop(["saveSubworkDirectory"]),
         "../../excelDirectoryImports":noop(["importProjectDirectoryExcel","importProjectEmployeesExcel","normalizeExcelDirectoryName","prepareEmployeeExcelImport"]),
+        "../../personnelImportOrderServer":appUrl("personnelImportOrderServer"),
         "../../bitrix24Sync":noop(["compareBitrixEmployees","fetchBitrixEmployeeSnapshot","normalizeBitrixText","selectBitrixEmployeesForImport","suggestBitrixEmployeeLinks"]),
       }));
     },

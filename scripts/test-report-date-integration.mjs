@@ -20,7 +20,7 @@ async function load(path, replacements = {}) {
   return import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 }
 const { PostgresDatabase } = await load("../db/client.ts", { pg: import.meta.resolve("pg") });
-const personnel = await load("../app/personnelReportStore.ts", { "./personnelReportWorkflow": new URL("../app/personnelReportWorkflow.ts", import.meta.url).href });
+const personnel = await load("../app/personnelReportStore.ts", { "./personnelImportOrderServer": new URL("../app/personnelImportOrderServer.ts", import.meta.url).href, "./personnelReportWorkflow": new URL("../app/personnelReportWorkflow.ts", import.meta.url).href });
 const equipment = await load("../app/equipmentReportStore.ts", {
   "./equipmentReportWorkflow": new URL("../app/equipmentReportWorkflow.ts", import.meta.url).href,
   "./equipmentExcel": new URL("../app/equipmentExcel.ts", import.meta.url).href,

@@ -31,7 +31,8 @@ async function harness() {
           if (rows.some(row => row.nameKey === values[1])) throw Object.assign(new Error("unique violation"), { code: "23505" });
           const row = { id: rows.length + 1, name: values[0], nameKey: values[1], baseRole: values[2], permissions: JSON.parse(values[3]), revision: 1, active: 1, createdByUserId: values[4] };
           rows.push(row); result = [row];
-        } else if (sql.includes("FROM custom_roles")) result = rows.filter(row => row.active === 1 && (!values.length || row.id === values[0])).sort((a,b) => a.nameKey.localeCompare(b.nameKey));
+        } else if (sql.startsWith("WITH inserted AS") || sql.startsWith("UPDATE app_users u SET custom_role_id")) result = [];
+        else if (sql.includes("FROM custom_roles")) result = rows.filter(row => row.active === 1 && (!values.length || row.id === values[0])).sort((a,b) => a.nameKey.localeCompare(b.nameKey));
         else if (sql.includes("FROM user_permissions WHERE user_id")) result = overrides;
         else if (sql.includes("FROM user_sessions s JOIN app_users")) result = user ? [user] : [];
         else if (sql.includes("FROM user_project_access WHERE user_id")) result = settings.has(values[0]) ? [settings.get(values[0])] : [];
@@ -47,7 +48,7 @@ async function harness() {
   };
   const boundaryUrl = sourceUrl(`// ${++harnessNumber}\nexport let database; export function configure(value){database=value;} export function getDatabase(){return database;}`);
   const boundary = await import(boundaryUrl); boundary.configure(db);
-  const serverUrl = await compile("../app/customRolesServer.ts", { "../db/client": boundaryUrl, "./customRoles.ts": fileUrl("../app/customRoles.ts") });
+  const serverUrl = await compile("../app/customRolesServer.ts", { "../db/client": boundaryUrl, "./customRoles.ts": fileUrl("../app/customRoles.ts"), "./projectAccessServer.ts": sourceUrl("export async function ensureUserProjectAccessSchema(){}") });
   const permissionsUrl = await compile("../app/permissions.ts", { "../db/client": boundaryUrl, "./permissionModel": fileUrl("../app/permissionModel.ts") });
   const accessUrl = await compile("../app/projectAccessServer.ts", { "../db/client": boundaryUrl, "./roles.ts": fileUrl("../app/roles.ts") });
   const authUrl = await compile("../app/auth.ts", {
@@ -63,7 +64,7 @@ delete process.env.DATABASE_RUNTIME_BOOTSTRAP;
 test("custom role names are normalized, bounded and separated from built-in identities", () => {
   assert.equal(normalizeCustomRoleName("  Руководитель   проекта  "), "Руководитель проекта");
   assert.equal(customRoleNameKey("Учёт  Техники"), customRoleNameKey("учет техники"));
-  for (const value of [null, "", "   ", "x".repeat(81), "Скрытая\u200bроль", "\0имя", "Прораб", " ИнЖеНеР ", "Просмотр", "Супер-админ", "superadmin", "ADMIN"]) {
+  for (const value of [null, "", "   ", "x".repeat(81), "Скрытая\u200bроль", "\0имя", "Супер-админ", "superadmin", "ADMIN"]) {
     assert.throws(() => normalizeCustomRoleName(value), CustomRoleError);
   }
 });
@@ -164,7 +165,7 @@ test("development bootstrap creates custom role schema before auth reads and is 
     process.env.NODE_ENV = "development";
     await Promise.all([h.server.ensureCustomRolesSchema(h.db), h.server.ensureCustomRolesSchema(h.db)]);
     const first = h.db.queries.length;
-    assert.equal(first, 3);
+    assert.equal(first, 12);
     await h.server.ensureCustomRolesSchema(h.db);
     assert.equal(h.db.queries.length, first);
     assert.match(h.db.queries[1].sql, /custom_role_id INTEGER REFERENCES custom_roles\(id\) ON DELETE RESTRICT/);

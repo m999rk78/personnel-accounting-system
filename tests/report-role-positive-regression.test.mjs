@@ -11,6 +11,7 @@ async function storeModule(domain) {
   }).outputText;
   for (const [specifier, file] of Object.entries({
     [`./${domain}ReportWorkflow`]: `${domain}ReportWorkflow`, "./equipmentExcel": "equipmentExcel", "./equipmentAvailability": "equipmentAvailability",
+    "./personnelImportOrderServer": "personnelImportOrderServer",
   })) source = source.replaceAll(JSON.stringify(specifier), JSON.stringify(new URL(`../app/${file}.ts`, import.meta.url).href));
   return import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 }

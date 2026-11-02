@@ -1,4 +1,5 @@
 import type { PostgresDatabase } from "../db/client";
+import { rememberPersonnelImportOrder } from "./personnelImportOrderServer.ts";
 
 export const normalizeExcelDirectoryName = (value: string) => value.trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/g, " ");
 
@@ -32,6 +33,7 @@ export async function importProjectEmployeesExcel(database: PostgresDatabase, si
         WHERE id = ? AND active = 1`).bind(siteId, employeeId).run();
       if (updated.meta.changes !== 1) throw new Error("Не удалось добавить одного из сотрудников. Изменения импорта отменены.");
     }
+    await rememberPersonnelImportOrder(db, "project-personnel", siteId, employeeIds);
     return { count: added.length, skipped: employeeIds.length - added.length };
   });
 }

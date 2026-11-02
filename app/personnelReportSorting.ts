@@ -8,6 +8,11 @@ export const personnelReportSortOptions = [
   { label: "Ручной порядок внутри даты", columnId: "", sort: null },
 ] as const;
 
+export const personnelReportImportSortOptions = [
+  { label: "Порядок импорта", columnId: "__importOrder", sort: "asc" },
+  ...personnelReportSortOptions,
+] as const;
+
 export function personnelActivityTime(value: string | undefined, workDate: string) {
   const parsed = Date.parse(value ?? "");
   return Number.isFinite(parsed) ? parsed : Date.parse(`${workDate}T00:00:00Z`) || 0;

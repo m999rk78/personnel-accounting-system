@@ -1,21 +1,19 @@
 import type { PostgresDatabase } from "../db/client";
 
-export const PROJECT_MASTER_POSITIONS = [
-  "Мастер участка строительных конструкций",
-  "Мастер участка технологических трубопроводов",
-] as const;
+export const PROJECT_MASTER_DEPARTMENTS = ["МУ", "МУТТ", "МУСК"] as const;
 
 export const normalizeProjectMasterText = (value: string) => value.trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/g, " ");
-const positions = new Set(PROJECT_MASTER_POSITIONS.map(normalizeProjectMasterText));
-export const isProjectMasterPosition = (position: string) => positions.has(normalizeProjectMasterText(position));
+const departments = new Set(PROJECT_MASTER_DEPARTMENTS.map(normalizeProjectMasterText));
+export const isProjectMasterEmployee = (employee: { employmentType: string; department: string }) =>
+  normalizeProjectMasterText(employee.employmentType) === "итр" && departments.has(normalizeProjectMasterText(employee.department));
 
-type Employee = { id: number; fullName: string; position: string };
+type Employee = { id: number; fullName: string; employmentType: string; department: string };
 type Master = { id: number; name: string; active: number; employeeId: number | null };
 type MasterUpdate = { id: number; employeeId: number; name: string; active: number };
 
 /** Employees are already scoped to active assignments; manual legacy masters stay untouched. */
 export function planProjectMasters(employees: readonly Employee[], masters: readonly Master[]) {
-  const eligible = employees.filter(employee => employee.fullName.trim() && isProjectMasterPosition(employee.position));
+  const eligible = employees.filter(employee => employee.fullName.trim() && isProjectMasterEmployee(employee));
   const byEmployee = new Map(eligible.map(employee => [employee.id, employee]));
   const linked = new Set(masters.flatMap(master => master.employeeId == null ? [] : [master.employeeId]));
   const employeeNames = new Map<string, number>();
@@ -69,7 +67,7 @@ export async function syncProjectMasters(database: Database, siteId: number) {
   await ensureProjectMastersSchema(database);
   return database.transaction(async db => {
     await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(`project-masters:${siteId}`).first();
-    const employees = await db.prepare(`SELECT e.id, e.full_name AS fullName, e.position FROM employees e
+    const employees = await db.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department FROM employees e
       JOIN employee_project_assignments assignment ON assignment.employee_id = e.id AND assignment.site_id = ? AND assignment.active = 1
       JOIN sites project ON project.id = assignment.site_id AND project.active = 1
       WHERE e.active = 1 ORDER BY e.id FOR SHARE OF e, assignment, project`).bind(siteId).all<Employee>();

@@ -20,7 +20,7 @@ test("employee import rejects ambiguity, duplicate normalized names and bad fina
   assert.throws(() => prepareEmployeeExcelImport([], sites, []), /от 1 до 2000/);
 });
 
-function memoryDatabase({ failInsertAt = 0, failEmployeeUpdate = 0, duplicateMasterName = false } = {}) {
+function memoryDatabase({ failInsertAt = 0, failEmployeeUpdate = 0, failOrderWrite = false, duplicateMasterName = false } = {}) {
   let state = {
     sites: [{ id: 1, active: 1 }, { id: 2, active: 1 }],
     employees: [
@@ -31,6 +31,7 @@ function memoryDatabase({ failInsertAt = 0, failEmployeeUpdate = 0, duplicateMas
     ],
     assignments: [{ employeeId: 2, siteId: 1, active: 1 }, { employeeId: 3, siteId: 2, active: 1 }, { employeeId: 1, siteId: 1, active: 1 }, ...(duplicateMasterName ? [{ employeeId: 4, siteId: 1, active: 1 }] : [])],
     zones: [{ id: 1, siteId: 1, name: "Зона А", active: 1 }], masters: [],
+    orders: new Map([["project-personnel:1", [2, 1]], ["project-personnel:2", [3]], ["import-order:project-personnel:1", [1, 2]], ["import-order:project-personnel:2", [3]]]),
   };
   const original = structuredClone(state);
   const result = (rows = [], changes = rows.length) => ({ results: rows, success: true, meta: { changes, last_row_id: null } });
@@ -41,6 +42,12 @@ function memoryDatabase({ failInsertAt = 0, failEmployeeUpdate = 0, duplicateMas
       let inserted = 0;
       const execute = (sql, values) => {
         if (sql.includes("pg_advisory_xact_lock")) return result([]);
+        if (sql.startsWith("INSERT INTO table_row_orders")) { if (!pending.orders.has(values[0])) pending.orders.set(values[0], []); return result([], 1); }
+        if (sql.startsWith("SELECT row_ids AS ids FROM table_row_orders")) return result(pending.orders.has(values[0]) ? [{ ids: pending.orders.get(values[0]) }] : []);
+        if (sql.startsWith("UPDATE table_row_orders")) {
+          if (failOrderWrite) throw new Error("Тестовый сбой сохранения порядка");
+          pending.orders.set(values[1], JSON.parse(values[0])); return result([], 1);
+        }
         if (sql.startsWith("SELECT id FROM sites")) return result(pending.sites.filter(row => row.id === values[0] && row.active));
         if (sql.startsWith("SELECT id FROM employees")) return result(pending.employees.filter(row => values[0].includes(row.id) && row.active).map(row => ({ id: row.id })));
         if (sql.startsWith("SELECT employee_id AS employeeId")) return result(pending.assignments.filter(row => values[0].includes(row.employeeId) && row.siteId === values[1] && row.active).map(row => ({ employeeId: row.employeeId })));
@@ -81,6 +88,26 @@ test("project employee import deduplicates IDs and preserves existing assignment
   assert.ok(snapshot.assignments.some(row => row.employeeId === 3 && row.siteId === 2));
   assert.equal(snapshot.employees.find(row => row.id === 3).availability, "vacation");
   assert.equal(snapshot.employees.find(row => row.id === 3).siteId, 2);
+  assert.deepEqual(snapshot.orders.get("import-order:project-personnel:1"), [3, 2, 1]);
+  assert.deepEqual(snapshot.orders.get("project-personnel:1"), [2, 1], "an import never changes the independently saved manual order");
+  assert.deepEqual(snapshot.orders.get("import-order:project-personnel:2"), [3]);
+});
+
+test("reimporting existing project employees changes import order without duplicate assignments or touching other projects", async () => {
+  const db = memoryDatabase();
+  await importProjectEmployeesExcel(db, 1, [3, 2, 3]);
+  assert.deepEqual(await importProjectEmployeesExcel(db, 1, [2, 3, 1, 3]), { count: 0, skipped: 3 });
+  const snapshot = db.snapshot();
+  assert.deepEqual(snapshot.orders.get("import-order:project-personnel:1"), [2, 3, 1]);
+  assert.equal(snapshot.assignments.filter(row => row.siteId === 1 && row.employeeId === 3).length, 1);
+  assert.deepEqual(snapshot.orders.get("project-personnel:1"), db.original.orders.get("project-personnel:1"));
+  assert.deepEqual(snapshot.orders.get("import-order:project-personnel:2"), db.original.orders.get("import-order:project-personnel:2"));
+});
+
+test("a late import-order write failure rolls back project assignments and employee state", async () => {
+  const db = memoryDatabase({ failOrderWrite: true });
+  await assert.rejects(importProjectEmployeesExcel(db, 1, [4, 3]), /сбой сохранения порядка/);
+  assert.deepEqual(db.snapshot(), db.original);
 });
 
 test("project employee import validates every ID and rolls back even a late write failure", async () => {

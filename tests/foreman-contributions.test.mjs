@@ -178,6 +178,14 @@ test("keeps personal submission separate from the engineer's global finalization
   assert.match(app, /finalizeReport: \{ siteId, workDate \}/);
   assert.match(app, /employeeUsage=\{data\?\.employeeUsage \?\? \[\]\}/);
   assert.match(app, /Сдали прорабы:/);
-  assert.match(grid, /headerName: "Ответственный прораб"/);
+  assert.match(grid, /headerName: "Ответственный"/);
   assert.match(grid, /Сегодня учтено \{used\} ч\. · доступно/);
+});
+
+test("both report grids label the responsible person without a role qualifier", async () => {
+  for (const path of ["app/PersonnelReportGrid.tsx", "app/EquipmentReportGrid.tsx"]) {
+    const grid = await source(path);
+    assert.match(grid, /column\("responsibleUserName", "Ответственный",/);
+    assert.doesNotMatch(grid, /Ответственный прораб/);
+  }
 });

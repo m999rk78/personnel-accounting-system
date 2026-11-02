@@ -2,7 +2,7 @@ import { getDatabase } from "../../../db/client";
 import { assertSameOrigin, getAuthUser } from "../../auth";
 import { withAuditTrail } from "../../auditLog";
 import { CustomRoleError } from "../../customRoles";
-import { createCustomRole, ensureCustomRolesSchema, listCustomRoles } from "../../customRolesServer";
+import { createCustomRole, deleteCustomRole, ensureCustomRolesSchema, listCustomRoles, updateCustomRole } from "../../customRolesServer";
 import { hasPermission } from "../../permissionModel";
 import { accessibleProjectIds, hasRestrictedProjectAccess } from "../../roles";
 
@@ -46,3 +46,27 @@ async function createRole(request: Request) {
 }
 
 export async function POST(request: Request) { return withAuditTrail(request, createRole); }
+
+async function changeRole(request: Request) {
+  try {
+    assertSameOrigin(request);
+    const user = await getAuthUser(request);
+    if (!user) return Response.json({ error: "Войдите в систему." }, { status: 401 });
+    if (!canManageRoles(user)) return Response.json({ error: "Нет права изменять роли." }, { status: 403 });
+    const payload = await request.json() as { roleId?: unknown; revision?: unknown; name?: unknown; permissions?: unknown };
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new CustomRoleError("Выберите роль.");
+    if (request.method === "DELETE") {
+      const deleted = await deleteCustomRole(payload.roleId, payload.revision);
+      return Response.json({ ok: true, id: deleted.id, name: deleted.name });
+    }
+    const role = await updateCustomRole({ id: payload.roleId, revision: payload.revision, name: payload.name, permissions: payload.permissions });
+    return Response.json({ role, id: role.id });
+  } catch (error) {
+    if (error instanceof CustomRoleError) return Response.json({ error: error.message, code: error.code }, { status: error.status });
+    if (error instanceof SyntaxError) return Response.json({ error: "Передайте данные роли." }, { status: 400 });
+    console.error("Role change failed", error);
+    return Response.json({ error: "Не удалось изменить роль. Повторите попытку." }, { status: 500 });
+  }
+}
+export async function PATCH(request: Request) { return withAuditTrail(request, changeRole); }
+export async function DELETE(request: Request) { return withAuditTrail(request, changeRole); }

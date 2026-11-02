@@ -10,15 +10,55 @@ import { equipmentReportOrderScope } from "./equipmentReportRowOrder";
 import { nativeRowDragIds, nativeRowDropIds, nativeSelectedRowIds, toggleNativeRowSelection, type NativeRowSelection } from "./nativeRowSelection";
 
 const EMPTY_ORDER: RowOrderId[] = [];
-type OrderState = { key: string; ids: RowOrderId[]; canWrite: boolean; hasSavedOrder: boolean };
+const EMPTY_IMPORT_ORDER: number[] = [];
+const IMPORT_ORDER_EVENT = "personnel-table-import-order";
+/** Notify the currently displayed table after an import without exposing its provider to the caller. */
+export function notifyTableImportOrder(scope: string, siteId: number) {
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(IMPORT_ORDER_EVENT, { detail: { scope, siteId } }));
+}
+type OrderState = { key: string; ids: RowOrderId[]; canWrite: boolean; hasSavedOrder: boolean; importIds: number[]; hasImportOrder: boolean };
 export function useTableRowOrder(scope: string | null, siteId: number, canReorder?: boolean) {
   const key = `${scope ?? ""}:${siteId}`;
-  const [state, setState] = useState<OrderState>({ key: "", ids: [], canWrite: false, hasSavedOrder: false });
+  const [state, setState] = useState<OrderState>({ key: "", ids: [], canWrite: false, hasSavedOrder: false, importIds: [], hasImportOrder: false });
+  const [importOrderRevision, setImportOrderRevision] = useState(0);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const activeKey = useRef(key);
+  const refreshRequest = useRef<AbortController | null>(null);
+  const refreshEpoch = useRef(0);
+  const requestedBaseline = useRef("");
+  const invalidateRefresh = useCallback(() => {
+    refreshEpoch.current++;
+    refreshRequest.current?.abort();
+    refreshRequest.current = null;
+  }, []);
+  useEffect(() => () => invalidateRefresh(), [invalidateRefresh]);
+  const activateImportOrder = useCallback(() => setImportOrderRevision(value => value + 1), []);
+  const refresh = useCallback(async () => {
+    if (!scope || busyRef.current || activeKey.current !== key) return false;
+    invalidateRefresh();
+    const epoch = refreshEpoch.current;
+    const controller = new AbortController(); refreshRequest.current = controller;
+    const isCurrent = () => !controller.signal.aborted && refreshEpoch.current === epoch && !busyRef.current && activeKey.current === key;
+    try {
+      const response = await fetch(`/api/table-order?scope=${encodeURIComponent(scope)}&siteId=${siteId}`, { signal: controller.signal, cache: "no-store" });
+      const result = await response.json() as Partial<OrderState> & { error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Не удалось загрузить порядок строк.");
+      if (isCurrent()) {
+        setState({ key, ids: result.ids ?? [], canWrite: Boolean(result.canWrite), hasSavedOrder: Boolean(result.hasSavedOrder), importIds: result.importIds ?? [], hasImportOrder: Boolean(result.hasImportOrder) });
+        setError("");
+        return true;
+      }
+      return false;
+    } catch (failure) {
+      if (isCurrent()) setError(failure instanceof Error ? failure.message : "Не удалось загрузить порядок строк.");
+      return false;
+    } finally {
+      if (refreshRequest.current === controller) refreshRequest.current = null;
+    }
+  }, [scope, siteId, key, invalidateRefresh]);
   useEffect(() => {
     if (!message) return;
     const timer = window.setTimeout(() => setMessage(""), 3000);
@@ -26,49 +66,62 @@ export function useTableRowOrder(scope: string | null, siteId: number, canReorde
   }, [message]);
   useEffect(() => {
     activeKey.current = key;
-    if (!scope) return;
-    const controller = new AbortController();
-    fetch(`/api/table-order?scope=${encodeURIComponent(scope)}&siteId=${siteId}`, { signal: controller.signal, cache: "no-store" })
-      .then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); return result as { ids: RowOrderId[]; canWrite: boolean; hasSavedOrder: boolean }; })
-      .then((result) => { if (!controller.signal.aborted) { setState({ ...result, key }); setError(""); } })
-      .catch((failure) => { if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "Не удалось загрузить порядок строк."); });
-    return () => controller.abort();
-  }, [key, scope, siteId, canReorder]);
+    // A scope opened while a mutation was pending still needs its baseline
+    // once that mutation finishes. An already loaded table needs no extra GET.
+    const baseline = `${key}:${String(canReorder)}`;
+    if (busyRef.current || requestedBaseline.current === baseline && state.key === key) return;
+    requestedBaseline.current = baseline;
+    const frame = requestAnimationFrame(() => void refresh());
+    return () => { cancelAnimationFrame(frame); invalidateRefresh(); };
+  }, [key, refresh, canReorder, busy, state.key, invalidateRefresh]);
+  useEffect(() => {
+    const imported = (event: Event) => {
+      const detail = (event as CustomEvent<{ scope: string; siteId: number }>).detail;
+      if (detail?.scope !== scope || detail.siteId !== siteId) return;
+      void refresh().then(loaded => { if (loaded && activeKey.current === key) activateImportOrder(); });
+    };
+    window.addEventListener(IMPORT_ORDER_EVENT, imported);
+    return () => window.removeEventListener(IMPORT_ORDER_EVENT, imported);
+  }, [scope, siteId, key, refresh, activateImportOrder]);
 
   const move = useCallback(async (operation: RowMove) => {
-    if (!scope || state.key !== key || !state.canWrite || busyRef.current) return false;
+    if (!scope || state.key !== key || activeKey.current !== key || !state.canWrite || busyRef.current) return false;
     busyRef.current = true;
+    invalidateRefresh();
     setBusy(true); setError(""); setMessage("");
     try {
       const response = await fetch("/api/table-order", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scope, siteId, ...operation }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Не удалось переместить строки.");
-      if (activeKey.current === key) { setState((current) => ({ ...current, ids: result.ids, hasSavedOrder: true })); setMessage(`Порядок сохранён · перемещено строк: ${operation.movingIds.length}`); }
+      if (activeKey.current === key) { setState((current) => current.key === key ? { ...current, ids: result.ids, hasSavedOrder: true } : current); setMessage(`Порядок сохранён · перемещено строк: ${operation.movingIds.length}`); }
       return true;
     } catch (failure) {
       if (activeKey.current === key) setError(failure instanceof Error ? failure.message : "Не удалось сохранить порядок строк.");
       return false;
-    } finally { busyRef.current = false; setBusy(false); }
-  }, [key, scope, siteId, state.canWrite, state.key]);
+    } finally { invalidateRefresh(); busyRef.current = false; setBusy(false); }
+  }, [key, scope, siteId, state.canWrite, state.key, invalidateRefresh]);
   const ids = state.key === key ? state.ids : EMPTY_ORDER;
   const canWrite = state.key === key && state.canWrite;
   const hasSavedOrder = state.key === key && state.hasSavedOrder;
+  const importIds = state.key === key ? state.importIds : EMPTY_IMPORT_ORDER;
+  const hasImportOrder = state.key === key && state.hasImportOrder;
+  const ready = state.key === key;
   const remap = useCallback(async (aliases: Record<string, string>) => {
-    if (!state.canWrite || state.key !== key || !Object.keys(aliases).length || busyRef.current) return false;
-    busyRef.current = true; setBusy(true); setError("");
+    if (!state.canWrite || state.key !== key || activeKey.current !== key || !Object.keys(aliases).length || busyRef.current) return false;
+    busyRef.current = true; invalidateRefresh(); setBusy(true); setError("");
     try {
       const response = await fetch("/api/table-order", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scope, siteId, action: "remap", aliases }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Не удалось сохранить порядок строк.");
-      if (activeKey.current === key) setState(current => ({ ...current, ids: result.ids }));
+      if (activeKey.current === key) setState(current => current.key === key ? { ...current, ids: result.ids } : current);
       return true;
     } catch (failure) {
       if (activeKey.current === key) setError(failure instanceof Error ? failure.message : "Не удалось сохранить порядок строк.");
       return false;
-    } finally { busyRef.current = false; setBusy(false); }
-  }, [state.canWrite, state.key, key, scope, siteId]);
+    } finally { invalidateRefresh(); busyRef.current = false; setBusy(false); }
+  }, [state.canWrite, state.key, key, scope, siteId, invalidateRefresh]);
   const order = useCallback(<T,>(rows: readonly T[], getId: (row: T) => RowOrderId | undefined) => orderRowsByIds(rows, ids, getId), [ids]);
-  return useMemo(() => ({ ids, canWrite, hasSavedOrder, busy, error, message, move, remap, order, scope }), [ids, canWrite, hasSavedOrder, busy, error, message, move, remap, order, scope]);
+  return useMemo(() => ({ ids, canWrite, hasSavedOrder, importIds, hasImportOrder, importOrderRevision, ready, refresh, activateImportOrder, busy, error, message, move, remap, order, scope }), [ids, canWrite, hasSavedOrder, importIds, hasImportOrder, importOrderRevision, ready, refresh, activateImportOrder, busy, error, message, move, remap, order, scope]);
 }
 
 const TableOrderContext = createContext<ReturnType<typeof useTableRowOrder> | null>(null);

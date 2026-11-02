@@ -35,4 +35,9 @@ test("role creation audit records its identity and the actor's named role, with 
   }
   await audit.withAuditTrail(request(), async () => Response.json({ error: "Нет доступа" }, { status: 403 }));
   assert.equal(boundary.inserts.length, 2, "failed creation must not be recorded as successful");
+  for (const method of ["PATCH", "DELETE"]) {
+    const change = new Request("http://localhost/api/roles", { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ roleId: 12, name: "Изменённая роль" }) });
+    await audit.withAuditTrail(change, async () => Response.json({ id: 12, ok: true }));
+    assert.deepEqual(boundary.inserts.at(-1).slice(3, 7), ["access", method === "PATCH" ? "roles.update" : "roles.delete", "custom_role", "12"]);
+  }
 });

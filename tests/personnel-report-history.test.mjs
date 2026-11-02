@@ -8,7 +8,8 @@ import { compatibleSubworkId } from "../app/workTypeHierarchy.ts";
 
 const source = ts.transpileModule(await readFile(new URL("../app/personnelReportStore.ts", import.meta.url), "utf8"), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
-}).outputText.replaceAll('"./personnelReportWorkflow"', JSON.stringify(new URL("../app/personnelReportWorkflow.ts", import.meta.url).href));
+}).outputText.replaceAll('"./personnelReportWorkflow"', JSON.stringify(new URL("../app/personnelReportWorkflow.ts", import.meta.url).href))
+  .replaceAll('"./personnelImportOrderServer"', JSON.stringify(new URL("../app/personnelImportOrderServer.ts", import.meta.url).href));
 const { mutatePersonnelReport, mutatePersonnelReportEntry } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 const actor = { id: 8, role: "engineer", fullName: "Инженер", projectAccess: { mode: "selected", siteIds: [7] }, permissions: rolePermissionTemplate("engineer") };
 const original = {

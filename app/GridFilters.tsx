@@ -18,6 +18,7 @@ import { useWorkspaceAccess } from "./TableAccessContext";
 import { SelectionRowDragRenderer } from "./SelectionRowDragRenderer";
 import { gridRowSelection } from "./gridRowSelection";
 import { findSpreadsheetDataRowIndex, isStructuralSpreadsheetRow, spreadsheetPointRowIndex, spreadsheetRangeHasStructuralRows } from "./gridSpreadsheetRows";
+import { createImportOrderRank, IMPORT_ORDER_COLUMN, importOrderColumnState, importOrderScopes, shouldApplyImportOrder } from "./importOrderSorting";
 
 type FilterRow = { kind: "entry" | "edit" | "draft" };
 type FilterProps = CustomFilterDisplayProps<FilterRow, unknown, PersonnelFilterModel> & {
@@ -49,9 +50,12 @@ function PersonnelFilter(props: FilterProps) {
   const sortedColumns = api.getColumnState().filter((item) => item.sort).sort((left, right) => (left.sortIndex ?? 0) - (right.sortIndex ?? 0));
   const columnId = column.getColId();
   const currentSort = sortedColumns.find((item) => item.colId === columnId);
+  const canSortByImport = Boolean(api.getColumn(IMPORT_ORDER_COLUMN));
+  const activeImportSort = sortedColumns.find(item => item.colId === IMPORT_ORDER_COLUMN);
   const appliedSort: SortDraft = props.rowSortOptions
     ? { columnId: sortedColumns[0]?.colId ?? "", sort: sortedColumns[0]?.sort ?? null }
-    : { columnId, sort: currentSort?.sort ?? null };
+    : canSortByImport && !sortedColumns.length ? { columnId: "", sort: null }
+      : activeImportSort && !currentSort ? { columnId: IMPORT_ORDER_COLUMN, sort: activeImportSort.sort ?? null } : { columnId, sort: currentSort?.sort ?? null };
   const selectedSort = sortDraft ?? appliedSort;
   const reportSortKey = props.rowSortOptions?.some(option => sortKey(option) === sortKey(selectedSort)) ? sortKey(selectedSort) : "keep";
   const hasOtherSorts = sortedColumns.some(item => item.colId !== columnId);
@@ -119,7 +123,7 @@ function PersonnelFilter(props: FilterProps) {
     // or reorders the table before the user presses Apply.
     props.onAction("apply");
     if (!sortDraft || api.isDestroyed()) return;
-    if (props.rowSortOptions || sortDraft.sort && !keepOtherSorts) {
+    if (props.rowSortOptions || sortDraft.columnId === IMPORT_ORDER_COLUMN || !sortDraft.columnId || sortDraft.sort && !keepOtherSorts) {
       api.applyColumnState({ state: sortDraft.columnId ? [{ colId: sortDraft.columnId, sort: sortDraft.sort, sortIndex: 0 }] : [], defaultState: { sort: null, sortIndex: null } });
     } else {
       const sortIndex = sortDraft.sort ? currentSort?.sortIndex ?? sortedColumns.reduce((maximum, item) => Math.max(maximum, item.sortIndex ?? 0), -1) + 1 : null;
@@ -144,10 +148,11 @@ function PersonnelFilter(props: FilterProps) {
         }} options={[
           ...(reportSortKey === "keep" ? [{ value: "keep", label: "Сохранить текущую сортировку" }] : []),
           ...props.rowSortOptions.map(option => ({ value: sortKey(option), label: option.label })),
-        ]} /> : <CustomSelect ariaLabel="Порядок строк" value={selectedSort.sort ?? "none"} onChange={value => setSortDraft({ columnId, sort: value === "none" ? null : value as "asc" | "desc" })} options={[
+        ]} /> : <CustomSelect ariaLabel="Порядок строк" value={selectedSort.columnId === IMPORT_ORDER_COLUMN ? "import" : !selectedSort.columnId ? "manual" : selectedSort.sort ?? "none"} onChange={value => setSortDraft(value === "import" ? { columnId: IMPORT_ORDER_COLUMN, sort: "asc" } : value === "manual" ? { columnId: "", sort: null } : { columnId, sort: value === "none" ? null : value as "asc" | "desc" })} options={[
           { value: "none", label: "Без сортировки по этой колонке" },
           { value: "asc", label: kind === "date" ? "Сначала ранние даты" : kind === "number" ? "От меньшего к большему" : "По алфавиту: от А до Я" },
           { value: "desc", label: kind === "date" ? "Сначала поздние даты" : kind === "number" ? "От большего к меньшему" : "По алфавиту: от Я до А" },
+          ...(canSortByImport ? [{ value: "import", label: "Порядок импорта" }, { value: "manual", label: "Ручной порядок" }] : []),
         ]} />}</div>
         {!props.rowSortOptions && hasOtherSorts && <label className="grid-filter-additive"><input type="checkbox" checked={keepOtherSorts} disabled={!selectedSort.sort} onChange={event => { setKeepOtherSorts(event.target.checked); setSortDraft(selectedSort); }} /><span>Сохранить сортировку других колонок</span></label>}
       </section>
@@ -289,6 +294,18 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     return () => cancelAnimationFrame(frame);
   }, [access?.edit, onSpreadsheetCancelEdit]);
   const [api, setApi] = useState<GridApi<TData> | null>(null);
+  const rowNumberFrame = useRef<number | null>(null);
+  const refreshRowNumbers = useCallback((grid: GridApi<TData>) => {
+    if (grid.isDestroyed() || !grid.getColumn("number")) return;
+    if (rowNumberFrame.current !== null) cancelAnimationFrame(rowNumberFrame.current);
+    // A sort changes node.rowIndex without changing its data. Refresh the
+    // presentation-only counter after AG Grid finishes positioning the rows.
+    rowNumberFrame.current = requestAnimationFrame(() => {
+      rowNumberFrame.current = null;
+      if (!grid.isDestroyed()) grid.refreshCells({ columns: ["number"], force: true });
+    });
+  }, []);
+  useEffect(() => () => { if (rowNumberFrame.current !== null) cancelAnimationFrame(rowNumberFrame.current); }, []);
   // Popups use the viewport, including when the table itself has only a few rows.
   const [popupParent] = useState(() => typeof document === "undefined" ? undefined : document.body);
   const [summary, setSummary] = useState<{
@@ -333,6 +350,8 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
   }, [api, rowOrderAutoSwitchSort, rowOrderFixedSorts, hasSavedRowOrder]);
   const orderedRowData = useMemo(() => rowOrder ? rowOrder.order(props.rowData ?? [], getRowOrderId) : props.rowData, [props.rowData, rowOrder, getRowOrderId]);
   const sourceColumns = props.columnDefs;
+  const importedScope = importOrderScopes.has(rowOrder?.scope ?? "");
+  const importRank = useMemo(() => createImportOrderRank(props.rowData ?? [], rowOrder?.importIds ?? [], getRowOrderId), [props.rowData, rowOrder?.importIds, getRowOrderId]);
   const baseFilter = props.defaultColDef?.filter;
   const baseFilterParams = props.defaultColDef?.filterParams;
   const nativeFilters = Boolean(enterpriseFilters && api?.isModuleRegistered("MultiFilterModule") && api.isModuleRegistered("SetFilterModule"));
@@ -352,8 +371,27 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       }
       return column.colId === "number" || column.field === "number" ? { ...column, valueGetter: (params: { node?: { rowIndex: number | null } | null }) => typeof params.node?.rowIndex === "number" ? params.node.rowIndex + 1 : "" } : column;
     };
-    return (sourceColumns ?? []).map(enhanceColumn);
-  }, [sourceColumns, baseFilter, baseFilterParams, nativeFilters]);
+    const columns = (sourceColumns ?? []).map(enhanceColumn);
+    if (importedScope && !columns.some(column => !("children" in column) && column.colId === IMPORT_ORDER_COLUMN)) columns.push({
+      colId: IMPORT_ORDER_COLUMN, headerName: "Порядок импорта", hide: true, lockVisible: true, suppressColumnsToolPanel: true,
+      filter: false, sortable: true, valueGetter: params => params.data ? importRank(params.data) : null,
+      comparator: (left: number, right: number) => left - right,
+    });
+    return columns;
+  }, [sourceColumns, baseFilter, baseFilterParams, nativeFilters, importedScope, importRank]);
+  const lastImportActivation = useRef(0);
+  const importDefaultApplied = useRef<GridApi<TData> | null>(null);
+  const importActivation = rowOrder?.importOrderRevision ?? 0;
+  const importReady = rowOrder?.ready ?? false;
+  const defaultImportSort = importedScope && Boolean(rowOrder?.hasImportOrder && !rowOrder.hasSavedOrder);
+  useEffect(() => {
+    if (!api || api.isDestroyed() || !api.getColumn(IMPORT_ORDER_COLUMN)) return;
+    const activated = lastImportActivation.current !== importActivation;
+    lastImportActivation.current = importActivation;
+    const firstLoad = importReady && importDefaultApplied.current !== api;
+    if (firstLoad) importDefaultApplied.current = api;
+    if (shouldApplyImportOrder({ activated, firstLoad, defaultImport: defaultImportSort, sorted: api.getColumnState().some(column => Boolean(column.sort)) })) api.applyColumnState(importOrderColumnState());
+  }, [api, importActivation, importReady, defaultImportSort, orderedColumns]);
   const previousEditState = useRef<{ api: GridApi<TData>; rows: Set<string>; blocked: boolean } | null>(null);
   const { rowData: sourceRows, getRowId: sourceGetRowId, context: sourceContext } = props;
   useEffect(() => {
@@ -838,7 +876,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       onCellMouseOver={(event) => { extendSelection(event); props.onCellMouseOver?.(event); }}
       onCellDoubleClicked={(event) => { if (access?.edit === false) return; if (event.rowIndex !== null && !isInteractiveTarget(event.event)) rememberCellUndo(event.rowIndex, event.column.getColId()); props.onCellDoubleClicked?.(event); }}
       onBodyScroll={(event) => { paintSelection(event.api); props.onBodyScroll?.(event); }}
-      onModelUpdated={(event) => { updateSummary(event.api); paintSelection(event.api); props.onModelUpdated?.(event); }}
+      onModelUpdated={(event) => { updateSummary(event.api); paintSelection(event.api); refreshRowNumbers(event.api); props.onModelUpdated?.(event); }}
       onRowGroupOpened={(event) => { clearSelection(); props.onRowGroupOpened?.(event); }}
       onFilterChanged={(event) => { if (onSpreadsheetBatch) clearSelection(); updateSummary(event.api); props.onFilterChanged?.(event); }}
       onSortChanged={(event) => { if (onSpreadsheetBatch) clearSelection(); updateSummary(event.api); props.onSortChanged?.(event); }}

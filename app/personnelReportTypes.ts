@@ -90,6 +90,7 @@ export type PersonnelReportSaveRequest = {
   reportId?: number;
   revision?: number;
   rows: PersonnelReportDraftRow[];
+  importEmployeeOrder?: number[];
 };
 
 export type PersonnelReportTransitionRequest = {

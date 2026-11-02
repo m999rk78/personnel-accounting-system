@@ -14,6 +14,10 @@ export type TimesheetClipboardChange = {
 type ClipboardPoint = { rowIndex: number; columnIndex: number };
 type ClipboardSelection = { start: ClipboardPoint; end: ClipboardPoint };
 
+function isTimesheetInputTarget(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest("input, textarea, select, [contenteditable='true'], [role='textbox'], [role='combobox']"));
+}
+
 function scrollCellIntoVisibleArea(shell: HTMLDivElement, point: ClipboardPoint) {
   const cell = shell.querySelector<HTMLElement>(`[data-timesheet-row="${point.rowIndex}"][data-timesheet-column="${point.columnIndex}"]`);
   if (!cell) return;
@@ -194,6 +198,7 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
   }, [getValue]);
 
   const onCopy = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
+    if (isTimesheetInputTarget(event.target)) return;
     const bounds = selectionBounds(selectionRef.current);
     const text = selectedText();
     if (!bounds || text === undefined) return;
@@ -250,6 +255,7 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
   }, [canPaste, columnCount, onPaste, previousValues, rememberUndo, rowCount]);
 
   const onClipboardPaste = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
+    if (isTimesheetInputTarget(event.target)) return;
     if (!selectionBounds(selectionRef.current)) return;
     event.preventDefault();
     void pasteText(event.clipboardData.getData("text/plain"));
@@ -323,7 +329,7 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
   useEffect(() => {
     const undoOutsideTable = (event: globalThis.KeyboardEvent) => {
       const target = event.target;
-      const interactive = target instanceof Element && Boolean(target.closest("input, textarea, select, [contenteditable='true'], [role='textbox'], [role='combobox']"));
+      const interactive = isTimesheetInputTarget(target);
       const undoShortcut = (event.ctrlKey || event.metaKey) && !event.shiftKey && (event.code === "KeyZ" || event.key.toLocaleLowerCase("en-US") === "z");
       if (!undoShortcut || interactive || !undoStack.current.length || (target instanceof Node && shellRef.current?.contains(target))) return;
       event.preventDefault();
@@ -334,6 +340,7 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
   }, [shellRef, undoLastChange]);
 
   const onKeyDown = useCallback(async (event: KeyboardEvent<HTMLDivElement>) => {
+    if (isTimesheetInputTarget(event.target)) return;
     if (event.key === "Escape") {
       clearSelection();
       return;

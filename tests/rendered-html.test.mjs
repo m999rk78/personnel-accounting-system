@@ -135,7 +135,7 @@ test("keeps business validation in the data API", async () => {
   assert.match(api, /ensureStandardShifts/);
   const projectMasters = await readFile(new URL("../app/projectMasters.ts", import.meta.url), "utf8");
   assert.match(api, /await syncProjectMasters\(env\.DB, siteId\)/);
-  assert.match(projectMasters, /PROJECT_MASTER_POSITIONS/);
+  assert.match(projectMasters, /PROJECT_MASTER_DEPARTMENTS/);
   assert.match(api, /name IN \('день', 'ночь'\)/);
   assert.match(api, /Смены фиксированы для всех проектов: день и ночь/);
   assert.match(api, /CREATE TABLE IF NOT EXISTS employee_project_assignments/);

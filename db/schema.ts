@@ -31,13 +31,14 @@ export const customRoles = pgTable("custom_roles", {
   name: text("name").notNull(),
   nameKey: text("name_key").notNull().unique(),
   baseRole: text("base_role").notNull(),
+  legacyRoleKey: text("legacy_role_key"),
   permissions: jsonb("permissions").notNull(),
   revision: integer("revision").notNull().default(1),
   active: integer("active").notNull().default(1),
   createdByUserId: integer("created_by_user_id").references(() => appUsers.id, { onDelete: "set null" }),
   createdAt: auditTimestamp("created_at").notNull().defaultNow(),
   updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
-}, table => [check("custom_roles_base_role_check", sql`${table.baseRole} IN ('engineer', 'viewer')`), check("custom_roles_permissions_check", sql`jsonb_typeof(${table.permissions}) = 'object'`), check("custom_roles_revision_check", sql`${table.revision} > 0`), check("custom_roles_active_check", sql`${table.active} IN (0, 1)`)]);
+}, table => [uniqueIndex("idx_custom_roles_legacy_key").on(table.legacyRoleKey), check("custom_roles_base_role_check", sql`${table.baseRole} IN ('foreman', 'engineer', 'viewer')`), check("custom_roles_permissions_check", sql`jsonb_typeof(${table.permissions}) = 'object'`), check("custom_roles_revision_check", sql`${table.revision} > 0`), check("custom_roles_active_check", sql`${table.active} IN (0, 1)`)]);
 
 export const userProjectAccess = pgTable("user_project_access", {
   userId: integer("user_id").primaryKey().references(() => appUsers.id, { onDelete: "cascade" }),

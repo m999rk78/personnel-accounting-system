@@ -22,6 +22,8 @@ const isolatedUrl = new URL(sourceUrl);
 isolatedUrl.pathname = `/${databaseName}`;
 const env = { ...process.env, DATABASE_URL: isolatedUrl.href, NODE_ENV: "production" };
 delete env.DATABASE_RUNTIME_BOOTSTRAP;
+process.env.NODE_ENV = "production";
+delete process.env.DATABASE_RUNTIME_BOOTSTRAP;
 let created = false, pool, migrationDirectory;
 async function compile(path, imports = {}) {
   let code = ts.transpileModule(await readFile(new URL(path, import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
@@ -76,9 +78,10 @@ try {
     const database = new PostgresDatabase(pool);
     globalThis.prepushIsolatedDatabase = database;
     const dbBoundary = `data:text/javascript,${encodeURIComponent("export function getDatabase(){return globalThis.prepushIsolatedDatabase;}")}`;
-    const { loadUserProjectAccess, saveUserProjectAccess } = await import(await compile("../app/projectAccessServer.ts", {
+    const projectAccessModuleUrl = await compile("../app/projectAccessServer.ts", {
       "../db/client": dbBoundary, "./roles.ts": new URL("../app/roles.ts", import.meta.url).href,
-    }));
+    });
+    const { loadUserProjectAccess, saveUserProjectAccess } = await import(projectAccessModuleUrl);
     const { effectiveProjectAccess, canAccessProject } = await import("../app/roles.ts");
     const admin = { id: users[0].id, role: "engineer", assignedSiteId: null };
     const engineer = { id: users[1].id, role: "engineer", assignedSiteId: siteIds[0] };
@@ -108,6 +111,7 @@ try {
 
     const customRoles = await import(await compile("../app/customRolesServer.ts", {
       "../db/client": dbBoundary, "./customRoles.ts": new URL("../app/customRoles.ts", import.meta.url).href,
+      "./projectAccessServer.ts": projectAccessModuleUrl,
     }));
     const permissionStore = await import(await compile("../app/permissions.ts", {
       "../db/client": dbBoundary, "./permissionModel": new URL("../app/permissionModel.ts", import.meta.url).href,
@@ -117,7 +121,8 @@ try {
     const readRole = await customRoles.createCustomRole({ name: "Контроль техники", permissions: readPermissions }, superadmin.id);
     const workRole = await customRoles.createCustomRole({ name: "Инженер ПТО", permissions: { workers_report: { view: true, create: true, update: true, delete: false } } }, superadmin.id);
     assert.equal(readRole.baseRole, "viewer"); assert.equal(workRole.baseRole, "engineer");
-    assert.deepEqual((await customRoles.listCustomRoles()).map(role => role.name), [workRole.name, readRole.name]);
+    const { managedDefaultRoleSeeds } = await import("../app/customRoles.ts");
+    assert.deepEqual((await customRoles.listCustomRoles()).map(role => role.name).sort(), [...managedDefaultRoleSeeds().map(role => role.name), workRole.name, readRole.name].sort());
     await assert.rejects(customRoles.createCustomRole({ name: " контроль  ТЕХНИКИ ", permissions: readPermissions }, superadmin.id), error => error.status === 409);
     const customUserId = (await pool.query("INSERT INTO app_users(full_name,email,role,custom_role_id) VALUES ('Custom QA','custom@invalid.test',$1,$2) RETURNING id", [readRole.baseRole, readRole.id])).rows[0].id;
     const customUser = { id: customUserId, role: readRole.baseRole, customRoleId: readRole.id, assignedSiteId: null };

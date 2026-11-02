@@ -8,7 +8,7 @@ import { personnelCellErrors, personnelEditableFields, personnelOptionFields, pa
 import { subworkOptions } from "./workTypeHierarchy";
 import { CustomSelect } from "./CustomSelect";
 import { GridTextEditor } from "./GridTextEditor";
-import { comparePersonnelActivity, personnelActivityTime, personnelReportSortOptions } from "./personnelReportSorting";
+import { comparePersonnelActivity, personnelActivityTime, personnelReportImportSortOptions } from "./personnelReportSorting";
 import { LocalizedGrid, personnelColumnFilter, personnelFilterParams, type SpreadsheetBatch } from "./GridFilters";
 import { groupPersonnelReportDates, personnelReportOrderId } from "./personnelReportRowOrder";
 import { ReportDatePicker } from "./ReportDateControls";
@@ -280,7 +280,8 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
     const column = (field: string, headerName: string, minWidth: number, flex = 1): ColDef<TableRow> => ({ colId: field, headerName, minWidth, flex, valueGetter: valueGetter(field), cellRenderer: renderCell, headerComponentParams: { innerHeaderComponent: FilterHeader } });
     return [
       { colId: "reportDateGroup", headerName: "Дата отчёта", valueGetter: ({ data }) => data?.workDate ?? "", rowGroup: Boolean(props.groupByDate), hide: true, lockVisible: true, suppressColumnsToolPanel: true, sortable: false, filter: false },
-      { ...column("workDate", "Дата", 125), pinned: "left", width: 125, maxWidth: 145, suppressSizeToFit: true, filterParams: { ...personnelFilterParams, kind: "date", rowSortOptions: personnelReportSortOptions }, initialSort: "desc", initialSortIndex: 0, comparator: (a: string, b: string) => dateKey(a).localeCompare(dateKey(b)) },
+      { ...column("workDate", "Дата", 125), pinned: "left", width: 125, maxWidth: 145, suppressSizeToFit: true, filterParams: { ...personnelFilterParams, kind: "date", rowSortOptions: personnelReportImportSortOptions }, initialSort: "desc", initialSortIndex: 0, comparator: (a: string, b: string) => dateKey(a).localeCompare(dateKey(b)) },
+      { colId: "__importOrder", headerName: "Порядок импорта", hide: true, lockVisible: true, suppressColumnsToolPanel: true, filter: false, sortable: true, valueGetter: ({ data }) => data?.insertionRank ?? Number.MAX_SAFE_INTEGER },
       ...(["createdAt", "updatedAt"] as const).map((field): ColDef<TableRow> => ({
         colId: field, headerName: field === "createdAt" ? "Добавлено" : "Изменено", hide: true, lockVisible: true,
         suppressColumnsToolPanel: true, filter: false, sortable: true, valueGetter: valueGetter(field),
@@ -288,7 +289,7 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
       })),
       { ...column("employeeName", "ФИО", 220, 2), pinned: "left", width: 250, maxWidth: 320 },
       column("status", "Статус", 165),
-      column("responsibleUserName", "Ответственный прораб", 190),
+      column("responsibleUserName", "Ответственный", 190),
       column("employmentType", "Тип", 100, .6),
       column("department", "Отдел", 125, .7),
       column("position", "Должность", 180, 1.4),

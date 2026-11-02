@@ -188,6 +188,7 @@ function actionDescription(path: string, method: string, payload: Record<string,
   }
   if (path === "/api/auth/password") return { category: "account" as const, actionKey: "account.password", entityType: "user", entityId: "", summary: "Изменил пароль своей учётной записи" };
   if (path === "/api/roles" && method === "POST") return { category: "access" as const, actionKey: "roles.create", entityType: "custom_role", entityId: "", summary: `Добавил роль «${String(payload.name ?? "").trim().slice(0, 80)}»` };
+  if (path === "/api/roles" && (method === "PATCH" || method === "DELETE")) return { category: "access" as const, actionKey: method === "DELETE" ? "roles.delete" : "roles.update", entityType: "custom_role", entityId: String(payload.roleId ?? ""), summary: method === "DELETE" ? "Удалил роль" : `Изменил роль «${String(payload.name ?? "").trim().slice(0, 80)}»` };
   if (path === "/api/access-rights") return {
     category: "access" as const,
     actionKey: payload.reset === true ? "access_rights.reset" : "access_rights.update",

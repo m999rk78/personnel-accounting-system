@@ -7,10 +7,11 @@ import ts from "typescript";
 import { normalizePermissionSet, rolePermissionTemplate } from "../app/permissionModel.ts";
 
 const dataUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
+const confirmationUrl = dataUrl("export function useConfirmationDialog(){return {confirm:options=>Promise.resolve(globalThis.customRoleUiConfirm?.(options) ?? false),dialog:null};}");
 const fileUrl = name => new URL(`../app/${name}.ts`, import.meta.url).href;
 async function compile(name, replacements = {}) {
   let code = ts.transpileModule(await readFile(new URL(`../app/${name}.tsx`, import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX } }).outputText;
-  for (const [specifier, replacement] of Object.entries({ react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"), "./permissionModel": fileUrl("permissionModel"), "./customRoles.css": dataUrl(""), ...replacements })) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(replacement));
+  for (const [specifier, replacement] of Object.entries({ react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"), "./permissionModel": fileUrl("permissionModel"), "./customRoles.css": dataUrl(""), "./useConfirmationDialog": confirmationUrl, ...replacements })) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(replacement));
   return dataUrl(code);
 }
 const matrixUrl = await compile("PermissionMatrix");
@@ -23,12 +24,14 @@ async function componentHarness(name) {
     export function useState(initial){const key=cursor++;if(!(key in states))states[key]=typeof initial==='function'?initial():initial;return [states[key],next=>{states[key]=typeof next==='function'?next(states[key]):next;}];}
     export function useRef(initial){const key=cursor++;if(!(key in states))states[key]={current:initial};return states[key];}
     export function useEffect(effect){cursor++;effects.push(effect);}
+    export function useLayoutEffect(effect){cursor++;effects.push(effect);}
     export function useMemo(create){cursor++;return create();}
   `);
   const contextUrl = dataUrl("export function useWorkspaceAccess(){return globalThis.customRoleUiAccess ?? null;}");
   const dialogUrl = await compile("RoleEditorDialog", { react: reactUrl, "./PermissionMatrix": matrixUrl });
+  const catalogUrl = await compile("RoleCatalog", { react: reactUrl, "./roles": fileUrl("roles") });
   const { [name]: Component } = await import(name === "RoleEditorDialog" ? dialogUrl : await compile(name, {
-    react: reactUrl, "./PermissionMatrix": matrixUrl, "./RoleEditorDialog": dialogUrl,
+    react: reactUrl, "./PermissionMatrix": matrixUrl, "./RoleEditorDialog": dialogUrl, "./RoleCatalog": catalogUrl,
     "./TableAccessContext": contextUrl, "./roles": fileUrl("roles"), "./userAccessModel": fileUrl("userAccessModel"),
     "./CustomSelect": dataUrl("export function CustomSelect(){return null;}"),
     "./ProjectAccessPicker": dataUrl("export function ProjectAccessPicker(){return null;}"),
@@ -46,6 +49,7 @@ const textOf = node => Array.isArray(node) ? node.map(textOf).join("") : node &&
 const find = (tree, predicate) => { const node = allNodes(tree).find(predicate); assert.ok(node, "Expected rendered control"); return node; };
 const button = (tree, text) => find(tree, node => node.type === "button" && textOf(node) === text);
 const matrix = tree => find(tree, node => node.type === PermissionMatrix);
+const catalog = tree => find(tree, node => node.type?.name === "RoleCatalog");
 const role = { id: 31, name: "Контроль проекта", baseRole: "viewer", permissions: rolePermissionTemplate("viewer"), revision: 1 };
 
 test("the shared permissions matrix names every checkbox and keeps unsupported/locked actions disabled", () => {
@@ -60,10 +64,10 @@ test("the shared permissions matrix names every checkbox and keeps unsupported/l
 });
 
 test("role creation submits the chosen matrix once, blocks closing during save and retains input after a duplicate", async context => {
-  const originalWindow = globalThis.window;
+  const originalConfirm = globalThis.customRoleUiConfirm;
   let confirmations = 0, allowDiscard = false;
-  globalThis.window = { confirm() { confirmations++; return allowDiscard; } };
-  context.after(() => { if (originalWindow === undefined) delete globalThis.window; else globalThis.window = originalWindow; });
+  globalThis.customRoleUiConfirm = options => { confirmations++; assert.equal(options.confirmLabel, "Закрыть без сохранения"); return allowDiscard; };
+  context.after(() => { if (originalConfirm === undefined) delete globalThis.customRoleUiConfirm; else globalThis.customRoleUiConfirm = originalConfirm; });
   let resolveResponse, calls = 0, closed = 0;
   const requests = [], created = [];
   context.mock.method(globalThis, "fetch", async (_url, init) => {
@@ -146,7 +150,7 @@ test("Access Rights uses a custom role template and creating a role preserves un
   const editor = find(tree, node => node.type?.name === "RoleEditorDialog");
   editor.props.onCreated({ ...role, id: 32, name: "Новая роль" }); tree = harness.render(props);
   assert.deepEqual(matrix(tree).props.value, template);
-  assert.ok(button(tree, "Новая роль"));
+  assert.ok(catalog(tree).props.roles.some(role => role.name === "Новая роль"));
   assert.match(textOf(find(tree, node => node.props.className === "message success inline-message")), /Роль «Новая роль» создана/);
   mayManage = false;
   const readonlyHarness = await componentHarness("AccessRightsView");
@@ -181,8 +185,8 @@ test("user role selection keeps custom identity, resets viewer project grants an
   select.props.onChange(String(role.id)); tree = editor();
   assert.equal(draft.role, "viewer"); assert.equal(draft.customRoleId, role.id);
   assert.deepEqual(draft.projectAccess, { mode: "selected", siteIds: [] }); assert.equal(draft.canViewPendingReports, false);
-  find(tree, node => node.props.role === "radio" && textOf(node).startsWith("ППросмотр")).props.onClick();
-  assert.equal(draft.customRoleId, null); assert.equal(draft.customRoleName, null); assert.equal(draft.role, "viewer");
+  find(tree, node => node.type?.name === "CustomSelect").props.onChange("__superadmin__");
+  assert.equal(draft.customRoleId, null); assert.equal(draft.customRoleName, null); assert.equal(draft.role, "superadmin");
 });
 
 test("a failed role catalog keeps the current user role and builtin choices usable, and retry reloads choices", async context => {
@@ -199,7 +203,7 @@ test("a failed role catalog keeps the current user role and builtin choices usab
   const select = find(tree, node => node.type?.name === "CustomSelect");
   assert.equal(select.props.value, String(role.id));
   assert.equal(select.props.options.find(option => option.value === String(role.id)).label, role.name);
-  assert.equal(select.props.disabled, true);
+  assert.equal(select.props.disabled, false);
   assert.equal(allNodes(tree).filter(node => node.props.role === "radio").every(node => !node.props.disabled), true);
   assert.match(textOf(find(tree, node => node.props.role === "alert")), /Каталог временно недоступен/);
   button(tree, "Повторить").props.onClick(); fail = false;
@@ -226,10 +230,10 @@ for (const lateStatus of [200, 503]) test(`a late role catalog response (${lateS
   button(tree, "＋Добавить роль").props.onClick(); tree = harness.render(props);
   find(tree, node => node.type?.name === "RoleEditorDialog").props.onCreated(role);
   tree = harness.render(props);
-  assert.ok(button(tree, role.name));
+  assert.ok(catalog(tree).props.roles.some(item => item.name === role.name));
   resolveCatalog(Response.json(lateStatus === 200 ? { roles: [], canManage: true } : { error: "Старая ошибка каталога" }, { status: lateStatus }));
   await flush(); tree = harness.render(props);
-  assert.ok(button(tree, role.name));
+  assert.ok(catalog(tree).props.roles.some(item => item.name === role.name));
   assert.ok(button(tree, "＋Добавить роль"));
   assert.doesNotMatch(textOf(tree), /Старая ошибка каталога/);
 });

@@ -31,6 +31,7 @@ function database(seed, queries) {
 for (const domain of ["personnel", "equipment"]) {
   const title = domain[0].toUpperCase() + domain.slice(1);
   const storePromise = moduleSource(`../app/${domain}ReportStore.ts`, {
+    "./personnelImportOrderServer": new URL("../app/personnelImportOrderServer.ts", import.meta.url).href,
     [`./${domain}ReportWorkflow`]: new URL(`../app/${domain}ReportWorkflow.ts`, import.meta.url).href,
     "./equipmentExcel": new URL("../app/equipmentExcel.ts", import.meta.url).href,
     "./equipmentAvailability": new URL("../app/equipmentAvailability.ts", import.meta.url).href,
@@ -125,6 +126,7 @@ test("table-order read, move and draft-remap endpoints deny foreign project acce
     "../../auth": authUrl,
     "../../auditLog": `data:text/javascript,${encodeURIComponent("export async function withAuditTrail(request,handler){return handler(request);}")}`,
     "../../tableRowOrderServer": serverUrl,
+    "../../personnelImportOrderServer": new URL("../app/personnelImportOrderServer.ts", import.meta.url).href,
     "../../tableRowOrder": new URL("../app/tableRowOrder.ts", import.meta.url).href,
     "../../personnelReportRowOrder": new URL("../app/personnelReportRowOrder.ts", import.meta.url).href,
     "../../equipmentReportRowOrder": new URL("../app/equipmentReportRowOrder.ts", import.meta.url).href,

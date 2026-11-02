@@ -5,11 +5,23 @@ export const personnelEditableFields = ["employeeName", "shift", "zone", "mainWo
 export type PersonnelCellField = typeof personnelEditableFields[number];
 export type PersonnelSpreadsheetDraft = GridDraftRow & {
   reportRowId?: number;
+  importBatchId?: string;
   createdAt?: string;
   updatedAt?: string;
   referenceIds?: Partial<Record<"employeeId" | "shiftId" | "zoneId" | "mainWorkTypeId" | "subworkTypeId" | "masterId", number | null>>;
   inputValues?: Partial<Record<PersonnelCellField, string>>;
 };
+export type PersonnelImportBatch = { id: string; rows: readonly Pick<PersonnelSpreadsheetDraft, "key" | "employeeId">[] };
+
+/** A workbook can span several dates; every saved day retains the same file order. */
+export function personnelImportedEmployeeOrder(drafts: readonly PersonnelSpreadsheetDraft[], batches: readonly PersonnelImportBatch[], allDrafts: readonly PersonnelSpreadsheetDraft[] = drafts): number[] | undefined {
+  const activeBatches = new Set(drafts.flatMap(row => row.importBatchId ? [row.importBatchId] : []));
+  const latest = batches.findLast(batch => activeBatches.has(batch.id));
+  if (!latest) return undefined;
+  const live = new Map(allDrafts.map(row => [row.key, row.employeeId]));
+  const ids = [...new Set(latest.rows.map(row => Number(live.get(row.key) ?? row.employeeId)).filter(id => Number.isSafeInteger(id) && id > 0))];
+  return ids.length ? ids : undefined;
+}
 export type PersonnelSpreadsheetCatalogs = {
   employees: GridEmployee[]; shifts: GridOption[]; zones: GridOption[]; mainWorkTypes: GridOption[]; subworkTypes: GridOption[]; masters: GridOption[];
 };

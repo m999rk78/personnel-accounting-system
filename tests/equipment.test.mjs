@@ -231,7 +231,8 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(view, /EquipmentTimesheetMarkList/);
   assert.match(view, /EQUIPMENT_MARK_OPTIONS/);
   assert.match(view, /timesheet-cell-inline-editor/);
-  assert.match(view, /void saveTimesheetInlineValue\(\)/);
+  assert.match(view, /void saveTimesheetInlineValue\(event\.currentTarget\.value\)/);
+  assert.match(view, /void saveTimesheetInlineValue\(event\.currentTarget\.value, false\)/);
   assert.match(view, /openTimesheetInlineEditor/);
   assert.match(view, /onType: \(rowIndex, columnIndex, _anchor, value\)/);
   assert.match(view, /isActiveCell && <button/);
@@ -367,5 +368,5 @@ test("separates the daily equipment report into foreman contributions", async ()
   assert.match(view, /equipmentCarryoverMode = section === "daily" && workDate === today[\s\S]*payload\.currentUserRole === "foreman" && payload\.canCreateDaily/);
   assert.match(view, /unitDrafts\.length === 0 && selectedUnitIds\.length === 0 && <div className="employee-footer-base">/);
   assert.match(view, /projectUnitDrafts\.length === 0 && selectedProjectUnitIds\.length === 0 && <div className="employee-footer-base">/);
-  assert.match(grids, /headerName: "Ответственный прораб"/);
+  assert.match(grids, /headerName: "Ответственный"/);
 });

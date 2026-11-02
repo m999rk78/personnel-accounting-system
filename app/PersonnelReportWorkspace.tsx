@@ -4,7 +4,7 @@ import { compatibleSubworkId, workTypeChanges } from "./workTypeHierarchy";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { GridEmployee, GridEntry, GridOption } from "./AgDataGrids";
-import { draftHistoryReducer, pastePersonnelCells, personnelCellErrors, personnelEditableFields, personnelOptionFields, timestampPersonnelDraft, type DraftHistory, type DraftHistoryAction, type PersonnelSpreadsheetDraft as GridDraftRow } from "./personnelSpreadsheet";
+import { draftHistoryReducer, pastePersonnelCells, personnelCellErrors, personnelEditableFields, personnelImportedEmployeeOrder, personnelOptionFields, timestampPersonnelDraft, type DraftHistory, type DraftHistoryAction, type PersonnelImportBatch, type PersonnelSpreadsheetDraft as GridDraftRow } from "./personnelSpreadsheet";
 import type { PersonnelReportGridRow } from "./PersonnelReportGrid";
 import type { PersonnelReport, PersonnelReportApprovedEntry, PersonnelReportData, PersonnelReportEntrySaveRequest, PersonnelReportDraftRow, PersonnelReportSaveRequest, PersonnelReportTransitionRequest, PersonnelReportRow, PersonnelReportValidationIssue, PersonnelReportValidationRequest, PersonnelReportValidationTarget } from "./personnelReportTypes";
 import { freezePersonnelReportSessions, mergePersonnelReportSessions, personnelReportImportTarget, personnelReportNewDate, personnelReportNewKey, personnelReportSaveIdentity } from "./personnelReportSessions";
@@ -17,7 +17,7 @@ import { ExcelActionsMenu } from "./ExcelActionsMenu";
 import { downloadExcelFile, excelFileName } from "./excelFiles";
 import { personnelExcelWorkTypePairs, personnelReportExcelRows } from "./personnelReportExcel";
 import { CustomSelect } from "./CustomSelect";
-import { useWorkspaceTableOrder } from "./TableRowMoves";
+import { notifyTableImportOrder, useWorkspaceTableOrder } from "./TableRowMoves";
 import { isUnsavedPersonnelReportOrderId, personnelReportOrderScope } from "./personnelReportRowOrder";
 import { isReportWorkDate, moveUnsavedReportDay } from "./reportDateChanges";
 import "./personnelReport.css";
@@ -77,6 +77,7 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
   const [visible, setVisible] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [importBatches, setImportBatches] = useState<PersonnelImportBatch[]>([]);
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -296,7 +297,7 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
       const entry = row.entry;
       const seed = row.draft ?? (entry ? { employeeId: String(entry.employeeId), employeeQuery: entry.employeeName, shiftId: String(entry.shiftId), zoneId: String(entry.zoneId), mainWorkTypeId: String(entry.mainWorkTypeId), subworkTypeId: String(entry.subworkTypeId), masterId: String(entry.masterId), hours: String(entry.hours), note: entry.note } : {});
       const time = new Date().toISOString();
-      return makeDraft({ ...seed, key: crypto.randomUUID(), reportRowId: undefined, referenceIds: undefined, lockedEmployee: false, createdAt: time, updatedAt: time, employeeId: props.employees.some(employee => String(employee.id) === seed.employeeId) ? seed.employeeId : "", shiftId: available(props.shifts, seed.shiftId ?? ""), zoneId: available(props.zones, seed.zoneId ?? ""), mainWorkTypeId: available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), subworkTypeId: compatibleSubworkId(props.subworkTypes, available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), seed.subworkTypeId), masterId: available(props.masters, seed.masterId ?? "") });
+      return makeDraft({ ...seed, key: crypto.randomUUID(), reportRowId: undefined, importBatchId: undefined, referenceIds: undefined, lockedEmployee: false, createdAt: time, updatedAt: time, employeeId: props.employees.some(employee => String(employee.id) === seed.employeeId) ? seed.employeeId : "", shiftId: available(props.shifts, seed.shiftId ?? ""), zoneId: available(props.zones, seed.zoneId ?? ""), mainWorkTypeId: available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), subworkTypeId: compatibleSubworkId(props.subworkTypes, available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), seed.subworkTypeId), masterId: available(props.masters, seed.masterId ?? "") });
     }));
   };
   const removeDrafts = (keys: string[]) => {
@@ -376,7 +377,15 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
       if (!response.ok) throw Object.assign(new Error(result.error ?? "Не удалось исправить подтверждённую запись."), { code: result.code });
       return null;
     }
-    const report = await mutate({ action: "save", ...personnelReportSaveIdentity(key, sessions, siteId, today), rows: drafts.map(draft => ({ ...toPayload(draft), approvedEntryRevision: sessions[key]?.rows.find(row => row.id === draft.reportRowId)?.approvedEntryRevision })) });
+    const allDrafts = Object.values(edits).flat();
+    const importEmployeeOrder = personnelImportedEmployeeOrder(drafts, importBatches, allDrafts);
+    const report = await mutate({ action: "save", ...personnelReportSaveIdentity(key, sessions, siteId, today), ...(importEmployeeOrder ? { importEmployeeOrder } : {}), rows: drafts.map(draft => ({ ...toPayload(draft), approvedEntryRevision: sessions[key]?.rows.find(row => row.id === draft.reportRowId)?.approvedEntryRevision })) });
+    if (importEmployeeOrder) {
+      // Keep resolved identities after saving only one day of a multi-day file.
+      const live = new Map(allDrafts.map(row => [row.key, row.employeeId]));
+      setImportBatches(current => current.map(batch => ({ ...batch, rows: batch.rows.map(row => ({ ...row, employeeId: live.get(row.key) ?? row.employeeId })) })));
+      notifyTableImportOrder("project-personnel", siteId);
+    }
     if (rowOrder?.scope === personnelReportOrderScope && rowOrder.hasSavedOrder) {
       const aliases = Object.fromEntries(drafts.flatMap((draft, index) => {
         const oldId = `${report.workDate}/${draft.key}`;
@@ -475,9 +484,12 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
       const { parsePlacementXlsx } = await import("./placementXlsx");
       const imported = await parsePlacementXlsx(file);
       if (!imported.length) throw new Error("В файле нет строк отчёта.");
+      const importBatchId = crypto.randomUUID();
+      const importRows: PersonnelImportBatch["rows"][number][] = [];
       const byDate = new Map<string, GridDraftRow[]>();
       for (const row of imported) {
-        const draft = pastePersonnelCells(makeDraft(), { employeeName: row.employeeName, shift: row.shiftName, zone: row.zoneName, mainWork: row.mainWorkTypeName, subwork: row.subworkTypeName, master: row.masterName, hours: row.hours, note: row.note }, props);
+        const draft = pastePersonnelCells(makeDraft({ importBatchId }), { employeeName: row.employeeName, shift: row.shiftName, zone: row.zoneName, mainWork: row.mainWorkTypeName, subwork: row.subworkTypeName, master: row.masterName, hours: row.hours, note: row.note }, props);
+        importRows.push({ key: draft.key, employeeId: draft.employeeId });
         const group = byDate.get(row.workDate) ?? [];
         group.push(draft);
         byDate.set(row.workDate, group);
@@ -493,6 +505,7 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
         if (previous.length + drafts.length > 1000) throw new Error(`За ${displayDate(workDate)} получится больше 1000 строк. Уменьшите объём импорта за этот день.`);
         return { key, workDate, drafts, previous };
       });
+      setImportBatches(current => [...current, { id: importBatchId, rows: importRows }]);
       rememberSessions(groups.map(group => group.key));
       setEdits(current => {
         const next = { ...current };
@@ -501,9 +514,10 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
       });
       setRequiredReports([]);
       setWorkflowView("draft"); setFocusedReportKey(null); setSelected([]); setVisible(null);
+      notifyTableImportOrder(personnelReportOrderScope, siteId);
       const dates = [...byDate.keys()].sort();
       const range = dates.length === 1 ? displayDate(dates[0]) : `${displayDate(dates[0])}–${displayDate(dates[dates.length - 1])}`;
-      setNotice(`Импортировано строк: ${imported.length} · дней: ${dates.length} (${range}). Проверьте данные и сохраните черновики.`);
+      setNotice(`Импортировано строк: ${imported.length} · дней: ${dates.length} (${range}). Сохранён порядок Excel. Проверьте данные и сохраните черновики.`);
     } catch (failure) { setError(failure instanceof Error ? failure.message : "Не удалось прочитать Excel."); }
     finally { setImporting(false); if (importInput.current) importInput.current.value = ""; }
   }

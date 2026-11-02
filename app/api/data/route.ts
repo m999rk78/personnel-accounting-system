@@ -8,10 +8,12 @@ import { readOptionalBatch } from "../../readOptionalBatch";
 import { compressJsonResponse } from "../../compressJsonResponse";
 import { saveSubworkDirectory } from "../../workTypeHierarchyServer";
 import { importProjectDirectoryExcel, importProjectEmployeesExcel, normalizeExcelDirectoryName, prepareEmployeeExcelImport } from "../../excelDirectoryImports";
+import { rememberPersonnelImportOrder } from "../../personnelImportOrderServer";
 import { getDatabase } from "../../../db/client";
 import { withAuditTrail } from "../../auditLog";
 import { assertSameOrigin, createInvitation, ensureAuthSchema, getAuthUser, sendInvitationEmail, type AuthUser } from "../../auth";
 import { bitrix24ActionCooldown, type Bitrix24Action, type Bitrix24Cooldowns } from "../../bitrix24Cooldown";
+import { bitrixReviewUpdateIds } from "../../bitrixReviewSelection";
 import { compareBitrixEmployees, fetchBitrixEmployeeSnapshot, normalizeBitrixText, selectBitrixEmployeesForImport, suggestBitrixEmployeeLinks, type BitrixEmployeeSnapshot, type BitrixLinkLocalEmployee, type EmployeeAvailabilityStatus } from "../../bitrix24Sync";
 import { hasPermission, type PermissionAction, type PermissionResource } from "../../permissionModel";
 import { accessibleProjectIds, canAccessProject, canViewAllProjects, hasRestrictedProjectAccess, requiresAssignedProject, isUserRole, visibleUserProjectAccess, type UserRole } from "../../roles";
@@ -1501,6 +1503,7 @@ async function buildBitrixInspection(sourceSnapshot: BitrixEmployeeSnapshot[]) {
       compared: comparison.compared,
       matched: comparison.matched,
       differences: [...activeDifferences, ...differences.filter((difference) => difference.acknowledged)].slice(0, 100),
+      updatableEmployeeIds: bitrixReviewUpdateIds({ differences: activeDifferences }),
       totalDifferences: activeDifferences.length,
       differenceCounts,
       acknowledgedDifferences: differences.length - activeDifferences.length,
@@ -1826,9 +1829,18 @@ async function usersWithProjectAccess(rows: Record<string, unknown>[], observer:
 async function resolveUserRole(payload: UserPayload, db: Pick<ReturnType<typeof getDatabase>, "prepare">, previous?: { role: string; customRoleId?: number | null }) {
   const preserve = payload.customRoleId === undefined && previous && (payload.role === undefined || payload.role === previous.role);
   const requestedId = preserve ? previous.customRoleId : payload.customRoleId;
-  const customRoleId = requestedId === undefined || requestedId === null ? null : asPositiveInteger(requestedId);
+  let customRoleId = requestedId === undefined || requestedId === null ? null : asPositiveInteger(requestedId);
   if (requestedId !== undefined && requestedId !== null && (!customRoleId || customRoleId > 2147483647)) throw new Error("Выберите роль из списка.");
-  const customRole = customRoleId ? await loadCustomRole(customRoleId, db) : null;
+  let customRole = customRoleId ? await loadCustomRole(customRoleId, db) : null;
+  const legacyKey = payload.role ?? previous?.role;
+  if (!customRoleId && (legacyKey === "foreman" || legacyKey === "engineer" || legacyKey === "viewer")) {
+    const managed = await db.prepare("SELECT id, active FROM custom_roles WHERE legacy_role_key = ?").bind(legacyKey).first<{ id: number; active: number }>();
+    if (managed) {
+      if (!managed.active) throw new Error("Эта роль удалена. Выберите действующую роль из справочника.");
+      customRoleId = managed.id;
+      customRole = await loadCustomRole(managed.id, db);
+    }
+  }
   if (customRoleId && !customRole) throw new Error("Выбранная роль не найдена. Обновите список ролей.");
   if (customRole && payload.role !== undefined && payload.role !== customRole.baseRole) throw new Error("Настройки выбранной роли изменились. Выберите роль повторно.");
   const role = customRole?.baseRole ?? payload.role ?? previous?.role;
@@ -2174,6 +2186,9 @@ async function handlePOST(request: Request) {
       const duplicate = await env.DB.prepare("SELECT id FROM app_users WHERE email = ? AND active = 1").bind(email).first();
       if (duplicate) throw new Error("Пользователь с таким email уже существует.");
       const userId = await env.DB.transaction(async db => {
+        await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind("user-role-management").first();
+        const freshRole = await resolveUserRole(payload, db);
+        if (freshRole.role !== role || freshRole.customRoleId !== customRoleId) throw new Error("Роль изменилась. Обновите список ролей.");
         const result = await db.prepare("INSERT INTO app_users (full_name, email, role, assigned_site_id, custom_role_id) VALUES (?, ?, ?, ?, ?)").bind(fullName, email, role, assignedSiteId, customRoleId).run();
         const id = Number(result.meta.last_row_id);
         if (payload.projectAccess !== undefined || payload.canViewPendingReports !== undefined || role === "viewer" || customRoleId) {
@@ -2302,6 +2317,8 @@ async function handlePOST(request: Request) {
         }
         // Resolve every name, project and permission before the first write.
         // Keep profile changes and all project assignments in this same transaction.
+        const importedEmployeeIds: number[] = [];
+        const importedProjectEmployees = new Map<number, number[]>();
         for (const row of rows) {
           let employeeId = row.existingId;
           if (employeeId) {
@@ -2315,6 +2332,12 @@ async function handlePOST(request: Request) {
             employeeId = Number(inserted.meta.last_row_id);
             if (!Number.isSafeInteger(employeeId) || employeeId <= 0) throw new Error(`Не удалось добавить сотрудника «${row.fullName}». Изменения импорта отменены.`);
           }
+          importedEmployeeIds.push(employeeId);
+          for (const siteId of row.siteIds) {
+            const employeeIds = importedProjectEmployees.get(siteId) ?? [];
+            employeeIds.push(employeeId);
+            importedProjectEmployees.set(siteId, employeeIds);
+          }
           if (!row.siteIds.length) {
             await db.prepare("UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, CURRENT_DATE) WHERE employee_id = ? AND active = 1").bind(employeeId).run();
             continue;
@@ -2325,6 +2348,8 @@ async function handlePOST(request: Request) {
             await db.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source, start_date) SELECT ?, ?, 'excel', CURRENT_DATE WHERE NOT EXISTS (SELECT 1 FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 1)").bind(employeeId, siteId, employeeId, siteId).run();
           }
         }
+        await rememberPersonnelImportOrder(db, "employees", null, importedEmployeeIds);
+        for (const [siteId, employeeIds] of importedProjectEmployees) await rememberPersonnelImportOrder(db, "project-personnel", siteId, employeeIds);
         return { count: rows.length, unassigned: rows.filter(row => row.siteIds.length === 0).length };
       });
       return Response.json(result, { status: 201 });

@@ -13,9 +13,14 @@ async function compile(path, replacements) {
 }
 let fixtureNumber = 0;
 async function harness() {
-  const rows = [], queries = [];
+  const rows = [], queries = [], users = [];
   const db = {
-    rows, queries,
+    rows, queries, users,
+    async transaction(callback) {
+      const before = structuredClone({ rows, users });
+      try { return await callback(db); }
+      catch (error) { rows.splice(0, rows.length, ...before.rows); users.splice(0, users.length, ...before.users); throw error; }
+    },
     prepare(sql) {
       let values = [];
       const execute = () => {
@@ -27,10 +32,19 @@ async function harness() {
           const row = { id: rows.length + 1, name: values[0], nameKey: values[1], baseRole: values[2], permissions: JSON.parse(values[3]), revision: 1, active: 1, createdByUserId: values[4] };
           rows.push(row); result = [row];
         } else if (sql.includes("FROM custom_roles")) result = rows.filter(row => row.active === 1 && (!values.length || row.id === values[0])).sort((a,b) => a.nameKey.localeCompare(b.nameKey));
+        else if (sql.includes("pg_advisory_xact_lock")) result = [];
+        else if (sql.startsWith("UPDATE custom_roles SET name")) {
+          if (rows.some(row => row.nameKey === values[1] && row.id !== values[4])) throw Object.assign(new Error("unique violation"), { code: "23505" });
+          const row = rows.find(row => row.id === values[4] && row.revision === values[5] && row.active === 1);
+          if (row) Object.assign(row, { name: values[0], nameKey: values[1], baseRole: values[2], permissions: JSON.parse(values[3]), revision: row.revision + 1 });
+          result = row ? [row] : [];
+        } else if (sql.startsWith("UPDATE app_users SET role")) { if (db.failUserUpdate) throw new Error("Synthetic user update failure"); result = users.filter(user => user.customRoleId === values[1]); result.forEach(user => { user.role = values[0]; }); }
+        else if (sql.startsWith("SELECT COUNT(*) AS count FROM app_users")) result = [{ count: users.filter(user => user.customRoleId === values[0] && user.active === 1).length }];
+        else if (sql.startsWith("UPDATE custom_roles SET active")) { result = rows.filter(row => row.id === values[1] && row.active === 1); result.forEach(row => { row.active = 0; row.nameKey = values[0]; row.revision++; }); }
         else throw new Error(`Unexpected role API query: ${sql.slice(0, 100)}`);
         return { results: structuredClone(result), meta: { changes: result.length, last_row_id: result[0]?.id ?? null } };
       };
-      const statement = { bind(...next) { values = next; return statement; }, async all() { return execute(); }, async first() { return execute().results[0] ?? null; } };
+      const statement = { bind(...next) { values = next; return statement; }, async all() { return execute(); }, async first() { return execute().results[0] ?? null; }, async run() { return execute(); } };
       return statement;
     },
   };
@@ -54,6 +68,64 @@ const request = (payload, raw = false) => new Request("http://localhost/api/role
 });
 process.env.NODE_ENV = "production";
 delete process.env.DATABASE_RUNTIME_BOOTSTRAP;
+
+const changeRequest = (method, payload) => new Request("http://localhost/api/roles", { method, headers: { "Content-Type": "application/json", origin: "http://localhost" }, body: JSON.stringify(payload) });
+
+test("role update/delete have the same authentication, global scope and management boundary as creation", async () => {
+  const h = await harness();
+  for (const user of [null, actor({ role: "viewer" }), actor({ role: "engineer", projectAccess: { mode: "selected", siteIds: [7] } }), actor({ role: "engineer", permissions: rolePermissionTemplate("engineer") })]) {
+    h.as(user);
+    for (const method of ["PATCH", "DELETE"]) assert.equal((await h.route[method](changeRequest(method, { roleId: 1, revision: 1, name: "Другая", permissions: {} }))).status, user ? 403 : 401);
+  }
+  assert.equal(h.db.queries.length, 0);
+});
+
+test("editing a role changes name/matrix/revision and synchronizes assigned base identities atomically", async () => {
+  const h = await harness(); h.as(actor());
+  const { role } = await (await h.route.POST(request({ name: "Рабочая роль", permissions: { workers_report: { update: true } } }))).json();
+  h.db.users.push({ id: 8, customRoleId: role.id, role: "engineer", active: 1 }, { id: 9, customRoleId: null, role: "superadmin", active: 1 });
+  const response = await h.route.PATCH(changeRequest("PATCH", { roleId: role.id, revision: role.revision, name: "Наблюдение", permissions: { workers_report: { view: true } } }));
+  assert.equal(response.status, 200);
+  const { role: saved } = await response.json();
+  assert.equal(saved.id, role.id); assert.equal(saved.revision, 2); assert.equal(saved.baseRole, "viewer");
+  assert.equal(h.db.users[0].role, "viewer"); assert.equal(h.db.users[1].role, "superadmin");
+  assert.equal(saved.permissions.workers_report.update, false);
+  const stale = await h.route.PATCH(changeRequest("PATCH", { roleId: role.id, revision: 1, name: "Устаревшая", permissions: {} }));
+  assert.equal(stale.status, 409);
+  assert.equal((await stale.json()).code, "ROLE_REVISION_CONFLICT");
+  assert.equal(h.db.rows[0].name, "Наблюдение");
+  h.db.failUserUpdate = true;
+  const failed = await h.route.PATCH(changeRequest("PATCH", { roleId: role.id, revision: 2, name: "Не сохранять", permissions: { workers_report: { update: true } } }));
+  assert.equal(failed.status, 500);
+  assert.equal(h.db.rows[0].revision, 2); assert.equal(h.db.rows[0].baseRole, "viewer"); assert.equal(h.db.users[0].role, "viewer");
+});
+
+test("catalog deletion blocks assigned roles, stale versions, builtins and missing IDs; unused roles are archived", async () => {
+  const h = await harness(); h.as(actor());
+  const { role } = await (await h.route.POST(request({ name: "Роль удаления", permissions: {} }))).json();
+  h.db.users.push({ id: 8, role: "viewer", customRoleId: role.id, active: 1 });
+  let response = await h.route.DELETE(changeRequest("DELETE", { roleId: role.id, revision: role.revision }));
+  assert.equal(response.status, 409); assert.equal((await response.json()).code, "ROLE_IN_USE");
+  assert.equal(h.db.rows[0].active, 1);
+  response = await h.route.DELETE(changeRequest("DELETE", { roleId: role.id, revision: 7 })); assert.equal(response.status, 409);
+  response = await h.route.DELETE(changeRequest("DELETE", { roleId: -1, revision: 1 })); assert.equal(response.status, 400);
+  response = await h.route.DELETE(changeRequest("DELETE", { roleId: 999, revision: 1 })); assert.equal(response.status, 404);
+  h.db.users[0].customRoleId = null;
+  response = await h.route.DELETE(changeRequest("DELETE", { roleId: role.id, revision: role.revision })); assert.equal(response.status, 200);
+  assert.equal(h.db.rows[0].active, 0);
+  assert.deepEqual((await (await h.route.GET(new Request("http://localhost/api/roles"))).json()).roles, []);
+  assert.equal((await h.route.POST(request({ name: "Роль удаления", permissions: {} }))).status, 201, "archived names can be reused without losing historical rows");
+});
+
+test("role rename uniqueness and malformed mutations fail without altering existing templates", async () => {
+  const h = await harness(); h.as(actor());
+  await h.route.POST(request({ name: "Первый шаблон", permissions: {} }));
+  await h.route.POST(request({ name: "Второй шаблон", permissions: {} }));
+  const response = await h.route.PATCH(changeRequest("PATCH", { roleId: 1, revision: 1, name: "Второй шаблон", permissions: {} }));
+  assert.equal(response.status, 409); assert.equal((await response.json()).code, "ROLE_NAME_EXISTS");
+  assert.equal(h.db.rows[0].name, "Первый шаблон"); assert.equal(h.db.rows[0].revision, 1);
+  for (const method of ["PATCH", "DELETE"]) for (const payload of [null, [], {}, { roleId: 1, revision: 0 }, { roleId: "1", revision: 1 }]) assert.equal((await h.route[method](changeRequest(method, payload))).status, 400);
+});
 
 test("role endpoints require authentication and default viewers cannot list or create roles", async () => {
   const h = await harness(); h.as(null);
@@ -96,7 +168,7 @@ test("read access lists reusable templates without authorizing role management",
 
 test("invalid role payloads return 400 before any SQL mutation", async () => {
   const h = await harness(); h.as(actor());
-  for (const payload of [null, [], "name", 1, {}, { name: "" }, { name: "Инженер", permissions: {} }, { name: "Роль", permissions: [] }, { name: "Роль", permissions: { employees: { update: "true" } } }, { name: "Роль", permissions: { invalid_resource: { view: true } } }]) {
+  for (const payload of [null, [], "name", 1, {}, { name: "" }, { name: "Супер-админ", permissions: {} }, { name: "Роль", permissions: [] }, { name: "Роль", permissions: { employees: { update: "true" } } }, { name: "Роль", permissions: { invalid_resource: { view: true } } }]) {
     const response = await h.route.POST(request(payload));
     assert.equal(response.status, 400, JSON.stringify(payload));
     assert.equal(typeof (await response.json()).error, "string");

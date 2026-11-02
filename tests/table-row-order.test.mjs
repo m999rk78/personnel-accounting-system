@@ -133,6 +133,15 @@ test("canonical project rows are read through the same transaction connection", 
   assert.deepEqual(bound, [9, 9, 9]);
 });
 
+test("approved personnel report ordering retains the saved workbook row rank", async () => {
+  const { canonicalRowIds } = await serverModule();
+  let sql;
+  const executor = { prepare: statement => { sql = statement; return { bind: () => ({ all: async () => ({ results: [] }) }) }; } };
+  await canonicalRowIds("personnel-report-rows", 9, executor, { id: 7, role: "foreman", assignedSiteId: 9 });
+  assert.match(sql, /COALESCE\(origin\.row_order, 0\) AS rank/);
+  assert.match(sql, /records ORDER BY day DESC, created DESC, rank, id DESC/);
+});
+
 test("equipment report ordering uses record IDs, keeps published origins and isolates the foreman's records", async () => {
   const { canonicalRowIds } = await serverModule();
   let sql;

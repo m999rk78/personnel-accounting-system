@@ -11,19 +11,20 @@ const COMPACT_ACTION_LABELS: Record<PermissionAction, string> = {
 
 type CellPolicy = { allowed?: boolean; locked?: boolean; title?: string };
 
-export function PermissionMatrix({ label, value, disabled = false, onChange, cellPolicy }: {
+export function PermissionMatrix({ label, value, disabled = false, onChange, cellPolicy, compact = false }: {
   label: string;
   value: PermissionSet;
   disabled?: boolean;
   onChange?: (resource: PermissionResource, action: PermissionAction, enabled: boolean) => void;
   cellPolicy?: (resource: PermissionResource, action: PermissionAction) => CellPolicy;
+  compact?: boolean;
 }) {
-  return <div className="permission-matrix" role="table" aria-label={label}>
+  return <div className={`permission-matrix${compact ? " compact" : ""}`} role="table" aria-label={label}>
     <div className="permission-matrix-header" role="row"><span role="columnheader">Раздел системы</span>{PERMISSION_ACTIONS.map(action => <span role="columnheader" data-compact-label={COMPACT_ACTION_LABELS[action]} key={action}>{PERMISSION_ACTION_LABELS[action]}</span>)}</div>
     {(["reports", "timesheets", "general", "project"] as const).map(group => <section className="permission-group" key={group}>
       <h3>{PERMISSION_GROUP_LABELS[group]}</h3>
       {PERMISSION_CATALOG.filter(item => item.group === group).map(definition => <div className="permission-row" role="row" key={definition.key}>
-        <div role="cell"><strong>{definition.title}</strong><span>{definition.description}</span></div>
+        <div role="cell"><strong>{definition.title}</strong>{!compact && <span>{definition.description}</span>}</div>
         {PERMISSION_ACTIONS.map(action => {
           const supported = definition.actions.includes(action);
           const policy = cellPolicy?.(definition.key, action);

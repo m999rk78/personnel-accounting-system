@@ -6,6 +6,7 @@ import type { ColumnFilter, GridApi, IFilterParams, ISetFilterParams, IMultiFilt
 import { CustomSelect } from "./CustomSelect";
 import { useGridFilterPopup } from "./useGridFilterPopup";
 import { compareGridValues, filterDateKey, normalizeFilterText, type PersonnelFilterModel } from "./gridFilterModel";
+import { IMPORT_ORDER_COLUMN, importOrderSortOption } from "./importOrderSorting";
 
 type Sort = { columnId: string; sort: "asc" | "desc" | null };
 type SortOption = Sort & { label: string };
@@ -32,6 +33,7 @@ function EnterpriseFilterSorting(props: SortProps) {
   const { api, column, colDef } = props;
   const pending = useRef<SortLevel[] | null>(null);
   const [levels, setLevels] = useState<SortLevel[]>(() => readSorts(api));
+  const presets = props.rowSortOptions ?? (api.getColumn(IMPORT_ORDER_COLUMN) ? [importOrderSortOption, { label: "Ручной порядок", columnId: "", sort: null }] : undefined);
   const available = (api.getColumns() ?? []).filter(item => item.isSortable()).map(item => ({
     value: item.getColId(), label: item.getColDef().headerName || item.getColId(),
   }));
@@ -48,7 +50,7 @@ function EnterpriseFilterSorting(props: SortProps) {
   };
   const currentSort = levels.find(item => item.columnId === column.getColId())?.sort;
   const preset = levels.length === 0 ? { columnId: "", sort: null } : levels.length === 1 ? levels[0] : null;
-  const presetValue = preset && props.rowSortOptions?.some(option => keyOf(option) === keyOf(preset)) ? keyOf(preset) : "keep";
+  const presetValue = preset && presets?.some(option => keyOf(option) === keyOf(preset)) ? keyOf(preset) : "keep";
   const remaining = available.filter(item => !levels.some(level => level.columnId === item.value));
   const directionLabels = props.kind === "date"
     ? { asc: "Сначала ранние даты", desc: "Сначала поздние даты" }
@@ -76,10 +78,10 @@ function EnterpriseFilterSorting(props: SortProps) {
     <header className="grid-filter-heading"><div><strong>{colDef.headerName}</strong><span>Сортировка и фильтры</span></div><button type="button" className="grid-filter-close" aria-label="Закрыть без применения" onClick={() => { pending.current = null; api.doFilterAction({ colId: column.getColId(), action: "cancel" }); api.hideColumnFilter(); }}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg></button></header>
     <section className="grid-filter-sort" aria-label="Сортировка строк">
       <div className="grid-enterprise-sort-heading"><strong>Сортировка</strong><button type="button" disabled={!levels.length} onClick={() => update([])}>Сбросить сортировку</button></div>
-      {props.rowSortOptions && <div className="grid-filter-field"><span>Порядок строк</span><CustomSelect ariaLabel="Порядок строк" value={presetValue} options={[
+      {presets && <div className="grid-filter-field"><span>Порядок строк</span><CustomSelect ariaLabel="Порядок строк" value={presetValue} options={[
         ...(presetValue === "keep" ? [{ value: "keep", label: "По нескольким столбцам / текущий порядок" }] : []),
-        ...props.rowSortOptions.map(option => ({ value: keyOf(option), label: option.label })),
-      ]} onChange={value => { const option = props.rowSortOptions?.find(item => keyOf(item) === value); if (option) update(option.columnId && option.sort ? [{ columnId: option.columnId, sort: option.sort }] : []); }} /></div>}
+        ...presets.map(option => ({ value: keyOf(option), label: option.label })),
+      ]} onChange={value => { const option = presets.find(item => keyOf(item) === value); if (option) update(option.columnId && option.sort ? [{ columnId: option.columnId, sort: option.sort }] : []); }} /></div>}
       <div className="grid-enterprise-sort-actions" aria-label={`Сортировка столбца ${colDef.headerName}`}>
         <button type="button" aria-pressed={currentSort === "asc"} title={directionLabels.asc} onClick={() => changeCurrentSort("asc")}>↑ По возрастанию</button>
         <button type="button" aria-pressed={currentSort === "desc"} title={directionLabels.desc} onClick={() => changeCurrentSort("desc")}>↓ По убыванию</button>

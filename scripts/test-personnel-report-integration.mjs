@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import ts from "typescript";
 import { rolePermissionTemplate } from "../app/permissionModel.ts";
+import { readPersonnelImportOrder } from "../app/personnelImportOrderServer.ts";
 
 const address = process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL).hostname : process.env.PGHOST;
 assert.ok(["localhost", "127.0.0.1", "::1", "[::1]"].includes(address), "Integration checks require a loopback PostgreSQL database.");
@@ -19,6 +20,7 @@ async function loadTypeScript(path, replacements = {}) {
 const { PostgresDatabase, PostgresStatement } = await loadTypeScript("../db/client.ts", { pg: import.meta.resolve("pg") });
 const { mutatePersonnelReport, mutatePersonnelReportEntry, listPersonnelReports, validatePersonnelReportSubmissions } = await loadTypeScript("../app/personnelReportStore.ts", {
   "./personnelReportWorkflow": new URL("../app/personnelReportWorkflow.ts", import.meta.url).href,
+  "./personnelImportOrderServer": new URL("../app/personnelImportOrderServer.ts", import.meta.url).href,
 });
 const pool = new pg.Pool({
   ...(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : {}),
@@ -58,6 +60,7 @@ const scoped = {
 try {
   await connection.query("BEGIN");
   await connection.query(await readFile(new URL("../drizzle-postgres/0019_personnel_report_approval.sql", import.meta.url), "utf8"));
+  await connection.query(await readFile(new URL("../drizzle-postgres/0020_table_row_orders.sql", import.meta.url), "utf8"));
   await connection.query(await readFile(new URL("../drizzle-postgres/0021_personnel_report_row_timestamps.sql", import.meta.url), "utf8"));
   const columns = await connection.query("SELECT column_name FROM information_schema.columns WHERE table_name = 'subwork_types' AND column_name = 'main_work_type_id'");
   if (!columns.rowCount) await connection.query(await readFile(new URL("../drizzle-postgres/0022_work_type_hierarchy.sql", import.meta.url), "utf8"));
@@ -131,6 +134,39 @@ try {
   await assert.rejects(validatePersonnelReportSubmissions(readOnly, foreman, { ...validationRequest, reports: [...validationRequest.reports, validationRequest.reports[0]] }), /ключи/);
   const ready = await validatePersonnelReportSubmissions(readOnly, foreman, { action: "validate-submissions", siteId, reports: [{ key: String(validationDraft.id), workDate: validationDraft.workDate, reportId: validationDraft.id, revision: validationDraft.revision, rows: validationDraft.rows }] });
   assert.deepEqual(ready.issues, []);
+
+  // One workbook can span multiple dates. Every save records its full employee
+  // order, even when some employees occur only on a different imported day.
+  const manualKey = `project-personnel:${siteId}`;
+  const importKey = `import-order:project-personnel:${siteId}`;
+  const fileOrder = [validationIds[1], employeeId, validationIds[0]];
+  const manualOrder = [employeeId, validationIds[0], validationIds[1]];
+  await connection.query("INSERT INTO table_row_orders(id,row_ids) VALUES ($1,$2::jsonb)", [manualKey, JSON.stringify(manualOrder)]);
+  let imported = await mutatePersonnelReport(scoped, foreman, { action: "save", siteId, workDate: "2026-10-13", rows: [row], importEmployeeOrder: fileOrder });
+  assert.deepEqual((await readPersonnelImportOrder(executor, "project-personnel", siteId, manualOrder)).importIds, fileOrder);
+  const secondDay = await mutatePersonnelReport(scoped, foreman, { action: "save", siteId, workDate: "2026-10-14", rows: [{ ...row, employeeId: validationIds[0] }], importEmployeeOrder: fileOrder });
+  imported = await mutatePersonnelReport(scoped, foreman, { action: "save", siteId, workDate: imported.workDate, reportId: imported.id, revision: imported.revision, rows: imported.rows, importEmployeeOrder: fileOrder });
+  assert.deepEqual((await readPersonnelImportOrder(executor, "project-personnel", siteId, manualOrder)).importIds, fileOrder);
+  assert.deepEqual((await connection.query("SELECT row_ids FROM table_row_orders WHERE id=$1", [manualKey])).rows[0].row_ids, manualOrder);
+  assert.equal(await approvedTotal(), 0, "saving an import order must not publish report hours");
+  const untouched = await counts();
+  const foreignId = await insert("INSERT INTO employees(full_name,position,employment_type) VALUES ($1,'Монтажник','ОПР') RETURNING id", [`${marker}-foreign-import-order`]);
+  const inactiveId = await insert("INSERT INTO employees(full_name,position,employment_type,active) VALUES ($1,'Монтажник','ОПР',0) RETURNING id", [`${marker}-inactive-import-order`]);
+  await connection.query("INSERT INTO employee_project_assignments(employee_id,site_id) VALUES ($1,$2)", [inactiveId, siteId]);
+  for (const invalid of [[foreignId], [inactiveId], [employeeId, employeeId], [0], [1.5], Array.from({ length: 5001 }, (_, index) => index + 1)]) {
+    await assert.rejects(mutatePersonnelReport(scoped, foreman, { action: "save", siteId, workDate: "2026-10-12", rows: [row], importEmployeeOrder: invalid }), error => error.code === "INVALID_IMPORT_ORDER");
+  }
+  assert.deepEqual(await counts(), untouched);
+  const failingImport = { transaction: callback => scoped.transaction(tx => callback({ ...tx, prepare(sql) {
+    if (sql.startsWith("UPDATE table_row_orders SET row_ids")) throw new Error("Injected import-order write failure");
+    return tx.prepare(sql);
+  } })) };
+  await assert.rejects(mutatePersonnelReport(failingImport, foreman, { action: "save", siteId, workDate: "2026-10-12", rows: [row], importEmployeeOrder: [...fileOrder].reverse() }), /Injected import-order/);
+  assert.deepEqual(await counts(), untouched, "metadata failure rolls back the report save too");
+  assert.deepEqual((await connection.query("SELECT row_ids FROM table_row_orders WHERE id=$1", [importKey])).rows[0].row_ids, fileOrder);
+  assert.deepEqual((await connection.query("SELECT row_ids FROM table_row_orders WHERE id=$1", [manualKey])).rows[0].row_ids, manualOrder);
+  await connection.query("DELETE FROM personnel_report_rows WHERE report_id=ANY($1)", [[imported.id, secondDay.id]]);
+  await connection.query("DELETE FROM personnel_reports WHERE id=ANY($1)", [[imported.id, secondDay.id]]);
   await connection.query("DELETE FROM personnel_report_rows WHERE report_id=$1", [validationDraft.id]);
   await connection.query("DELETE FROM personnel_reports WHERE id=$1", [validationDraft.id]);
   await connection.query("DELETE FROM placement_entries WHERE employee_id=ANY($1)", [validationIds]);
