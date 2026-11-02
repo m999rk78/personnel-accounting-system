@@ -108,6 +108,21 @@ export type PersonnelReportEntrySaveRequest = {
   row: PersonnelReportDraftRow;
 };
 
+export type PersonnelReportDateRequest = {
+  action: "change-date";
+  reportId: number;
+  revision: number;
+  workDate: string;
+};
+
+export type PersonnelReportEntryDateRequest = {
+  action: "change-entry-date";
+  entryId: number;
+  revision: number;
+  siteId: number;
+  workDate: string;
+};
+
 export type PersonnelReportRowValidationIssue = {
   rowNumbers?: number[];
   employeeId?: number;
@@ -140,4 +155,4 @@ export type PersonnelReportValidationRequest = {
 
 export type PersonnelReportValidationResult = { issues: PersonnelReportValidationIssue[] };
 
-export type PersonnelReportRequest = PersonnelReportSaveRequest | PersonnelReportTransitionRequest | PersonnelReportEntrySaveRequest | PersonnelReportValidationRequest;
+export type PersonnelReportRequest = PersonnelReportSaveRequest | PersonnelReportTransitionRequest | PersonnelReportEntrySaveRequest | PersonnelReportValidationRequest | PersonnelReportDateRequest | PersonnelReportEntryDateRequest;

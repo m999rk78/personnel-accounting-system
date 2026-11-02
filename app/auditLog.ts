@@ -135,26 +135,30 @@ function actionDescription(path: string, method: string, payload: Record<string,
     const descriptions: Record<string, string> = {
       save: "Сохранил изменения отчёта персонала",
       "save-approved-entry": "Исправил подтверждённую запись отчёта персонала и обновил табель",
+      "change-date": "Изменил дату отчёта персонала",
+      "change-entry-date": "Изменил дату подтверждённой записи отчёта персонала и обновил табель",
       submit: "Отправил отчёт персонала на проверку инженеру",
       approve: "Утвердил отчёт персонала и опубликовал часы в табель",
       reject: "Вернул отчёт персонала на доработку",
       reopen: "Снял отчёт персонала с проверки",
     };
     if (!descriptions[action]) return null;
-    return { category: "reports" as const, actionKey: `personnel_report.${action}`, entityType: action === "save-approved-entry" ? "placement_entry" : "personnel_report_draft", entityId: String(payload.reportId ?? payload.entryId ?? ""), summary: `${descriptions[action]}${workDate ? ` за ${workDate}` : ""}` };
+    return { category: "reports" as const, actionKey: `personnel_report.${action}`, entityType: ["save-approved-entry", "change-entry-date"].includes(action) ? "placement_entry" : "personnel_report_draft", entityId: String(payload.reportId ?? payload.entryId ?? ""), summary: `${descriptions[action]}${workDate ? `${action.startsWith("change-") ? " на" : " за"} ${workDate}` : ""}` };
   }
 
   if (path === "/api/equipment-report") {
     const descriptions: Record<string, string> = {
       save: "Сохранил изменения отчёта техники",
       "save-approved-entry": "Исправил подтверждённую запись отчёта техники и обновил табель",
+      "change-date": "Изменил дату отчёта техники",
+      "change-entry-date": "Изменил дату подтверждённой записи отчёта техники и обновил табель",
       submit: "Отправил отчёт техники на проверку инженеру",
       approve: "Утвердил отчёт техники и опубликовал часы в табель",
       reject: "Вернул отчёт техники на доработку",
       reopen: "Снял отчёт техники с проверки",
     };
     if (!descriptions[action]) return null;
-    return { category: "reports" as const, actionKey: `equipment_report.${action}`, entityType: action === "save-approved-entry" ? "equipment_entry" : "equipment_report_draft", entityId: String(payload.reportId ?? payload.entryId ?? ""), summary: `${descriptions[action]}${workDate ? ` за ${workDate}` : ""}` };
+    return { category: "reports" as const, actionKey: `equipment_report.${action}`, entityType: ["save-approved-entry", "change-entry-date"].includes(action) ? "equipment_entry" : "equipment_report_draft", entityId: String(payload.reportId ?? payload.entryId ?? ""), summary: `${descriptions[action]}${workDate ? `${action.startsWith("change-") ? " на" : " за"} ${workDate}` : ""}` };
   }
 
   if (path === "/api/timesheet") {
@@ -268,7 +272,7 @@ async function previousState(path: string, method: string, payload: Record<strin
     return { parents: parents.results, children: children.results };
   }
   if (path === "/api/personnel-report") {
-    if (payload.action === "save-approved-entry") {
+    if (payload.action === "save-approved-entry" || payload.action === "change-entry-date") {
       const entryId = positiveInteger(payload.entryId);
       return entryId ? db.prepare(`SELECT id, site_id AS siteId, work_date AS workDate, employee_id AS employeeId,
         employee_name_snapshot AS employeeName, shift_id AS shiftId, zone_id AS zoneId, main_work_type_id AS mainWorkTypeId,
@@ -285,7 +289,7 @@ async function previousState(path: string, method: string, payload: Record<strin
       FROM personnel_reports report WHERE report.id = ?`).bind(reportId).first();
   }
   if (path === "/api/equipment-report") {
-    if (payload.action === "save-approved-entry") {
+    if (payload.action === "save-approved-entry" || payload.action === "change-entry-date") {
       const entryId = positiveInteger(payload.entryId);
       return entryId ? db.prepare(`SELECT id, site_id AS siteId, work_date AS workDate, equipment_id AS equipmentId,
         equipment_name_snapshot AS equipmentName, shift_id AS shiftId, zone_id AS zoneId, main_work_type_id AS mainWorkTypeId,

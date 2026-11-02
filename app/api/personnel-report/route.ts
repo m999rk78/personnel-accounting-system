@@ -1,7 +1,7 @@
 import { getDatabase } from "../../../db/client";
 import { withAuditTrail } from "../../auditLog";
 import { assertSameOrigin, getAuthUser } from "../../auth";
-import { ensurePersonnelReportSchema, listPersonnelReports, mutatePersonnelReport, mutatePersonnelReportEntry, validatePersonnelReportSubmissions } from "../../personnelReportStore";
+import { ensurePersonnelReportSchema, listPersonnelReports, mutatePersonnelReport, mutatePersonnelReportDate, mutatePersonnelReportEntry, mutatePersonnelReportEntryDate, validatePersonnelReportSubmissions } from "../../personnelReportStore";
 import type { PersonnelReportRequest } from "../../personnelReportTypes";
 import { PersonnelReportError } from "../../personnelReportWorkflow";
 
@@ -54,6 +54,8 @@ async function handlePOST(request: Request) {
     // Validation is read-only: do not create audit records for every preview.
     if (payload.action === "validate-submissions") return Response.json(await validatePersonnelReportSubmissions(db, user, payload));
     return await withAuditTrail(auditRequest, async () => {
+      if (payload.action === "change-date") return Response.json({ report: await mutatePersonnelReportDate(db, user, payload) });
+      if (payload.action === "change-entry-date") return Response.json({ entry: await mutatePersonnelReportEntryDate(db, user, payload) });
       if (payload.action === "save-approved-entry") return Response.json({ entry: await mutatePersonnelReportEntry(db, user, payload) });
       const report = await mutatePersonnelReport(db, user, payload);
       return Response.json({ report });

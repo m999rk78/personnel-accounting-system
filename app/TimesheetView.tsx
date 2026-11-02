@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createIdlePageRefresh } from "./idlePageRefresh";
 import { useWorkspaceAccess } from "./TableAccessContext";
 import { useNativeRowMoves, useWorkspaceTableOrder } from "./TableRowMoves";
 import { useTableViewport } from "./useTableViewport";
@@ -250,6 +251,14 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
   const inlineCancelPending = useRef(false);
   const inlineGridFocusPending = useRef(false);
   const [savingMark, setSavingMark] = useState(false);
+  const [savingBulkMarks, setSavingBulkMarks] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
+  const refreshControl = useRef<ReturnType<typeof createIdlePageRefresh> | null>(null);
+  const refreshBusy = useRef(true);
+  const markWrites = useRef(0);
+  const markRevision = useRef(0);
+  const activeScope = useRef(`${siteId}:${month}`);
+  const activeScopeVersion = useRef(0);
   const [editorError, setEditorError] = useState("");
   const inlineEditorEmployeeId = inlineEditor?.employeeId;
   const inlineEditorWorkDate = inlineEditor?.workDate;
@@ -266,11 +275,20 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     return () => window.clearTimeout(task);
   }, []);
 
+  useLayoutEffect(() => {
+    const scope = `${siteId}:${month}`;
+    if (activeScope.current !== scope) activeScopeVersion.current += 1;
+    activeScope.current = scope;
+    refreshBusy.current = Boolean(editor || inlineEditor || savingMark || savingBulkMarks || loading);
+    refreshControl.current?.flush();
+  }, [editor, inlineEditor, savingMark, savingBulkMarks, loading, month, siteId]);
+
   useEffect(() => {
     const controller = new AbortController();
     const task = window.setTimeout(() => {
       setLoading(true);
       setError("");
+      setRefreshError("");
       setEditor(null);
       setInlineEditor(null);
       fetch(`/api/timesheet?siteId=${siteId}&month=${month}`, { cache: "no-store", signal: controller.signal })
@@ -294,6 +312,37 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
       window.clearTimeout(task);
       controller.abort();
     };
+  }, [month, reloadKey, siteId]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const isBusy = () => refreshBusy.current || markWrites.current > 0;
+    const control = createIdlePageRefresh({ pageWindow: window, pageDocument: document, isBusy, refresh: async () => {
+      const revision = markRevision.current;
+      try {
+        const response = await fetch(`/api/timesheet?siteId=${siteId}&month=${month}`, { cache: "no-store", signal: controller.signal });
+        if (controller.signal.aborted) return;
+        if (response.status === 401) { window.location.replace("/login"); return; }
+        const result = await response.json() as TimesheetPayload;
+        if (controller.signal.aborted) return;
+        if (response.status === 403 || response.status === 404) {
+          setPayload(null);
+          setError(result.error ?? "Нет доступа к табелю этого проекта.");
+          return;
+        }
+        if (!response.ok) throw new Error(result.error ?? "Не удалось обновить табель.");
+        // Do not replace an edit that began while the GET was in flight or an
+        // acknowledged local write with a response from before that write.
+        if (isBusy() || markRevision.current !== revision) { control.request(); return; }
+        setPayload(result);
+        setError("");
+        setRefreshError("");
+      } catch (failure) {
+        if (!controller.signal.aborted) setRefreshError(failure instanceof Error ? failure.message : "Не удалось обновить табель.");
+      }
+    } });
+    refreshControl.current = control;
+    return () => { controller.abort(); control.dispose(); if (refreshControl.current === control) refreshControl.current = null; };
   }, [month, reloadKey, siteId]);
 
   useEffect(() => {
@@ -406,7 +455,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
   const employeesWithReports = useMemo(() => new Set(visibleEntries.map((entry) => entry.employeeId)).size, [visibleEntries]);
   const editingEmployee = editor ? employeeById.get(editor.employeeId) : undefined;
   const editingMark = editor ? marksByCell.get(cellKey(editor.employeeId, editor.workDate)) : undefined;
-  const rowMoves = useNativeRowMoves(rowOrder, filters.isActive, Boolean(editor || inlineEditor || savingMark || loading), { key: `${siteId}:${month}`, ids: visibleEmployees.map(employee => employee.id) });
+  const rowMoves = useNativeRowMoves(rowOrder, filters.isActive, Boolean(editor || inlineEditor || savingMark || savingBulkMarks || loading), { key: `${siteId}:${month}`, ids: visibleEmployees.map(employee => employee.id) });
   const rowOrderKey = useMemo(() => `${siteId}:${month}:${visibleEmployees.map((employee) => employee.id).join("|")}`, [siteId, month, visibleEmployees]);
   const pinnedEmployeeId = inlineEditor?.employeeId ?? editor?.employeeId;
   const viewport = useTableViewport(visibleEmployees.length, rowOrderKey, !loading && !error,
@@ -540,11 +589,16 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
 
   async function persistMark(target: { employeeId: number; workDate: string }, value: string, note = "") {
     if (!payload) throw new Error("Табель ещё не загружен.");
+    const requestScope = `${payload.siteId}:${payload.month}`;
+    const requestScopeVersion = activeScopeVersion.current;
+    if (activeScope.current !== requestScope || target.workDate.slice(0, 7) !== payload.month) throw new Error("Табель обновляется. Дождитесь загрузки выбранного месяца.");
     const existingMark = marksByCell.has(cellKey(target.employeeId, target.workDate));
-    if (!value && !existingMark) return;
+    if (!value && !existingMark) return true;
     if (!value && !payload.canDelete) throw new Error("Недостаточно прав для удаления отметки табеля.");
     if (value && existingMark && !payload.canUpdate) throw new Error("Недостаточно прав для изменения отметки табеля.");
     if (value && !existingMark && !payload.canCreate) throw new Error("Недостаточно прав для добавления отметки табеля.");
+    markWrites.current += 1;
+    markRevision.current += 1;
     setSavingMark(true);
     const previousMark = marksByCell.get(cellKey(target.employeeId, target.workDate));
     const undoRowIndex = visibleEmployees.findIndex((employee) => employee.id === target.employeeId);
@@ -561,7 +615,8 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
       }
       const result = await response.json() as { mark?: TimesheetMark; deleted?: boolean; error?: string };
       if (!response.ok) throw new Error(result.error ?? "Не удалось сохранить отметку.");
-      setPayload((current) => current ? {
+      if (activeScope.current !== requestScope || activeScopeVersion.current !== requestScopeVersion) return false;
+      setPayload((current) => current && activeScopeVersion.current === requestScopeVersion && current.siteId === payload.siteId && current.month === payload.month ? {
         ...current,
         marks: [
           ...current.marks.filter((mark) => cellKey(mark.employeeId, mark.workDate) !== cellKey(target.employeeId, target.workDate)),
@@ -569,19 +624,25 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
         ],
       } : current);
       if (undoRowIndex >= 0 && undoColumnIndex >= 0) rememberTimesheetUndo([{ rowIndex: undoRowIndex, columnIndex: undoColumnIndex, value: previousMark ? markValue(previousMark, undefined) : "", note: previousMark?.note ?? "" }]);
+      return true;
     } finally {
+      markWrites.current -= 1;
       setSavingMark(false);
+      refreshControl.current?.flush();
     }
   }
 
   async function saveMark(clear = false, valueOverride?: string) {
     if (!editor) return;
     const nextValue = clear ? "" : valueOverride ?? "";
+    const editorScope = activeScope.current;
+    const editorScopeVersion = activeScopeVersion.current;
     setEditorError("");
     try {
-      await persistMark(editor, nextValue, marksByCell.get(cellKey(editor.employeeId, editor.workDate))?.note ?? "");
+      if (!await persistMark(editor, nextValue, marksByCell.get(cellKey(editor.employeeId, editor.workDate))?.note ?? "")) return;
       closeEditorAndRestoreGridFocus();
     } catch (saveError) {
+      if (activeScope.current !== editorScope || activeScopeVersion.current !== editorScopeVersion) return;
       setEditorError(saveError instanceof Error ? saveError.message : "Не удалось сохранить отметку.");
     }
   }
@@ -589,6 +650,8 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
   async function saveInlineEditor(move?: InlineEditorMove, valueOverride?: string, returnFocus = true) {
     const target = inlineEditor;
     if (!target || inlineSaveInFlight.current) return;
+    const editorScope = activeScope.current;
+    const editorScopeVersion = activeScopeVersion.current;
     const normalizedValue = (valueOverride ?? target.value).trim().toLocaleUpperCase("ru-RU");
     const valid = normalizedValue === "" || /^([1-9]|10)$/.test(normalizedValue) || CODE_VALUES.has(normalizedValue as typeof TIMESHEET_CODES[number]["value"]);
     if (!valid) {
@@ -606,11 +669,12 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     inlineSaveInFlight.current = true;
     try {
       const currentMark = marksByCell.get(cellKey(target.employeeId, target.workDate));
-      await persistMark(target, normalizedValue, currentMark?.note ?? "");
+      if (!await persistMark(target, normalizedValue, currentMark?.note ?? "")) return;
       if (returnFocus) inlineGridFocusPending.current = true;
       setInlineEditor((current) => current?.employeeId === target.employeeId && current.workDate === target.workDate ? null : current);
       if (move) focusClipboardCell(target.rowIndex + move.row, target.columnIndex + move.column);
     } catch (saveError) {
+      if (activeScope.current !== editorScope || activeScopeVersion.current !== editorScopeVersion) return;
       setInlineEditor((current) => current?.employeeId === target.employeeId && current.workDate === target.workDate
         ? { ...current, error: saveError instanceof Error ? saveError.message : "Не удалось сохранить отметку" }
         : current);
@@ -621,6 +685,9 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
 
   async function pasteTimesheetCells(changes: TimesheetClipboardChange[]) {
     if (!payload?.canEdit) throw new Error("Недостаточно прав для изменения табеля");
+    const requestScope = `${payload.siteId}:${payload.month}`;
+    const requestScopeVersion = activeScopeVersion.current;
+    if (activeScope.current !== requestScope) throw new Error("Табель обновляется. Дождитесь загрузки выбранного месяца.");
     const prepared = changes.flatMap((change) => {
       const employee = visibleEmployees[change.rowIndex];
       const day = days[change.columnIndex];
@@ -639,30 +706,48 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     });
     if (!prepared.length) return 0;
 
-    const results = await Promise.all(prepared.map(async (item) => {
-      const response = await fetch("/api/timesheet", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ siteId: payload.siteId, employeeId: item.employeeId, workDate: item.workDate, value: item.value, note: item.note }),
-      });
-      if (response.status === 401) {
-        window.location.replace("/login");
-        throw new Error("Требуется авторизация");
-      }
-      const result = await response.json() as { mark?: TimesheetMark; deleted?: boolean; error?: string };
-      if (!response.ok) throw new Error(result.error ?? "Не удалось вставить данные табеля");
-      return { ...item, mark: result.mark };
-    }));
+    markWrites.current += 1;
+    markRevision.current += 1;
+    setSavingBulkMarks(true);
+    try {
+      const outcomes = await Promise.allSettled(prepared.map(async (item) => {
+        const response = await fetch("/api/timesheet", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ siteId: payload.siteId, employeeId: item.employeeId, workDate: item.workDate, value: item.value, note: item.note }),
+        });
+        if (response.status === 401) {
+          window.location.replace("/login");
+          throw new Error("Требуется авторизация");
+        }
+        const result = await response.json() as { mark?: TimesheetMark; deleted?: boolean; error?: string };
+        if (!response.ok) throw new Error(result.error ?? "Не удалось вставить данные табеля");
+        return { ...item, mark: result.mark };
+      }));
 
-    const changedKeys = new Set(prepared.map((item) => cellKey(item.employeeId, item.workDate)));
-    setPayload((current) => current ? {
-      ...current,
-      marks: [
-        ...current.marks.filter((mark) => !changedKeys.has(cellKey(mark.employeeId, mark.workDate))),
-        ...results.flatMap((result) => result.mark ? [result.mark] : []),
-      ],
-    } : current);
-    return results.length;
+      const failure = outcomes.find(outcome => outcome.status === "rejected");
+      if (activeScope.current !== requestScope || activeScopeVersion.current !== requestScopeVersion) return 0;
+      if (failure?.status === "rejected") throw failure.reason;
+      const results = outcomes.flatMap(outcome => outcome.status === "fulfilled" ? [outcome.value] : []);
+      const changedKeys = new Set(prepared.map((item) => cellKey(item.employeeId, item.workDate)));
+      setPayload((current) => current && activeScopeVersion.current === requestScopeVersion && current.siteId === payload.siteId && current.month === payload.month ? {
+        ...current,
+        marks: [
+          ...current.marks.filter((mark) => !changedKeys.has(cellKey(mark.employeeId, mark.workDate))),
+          ...results.flatMap((result) => result.mark ? [result.mark] : []),
+        ],
+      } : current);
+      return results.length;
+    } catch (failure) {
+      // Some independent cells may already be saved; read their final state
+      // once every request has completed rather than showing an old snapshot.
+      refreshControl.current?.request();
+      throw failure;
+    } finally {
+      markWrites.current -= 1;
+      setSavingBulkMarks(false);
+      refreshControl.current?.flush();
+    }
   }
 
   function openTimesheetExportPreview() {
@@ -748,6 +833,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange }: { 
     </div>, headerActionsTarget)}
 
     {error && <div className="timesheet-state timesheet-state-error"><strong>Не удалось открыть табель</strong><span>{error}</span><button type="button" onClick={() => setReloadKey((value) => value + 1)}>Повторить</button></div>}
+    {refreshError && !error && <div className="timesheet-state timesheet-state-error" role="status"><strong>Не удалось обновить табель</strong><span>{refreshError}</span><button type="button" onClick={() => refreshControl.current?.request()}>Повторить</button></div>}
     {!error && <div className="personnel-timesheet-summary timesheet-top-summary" aria-label={`Период и итоги за ${monthLabel(month)}`} aria-busy={loading}>
       <div className="timesheet-month-control timesheet-summary-month-control" aria-label="Выбор месяца">
         <button type="button" onClick={() => changeMonth(shiftMonth(month, -1))} aria-label="Предыдущий месяц">‹</button>

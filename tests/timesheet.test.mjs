@@ -109,6 +109,30 @@ test("uses daily report hours only for OPR employees", () => {
   assert.equal(engineer?.reportHours, 0);
 });
 
+test("keeps approved OPR hours after a date transfer and a later change of employee type", () => {
+  const employee = { id: 7, fullName: "Архивный сотрудник", employmentType: "ИТР", department: "ПТО", position: "Инженер" };
+  const oldMonth = { employees: [], entries: [], marks: [] };
+  const newMonth = {
+    employees: [employee],
+    entries: [{ employeeId: 7, workDate: "2027-01-01", hours: 8, masters: "Исходный мастер", zones: "А", reportTracked: true }],
+    marks: [],
+  };
+  const exported = buildPersonnelTimesheetRange([oldMonth, newMonth], "2026-12-31", "2027-01-01");
+  assert.deepEqual(exported.rows[0].dailyValues, ["", 8]);
+  assert.deepEqual(exported.rows[0].dailyReportHours, [0, 8]);
+  assert.deepEqual(exported.dayTotals, [0, 8]);
+  assert.equal(exported.rows[0].masters, "Исходный мастер");
+  assert.equal(exported.rows[0].employmentType, "ИТР");
+  assert.equal(exported.totalHours, 8);
+  const corrected = buildPersonnelTimesheetRange([oldMonth, { ...newMonth,
+    marks: [{ employeeId: 7, workDate: "2027-01-01", hours: null, code: "В", note: "Ручная отметка", updatedBy: "Инженер" }],
+  }], "2026-12-31", "2027-01-01");
+  assert.deepEqual(corrected.rows[0].dailyValues, ["", "В"]);
+  assert.deepEqual(corrected.rows[0].dailyReportHours, [0, 8]);
+  assert.equal(corrected.totalHours, 0);
+  assert.equal(newMonth.entries[0].hours, 8);
+});
+
 test("builds the monthly timesheet from saved daily reports", async () => {
   const api = await readFile(new URL("../app/api/timesheet/route.ts", import.meta.url), "utf8");
   const view = await readFile(new URL("../app/TimesheetView.tsx", import.meta.url), "utf8");

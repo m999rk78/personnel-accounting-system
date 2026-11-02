@@ -1,6 +1,6 @@
 import type { PostgresDatabase } from "../db/client";
 import type { AuthUser } from "./auth";
-import type { PersonnelReport, PersonnelReportApprovedEntry, PersonnelReportData, PersonnelReportEntrySaveRequest, PersonnelReportRequest, PersonnelReportRow, PersonnelReportRowValidationIssue, PersonnelReportValidationIssue, PersonnelReportValidationRequest, PersonnelReportValidationResult } from "./personnelReportTypes";
+import type { PersonnelReport, PersonnelReportApprovedEntry, PersonnelReportData, PersonnelReportDateRequest, PersonnelReportEntryDateRequest, PersonnelReportEntrySaveRequest, PersonnelReportRequest, PersonnelReportRow, PersonnelReportRowValidationIssue, PersonnelReportValidationIssue, PersonnelReportValidationRequest, PersonnelReportValidationResult } from "./personnelReportTypes";
 import {
   assertCanSavePersonnelReport, assertPersonnelReportHours, assertPersonnelReportOwner,
   assertPersonnelReportRevision, assertPersonnelReportSiteAccess, canReviewPersonnelReport, canViewPendingReportsFor,
@@ -378,6 +378,131 @@ async function publishPersonnelReportRows(db: Executor, user: AuthUser, report: 
   }
 }
 
+function assertPersonnelDateChange(value: unknown) {
+  if (!validPersonnelReportDate(value) || value.startsWith("0000-")) {
+    throw new PersonnelReportError("Укажите корректную дату отчёта.");
+  }
+}
+
+async function lockPersonnelDateHours(db: Executor, from: string, to: string, employeeIds: number[]) {
+  const keys = [...new Set([from, to].flatMap(date => employeeIds.map(id => `${date}:${id}`)))].sort();
+  for (const key of keys) await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(`placement-hours:${key}`).first();
+}
+
+async function movePersonnelPublishedDay(db: Executor, user: AuthUser, siteId: number, from: string, to: string) {
+  // Different owners can transfer different employees in opposite directions.
+  // Lock their shared day markers in the same order before either row is written.
+  for (const date of [...new Set([from, to])].sort()) {
+    await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(`personnel-published-day:${siteId}:${date}`).first();
+  }
+  await db.prepare(`INSERT INTO placement_report_days (site_id, work_date, submitted_by, submitted_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT (site_id, work_date) DO UPDATE SET
+    submitted_by = EXCLUDED.submitted_by, submitted_at = CURRENT_TIMESTAMP RETURNING site_id`)
+    .bind(siteId, to, user.id).all();
+  // Another foreman's report or an older standalone entry can still use the
+  // original day. Their submission marker must survive this transfer.
+  await db.prepare(`DELETE FROM placement_report_days day WHERE day.site_id = ? AND day.work_date = ?
+    AND NOT EXISTS (SELECT 1 FROM placement_entries entry WHERE entry.site_id = day.site_id
+      AND entry.work_date = day.work_date AND entry.deleted_at IS NULL)
+    AND NOT EXISTS (SELECT 1 FROM personnel_reports report WHERE report.site_id = day.site_id
+      AND report.work_date = day.work_date AND report.status = 'approved')`)
+    .bind(siteId, from).run();
+}
+
+/** A date belongs to the daily report: keep its identity and move all rows atomically. */
+export async function mutatePersonnelReportDate(database: PostgresDatabase, user: AuthUser, payload: PersonnelReportDateRequest): Promise<PersonnelReport> {
+  if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
+  if (payload.action !== "change-date" || !positiveId(payload.reportId)) throw new PersonnelReportError("Укажите отчёт.");
+  assertPersonnelDateChange(payload.workDate);
+  return database.transaction(async db => {
+    await db.prepare("SELECT id FROM personnel_reports WHERE id = ? FOR UPDATE").bind(payload.reportId).first();
+    // Match the save/approval lock order: report, published rows, hour keys.
+    const published = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
+      entry.employee_id AS employeeId, entry.hours, entry.revision, entry.deleted_at AS deletedAt,
+      source.id AS reportRowId FROM placement_entries entry
+      JOIN personnel_report_rows source ON source.approved_entry_id = entry.id
+      WHERE source.report_id = ? ORDER BY entry.id FOR UPDATE OF entry`).bind(payload.reportId)
+      .all<{ id: number; siteId: number; workDate: string; employeeId: number; hours: number; revision: number; deletedAt: string | null; reportRowId: number }>();
+    const current = await readReport(db, payload.reportId);
+    assertCanSavePersonnelReport(user, current);
+    await assertActiveSite(db, user, current.siteId);
+    assertPersonnelReportRevision(current.revision, payload.revision);
+    if (current.workDate === payload.workDate) return current;
+    for (const key of [...new Set([current.workDate, payload.workDate])].map(date => `personnel-report:${current.siteId}:${date}:${current.ownerUserId}`).sort()) {
+      await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(key).first();
+    }
+    if (current.status !== "approved") {
+      const existing = await db.prepare(`SELECT id FROM personnel_reports WHERE site_id = ? AND work_date = ?
+        AND owner_user_id = ? AND status <> 'approved' AND id <> ?`)
+        .bind(current.siteId, payload.workDate, current.ownerUserId, current.id).first<{ id: number }>();
+      if (existing) throw new PersonnelReportError("На выбранную дату уже есть незавершённый отчёт этого прораба. Выберите другую дату или продолжите существующий отчёт.", 409, "REPORT_EXISTS", { reportId: existing.id });
+    }
+    const rawRows = await reportRowsStatement(db, [current.id], false).all<PersonnelReportRow>();
+    const publishedById = new Map(published.results.map(entry => [entry.id, entry]));
+    if (current.status === "approved") {
+      if (rawRows.results.length !== current.rows.length || rawRows.results.some(row => {
+        const entry = row.approvedEntryId ? publishedById.get(row.approvedEntryId) : undefined;
+        return !entry || entry.deletedAt || entry.siteId !== current.siteId || entry.workDate !== current.workDate || entry.reportRowId !== row.id;
+      })) throw new PersonnelReportError("Подтверждённые записи отчёта уже изменены. Обновите таблицу перед переносом.", 409, "STALE_REPORT");
+    } else if (published.results.length) throw new PersonnelReportError("Состояние отчёта уже изменено. Обновите таблицу.", 409, "STALE_REPORT");
+    if (current.status === "submitted" || current.status === "approved") {
+      const rows = completePersonnelReportRows(normalizePersonnelReportRows(current.rows));
+      await lockPersonnelDateHours(db, current.workDate, payload.workDate, rows.map(row => row.employeeId));
+      await checkHours(db, payload.workDate, rows, false, new Map(current.rows.flatMap(row => row.employeeId ? [[row.employeeId, row.employeeName]] : [])),
+        current.status === "approved" ? published.results.map(entry => entry.id) : []);
+    }
+    if (current.status === "approved") {
+      const ids = published.results.map(entry => entry.id);
+      const moved = await db.prepare(`UPDATE placement_entries SET work_date = ?, updated_by_user_id = ?,
+        updated_at = clock_timestamp(), revision = revision + 1 WHERE id = ANY(?) AND deleted_at IS NULL RETURNING id`)
+        .bind(payload.workDate, user.id, ids).all<{ id: number }>();
+      if (moved.results.length !== ids.length) throw new PersonnelReportError("Подтверждённые записи отчёта уже изменены. Обновите таблицу.", 409, "STALE_REPORT");
+    }
+    await db.prepare(`UPDATE personnel_reports SET work_date = ?, revision = revision + 1,
+      updated_by_user_id = ?, updated_at = clock_timestamp() WHERE id = ? RETURNING id`)
+      .bind(payload.workDate, user.id, current.id).run();
+    await db.prepare("UPDATE personnel_report_rows SET updated_at = clock_timestamp() WHERE report_id = ?").bind(current.id).run();
+    if (current.status === "approved") await movePersonnelPublishedDay(db, user, current.siteId, current.workDate, payload.workDate);
+    return readReport(db, current.id);
+  });
+}
+
+/** Approved entries created before daily reports retain their own revision and identity. */
+export async function mutatePersonnelReportEntryDate(database: PostgresDatabase, user: AuthUser, payload: PersonnelReportEntryDateRequest): Promise<PersonnelReportApprovedEntry> {
+  if (user.role === "viewer" || !canReviewPersonnelReport(user)) throw new PersonnelReportError("Изменять дату подтверждённой записи может только инженер.", 403, "REPORT_FORBIDDEN");
+  if (payload.action !== "change-entry-date" || !positiveId(payload.entryId) || !positiveId(payload.siteId)) throw new PersonnelReportError("Укажите запись и проект.");
+  assertPersonnelDateChange(payload.workDate);
+  return database.transaction(async db => {
+    await assertActiveSite(db, user, payload.siteId);
+    const previous = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
+      entry.employee_id AS employeeId, entry.hours, entry.revision, source.report_id AS reportId,
+      COALESCE(NULLIF(entry.employee_name_snapshot, ''), employee.full_name) AS employeeName
+      FROM placement_entries entry JOIN employees employee ON employee.id = entry.employee_id
+      LEFT JOIN personnel_report_rows source ON source.approved_entry_id = entry.id
+      WHERE entry.id = ? AND entry.deleted_at IS NULL
+        AND UPPER(TRIM(COALESCE(NULLIF(entry.employment_type_snapshot, ''), employee.employment_type))) = 'ОПР'
+      ORDER BY entry.id FOR UPDATE OF entry`).bind(payload.entryId)
+      .first<{ id: number; siteId: number; workDate: string; employeeId: number; hours: number; revision: number; reportId: number | null; employeeName: string }>();
+    if (!previous) throw new PersonnelReportError("Запись уже удалена. Обновите таблицу.", 409, "STALE_REPORT");
+    if (previous.siteId !== payload.siteId) throw new PersonnelReportError("Нельзя изменить проект существующей записи.", 403, "REPORT_FORBIDDEN");
+    if (previous.reportId) throw new PersonnelReportError("Запись относится к отчёту. Обновите таблицу и измените дату отчёта целиком.", 409, "STALE_REPORT");
+    assertPersonnelReportRevision(previous.revision, payload.revision);
+    if (previous.workDate !== payload.workDate) {
+      await lockPersonnelDateHours(db, previous.workDate, payload.workDate, [previous.employeeId]);
+      const issues = collectPersonnelReportHourIssues([previous], await approvedHoursForDate(db, payload.workDate, [previous.employeeId], [previous.id]), new Map([[previous.employeeId, previous.employeeName]]));
+      if (issues.length) throw new PersonnelReportError(issues.map(issue => issue.message).join("\n"), 409, "HOURS_CONFLICT", { ...issues[0], issues });
+      await db.prepare(`UPDATE placement_entries SET work_date = ?, updated_by_user_id = ?,
+        updated_at = clock_timestamp(), revision = revision + 1 WHERE id = ? AND deleted_at IS NULL RETURNING id`)
+        .bind(payload.workDate, user.id, previous.id).run();
+      await movePersonnelPublishedDay(db, user, previous.siteId, previous.workDate, payload.workDate);
+    }
+    const result = await listPersonnelReports(db, user, payload.siteId, payload.workDate, payload.workDate);
+    const entry = result.entries.find(entry => entry.id === previous.id);
+    if (!entry) throw new Error("Не удалось загрузить исправленную запись.");
+    return entry;
+  });
+}
+
 /** Older approved entries have no draft header. Correct them with their own optimistic revision. */
 export async function mutatePersonnelReportEntry(database: PostgresDatabase, user: AuthUser, payload: PersonnelReportEntrySaveRequest): Promise<PersonnelReportApprovedEntry> {
   if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
@@ -411,7 +536,7 @@ export async function mutatePersonnelReportEntry(database: PostgresDatabase, use
   });
 }
 
-export async function mutatePersonnelReport(database: PostgresDatabase, user: AuthUser, payload: Exclude<PersonnelReportRequest, PersonnelReportEntrySaveRequest | PersonnelReportValidationRequest>): Promise<PersonnelReport> {
+export async function mutatePersonnelReport(database: PostgresDatabase, user: AuthUser, payload: Exclude<PersonnelReportRequest, PersonnelReportEntrySaveRequest | PersonnelReportValidationRequest | PersonnelReportDateRequest | PersonnelReportEntryDateRequest>): Promise<PersonnelReport> {
   if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   return database.transaction(async (db) => {
     if (payload.action === "save") {

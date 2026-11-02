@@ -16,6 +16,7 @@ type TimesheetEntry = {
   employeeId: number;
   workDate: string;
   hours: number;
+  reportTracked?: boolean;
   masters: string;
   zones: string;
 };
@@ -118,8 +119,13 @@ export async function GET(request: Request) {
     const endDate = nextMonthStart(month);
     const db = getDatabase();
 
-    const [employeesResult, entriesResult, marksResult] = await db.readBatch([
-      db.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position
+    // Keep the roster, approved hours and manual marks on one snapshot. A date
+    // transfer committing between these reads must not hide a former employee
+    // whose only connection to this month is a historical report entry.
+    const [employeesResult, entriesResult, marksResult] = await db.transaction(async transaction => {
+      await transaction.prepare("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY").run();
+      return transaction.readBatch([
+        transaction.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position
         FROM employees e
         WHERE e.id IN (
           SELECT epa.employee_id FROM employee_project_assignments epa
@@ -135,8 +141,9 @@ export async function GET(request: Request) {
           WHERE tm.site_id = ? AND tm.work_date >= ? AND tm.work_date < ?
         )
         ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId, siteId, startDate, endDate, siteId, startDate, endDate),
-      db.prepare(`SELECT pe.employee_id AS employeeId, pe.work_date AS workDate,
+        transaction.prepare(`SELECT pe.employee_id AS employeeId, pe.work_date AS workDate,
           SUM(pe.hours)::int AS hours,
+          TRUE AS reportTracked,
           COALESCE(STRING_AGG(DISTINCT COALESCE(NULLIF(pe.master_name_snapshot, ''), m.name), ', '), '') AS masters,
           COALESCE(STRING_AGG(DISTINCT z.name, ', '), '') AS zones
         FROM placement_entries pe
@@ -146,11 +153,12 @@ export async function GET(request: Request) {
           AND UPPER(TRIM(pe.employment_type_snapshot)) = 'ОПР'
         GROUP BY pe.employee_id, pe.work_date
         ORDER BY pe.work_date, pe.employee_id`).bind(siteId, startDate, endDate),
-      db.prepare(`SELECT employee_id AS employeeId, work_date AS workDate, hours, code, note, created_by AS updatedBy
+        transaction.prepare(`SELECT employee_id AS employeeId, work_date AS workDate, hours, code, note, created_by AS updatedBy
         FROM timesheet_marks
         WHERE site_id = ? AND work_date >= ? AND work_date < ?
         ORDER BY work_date, employee_id`).bind(siteId, startDate, endDate),
-    ]);
+      ]);
+    });
 
     return Response.json({
       siteId,

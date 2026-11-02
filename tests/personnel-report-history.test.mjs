@@ -147,7 +147,7 @@ test("approved and legacy editors retain unchanged references; copying starts a 
   const code = ts.transpileModule([...declarations.values()].join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const catalogs = { employees: [], shifts: [], zones: [], mainWorkTypes: [], subworkTypes: [], masters: [] };
   let copied;
-  const helpers = new Function("props", "appendToday", "setError", "compatibleSubworkId", `${code}; return {toDraft,toApprovedDraft,toEntryDraft,copyRows};`)(catalogs, rows => { copied = rows; }, message => { throw new Error(message); }, compatibleSubworkId);
+  const helpers = new Function("props", "appendOnDate", "setError", "compatibleSubworkId", `${code}; return {toDraft,toApprovedDraft,toEntryDraft,copyRows};`)(catalogs, rows => { copied = rows; }, message => { throw new Error(message); }, compatibleSubworkId);
   const approved = helpers.toApprovedDraft(original);
   const legacy = helpers.toEntryDraft({ ...original, id: 500 });
   assert.deepEqual(personnelCellErrors(approved, catalogs, true), {});

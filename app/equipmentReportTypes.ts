@@ -91,6 +91,21 @@ export type EquipmentReportSaveRequest = {
   rows: EquipmentReportDraftRow[];
 };
 
+export type EquipmentReportDateRequest = {
+  action: "change-date";
+  reportId: number;
+  revision: number;
+  workDate: string;
+};
+
+export type EquipmentReportEntryDateRequest = {
+  action: "change-entry-date";
+  entryId: number;
+  revision: number;
+  siteId: number;
+  workDate: string;
+};
+
 export type EquipmentReportTransitionRequest = {
   action: "submit" | "approve" | "reject" | "reopen";
   reportId: number;
@@ -139,6 +154,6 @@ export type EquipmentReportValidationRequest = {
 
 export type EquipmentReportValidationResult = { issues: EquipmentReportValidationIssue[] };
 
-export type EquipmentReportRequest = EquipmentReportSaveRequest | EquipmentReportTransitionRequest | EquipmentReportEntrySaveRequest | EquipmentReportValidationRequest;
+export type EquipmentReportRequest = EquipmentReportSaveRequest | EquipmentReportTransitionRequest | EquipmentReportEntrySaveRequest | EquipmentReportValidationRequest | EquipmentReportDateRequest | EquipmentReportEntryDateRequest;
 
 export type EquipmentReportAvailabilityMark = { equipmentId: number; workDate: string; productiveHours: number; downtimeHours: number; note: string };

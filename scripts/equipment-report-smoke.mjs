@@ -196,6 +196,41 @@ function validateSubmissions(body, actor) {
 function mutateReport(body, actor) {
   assertWritable(actor);
   const now = new Date().toISOString();
+  if (body.action === "change-entry-date") {
+    assertEquipmentReportSiteAccess(actor, body.siteId);
+    if (!canReviewEquipmentReport(actor)) fail("Изменить дату подтверждённой записи может инженер.", 403, "REPORT_FORBIDDEN");
+    if (!validEquipmentReportDate(body.workDate) || body.workDate.startsWith("0000-")) fail("Укажите корректную дату отчёта.");
+    const previous = entries.get(body.entryId);
+    if (!previous || previous.siteId !== body.siteId) fail("Подтверждённая запись не найдена.", 404, "ENTRY_NOT_FOUND");
+    if (previous.orderReportId) fail("Измените дату отчёта целиком.", 409, "STALE_REPORT");
+    assertEquipmentReportRevision(previous.revision, body.revision);
+    if (previous.workDate === body.workDate) return { entry: previous };
+    checkMaterialization([previous], body.workDate, [previous.id]);
+    const entry = { ...previous, workDate: body.workDate, updatedAt: now, revision: previous.revision + 1 };
+    entries.set(entry.id, entry);
+    return { entry };
+  }
+  if (body.action === "change-date") {
+    if (!validEquipmentReportDate(body.workDate) || body.workDate.startsWith("0000-")) fail("Укажите корректную дату отчёта.");
+    const current = reports.get(body.reportId);
+    if (!current) fail("Отчёт не найден.", 404, "REPORT_NOT_FOUND");
+    assertCanSaveEquipmentReport(actor, current);
+    assertEquipmentReportRevision(current.revision, body.revision);
+    if (current.workDate === body.workDate) return { report: current };
+    if (current.status !== "approved" && [...reports.values()].some(item => item.id !== current.id && item.siteId === current.siteId && item.ownerUserId === current.ownerUserId && item.status !== "approved" && item.workDate === body.workDate)) fail("На выбранную дату уже есть отчёт этого прораба.", 409, "REPORT_EXISTS");
+    const linked = current.rows.map(row => row.approvedEntryId ? entries.get(row.approvedEntryId) : undefined);
+    if (current.status === "approved" && linked.some(entry => !entry || entry.workDate !== current.workDate || entry.siteId !== current.siteId)) fail("Подтверждённые строки уже изменены.", 409, "STALE_REPORT");
+    if (["submitted", "approved"].includes(current.status)) checkMaterialization(current.rows, body.workDate, linked.filter(Boolean).map(entry => entry.id));
+    else {
+      const issues = availabilityIssues(current.rows, body.workDate);
+      if (issues.length) fail(issues[0].message, 409, "EQUIPMENT_UNAVAILABLE", { issues });
+    }
+    const report = { ...structuredClone(current), workDate: body.workDate, updatedAt: now, revision: current.revision + 1 };
+    report.rows = report.rows.map((row, index) => ({ ...row, workDate: body.workDate, updatedAt: now, ...(linked[index] ? { approvedEntryRevision: linked[index].revision + 1 } : {}) }));
+    if (report.status === "approved") for (const entry of linked) entries.set(entry.id, { ...entry, workDate: body.workDate, updatedAt: now, revision: entry.revision + 1 });
+    reports.set(report.id, report);
+    return { report };
+  }
   if (body.action === "save-approved-entry") {
     assertEquipmentReportSiteAccess(actor, body.siteId);
     if (!canReviewEquipmentReport(actor)) fail("Исправить подтверждённую запись может инженер.", 403, "REVIEW_FORBIDDEN");
@@ -326,13 +361,24 @@ if (selfTest) {
   const snapshot = () => JSON.stringify({ reports: [...reports], entries: [...entries], orders: [...orders], requestCounts });
   const unchanged = snapshot();
   for (const actor of [actors.viewer, actors.viewer_pending, { ...actors.viewer, permissions: actors.engineer.permissions }]) {
-    for (const action of ["save", "submit", "approve", "reject", "reopen", "save-approved-entry"]) {
+    for (const action of ["save", "submit", "approve", "reject", "reopen", "save-approved-entry", "change-date", "change-entry-date"]) {
       assert.throws(() => mutateReport({ action, siteId: site.id, reportId: pending.id, revision: pending.revision, workDate: TODAY, rows: pending.rows }, actor), { status: 403, code: "REPORT_FORBIDDEN" });
     }
     assert.throws(() => validateSubmissions({ siteId: site.id, reports: [] }, actor), { status: 403, code: "REPORT_FORBIDDEN" });
     assert.throws(() => assertWritable(actor), { status: 403, code: "REPORT_FORBIDDEN" });
   }
   assert.equal(snapshot(), unchanged, "Viewer requests must leave all in-memory state unchanged");
+  scenario = "default"; resetFixture();
+  const dated = [...reports.values()].find(report => report.status === "approved");
+  const oldDate = dated.workDate;
+  const moved = mutateReport({ action: "change-date", reportId: dated.id, revision: dated.revision, workDate: "2026-11-02" }, actors.engineer).report;
+  assert.equal(moved.rows[0].workDate, "2026-11-02");
+  assert.ok(!timesheetEntries().some(row => row.workDate === oldDate));
+  assert.equal(entries.get(moved.rows[0].approvedEntryId).revision, moved.rows[0].approvedEntryRevision);
+  const standalone = [...entries.values()].find(entry => !entry.orderReportId);
+  const movedEntry = mutateReport({ action: "change-entry-date", siteId: 1, entryId: standalone.id, revision: standalone.revision, workDate: "2026-11-03" }, actors.engineer).entry;
+  assert.equal(movedEntry.workDate, "2026-11-03");
+  assert.throws(() => mutateReport({ action: "change-date", reportId: moved.id, revision: dated.revision, workDate: "2026-11-04" }, actors.engineer), { code: "STALE_REPORT" });
   scenario = savedScenario; resetFixture();
   console.log("Equipment smoke self-test passed: lifecycle, ownership, approved edits, hours cap, marks, publish isolation and viewer read/write boundaries.");
   process.exit(0);

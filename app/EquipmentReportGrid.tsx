@@ -12,6 +12,7 @@ import { comparePersonnelActivity, personnelActivityTime, personnelReportSortOpt
 import { LocalizedGrid, personnelColumnFilter, personnelFilterParams, type SpreadsheetBatch } from "./GridFilters";
 import { groupEquipmentReportDates, equipmentReportOrderId } from "./equipmentReportRowOrder";
 import type { EquipmentReportStatus } from "./equipmentReportTypes";
+import { ReportDatePicker } from "./ReportDateControls";
 import "./personnelReportGrid.css";
 
 export type { EquipmentReportStatus } from "./equipmentReportTypes";
@@ -26,6 +27,8 @@ export type EquipmentReportGridRow = {
   entry?: GridEquipmentEntry;
   draft?: EquipmentSpreadsheetDraft;
   editable?: boolean;
+  dateEditable?: boolean;
+  dateScopeLabel?: string;
   removable?: boolean;
   proposalId?: number;
   responsibleUserId?: number | null;
@@ -45,6 +48,7 @@ export type EquipmentReportGridProps = {
   mainWorkTypes: GridOption[];
   subworkTypes: GridOption[];
   dailyTimesheetMarks?: EquipmentAvailabilityMark[];
+  onChangeDate?: (row: EquipmentReportGridRow, workDate: string) => Promise<void>;
   onPatchDraft: (key: string, changes: Partial<EquipmentSpreadsheetDraft>) => void;
   onApplyRange: (batch: { rows: { rowKey?: string; values: Record<string, string> }[]; source: SpreadsheetBatch<unknown>["source"] }) => boolean;
   history: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean };
@@ -130,6 +134,7 @@ export function EquipmentReportGrid(props: EquipmentReportGridProps) {
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [focusRequest, setFocusRequest] = useState(0);
   const previousRowKeys = useRef(new Set(props.rows.map((row) => row.rowKey)));
+  const previousRowDates = useRef(new Map(props.rows.map(row => [row.rowKey, row.workDate])));
   const structure = JSON.stringify(props.rows.map(({ rowKey, workDate, orderKey }) => ({ rowKey, workDate, orderKey })));
   const rowData = useMemo<TableRow[]>(() => (JSON.parse(structure) as { rowKey: string; orderKey?: string; workDate: string }[]).map((row, insertionRank) => ({ ...row, kind: "entry", insertionRank })), [structure]);
   const keepDatesTogether = useCallback(({ nodes, api }: PostSortRowsParams<TableRow>) => {
@@ -178,6 +183,8 @@ export function EquipmentReportGrid(props: EquipmentReportGridProps) {
 
   useEffect(() => {
     const addedDraft = [...rowsByKey.values()].find((row) => row.editable && !previousRowKeys.current.has(row.rowKey));
+    const movedRow = [...rowsByKey.values()].find(row => previousRowDates.current.has(row.rowKey) && previousRowDates.current.get(row.rowKey) !== row.workDate);
+    previousRowDates.current = new Map([...rowsByKey.values()].map(row => [row.rowKey, row.workDate]));
     previousRowKeys.current = new Set(rowsByKey.keys());
     const frame = requestAnimationFrame(() => {
       const api = apiRef.current;
@@ -186,11 +193,12 @@ export function EquipmentReportGrid(props: EquipmentReportGridProps) {
       // Refresh committed values in place; never tear down an editing row.
       api.refreshClientSideRowModel("everything");
       api.refreshCells({ force: true });
-      if (addedDraft) {
+      const revealRow = movedRow ?? addedDraft;
+      if (revealRow) {
         // A new editable row must be reachable even when an equipment/date filter
         // had hidden blank values before the row was created.
         api.setFilterModel(null);
-        const node = api.getRowNode(addedDraft.rowKey);
+        const node = api.getRowNode(revealRow.rowKey);
         // Only scroll when the new row is outside the viewport. Aligning every
         // addition to the top hides the drafts added by the preceding clicks.
         if (node) api.ensureNodeVisible(node);
@@ -228,6 +236,7 @@ export function EquipmentReportGrid(props: EquipmentReportGridProps) {
     if (!row) return null;
     const field = params.column?.getColId() as EditableField;
     const value = params.value ?? "";
+    if (String(field) === "workDate" && (row.dateEditable ?? row.editable) && propsRef.current.onChangeDate) return <ReportDatePicker workDate={row.workDate} scopeLabel={row.dateScopeLabel} disabled={!row.editable} onChange={workDate => propsRef.current.onChangeDate!(row, workDate)} />;
     const issue = canEdit(row) && row.draft ? equipmentCellErrors(row.draft, propsRef.current, (propsRef.current.requireComplete || propsRef.current.requiredRowKeys?.includes(row.rowKey)), row.workDate)[field] : undefined;
     const unavailable = field === "equipment" ? equipmentUnavailableFor(propsRef.current, row.draft?.equipmentId || row.entry?.equipmentId || "", row.workDate) : undefined;
     const withAvailability = (content: ReactNode) => unavailable ? <div className="ag-roster-employee-wrap">{content}<small className="ag-timesheet-conflict" title={`Техника недоступна по табелю: ${unavailable}`}>⚠ {unavailable}</small></div> : content;

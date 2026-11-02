@@ -244,6 +244,37 @@ function validateSubmissions(body, actor) {
 
 function mutateReport(body, actor) {
   const now = new Date().toISOString();
+  if (["change-date", "change-entry-date"].includes(body.action)) {
+    if (!["foreman", "engineer", "superadmin"].includes(actor.role)) throw new FixtureError("Нет права изменять отчёты.", 403, "REPORT_FORBIDDEN");
+    if (!validPersonnelReportDate(body.workDate) || body.workDate.startsWith("0000-")) throw new FixtureError("Укажите корректную дату отчёта.");
+    if (body.action === "change-entry-date") {
+      if (!["engineer", "superadmin"].includes(actor.role)) throw new FixtureError("Изменить дату подтверждённой записи может инженер.", 403, "REPORT_FORBIDDEN");
+      const previous = entries.get(body.entryId);
+      if (!previous || body.siteId !== site.id || previous.siteId !== body.siteId) throw new FixtureError("Подтверждённая запись не найдена.", 404, "ENTRY_NOT_FOUND");
+      if (previous.orderReportId) throw new FixtureError("Измените дату отчёта целиком.", 409, "STALE_REPORT");
+      checkRevision(previous, body.revision);
+      if (previous.workDate === body.workDate) return previous;
+      checkHours({ workDate: body.workDate, rows: [previous] }, [previous.id]);
+      const entry = { ...previous, workDate: body.workDate, updatedAt: now, revision: previous.revision + 1 };
+      entries.set(entry.id, entry);
+      return entry;
+    }
+    const current = reports.get(body.reportId);
+    if (!current || current.siteId !== site.id) throw new FixtureError("Отчёт не найден.", 404, "REPORT_NOT_FOUND");
+    checkOwner(current, actor);
+    checkRevision(current, body.revision);
+    if (actor.role === "foreman" && !["draft", "rejected"].includes(current.status)) throw new FixtureError("Этот отчёт может исправить инженер.", 409, "REPORT_LOCKED");
+    if (current.workDate === body.workDate) return current;
+    if (current.status !== "approved" && [...reports.values()].some(item => item.id !== current.id && item.siteId === current.siteId && item.ownerUserId === current.ownerUserId && item.status !== "approved" && item.workDate === body.workDate)) throw new FixtureError("На выбранную дату уже есть отчёт этого прораба.", 409, "REPORT_EXISTS");
+    const linked = current.rows.map(row => row.approvedEntryId ? entries.get(row.approvedEntryId) : undefined);
+    if (current.status === "approved" && linked.some(entry => !entry || entry.workDate !== current.workDate || entry.siteId !== current.siteId)) throw new FixtureError("Подтверждённые строки уже изменены.", 409, "STALE_REPORT");
+    if (["submitted", "approved"].includes(current.status)) checkHours({ ...current, workDate: body.workDate }, linked.filter(Boolean).map(entry => entry.id));
+    const report = { ...structuredClone(current), workDate: body.workDate, updatedAt: now, revision: current.revision + 1 };
+    report.rows = report.rows.map((row, index) => ({ ...row, workDate: body.workDate, updatedAt: now, ...(linked[index] ? { approvedEntryRevision: linked[index].revision + 1 } : {}) }));
+    if (report.status === "approved") for (const entry of linked) entries.set(entry.id, { ...entry, workDate: body.workDate, updatedAt: now, revision: entry.revision + 1 });
+    reports.set(report.id, report);
+    return report;
+  }
   if (body.action === "save") {
     if (body.siteId !== site.id || !/^\d{4}-\d{2}-\d{2}$/.test(body.workDate ?? "")) throw new FixtureError("Некорректный проект или дата.");
     checkRows(body.rows);
@@ -428,7 +459,7 @@ const config = {
             if (body.action === "submit") requestCounts.submit++;
             const report = mutateReport(body, actor);
             requestCounts.mutations++;
-            return json(response, { report });
+            return json(response, body.action === "change-entry-date" ? { entry: report } : { report });
           }
           if (request.method !== "GET") throw new FixtureError("Метод не поддерживается.", 405);
           const from = url.searchParams.get("from");

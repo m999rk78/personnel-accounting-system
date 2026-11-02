@@ -2,7 +2,7 @@ import type { EquipmentTimesheetExportRow, PersonnelTimesheetExportRow } from ".
 
 export type PersonnelTimesheetMonthData = {
   employees: Array<{ id: number; fullName: string; employmentType: string; department: string; position: string }>;
-  entries: Array<{ employeeId: number; workDate: string; hours: number; masters: string; zones: string }>;
+  entries: Array<{ employeeId: number; workDate: string; hours: number; masters: string; zones: string; reportTracked?: boolean }>;
   marks: Array<{ employeeId: number; workDate: string; hours: number | null; code: string | null; note: string; updatedBy: string }>;
 };
 
@@ -107,7 +107,10 @@ export function buildPersonnelTimesheetRange(months: PersonnelTimesheetMonthData
       const dailyMasters: string[] = [];
       const dailyValues = dates.map((date) => {
         const key = personnelCellKey(employee.id, date);
-        const entry = reportTracked ? entries.get(key) : undefined;
+        const reported = entries.get(key);
+        // The API identifies historical OPR records from their saved snapshots.
+        // A later transfer to ITR must not erase those hours from an export.
+        const entry = reportTracked || reported?.reportTracked ? reported : undefined;
         const mark = marks.get(key);
         dailyTimesheetHours.push(mark?.code ? 0 : mark?.hours !== null && mark?.hours !== undefined ? Number(mark.hours) : Number(entry?.hours ?? 0));
         dailyReportHours.push(Number(entry?.hours ?? 0));

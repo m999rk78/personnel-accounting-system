@@ -1,7 +1,7 @@
 import { getDatabase } from "../../../db/client";
 import { withAuditTrail } from "../../auditLog";
 import { assertSameOrigin, getAuthUser } from "../../auth";
-import { ensureEquipmentReportSchema, listEquipmentReports, mutateEquipmentReport, mutateEquipmentReportEntry, validateEquipmentReportSubmissions } from "../../equipmentReportStore";
+import { ensureEquipmentReportSchema, changeEquipmentReportEntryDate, listEquipmentReports, mutateEquipmentReport, mutateEquipmentReportEntry, validateEquipmentReportSubmissions } from "../../equipmentReportStore";
 import type { EquipmentReportRequest } from "../../equipmentReportTypes";
 import { EquipmentReportError } from "../../equipmentReportWorkflow";
 
@@ -54,6 +54,7 @@ async function handlePOST(request: Request) {
     // Validation is read-only: do not create audit records for every preview.
     if (payload.action === "validate-submissions") return Response.json(await validateEquipmentReportSubmissions(db, user, payload));
     return await withAuditTrail(auditRequest, async () => {
+      if (payload.action === "change-entry-date") return Response.json({ entry: await changeEquipmentReportEntryDate(db, user, payload) });
       if (payload.action === "save-approved-entry") return Response.json({ entry: await mutateEquipmentReportEntry(db, user, payload) });
       const report = await mutateEquipmentReport(db, user, payload);
       return Response.json({ report });

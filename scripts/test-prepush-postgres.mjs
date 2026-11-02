@@ -141,7 +141,7 @@ try {
     assert.equal((await customRoles.loadCustomRole(readRole.id)).name, readRole.name);
     console.log("PASS: 0026 custom roles, JSON permission templates, case-insensitive duplicates, assignment/default isolation, readonly ceiling, transactional role change and repeat migration on real PostgreSQL.");
 
-    for (const script of ["scripts/test-personnel-report-integration.mjs", "scripts/test-equipment-report-integration.mjs", "scripts/test-table-order-integration.mjs"]) await run(script);
+    for (const script of ["scripts/test-personnel-report-integration.mjs", "scripts/test-equipment-report-integration.mjs", "scripts/test-report-date-integration.mjs", "scripts/test-table-order-integration.mjs"]) await run(script);
     console.log("PASS: all integration checks used the disposable database only.");
   }
 } catch (error) {

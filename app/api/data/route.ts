@@ -1022,6 +1022,23 @@ function assertEntryRevisions(payloads: EntryPayload[], existingRows: ExistingPl
   }
 }
 
+async function assertLinkedReportDates(db: DatabaseExecutor, payloads: EntryPayload[], existingRows: ExistingPlacementEntry[]) {
+  const byId = new Map(existingRows.map(entry => [entry.id, entry]));
+  const changedIds = payloads.flatMap(payload => {
+    const entry = byId.get(asPositiveInteger(payload.id) ?? 0);
+    return entry && (entry.siteId !== asPositiveInteger(payload.siteId) || entry.workDate !== payload.workDate) ? [entry.id] : [];
+  });
+  if (!changedIds.length) return;
+  // The entries are already locked. A legacy client must not move a published
+  // row independently of the daily report that owns its date and project.
+  const linked = await db.prepare("SELECT approved_entry_id AS entryId FROM personnel_report_rows WHERE approved_entry_id = ANY(?)")
+    .bind(changedIds).all<{ entryId: number }>();
+  if (linked.results.length) throw new PlacementRequestError(
+    "Эти строки относятся к отчёту. Измените его дату через календарь в отчёте персонала; проект связанной записи менять нельзя.",
+    409, "REPORT_IDENTITY_LOCKED", { entryIds: linked.results.map(entry => entry.entryId) },
+  );
+}
+
 async function lockPlacementHours(db: DatabaseExecutor, payloads: EntryPayload[], existingRows: ExistingPlacementEntry[] = []) {
   const keys = new Set<string>();
   for (const entry of existingRows) keys.add(`${entry.workDate}:${entry.employeeId}`);
@@ -2622,6 +2639,7 @@ async function handlePATCH(request: Request) {
         if (existingResult.results.length !== entryIds.length) throw new Error("Одна или несколько строк не найдены.");
         assertPlacementOwnership(authUser, existingResult.results);
         assertEntryRevisions(updates, existingResult.results);
+        await assertLinkedReportDates(db, updates, existingResult.results);
         await lockPlacementHours(db, payloadRows, existingResult.results);
         const rows = payloadRows.length ? await validateBulkPayloads(db, payloadRows, existingResult.results) : [];
         const responsibleUsers = await resolveResponsibleUsers(db, authUser, payloadRows, existingResult.results);
@@ -2686,6 +2704,7 @@ async function handlePATCH(request: Request) {
         if (existing.results.length !== entryIds.length) throw new Error("Одна или несколько строк не найдены.");
         assertPlacementOwnership(authUser, existing.results);
         assertEntryRevisions(placementUpdates, existing.results);
+        await assertLinkedReportDates(db, placementUpdates, existing.results);
         await lockPlacementHours(db, placementUpdates, existing.results);
         const rows = await validateBulkPayloads(db, placementUpdates, existing.results);
         const responsibleUsers = await resolveResponsibleUsers(db, authUser, placementUpdates, existing.results);
@@ -2713,6 +2732,7 @@ async function handlePATCH(request: Request) {
       if (!existing) throw new Error("Строка не найдена.");
       assertPlacementOwnership(authUser, [existing]);
       assertEntryRevisions([payload], [existing]);
+      await assertLinkedReportDates(db, [payload], [existing]);
       await lockPlacementHours(db, [payload], [existing]);
       const data = await validatePayload(db, payload, id);
       const [responsibleUserId] = await resolveResponsibleUsers(db, authUser, [payload], [existing]);

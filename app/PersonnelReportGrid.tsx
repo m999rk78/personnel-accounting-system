@@ -11,6 +11,7 @@ import { GridTextEditor } from "./GridTextEditor";
 import { comparePersonnelActivity, personnelActivityTime, personnelReportSortOptions } from "./personnelReportSorting";
 import { LocalizedGrid, personnelColumnFilter, personnelFilterParams, type SpreadsheetBatch } from "./GridFilters";
 import { groupPersonnelReportDates, personnelReportOrderId } from "./personnelReportRowOrder";
+import { ReportDatePicker } from "./ReportDateControls";
 import "./personnelReportGrid.css";
 
 export type PersonnelReportStatus = "draft" | "submitted" | "approved" | "rejected";
@@ -25,6 +26,8 @@ export type PersonnelReportGridRow = {
   entry?: GridEntry;
   draft?: PersonnelSpreadsheetDraft;
   editable?: boolean;
+  dateEditable?: boolean;
+  dateScopeLabel?: string;
   proposalId?: number;
   responsibleUserId?: number | null;
   responsibleUserName?: string;
@@ -44,6 +47,7 @@ export type PersonnelReportGridProps = {
   mainWorkTypes: GridOption[];
   subworkTypes: GridOption[];
   masters: GridOption[];
+  onChangeDate?: (row: PersonnelReportGridRow, workDate: string) => Promise<void>;
   onPatchDraft: (key: string, changes: Partial<PersonnelSpreadsheetDraft>) => void;
   onApplyRange: (batch: { rows: { rowKey?: string; values: Record<string, string> }[]; source: SpreadsheetBatch<unknown>["source"] }) => boolean;
   history: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean };
@@ -133,6 +137,7 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [focusRequest, setFocusRequest] = useState(0);
   const previousRowKeys = useRef(new Set(props.rows.map((row) => row.rowKey)));
+  const previousRowDates = useRef(new Map(props.rows.map(row => [row.rowKey, row.workDate])));
   const structure = JSON.stringify(props.rows.map(({ rowKey, workDate, orderKey }) => ({ rowKey, workDate, orderKey })));
   const rowData = useMemo<TableRow[]>(() => (JSON.parse(structure) as { rowKey: string; orderKey?: string; workDate: string }[]).map((row, insertionRank) => ({ ...row, kind: "entry", insertionRank })), [structure]);
   const keepDatesTogether = useCallback(({ nodes, api }: PostSortRowsParams<TableRow>) => {
@@ -188,6 +193,8 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
 
   useEffect(() => {
     const addedDraft = [...rowsByKey.values()].find((row) => row.editable && !previousRowKeys.current.has(row.rowKey));
+    const movedRow = [...rowsByKey.values()].find(row => previousRowDates.current.has(row.rowKey) && previousRowDates.current.get(row.rowKey) !== row.workDate);
+    previousRowDates.current = new Map([...rowsByKey.values()].map(row => [row.rowKey, row.workDate]));
     previousRowKeys.current = new Set(rowsByKey.keys());
     const frame = requestAnimationFrame(() => {
       const api = apiRef.current;
@@ -197,11 +204,12 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
       api.refreshClientSideRowModel("everything");
       api.refreshCells({ force: true });
       refreshDateGroups(api);
-      if (addedDraft) {
+      const revealRow = movedRow ?? addedDraft;
+      if (revealRow) {
         // A new editable row must be reachable even when an employee/date filter
         // had hidden blank values before the row was created.
         api.setFilterModel(null);
-        const node = api.getRowNode(addedDraft.rowKey);
+        const node = api.getRowNode(revealRow.rowKey);
         // Only scroll when the new row is outside the viewport. Aligning every
         // addition to the top hides the drafts added by the preceding clicks.
         if (node) api.ensureNodeVisible(node);
@@ -252,6 +260,7 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
     if (!row) return null;
     const field = params.column?.getColId() as EditableField;
     const value = params.value ?? "";
+    if (String(field) === "workDate" && (row.dateEditable ?? row.editable) && propsRef.current.onChangeDate) return <ReportDatePicker workDate={row.workDate} scopeLabel={row.dateScopeLabel} disabled={!row.editable} onChange={workDate => propsRef.current.onChangeDate!(row, workDate)} />;
     const issue = canEdit(row) && row.draft ? personnelCellErrors(row.draft, propsRef.current, (propsRef.current.requireComplete || propsRef.current.requiredRowKeys?.includes(row.rowKey)))[field] : undefined;
     if (String(field) === "status") return <span className={`personnel-report-status ${row.status}`} title={row.reviewNote || statusLabels[row.status]}>{statusLabels[row.status]}{row.reviewNote && <span aria-label={row.reviewNote}> · ⓘ</span>}</span>;
     if (!canEdit(row) || !editableFields.includes(field) || field === "employeeName" && row.draft?.lockedEmployee) return <span title={String(value)}>{value === "" ? "—" : value}</span>;

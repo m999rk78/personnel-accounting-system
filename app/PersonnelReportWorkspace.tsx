@@ -19,6 +19,7 @@ import { personnelExcelWorkTypePairs, personnelReportExcelRows } from "./personn
 import { CustomSelect } from "./CustomSelect";
 import { useWorkspaceTableOrder } from "./TableRowMoves";
 import { isUnsavedPersonnelReportOrderId, personnelReportOrderScope } from "./personnelReportRowOrder";
+import { isReportWorkDate, moveUnsavedReportDay } from "./reportDateChanges";
 import "./personnelReport.css";
 
 const ReportGrid = lazy(() => import("./PersonnelReportGrid").then(module => ({ default: module.PersonnelReportGrid })));
@@ -160,12 +161,10 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
       return additions.length ? { ...current, ...Object.fromEntries(additions.map(entry => [entryKey(entry), entry])) } : current;
     });
   }, [reports, data]);
-  const ownToday = reports.find(report => report.ownerUserId === currentUser.id && report.workDate === today && (report.status === "draft" || report.status === "rejected"));
   const newDraftGroups = useMemo(() => Object.entries(edits).flatMap(([key, drafts]) => {
     const workDate = personnelReportNewDate(key, today);
     return workDate ? [{ key, workDate, drafts }] : [];
   }).sort((left, right) => right.workDate.localeCompare(left.workDate)), [edits, today]);
-  const todayKey = ownToday ? keyOf(ownToday) : newDraftGroups.find(group => group.workDate === today)?.key ?? personnelReportNewKey(today);
   const canEdit = useCallback((report: PersonnelReport) => permissions.update && (canReview || (report.status === "draft" || report.status === "rejected") && report.ownerUserId === currentUser.id), [permissions.update, currentUser.id, canReview]);
   useEffect(() => {
     if (!data || fetching || props.loading || currentUser.role !== "foreman" || !permissions.create) return;
@@ -196,10 +195,10 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
       return drafts.map(draft => {
         const snapshot = report.rows.find(row => `report-${row.reportId}-${row.id}` === draft.key);
         const entry = snapshot ? { ...snapshot, id: snapshot.approvedEntryId ?? snapshot.id, employeeId: snapshot.employeeId ?? 0, shiftId: snapshot.shiftId ?? 0, zoneId: snapshot.zoneId ?? 0, mainWorkTypeId: snapshot.mainWorkTypeId ?? 0, subworkTypeId: snapshot.subworkTypeId ?? 0, masterId: snapshot.masterId ?? 0, hours: snapshot.hours ?? 0, revision: report.revision, responsibleUserId: report.ownerUserId, responsibleUserName: report.ownerName } : undefined;
-        return { rowKey: draft.key, workDate: report.workDate, createdAt: draft.createdAt ?? report.createdAt, updatedAt: draft.updatedAt ?? report.updatedAt, rowOrder: snapshot?.rowOrder, status: report.status, draft, entry, editable: canEdit(report) && !locked, proposalId: report.id, responsibleUserName: report.ownerName, responsibleUserId: report.ownerUserId, reviewNote: report.reviewComment };
+        return { rowKey: draft.key, workDate: report.workDate, createdAt: draft.createdAt ?? report.createdAt, updatedAt: draft.updatedAt ?? report.updatedAt, rowOrder: snapshot?.rowOrder, status: report.status, draft, entry, dateEditable: canEdit(report), dateScopeLabel: drafts.length > 1 ? `Весь отчёт · строк: ${drafts.length}` : undefined, editable: canEdit(report) && !locked, proposalId: report.id, responsibleUserName: report.ownerName, responsibleUserId: report.ownerUserId, reviewNote: report.reviewComment };
       });
     });
-    const fresh = newDraftGroups.flatMap(group => group.drafts.map(draft => ({ rowKey: draft.key, draftGroupKey: group.key, workDate: group.workDate, createdAt: draft.createdAt, updatedAt: draft.updatedAt, status: "draft" as const, draft, editable: permissions.create && !locked, responsibleUserName: currentUser.fullName, responsibleUserId: currentUser.id })));
+    const fresh = newDraftGroups.flatMap(group => group.drafts.map(draft => ({ rowKey: draft.key, draftGroupKey: group.key, workDate: group.workDate, createdAt: draft.createdAt, updatedAt: draft.updatedAt, status: "draft" as const, draft, dateEditable: permissions.create, dateScopeLabel: group.drafts.length > 1 ? `Весь отчёт · строк: ${group.drafts.length}` : undefined, editable: permissions.create && !locked, responsibleUserName: currentUser.fullName, responsibleUserId: currentUser.id })));
     const entries = new Map((data?.entries ?? []).map(entry => [entryKey(entry), entry]));
     for (const key of Object.keys(edits)) if (entrySessions[key]) entries.set(key, entrySessions[key]);
     const approved = [...entries.values()].filter(entry => !entry.orderReportId || !reports.some(report => report.id === entry.orderReportId)).map(entry => {
@@ -207,7 +206,7 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
       const draft = edits[key]?.[0] ?? toEntryDraft(entry);
       return { rowKey: draft.key, draftGroupKey: key, workDate: entry.workDate, createdAt: draft.createdAt, updatedAt: draft.updatedAt, rowOrder: entry.rowOrder, status: "approved" as const,
         entry: { ...entry, responsibleUserName: entry.responsibleUserName ?? "" } as GridEntry, draft: canReview ? draft : undefined,
-        editable: canReview && !locked && !entry.orderReportId, responsibleUserName: entry.responsibleUserName ?? "", responsibleUserId: entry.responsibleUserId };
+        dateEditable: canReview && !entry.orderReportId, editable: canReview && !locked && !entry.orderReportId, responsibleUserName: entry.responsibleUserName ?? "", responsibleUserId: entry.responsibleUserId };
     });
     return [...fresh, ...staged, ...approved];
   }, [data, reports, edits, entrySessions, canReview, newDraftGroups, canEdit, locked, permissions.create, currentUser.fullName, currentUser.id]);
@@ -274,19 +273,26 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
     setNotice(invalid ? `Диапазон вставлен. Проверьте красные ячейки: ${invalid}. Введённые значения сохранены в таблице.` : `Изменено строк: ${plan.length}${plan.some(item => item.append) ? ` · добавлено новых: ${plan.filter(item => item.append).length}` : ""}.`);
     return true;
   }, [locked, props, fetching, rows, ownerByRow, permissions.create, setEdits, rememberSessions]);
-  const appendToday = (drafts: GridDraftRow[]) => {
-    if (reports.some(report => report.ownerUserId === currentUser.id && report.workDate === today && report.status === "submitted")) { setError("Сегодняшний отчёт уже на проверке. Снимите его с проверки во вкладке «На проверке», чтобы добавить записи."); return; }
+  const appendOnDate = (drafts: GridDraftRow[], workDate = today) => {
     if (!permissions.create || locked || fetching || props.loading) return;
-    if ((edits[todayKey] ?? ownToday?.rows ?? []).length + drafts.length > 1000) { setError("В одном отчёте можно сохранить не более 1000 строк. Выберите для копирования меньше записей."); return; }
-    rememberSessions([todayKey]);
-    setEdits(current => ({ ...current, [todayKey]: [...drafts, ...(current[todayKey] ?? ownToday?.rows.map(toDraft) ?? [])] }));
-    setError("");
-    setNotice(drafts.length > 1 ? `Добавлено строк: ${drafts.length}.` : "");
+    try {
+      if (!isReportWorkDate(workDate)) throw new Error("Выберите корректную дату новых строк.");
+      const submitted = reports.some(report => report.siteId === siteId && report.ownerUserId === currentUser.id && report.workDate === workDate && report.status === "submitted");
+      // A local row can be dated before saving even when today's report is already under review.
+      const key = submitted ? personnelReportNewKey(workDate) : personnelReportImportTarget(reports, sessions, siteId, currentUser.id, workDate);
+      const report = reports.find(item => keyOf(item) === key);
+      if (report && !canEdit(report)) throw new Error("Нет права изменять отчёт на выбранную дату.");
+      if ((edits[key] ?? report?.rows ?? []).length + drafts.length > 1000) throw new Error("В одном отчёте можно сохранить не более 1000 строк. Выберите меньше записей.");
+      rememberSessions([key]);
+      setEdits(current => ({ ...current, [key]: [...drafts, ...(current[key] ?? report?.rows.map(toDraft) ?? [])] }));
+      setError("");
+      setNotice(submitted ? "На эту дату отчёт уже на проверке. Выберите другую дату в новой строке." : drafts.length > 1 ? `Добавлено строк: ${drafts.length}.` : "");
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "Не удалось добавить строки."); }
   };
   const copyRows = (source: PersonnelReportGridRow[]) => {
     if (!source.length) { setError("Выберите строки прошлых дней для копирования."); return; }
     const available = (options: GridOption[], value: string) => options.some(option => String(option.id) === value) ? value : "";
-    appendToday(source.map(row => {
+    appendOnDate(source.map(row => {
       const entry = row.entry;
       const seed = row.draft ?? (entry ? { employeeId: String(entry.employeeId), employeeQuery: entry.employeeName, shiftId: String(entry.shiftId), zoneId: String(entry.zoneId), mainWorkTypeId: String(entry.mainWorkTypeId), subworkTypeId: String(entry.subworkTypeId), masterId: String(entry.masterId), hours: String(entry.hours), note: entry.note } : {});
       const time = new Date().toISOString();
@@ -303,6 +309,56 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
     });
     setSelected([]);
   };
+  async function changeReportDate(row: PersonnelReportGridRow, workDate: string) {
+    if (!row.editable || locked || fetching || props.loading) throw new Error("Подождите завершения текущего действия.");
+    if (!isReportWorkDate(workDate)) throw new Error("Укажите корректную дату.");
+    const sourceKey = ownerByRow.get(row.rowKey);
+    if (!sourceKey) throw new Error("Не найден исходный отчёт. Обновите таблицу.");
+    const sourceReport = reports.find(item => keyOf(item) === sourceKey);
+    const sourceEntry = sourceKey.startsWith("entry-") ? data?.entries.find(item => entryKey(item) === sourceKey) : undefined;
+    const target = { key: sourceKey, workDate: row.workDate,
+      kind: sourceReport ? "report" : sourceEntry ? "entry" : "new", approved: row.status === "approved",
+      id: sourceReport?.id ?? sourceEntry?.id, revision: sourceReport?.revision ?? sourceEntry?.revision };
+    if (workDate === target.workDate) return;
+    if (target.kind === "new") {
+      const key = personnelReportImportTarget(reports, sessions, siteId, currentUser.id, workDate);
+      const report = reports.find(item => keyOf(item) === key);
+      if (report && !canEdit(report)) throw new Error("Нет права изменять отчёт на выбранную дату.");
+      const next = moveUnsavedReportDay(edits, target.key, key, report?.rows.map(toDraft));
+      rememberSessions([key]);
+      setEdits(next);
+      setFocusedReportKey(null); setSelected([]); setRequiredReports([]);
+      setNotice(`Дата черновика изменена на ${displayDate(workDate)}. Сохраните изменения.`);
+      return;
+    }
+    if (edits[target.key]) throw new Error("Сначала сохраните изменения этого отчёта, затем измените его дату.");
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const response = await fetch("/api/personnel-report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(target.kind === "entry"
+        ? { action: "change-entry-date", entryId: target.id, revision: target.revision, siteId, workDate }
+        : { action: "change-date", reportId: target.id, revision: target.revision, workDate }) });
+      const result = await response.json() as { report?: PersonnelReport; entry?: PersonnelReportApprovedEntry; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Не удалось изменить дату.");
+      // Keep unrelated edits, but discard undo states containing the report's old identity.
+      dispatchEdits({ type: "reset", value: edits });
+      setSessions(current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== target.key)));
+      setEntrySessions(current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== target.key)));
+      setData(current => current ? { ...current,
+        reports: current.reports.map(report => report.id === result.report?.id ? result.report : report),
+        entries: current.entries.map(entry => {
+          if (entry.id === result.entry?.id) return result.entry;
+          const row = result.report?.rows.find(row => row.approvedEntryId === entry.id);
+          return row ? { ...entry, workDate, revision: row.approvedEntryRevision ?? entry.revision } : entry;
+        }) } : current);
+      setFocusedReportKey(null); setSelected([]); setRequiredReports([]);
+      await load();
+      setNotice(`Дата изменена на ${displayDate(workDate)}.${target.approved ? " Часы в табеле обновлены." : ""}`);
+    } catch (failure) {
+      // A virtualized row may leave the screen before the request completes.
+      setError(failure instanceof Error ? failure.message : "Не удалось изменить дату.");
+      throw failure;
+    } finally { setBusy(false); }
+  }
   async function mutate(payload: PersonnelReportSaveRequest | PersonnelReportTransitionRequest) {
     const response = await fetch("/api/personnel-report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     const result = await response.json() as { report: PersonnelReport; error?: string; code?: string; details?: unknown };
@@ -527,7 +583,6 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
   const canSendSelected = personnelSubmissionCanSend(sendPlan.token, sendValidation, selectedSubmissions.length > 0) && sendIssues.length === 0;
   const selectedSubmissionRows = selectedSubmissions.reduce((sum, item) => sum + item.rowCount, 0);
   const selectedSubmissionHours = selectedSubmissions.reduce((sum, item) => sum + item.hours, 0);
-  const todayOnReview = reports.some(report => report.ownerUserId === currentUser.id && report.workDate === today && report.status === "submitted");
   const workflowControls = <div className="personnel-report-workflow-bar">
     <div className="personnel-report-views" role="group" aria-label="Показать отчёты">
       <button type="button" aria-pressed={workflowView === "all"} onClick={() => changeWorkflow("all")}>Все записи</button>
@@ -547,7 +602,7 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
     <button type="button" className="personnel-report-refresh" aria-label="Обновить отчёты" title="Обновить отчёты" disabled={fetching || locked} onClick={() => void load()}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 6.1A8 8 0 0 1 19.6 10M4.4 14A8 8 0 0 0 17.9 17.9" /></svg></button>
   </div>;
   const footerActions = <div className="toolbar-actions personnel-report-editor-actions">
-    {permissions.create && <button className="add-row-button" type="button" disabled={locked || props.loading || fetching || todayOnReview} title={todayOnReview ? "Сегодняшний отчёт на проверке. Для изменения снимите его с проверки во вкладке «На проверке»." : undefined} onClick={() => { changeWorkflow("draft"); appendToday([makeDraft()]); }}>Добавить строку</button>}
+    {permissions.create && <button className="add-row-button" type="button" disabled={locked || props.loading || fetching} onClick={() => { changeWorkflow("draft"); appendOnDate([makeDraft()]); }}>Добавить строку</button>}
     {(permissions.create || permissions.update) && <>
       <button className="secondary-button" type="button" disabled={!dirty || locked} onClick={() => void saveDrafts()}>{importing ? "Импортируем…" : busy ? "Сохраняем…" : "Сохранить изменения"}{dirty && !locked && <span className="personnel-report-unsaved-dot" aria-label="Есть несохранённые изменения" />}</button>
       {!(canReview && workflowView === "submitted") && <button className="save-edits-button" type="button" disabled={locked || fetching || props.loading || !submissionItems.length} aria-haspopup="dialog" onClick={() => openSend()}>Отправить на проверку…</button>}
@@ -572,7 +627,7 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
     </section>}
     {!activeReview && focusedItem && <div className="personnel-report-focused-caption"><span><strong>{displayDate(focusedItem.workDate)} · {focusedItem.ownerName}</strong> · строк: {focusedItem.rowCount} · {focusedItem.hours} ч{focusedItem.report?.reviewComment && <small className="personnel-report-return-comment">Комментарий инженера: {focusedItem.report.reviewComment}</small>}</span><button type="button" onClick={() => changeWorkflow(workflowView)}>Показать все даты</button></div>}
     {canReview && workflowView === "approved" && <div className="personnel-report-focused-caption"><span>Подтверждённые записи можно исправлять прямо в таблице. Нажмите «Сохранить изменения» — табель обновится, статус останется «Подтверждён».</span></div>}
-    <Suspense fallback={<p role="status">Загружаем таблицу…</p>}><ReportGrid rows={displayedRows} groupByDate={workflowView === "approved"} selectionScope={workflowView} today={today} loading={props.loading || fetching || importing} canCreate={permissions.create && !locked} canReview={canReview} employees={props.employees} shifts={props.shifts} zones={props.zones} mainWorkTypes={props.mainWorkTypes} subworkTypes={props.subworkTypes} masters={props.masters} onPatchDraft={patchDraft} onApplyRange={applyRange} requiredRowKeys={requiredRowKeys} emptyMessage={workflowView === "submitted" ? "Нет отчётов на проверке" : workflowView === "draft" ? "Нет черновиков" : "За выбранный период отчётов пока нет"} history={{ undo: () => { if (!locked) dispatchEdits({ type: "undo" }); }, redo: () => { if (!locked) dispatchEdits({ type: "redo" }); }, canUndo: !locked && history.past.length > 0, canRedo: !locked && history.future.length > 0 }} onSelectionChange={setSelected} onCopyRows={copyRows} onRemoveDraft={permissions.delete ? removeDrafts : undefined} onValidationError={setError} onVisibleRowsChange={setVisible} footerActions={footerActions} /></Suspense>
+    <Suspense fallback={<p role="status">Загружаем таблицу…</p>}><ReportGrid rows={displayedRows} groupByDate={workflowView === "approved"} selectionScope={workflowView} today={today} loading={props.loading || fetching || importing} canCreate={permissions.create && !locked} canReview={canReview} employees={props.employees} shifts={props.shifts} zones={props.zones} mainWorkTypes={props.mainWorkTypes} subworkTypes={props.subworkTypes} masters={props.masters} onChangeDate={changeReportDate} onPatchDraft={patchDraft} onApplyRange={applyRange} requiredRowKeys={requiredRowKeys} emptyMessage={workflowView === "submitted" ? "Нет отчётов на проверке" : workflowView === "draft" ? "Нет черновиков" : "За выбранный период отчётов пока нет"} history={{ undo: () => { if (!locked) dispatchEdits({ type: "undo" }); }, redo: () => { if (!locked) dispatchEdits({ type: "redo" }); }, canUndo: !locked && history.past.length > 0, canRedo: !locked && history.future.length > 0 }} onSelectionChange={setSelected} onCopyRows={copyRows} onRemoveDraft={permissions.delete ? removeDrafts : undefined} onValidationError={setError} onVisibleRowsChange={setVisible} footerActions={footerActions} /></Suspense>
     {reportsOpen && <ReportDialog titleId="personnel-reports-title" onClose={() => setReportsOpen(false)} busy={locked}>
       <header className="personnel-report-dialog-heading"><div><h2 id="personnel-reports-title">Отчёты по датам</h2><p>Каждый отчёт — одна дата и один прораб.</p></div><button type="button" className="personnel-report-dialog-close" aria-label="Закрыть список отчётов" disabled={locked} onClick={() => setReportsOpen(false)}>×</button></header>
       <div className="personnel-report-reviews" aria-label="Состояние отчётов">

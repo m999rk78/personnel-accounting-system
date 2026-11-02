@@ -2,7 +2,7 @@ import type { PostgresDatabase } from "../db/client";
 import type { AuthUser } from "./auth";
 import { equipmentExcelName } from "./equipmentExcel";
 import { equipmentUnavailableReason } from "./equipmentAvailability";
-import type { EquipmentReport, EquipmentReportApprovedEntry, EquipmentReportAvailabilityMark, EquipmentReportData, EquipmentReportEntrySaveRequest, EquipmentReportRequest, EquipmentReportRow, EquipmentReportRowValidationIssue, EquipmentReportValidationIssue, EquipmentReportValidationRequest, EquipmentReportValidationResult } from "./equipmentReportTypes";
+import type { EquipmentReport, EquipmentReportApprovedEntry, EquipmentReportAvailabilityMark, EquipmentReportData, EquipmentReportEntrySaveRequest, EquipmentReportDateRequest, EquipmentReportEntryDateRequest, EquipmentReportRequest, EquipmentReportRow, EquipmentReportRowValidationIssue, EquipmentReportValidationIssue, EquipmentReportValidationRequest, EquipmentReportValidationResult } from "./equipmentReportTypes";
 import {
   assertCanSaveEquipmentReport, assertEquipmentReportHours, assertEquipmentReportOwner,
   assertEquipmentReportRevision, assertEquipmentReportSiteAccess, canReviewEquipmentReport, canViewPendingReportsFor,
@@ -413,9 +413,125 @@ export async function mutateEquipmentReportEntry(database: PostgresDatabase, use
   });
 }
 
-export async function mutateEquipmentReport(database: PostgresDatabase, user: AuthUser, payload: Exclude<EquipmentReportRequest, EquipmentReportEntrySaveRequest | EquipmentReportValidationRequest>): Promise<EquipmentReport> {
+/** Date edits share the same unit/day locks as publication and timesheet marks. */
+async function lockEquipmentReportDates(db: Executor, dates: string[], equipmentIds: number[]) {
+  const keys = [...new Set(dates.flatMap(date => equipmentIds.map(id => `${date}:${id}`)))].sort();
+  for (const key of keys) await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(`equipment-hours:${key}`).first();
+}
+
+function assertEquipmentDate(value: unknown): asserts value is string {
+  if (!validEquipmentReportDate(value) || value.startsWith("0000-")) throw new EquipmentReportError("Укажите корректную дату отчёта.");
+}
+
+async function updateEquipmentReportDay(db: Executor, user: AuthUser, siteId: number, oldDate: string, workDate: string) {
+  // Different owners and units can move in opposite directions at once. Their
+  // shared day-marker rows still need a common deterministic lock order.
+  for (const date of [...new Set([oldDate, workDate])].sort()) {
+    await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(`equipment-published-day:${siteId}:${date}`).first();
+  }
+  await db.prepare(`INSERT INTO equipment_report_days (site_id, work_date, submitted_by, submitted_at)
+    VALUES (?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT (site_id, work_date) DO UPDATE SET
+    submitted_by = EXCLUDED.submitted_by, submitted_at = CURRENT_TIMESTAMP RETURNING site_id`)
+    .bind(siteId, workDate, user.id).run();
+  // Another foreman's approved report or legacy entries keep the original day.
+  await db.prepare(`DELETE FROM equipment_report_days WHERE site_id = ? AND work_date = ?
+    AND NOT EXISTS (SELECT 1 FROM equipment_entries WHERE site_id = ? AND work_date = ? AND deleted_at IS NULL)
+    AND NOT EXISTS (SELECT 1 FROM equipment_reports WHERE site_id = ? AND work_date = ? AND status = 'approved')`)
+    .bind(siteId, oldDate, siteId, oldDate, siteId, oldDate).run();
+}
+
+async function changeEquipmentReportDate(db: Executor, user: AuthUser, payload: EquipmentReportDateRequest): Promise<EquipmentReport> {
+  assertEquipmentDate(payload.workDate);
+  if (!positiveId(payload.reportId)) throw new EquipmentReportError("Некорректный отчёт.");
+  await db.prepare("SELECT id FROM equipment_reports WHERE id = ? FOR UPDATE").bind(payload.reportId).first();
+  const initial = await readReport(db, payload.reportId);
+  assertCanSaveEquipmentReport(user, initial);
+  await assertActiveSite(db, user, initial.siteId);
+  assertEquipmentReportRevision(initial.revision, payload.revision);
+  if (initial.workDate === payload.workDate) return initial;
+  for (const date of [...new Set([initial.workDate, payload.workDate])].sort()) {
+    await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))")
+      .bind(`equipment-report:${initial.siteId}:${date}:${initial.ownerUserId}`).first();
+  }
+  if (initial.status !== "approved") {
+    const existing = await db.prepare(`SELECT id FROM equipment_reports WHERE site_id = ? AND work_date = ?
+      AND owner_user_id = ? AND status <> 'approved' AND id <> ?`)
+      .bind(initial.siteId, payload.workDate, initial.ownerUserId, initial.id).first<{ id: number }>();
+    if (existing) throw new EquipmentReportError("На выбранную дату уже есть отчёт этого прораба. Выберите другую дату или продолжите заполнение существующего отчёта.", 409, "REPORT_EXISTS", { reportId: existing.id });
+  }
+  const linked = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
+    entry.deleted_at AS deletedAt FROM equipment_entries entry
+    JOIN equipment_report_rows source ON source.approved_entry_id = entry.id
+    WHERE source.report_id = ? ORDER BY entry.id FOR UPDATE OF entry`).bind(initial.id)
+    .all<{ id: number; siteId: number; workDate: string; deletedAt: string | null }>();
+  const current = await readReport(db, initial.id);
+  const source = (await reportRowsStatement(db, [initial.id], false).all<EquipmentReportRow>()).results;
+  if (linked.results.some(entry => entry.deletedAt || entry.siteId !== initial.siteId || entry.workDate !== initial.workDate)
+    || current.status === "approved" && (source.length !== current.rows.length || source.some(row => !row.approvedEntryId) || linked.results.length !== source.length)
+    || current.status !== "approved" && linked.results.length) {
+    throw new EquipmentReportError("Подтверждённые записи отчёта уже изменены. Обновите таблицу перед переносом.", 409, "STALE_REPORT");
+  }
+  const normalized = normalizeEquipmentReportRows(current.rows);
+  const equipmentIds = [...new Set(normalized.flatMap(row => row.equipmentId ? [row.equipmentId] : []))];
+  const names = new Map(current.rows.flatMap(row => row.equipmentId ? [[row.equipmentId, row.equipmentName] as const] : []));
+  await lockEquipmentReportDates(db, [initial.workDate, payload.workDate], equipmentIds);
+  if (current.status === "approved" || current.status === "submitted") {
+    await checkHours(db, current.siteId, payload.workDate, completeEquipmentReportRows(normalized), false, names,
+      linked.results.map(entry => entry.id));
+  } else {
+    // An incomplete draft stays incomplete, but an unavailable assigned unit is
+    // still explained before its date is changed.
+    const issues = await availabilityIssues(db, current.siteId, payload.workDate, normalized, names);
+    if (issues.length) throw new EquipmentReportError(issues.map(issue => issue.message).join("\n"), 409, "EQUIPMENT_UNAVAILABLE", { issues });
+  }
+  if (current.status === "approved" && linked.results.length) {
+    await db.prepare(`UPDATE equipment_entries SET work_date = ?, updated_by_user_id = ?,
+      updated_at = clock_timestamp(), revision = revision + 1 WHERE id = ANY(?) AND deleted_at IS NULL RETURNING id`)
+      .bind(payload.workDate, user.id, linked.results.map(entry => entry.id)).run();
+  }
+  await db.prepare(`UPDATE equipment_reports SET work_date = ?, revision = revision + 1,
+    updated_by_user_id = ?, updated_at = clock_timestamp() WHERE id = ? RETURNING id`)
+    .bind(payload.workDate, user.id, current.id).run();
+  await db.prepare("UPDATE equipment_report_rows SET updated_at = clock_timestamp() WHERE report_id = ?").bind(current.id).run();
+  if (current.status === "approved") await updateEquipmentReportDay(db, user, current.siteId, initial.workDate, payload.workDate);
+  return readReport(db, current.id);
+}
+
+/** Move old published rows without recreating identity or historical snapshots. */
+export async function changeEquipmentReportEntryDate(database: PostgresDatabase, user: AuthUser, payload: EquipmentReportEntryDateRequest): Promise<EquipmentReportApprovedEntry> {
+  if (user.role === "viewer" || !canReviewEquipmentReport(user)) throw new EquipmentReportError("Исправлять подтверждённые записи может только инженер.", 403, "REPORT_FORBIDDEN");
+  assertEquipmentDate(payload.workDate);
+  if (!positiveId(payload.entryId) || !positiveId(payload.siteId)) throw new EquipmentReportError("Укажите запись и проект отчёта.");
+  return database.transaction(async db => {
+    await assertActiveSite(db, user, payload.siteId);
+    const previous = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
+      entry.equipment_id AS equipmentId, entry.revision, source.report_id AS reportId FROM equipment_entries entry
+      LEFT JOIN equipment_report_rows source ON source.approved_entry_id = entry.id
+      WHERE entry.id = ? AND entry.deleted_at IS NULL ORDER BY entry.id FOR UPDATE OF entry`).bind(payload.entryId)
+      .first<{ id: number; siteId: number; workDate: string; equipmentId: number; revision: number; reportId: number | null }>();
+    if (!previous || previous.siteId !== payload.siteId) throw new EquipmentReportError("Запись уже изменена. Обновите таблицу.", 409, "STALE_REPORT");
+    if (previous.reportId) throw new EquipmentReportError("Запись относится к отчёту. Измените дату отчёта целиком.", 409, "STALE_REPORT");
+    assertEquipmentReportRevision(previous.revision, payload.revision);
+    const original = (await listEquipmentReports(db, user, payload.siteId, previous.workDate, previous.workDate)).entries.find(entry => entry.id === previous.id);
+    if (!original) throw new EquipmentReportError("Запись уже изменена. Обновите таблицу.", 409, "STALE_REPORT");
+    if (previous.workDate === payload.workDate) return original;
+    await lockEquipmentReportDates(db, [previous.workDate, payload.workDate], [previous.equipmentId]);
+    const rows = completeEquipmentReportRows(normalizeEquipmentReportRows([original]));
+    await checkHours(db, payload.siteId, payload.workDate, rows, false, new Map([[original.equipmentId, original.equipmentName]]), [previous.id]);
+    await db.prepare(`UPDATE equipment_entries SET work_date = ?, updated_by_user_id = ?,
+      updated_at = clock_timestamp(), revision = revision + 1 WHERE id = ? AND deleted_at IS NULL RETURNING id`)
+      .bind(payload.workDate, user.id, previous.id).run();
+    await updateEquipmentReportDay(db, user, payload.siteId, previous.workDate, payload.workDate);
+    const entry = (await listEquipmentReports(db, user, payload.siteId, payload.workDate, payload.workDate)).entries.find(entry => entry.id === previous.id);
+    if (!entry) throw new Error("Не удалось загрузить перенесённую запись.");
+    return entry;
+  });
+}
+
+export async function mutateEquipmentReport(database: PostgresDatabase, user: AuthUser, payload: Exclude<EquipmentReportRequest, EquipmentReportEntrySaveRequest | EquipmentReportValidationRequest | EquipmentReportEntryDateRequest>): Promise<EquipmentReport> {
   if (user.role === "viewer") throw new EquipmentReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   return database.transaction(async (db) => {
+    if (payload.action === "change-date") return changeEquipmentReportDate(db, user, payload);
     if (payload.action === "save") {
       if (!positiveId(payload.siteId) || !validEquipmentReportDate(payload.workDate)) throw new EquipmentReportError("Укажите проект и корректную дату отчёта.");
       await assertActiveSite(db, user, payload.siteId);
