@@ -645,7 +645,7 @@ test("builds a foreman's report from the last personal submission and keeps proj
   assert.match(api, /updatedCount,\s*createdCount: createRows\.length/);
 });
 
-test("shows users as access cards while keeping the grid fallback", async () => {
+test("shows users as a compact list with profile editing while keeping the grid fallback", async () => {
   const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
   const cards = await readFile(new URL("../app/UserAccessCards.tsx", import.meta.url), "utf8");
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
@@ -653,6 +653,7 @@ test("shows users as access cards while keeping the grid fallback", async () => 
 
   assert.match(app, /const useUserAccessCardLayout = true/);
   assert.match(app, /useUserAccessCardLayout\s*\? <UserAccessCards/);
+  assert.match(app, /<UserAccessCards layout="list"/);
   assert.match(app, /: <UserAgGrid/);
   assert.match(grid, /export function UserAgGrid/);
   assert.match(cards, /Пользователи системы/);

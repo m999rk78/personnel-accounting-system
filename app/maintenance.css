@@ -1,0 +1,58 @@
+.maintenance-dialog {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: #f7f7f5;
+  color: #292927;
+  overflow: auto;
+  box-sizing: border-box;
+}
+.maintenance-dialog:not([open]) { display: none; }
+.maintenance-dialog::backdrop { background: #f7f7f5; }
+.maintenance-page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  box-sizing: border-box;
+  background: #f7f7f5;
+  color: #292927;
+  font-family: Arial, Helvetica, sans-serif;
+}
+.maintenance-card {
+  width: 100%;
+  max-width: 420px;
+  padding: 32px;
+  box-sizing: border-box;
+  border: 1px solid #e6e6e1;
+  border-radius: 14px;
+  background: #fff;
+  text-align: center;
+}
+.maintenance-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 26px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.maintenance-brand img { width: 28px; height: 30px; object-fit: contain; flex: none; }
+.maintenance-content h1 { margin: 0 0 12px; font-size: 26px; font-weight: 600; line-height: 1.2; letter-spacing: -.6px; }
+.maintenance-description { margin: 0; color: #73736e; font-size: 14px; line-height: 1.6; }
+.maintenance-retry { min-height: 38px; margin-top: 24px; padding: 9px 16px; border: 1px solid #dcdcd5; border-radius: 7px; background: #fafaf8; color: #3c3c37; font: 600 12px Arial, Helvetica, sans-serif; cursor: pointer; }
+.maintenance-retry:hover { background: #f1f1ec; }
+.maintenance-retry:focus-visible { outline: 2px solid #b98c31; outline-offset: 3px; }
+.maintenance-retry:disabled { cursor: wait; opacity: .6; }
+.maintenance-preservation { max-width: 290px; margin: 22px auto 0; color: #92928b; font-size: 11px; line-height: 1.6; }
+.maintenance-status { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (max-width: 480px) {
+  .maintenance-page { padding: 18px; }
+  .maintenance-card { padding: 28px 22px; }
+  .maintenance-content h1 { font-size: 24px; }
+}

@@ -1,7 +1,8 @@
 import type { EquipmentTimesheetExportRow, PersonnelTimesheetExportRow } from "./placementXlsx";
+import { orderPersonnelTimesheetEmployees } from "./personnelTimesheetOrder.ts";
 
 export type PersonnelTimesheetMonthData = {
-  employees: Array<{ id: number; fullName: string; employmentType: string; department: string; position: string }>;
+  employees: Array<{ id: number; fullName: string; employmentType: string; department: string; position: string; timesheetOrder?: number | null }>;
   entries: Array<{ employeeId: number; workDate: string; hours: number; masters: string; zones: string; reportTracked?: boolean }>;
   marks: Array<{ employeeId: number; workDate: string; hours: number | null; code: string | null; note: string; updatedBy: string }>;
 };
@@ -94,12 +95,7 @@ export function buildPersonnelTimesheetRange(months: PersonnelTimesheetMonthData
     for (const entry of month.entries) entries.set(personnelCellKey(entry.employeeId, entry.workDate), entry);
     for (const mark of month.marks) marks.set(personnelCellKey(mark.employeeId, mark.workDate), mark);
   }
-  const rows = Array.from(employees.values())
-    .sort((left, right) => {
-      const leftOpr = left.employmentType.trim().toLocaleUpperCase("ru-RU") === "ОПР";
-      const rightOpr = right.employmentType.trim().toLocaleUpperCase("ru-RU") === "ОПР";
-      return leftOpr !== rightOpr ? (leftOpr ? 1 : -1) : left.fullName.localeCompare(right.fullName, "ru");
-    })
+  const rows = orderPersonnelTimesheetEmployees(Array.from(employees.values()))
     .map((employee): PersonnelTimesheetExportRow => {
       const reportTracked = employee.employmentType.trim().toLocaleUpperCase("ru-RU") === "ОПР";
       const dailyTimesheetHours: number[] = [];

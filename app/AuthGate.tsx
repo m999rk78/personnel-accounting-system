@@ -6,6 +6,7 @@ import type { PermissionSet } from "./permissionModel";
 import type { ProjectAccess, UserRole } from "./roles";
 import { permissionSetsEqual } from "./permissionModel";
 import { useProjectToday } from "./useProjectToday";
+import { MAINTENANCE_READY_EVENT } from "./maintenanceClient";
 
 export type CurrentUser = {
   id: number;
@@ -30,6 +31,7 @@ export default function AuthGate({ initialToday, initialUser }: { initialToday: 
   const today = useProjectToday(initialToday);
   const [user, setUser] = useState<CurrentUser | null>(initialUser ?? null);
   const [checking, setChecking] = useState(initialUser === undefined);
+  const [authRetry, setAuthRetry] = useState(0);
   const hydrated = useSyncExternalStore(subscribeToHydration, hydratedInBrowser, hydratingOnServer);
 
   useEffect(() => {
@@ -38,20 +40,32 @@ export default function AuthGate({ initialToday, initialUser }: { initialToday: 
       return;
     }
     let active = true;
-    void fetch("/api/auth/status", { cache: "no-store" })
-      .then(async (response) => response.json() as Promise<{ authenticated: boolean; user: CurrentUser | null }>)
-      .then((result) => {
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const check = async () => {
+      try {
+        const response = await fetch("/api/auth/status", { cache: "no-store" });
         if (!active) return;
-        if (!result.authenticated || !result.user) {
-          window.location.replace("/login");
-          return;
-        }
-        setUser(result.user);
-        setChecking(false);
-      })
-      .catch(() => { if (active) window.location.replace("/login"); });
-    return () => { active = false; };
-  }, [initialUser]);
+        if (response.status === 401) { window.location.replace("/login"); return; }
+        if (!response.ok) throw new Error("Проверка доступа временно недоступна.");
+        const result = await response.json() as { authenticated?: boolean; user?: CurrentUser | null };
+        if (!active) return;
+        if (result.authenticated === false) { window.location.replace("/login"); return; }
+        if (result.authenticated !== true || !result.user) throw new Error("Не удалось проверить доступ.");
+        setUser(result.user); setChecking(false);
+      } catch {
+        // A restart or maintenance response must not discard the current workspace.
+        if (active) retry = setTimeout(() => void check(), 5000);
+      }
+    };
+    void check();
+    return () => { active = false; if (retry !== undefined) clearTimeout(retry); };
+  }, [initialUser, authRetry]);
+
+  useEffect(() => {
+    const ready = () => setAuthRetry(value => value + 1);
+    window.addEventListener(MAINTENANCE_READY_EVENT, ready);
+    return () => window.removeEventListener(MAINTENANCE_READY_EVENT, ready);
+  }, []);
 
   useEffect(() => {
     if (!user) return;

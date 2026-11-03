@@ -55,44 +55,58 @@ await page.route("**/api/**", async route => {
   else throw new Error(`Unexpected synthetic API ${url.pathname}`);
   await route.fulfill({ json: data, status });
 });
-const roleRow = () => page.locator(".role-catalog-row").filter({ hasText: "Координатор производства" });
+const sidebarRole = name => page.locator(".roles-sidebar-item").filter({ hasText: name });
+const panel = () => page.locator(".roles-permissions-panel");
 async function openRoles() {
   await page.getByRole("button", { name: "Общие настройки", exact: true }).click();
-  await page.locator(".settings-list-item").filter({ hasText: "Права доступа" }).click();
-  await page.getByRole("button", { name: "Добавить роль", exact: true }).waitFor();
-  if (!await page.locator(".access-role-catalog").evaluate(details => details.open)) await page.locator(".access-role-catalog > summary").click();
+  await page.locator(".settings-list-item").filter({ hasText: "Пользователи и права" }).click();
+  await page.getByRole("tab", { name: "Роли и права", exact: true }).click();
+  await page.locator(".roles-sidebar footer button").waitFor();
 }
 async function openUserRole() {
-  await page.getByRole("button", { name: "Общие настройки", exact: true }).click();
-  await page.locator(".settings-list-item").filter({ hasText: "Пользователи системы" }).click();
-  await page.locator(".user-access-card").filter({ hasText: "Существующий пользователь" }).getByRole("button", { name: "Изменить роль", exact: true }).click();
+  await page.getByRole("tab", { name: "Пользователи", exact: true }).click();
+  await page.getByRole("button", { name: "Открыть пользователя Существующий пользователь", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "Существующий пользователь", exact: true });
+  assert.match(await details.innerText(), /user@example.invalid/);
+  await details.getByRole("button", { name: "Изменить роль", exact: true }).click();
   return page.getByRole("dialog", { name: "Изменить роль пользователя", exact: true });
 }
 try {
   await page.goto("http://127.0.0.1:3124/confirmation-dialogs.html"); await openRoles();
-  assert.equal(await page.locator(".role-catalog-row").count(), 4);
-  assert.equal(await page.getByRole("button", { name: /^Удалить роль/ }).count(), 3);
-  await page.getByRole("button", { name: "Добавить роль", exact: true }).click();
-  let dialog = page.getByRole("dialog", { name: "Добавить роль", exact: true });
-  await dialog.getByRole("textbox", { name: "Название роли", exact: true }).fill("Координатор");
-  await dialog.getByRole("checkbox", { name: "Редактирование: Отчёт рабочих", exact: true }).locator("..").click();
-  await dialog.getByRole("button", { name: "Сохранить роль", exact: true }).click(); await dialog.waitFor({ state: "detached" });
-  await page.locator(".role-catalog-row").filter({ hasText: "Координатор" }).getByRole("button", { name: "Редактировать", exact: true }).click();
-  dialog = page.getByRole("dialog", { name: "Редактировать роль", exact: true });
-  await dialog.getByRole("textbox", { name: "Название роли", exact: true }).fill("Координатор производства");
-  await dialog.getByRole("checkbox", { name: "Добавление: Отчёт техники", exact: true }).locator("..").click();
-  await dialog.getByRole("button", { name: "Сохранить роль", exact: true }).click(); await dialog.waitFor({ state: "detached" }); await roleRow().waitFor();
+  assert.equal(await page.locator(".roles-sidebar-item").count(), 4);
+  assert.equal(await panel().getByRole("button", { name: "Удалить роль", exact: true }).count(), 0);
+  await page.locator(".roles-sidebar footer button").click();
+  await panel().getByRole("textbox", { name: "Название роли", exact: true }).fill("Координатор");
+  await panel().getByRole("checkbox", { name: "Редактирование: Отчёт рабочих", exact: true }).locator("..").click();
+  await panel().getByRole("button", { name: "Создать роль", exact: true }).click(); await sidebarRole("Координатор").waitFor();
+  await panel().getByRole("textbox", { name: "Название роли", exact: true }).fill("Координатор производства");
+  await panel().getByRole("checkbox", { name: "Добавление: Отчёт техники", exact: true }).locator("..").click();
+  await panel().getByRole("button", { name: "Сохранить изменения", exact: true }).click(); await sidebarRole("Координатор производства").waitFor();
   assert.equal(roles.find(role => role.id === 100).revision, 2); assert.equal(roles.find(role => role.id === 100).permissions.equipment_report.create, true);
-  await page.screenshot({ path: "/tmp/roles-catalog.png" });
-  dialog = await openUserRole();
+  await page.screenshot({ path: "/tmp/users-rights-roles.png" });
+  // Search only filters the display, and unsaved drafts cannot disappear on tab change.
+  await panel().getByRole("searchbox", { name: "Найти раздел прав", exact: true }).fill("техники");
+  assert.equal(await panel().getByRole("checkbox", { name: "Просмотр: Отчёт рабочих", exact: true }).count(), 0);
+  await panel().getByRole("searchbox", { name: "Найти раздел прав", exact: true }).fill("");
+  await panel().getByRole("textbox", { name: "Название роли", exact: true }).fill("Не сохранять");
+  await page.getByRole("tab", { name: "Пользователи", exact: true }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Остаться", exact: true }).click();
+  assert.equal(await panel().getByRole("textbox", { name: "Название роли", exact: true }).inputValue(), "Не сохранять");
+  await panel().getByRole("button", { name: "Сбросить изменения", exact: true }).click();
+  let dialog = await openUserRole();
   assert.equal(await dialog.getByRole("textbox", { name: "ФИО", exact: true }).count(), 0);
   await dialog.getByRole("button", { name: "Роль пользователя", exact: true }).click();
   await page.getByRole("option", { name: "Координатор производства", exact: true }).click();
   await dialog.getByRole("button", { name: "Сохранить роль пользователя", exact: true }).click(); await dialog.waitFor({ state: "detached" });
   assert.equal(assignments[0].customRoleId, 100); assert.equal(users[1].customRoleName, "Координатор производства");
   console.log("PASS: create/edit catalog role and assign it to an existing user without changing profile data");
+  assert.equal(await page.getByRole("columnheader", { name: "ФИО", exact: true }).count(), 1);
+  assert.equal(await page.getByRole("columnheader", { name: "Роль", exact: true }).count(), 1);
+  assert.equal(await page.locator(".users-table").getByRole("link", { name: "user@example.invalid" }).count(), 0);
+  await page.screenshot({ path: "/tmp/users-rights-users.png" });
   await openRoles();
-  await roleRow().getByRole("button", { name: "Удалить роль Координатор производства", exact: true }).click();
+  await sidebarRole("Координатор производства").click();
+  await panel().getByRole("button", { name: "Удалить роль", exact: true }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Удалить роль", exact: true }).click();
   await page.getByRole("alert").filter({ hasText: "Сначала назначьте" }).waitFor(); assert.equal(roles.length, 4);
   dialog = await openUserRole();
@@ -100,21 +114,52 @@ try {
   await page.getByRole("option", { name: "Инженер", exact: true }).click();
   await dialog.getByRole("button", { name: "Сохранить роль пользователя", exact: true }).click(); await dialog.waitFor({ state: "detached" });
   assert.equal(users[1].customRoleId, 11);
-  await openRoles(); await roleRow().getByRole("button", { name: "Удалить роль Координатор производства", exact: true }).click();
+  await openRoles(); await sidebarRole("Координатор производства").click(); await panel().getByRole("button", { name: "Удалить роль", exact: true }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Удалить роль", exact: true }).click();
-  await roleRow().waitFor({ state: "detached" }); assert.equal(roles.length, 3);
-  await page.locator(".role-catalog-row").filter({ hasText: "Прораб" }).getByRole("button", { name: "Редактировать", exact: true }).click();
-  dialog = page.getByRole("dialog", { name: "Редактировать роль", exact: true });
-  await dialog.getByRole("textbox", { name: "Название роли", exact: true }).fill("Начальник смены");
-  await dialog.getByRole("button", { name: "Сохранить роль", exact: true }).click(); await dialog.waitFor({ state: "detached" });
+  await sidebarRole("Координатор производства").waitFor({ state: "detached" }); assert.equal(roles.length, 3);
+  await sidebarRole("Прораб").click();
+  await panel().getByRole("textbox", { name: "Название роли", exact: true }).fill("Начальник смены");
+  await panel().getByRole("button", { name: "Сохранить изменения", exact: true }).click(); await sidebarRole("Начальник смены").waitFor();
   assert.equal(roles.find(role => role.legacyRoleKey === "foreman").name, "Начальник смены");
-  await page.getByRole("button", { name: "Удалить роль Просмотр", exact: true }).click();
+  await sidebarRole("Просмотр").click(); await panel().getByRole("button", { name: "Удалить роль", exact: true }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Удалить роль", exact: true }).click();
-  await page.getByRole("button", { name: "Удалить роль Просмотр", exact: true }).waitFor({ state: "detached" });
-  await page.screenshot({ path: "/tmp/roles-catalog.png" });
-  await page.locator(".role-catalog-row").filter({ hasText: "Супер-админ" }).getByRole("button", { name: "Просмотреть", exact: true }).click();
-  dialog = page.getByRole("dialog", { name: "Супер-админ", exact: true });
-  assert.equal(await dialog.getByRole("button", { name: "Сохранить роль", exact: true }).count(), 0);
+  await sidebarRole("Просмотр").waitFor({ state: "detached" });
+  await sidebarRole("Супер-админ").click();
+  assert.equal(await panel().getByRole("button", { name: "Сохранить изменения", exact: true }).count(), 0);
+  assert.equal(await panel().getByRole("checkbox").first().isDisabled(), true);
+  await sidebarRole("Начальник смены").click();
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 913, height: 953 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    if (viewport.width < 680) await page.getByRole("button", { name: "Свернуть меню", exact: true }).click();
+    const checkbox = panel().getByRole("checkbox", { name: "Удаление: Справочники проекта", exact: true });
+    await checkbox.focus(); await page.keyboard.press("Space"); await page.keyboard.press("Space");
+    const bodyWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+    assert.ok(bodyWidth <= viewport.width + 1, `No page-level horizontal overflow at ${viewport.width}: ${bodyWidth}`);
+    const footer = await panel().locator(".roles-panel-footer").boundingBox(), box = await panel().boundingBox();
+    assert.ok(Math.abs(footer.y + footer.height - box.y - box.height) < 3, "Footer stays at panel bottom");
+    await page.screenshot({ path: `/tmp/users-rights-${viewport.width}.png`, fullPage: true });
+  }
+  // Each tab is hidden if its permission is missing, rather than showing disabled controls.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  for (const accessMode of ["users-only", "roles-only", "read-only"]) {
+    await page.goto(`http://127.0.0.1:3124/confirmation-dialogs.html?access=${accessMode}`);
+    await page.locator(".settings-list-item").filter({ hasText: "Пользователи и права" }).click();
+    assert.equal(await page.getByRole("tab", { name: "Пользователи", exact: true }).count(), accessMode === "roles-only" ? 0 : 1);
+    assert.equal(await page.getByRole("tab", { name: "Роли и права", exact: true }).count(), accessMode === "users-only" ? 0 : 1);
+    if (accessMode !== "roles-only") {
+      await page.getByRole("button", { name: "Открыть пользователя Существующий пользователь", exact: true }).click();
+      dialog = page.getByRole("dialog", { name: "Существующий пользователь", exact: true });
+      assert.equal(await dialog.getByRole("button", { name: "Редактировать", exact: true }).count(), 0);
+      assert.equal(await dialog.getByRole("button", { name: "Изменить роль", exact: true }).count(), 0);
+      await dialog.getByRole("button", { name: "Закрыть карточку пользователя", exact: true }).click();
+    }
+    if (accessMode !== "users-only") {
+      await page.getByRole("tab", { name: "Роли и права", exact: true }).click();
+      await sidebarRole("Инженер").click();
+      assert.equal(await panel().getByRole("button", { name: "Сохранить изменения", exact: true }).count(), 0);
+      assert.equal(await panel().getByRole("checkbox").first().isDisabled(), true);
+    }
+  }
   assert.deepEqual(errors, []); assert.deepEqual(native, []);
   console.log("PASS: in-use deletion rejected; previous Foreman/Engineer/Viewer templates are editable/deletable; only Super-admin remains protected");
 } catch (error) { console.error((await page.locator("body").innerText()).slice(-2200)); await page.screenshot({ path: "/tmp/role-management-failure.png" }); throw error; }

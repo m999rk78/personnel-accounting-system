@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CustomSelect } from "./CustomSelect";
 import { ProjectAccessPicker } from "./ProjectAccessPicker";
 import { type ProjectAccess, type UserRole } from "./roles";
 import { customUserRoleChanges, userDraftProjectAccess, userProjectAccessValid, userProjectLabel, userRoleChanges, userRoleLabel } from "./userAccessModel";
 import type { CustomRole } from "./customRoles";
 import "./customRoles.css";
+import "./usersRights.css";
 
 type AccessOption = { id: number; name: string };
 type AccessUser = { id: number; fullName: string; email: string; role: UserRole; customRoleId?: number | null; customRoleName?: string | null; assignedSiteId: number | null; projectAccess?: ProjectAccess; projectAccessLimitedToViewer?: boolean; canViewPendingReports?: boolean; status?: "active" | "invited" };
@@ -21,6 +22,8 @@ type UserAccessCardsProps = {
   onEditRole?: (user: AccessUser) => void;
   roleOnly?: boolean;
   error?: string;
+  layout?: "cards" | "list";
+  onOpenPermissions?: (userId: number) => void;
   onSelectionChange: (ids: number[]) => void;
   onPatchDraft: (key: string, changes: Partial<AccessUserDraft>) => void;
   onCancelEditing: () => void;
@@ -39,6 +42,29 @@ function normalize(value: string) {
 function initials(value: string) {
   const parts = value.trim().split(/\s+/).filter(Boolean);
   return (parts.length > 1 ? `${parts[0][0]}${parts[1][0]}` : parts[0]?.slice(0, 2) || "НП").toLocaleUpperCase("ru-RU");
+}
+
+function UserDetailsDialog({ user, sites, onClose, onEdit, onEditRole, onOpenPermissions }: {
+  user: AccessUser; sites: AccessOption[]; onClose: () => void; onEdit?: () => void; onEditRole?: () => void; onOpenPermissions?: () => void;
+}) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const element = ref.current;
+    element?.showModal();
+    return () => { element?.close(); if (previous?.isConnected) previous.focus({ preventScroll: true }); };
+  }, []);
+  return <dialog ref={ref} className="user-detail-dialog" aria-labelledby="user-detail-title" onCancel={event => { event.preventDefault(); onClose(); }}>
+    <header className="user-detail-heading"><span className="user-access-avatar" aria-hidden="true">{initials(user.fullName)}</span><div><h2 id="user-detail-title">{user.fullName}</h2><p>Пользователь системы</p></div><button type="button" className="user-detail-close" aria-label="Закрыть карточку пользователя" onClick={onClose}>×</button></header>
+    <dl className="user-detail-fields">
+      <div><dt>Почта</dt><dd><a href={`mailto:${user.email}`}>{user.email}</a></dd></div>
+      <div><dt>Роль</dt><dd>{userRoleLabel(user)}</dd></div>
+      <div><dt>Проекты</dt><dd>{userProjectLabel(user.role, user.assignedSiteId, sites, user.projectAccess, user.projectAccessLimitedToViewer)}</dd></div>
+      <div><dt>Статус</dt><dd>{user.status === "active" ? "Активен" : "Приглашён"}</dd></div>
+      {user.role === "viewer" && <div><dt>Черновики</dt><dd>{user.canViewPendingReports ? "Доступны для просмотра" : "Скрыты"}</dd></div>}
+    </dl>
+    <footer className="user-detail-actions">{onOpenPermissions && <button type="button" className="back-button" onClick={onOpenPermissions}>Индивидуальные права</button>}{onEditRole && <button type="button" className="back-button" onClick={onEditRole}>Изменить роль</button>}{onEdit && <button type="button" className="primary-button" onClick={onEdit}>Редактировать</button>}</footer>
+  </dialog>;
 }
 
 function UserEditorDialog({ drafts, sites, saving, onPatch, onCancel, onSave, roles, rolesLoading, rolesError, onRetryRoles, roleOnly = false, error }: { drafts: AccessUserDraft[]; sites: AccessOption[]; saving: boolean; onPatch: (key: string, changes: Partial<AccessUserDraft>) => void; onCancel: () => void; onSave: () => void; roles: CustomRole[]; rolesLoading: boolean; rolesError: string; onRetryRoles: () => void; roleOnly?: boolean; error?: string }) {
@@ -83,9 +109,9 @@ function UserEditorDialog({ drafts, sites, saving, onPatch, onCancel, onSave, ro
         </section>}
 
         <section className="user-create-section">
-          <div className="user-create-section-heading"><span>2</span><div><h3>Роль и доступ</h3><p>Выберите, какие разделы и проекты будут доступны пользователю.</p></div></div>
+          <div className="user-create-section-heading"><span>{roleOnly ? 1 : 2}</span><div><h3>Роль и доступ</h3><p>Выберите, какие разделы и проекты будут доступны пользователю.</p></div></div>
           <div className="user-custom-role-field"><span>Роль</span><CustomSelect searchable value={roleValue} options={roleOptions} ariaLabel="Роль пользователя" disabled={saving || rolesLoading} onChange={value => { if (value === "__superadmin__") { selectBuiltinRole("superadmin"); return; } const role = roles.find(item => String(item.id) === value); if (role && role.id !== draft.customRoleId) onPatch(draft.key, customUserRoleChanges(role, draft.projectAccess)); }} />
-            {rolesLoading ? <p role="status">Загружаем роли…</p> : rolesError ? <p className="user-custom-role-error" role="alert">{rolesError}<button type="button" disabled={saving} onClick={onRetryRoles}>Повторить</button></p> : <p>Новые роли добавляются в разделе «Права доступа».</p>}
+            {rolesLoading ? <p role="status">Загружаем роли…</p> : rolesError ? <p className="user-custom-role-error" role="alert">{rolesError}<button type="button" disabled={saving} onClick={onRetryRoles}>Повторить</button></p> : <p>Роли настраиваются на вкладке «Роли и права».</p>}
           </div>
           <div className={`user-create-access-field${activeProjectInvalid ? " invalid" : ""}`}>
             <span>Доступ к проектам</span>
@@ -104,8 +130,9 @@ function UserEditorDialog({ drafts, sites, saving, onPatch, onCancel, onSave, ro
   </div>;
 }
 
-export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onEditRole, roleOnly = false, error, onSelectionChange, onPatchDraft, onCancelEditing, onSave, saving, readOnly = false, canCreate, canUpdate, canDelete }: UserAccessCardsProps) {
+export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onEditRole, roleOnly = false, error, layout = "cards", onOpenPermissions, onSelectionChange, onPatchDraft, onCancelEditing, onSave, saving, readOnly = false, canCreate, canUpdate, canDelete }: UserAccessCardsProps) {
   const [query, setQuery] = useState("");
+  const [detailUser, setDetailUser] = useState<AccessUser | null>(null);
   const editorOpen = drafts.length > 0;
   const mayCreate = canCreate ?? !readOnly;
   const mayUpdate = canUpdate ?? !readOnly;
@@ -144,18 +171,19 @@ export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onEd
     onSelectionChange(selectedIds.includes(id) ? selectedIds.filter((selectedId) => selectedId !== id) : [...selectedIds, id]);
   }
 
-  return <section className="user-access-shell" aria-label="Пользователи системы">
+  const allSelected = visibleRows.length > 0 && visibleRows.every(user => selectedIds.includes(user.id));
+  return <section className={`user-access-shell${layout === "list" ? " users-list-shell" : ""}`} aria-label="Пользователи системы">
     <div className="user-access-overview">
-      <div className="user-access-stats" aria-label="Сводка по пользователям">
+      {layout === "list" ? <div className="users-list-summary"><strong>Пользователи <span className="users-list-count">{rows.length}</span></strong><span>{activeCount} активных · {invitedCount} приглашённых{search && ` · Найдено ${visibleRows.length} из ${rows.length}`}</span></div> : <div className="user-access-stats" aria-label="Сводка по пользователям">
         <div><strong>{rows.length}</strong><span>пользователей</span></div>
         <div><strong>{activeCount}</strong><span>активны</span></div>
         <div><strong>{invitedCount}</strong><span>ожидают входа</span></div>
         <div><strong>{adminCount}</strong><span>супер-админы</span></div>
-      </div>
+      </div>}
       <label className="user-access-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Найти пользователя…" aria-label="Найти пользователя" />{query && <button type="button" onClick={() => setQuery("")} aria-label="Очистить поиск">×</button>}</label>
     </div>
 
-    <div className="user-access-list">
+    {layout === "list" ? <div className="users-table-wrap"><table className="users-table" aria-label="Список пользователей"><thead><tr>{mayDelete && <th className="users-table-selection"><input type="checkbox" aria-label="Выбрать всех пользователей" checked={allSelected} disabled={editorOpen || !visibleRows.length} ref={element => { if (element) element.indeterminate = !allSelected && visibleRows.some(user => selectedIds.includes(user.id)); }} onChange={() => { const ids = new Set(visibleRows.map(user => user.id)); onSelectionChange(allSelected ? selectedIds.filter(id => !ids.has(id)) : [...new Set([...selectedIds, ...ids])]); }} /></th>}<th scope="col">ФИО</th><th scope="col">Роль и статус</th></tr></thead><tbody>{visibleRows.map(user => <tr key={user.id} className={selectedIds.includes(user.id) ? "selected" : ""}>{mayDelete && <td className="users-table-selection"><input type="checkbox" checked={selectedIds.includes(user.id)} disabled={editorOpen} onChange={() => toggleUser(user.id)} aria-label={`Выбрать пользователя ${user.fullName}`} /></td>}<td><button type="button" className="users-table-open" aria-label={`Открыть пользователя ${user.fullName}`} disabled={editorOpen} onClick={() => setDetailUser(user)}><span className="user-access-avatar" aria-hidden="true">{initials(user.fullName)}</span><span className="users-table-identity"><strong>{user.fullName}</strong><small>{user.email}</small></span></button></td><td><span className={`user-role${user.customRoleId ? " custom" : ""}`}>{userRoleLabel(user)}</span><small className="users-table-status"><span className={user.status === "active" ? "is-active" : "is-invited"} aria-hidden="true" />{user.status === "active" ? "Активен" : "Приглашён"}</small></td></tr>)}</tbody></table>{!visibleRows.length && <div className="user-access-empty"><strong>Пользователи не найдены</strong><span>Попробуйте изменить поисковый запрос.</span></div>}</div> : <div className="user-access-list">
       {visibleRows.map((user) => {
         const selected = selectedIds.includes(user.id);
         const scopeTitle = user.projectAccessLimitedToViewer ? "Проекты в пределах вашего доступа" : user.role === "superadmin" ? "Полный доступ" : user.role === "viewer" ? "Только просмотр" : "Рабочий доступ";
@@ -177,7 +205,8 @@ export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onEd
         </article>;
       })}
       {!drafts.length && !visibleRows.length && <div className="user-access-empty"><strong>Пользователи не найдены</strong><span>Попробуйте изменить поисковый запрос.</span></div>}
-    </div>
+    </div>}
+    {detailUser && !editorOpen && <UserDetailsDialog user={detailUser} sites={sites} onClose={() => setDetailUser(null)} onEdit={mayUpdate ? () => { setDetailUser(null); onEdit(detailUser); } : undefined} onEditRole={mayUpdate && onEditRole ? () => { setDetailUser(null); onEditRole(detailUser); } : undefined} onOpenPermissions={onOpenPermissions ? () => { setDetailUser(null); onOpenPermissions(detailUser.id); } : undefined} />}
     {mayShowEditor && drafts.length > 0 && <UserEditorDialog drafts={drafts} sites={sites} saving={saving} roleOnly={roleOnly} error={error} onPatch={onPatchDraft} onCancel={onCancelEditing} onSave={onSave} roles={roles} rolesLoading={rolesLoading} rolesError={rolesError} onRetryRoles={() => setRolesReload(current => current + 1)} />}
   </section>;
 }

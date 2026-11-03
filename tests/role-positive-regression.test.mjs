@@ -21,7 +21,7 @@ const replacements = {
   "../../../db/client": boundaryUrl, "../../auth": boundaryUrl,
   "../../auditLog": moduleUrl("export async function withAuditTrail(request,handler){return handler(request);}"),
   "../../compressJsonResponse": moduleUrl("export async function compressJsonResponse(request,response){return response;}"),
-  ...Object.fromEntries(["roles", "permissionModel", "projectScopedData", "readOptionalBatch", "settingsReadPolicy", "bitrix24Cooldown", "bitrixReviewSelection", "excelDirectoryImports", "personnelImportOrderServer", "equipmentAvailability", "equipmentImport", "equipmentTimesheetUnits", "equipmentReportWorkflow"].map(name=>[`../../${name}`,file(name)])),
+  ...Object.fromEntries(["roles", "permissionModel", "projectScopedData", "readOptionalBatch", "settingsReadPolicy", "bitrix24Cooldown", "bitrixReviewSelection", "excelDirectoryImports", "personnelImportOrderServer", "equipmentAvailability", "equipmentImport", "equipmentTimesheetUnits", "equipmentReportWorkflow", "personnelTimesheetReference.server"].map(name=>[`../../${name}`,file(name)])),
   "../../projectMasters": noop(["ensureProjectMastersSchema", "syncProjectMasters"]),
   "../../workTypeHierarchyServer": noop(["saveSubworkDirectory"]),
   "../../bitrix24Sync": noop(["compareBitrixEmployees", "fetchBitrixEmployeeSnapshot", "normalizeBitrixText", "selectBitrixEmployeesForImport", "suggestBitrixEmployeeLinks"]),

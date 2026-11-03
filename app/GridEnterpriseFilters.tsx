@@ -143,6 +143,9 @@ export function enterpriseFilterParams(params: IFilterParams, options: Enterpris
   const conditions = kind === "date" ? "agDateColumnFilter" : kind === "number" ? "agNumberColumnFilter" : "agTextColumnFilter";
   const formatter = options.valueFormatter ?? (!params.colDef.filterValueGetter && typeof params.colDef.valueFormatter === "function" ? params.colDef.valueFormatter : undefined);
   const setParams: ISetFilterParams = {
+    // Select search results as in Excel; the Multi Filter still owns Apply/Cancel.
+    excelMode: "windows",
+    refreshValuesOnOpen: true, suppressClearModelOnRefreshValues: true,
     showTooltips: true, cellHeight: setCellHeight(params.api, params.column.getColId()),
     textFormatter: normalizeFilterText,
     comparator: kind === "date" ? (a, b) => filterDateKey(b).localeCompare(filterDateKey(a)) : compareGridValues,

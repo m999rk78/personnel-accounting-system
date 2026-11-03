@@ -18,6 +18,7 @@ import { TimesheetMonthPicker } from "./TimesheetMonthPicker";
 import { resetTimesheetHeaderScroll, syncTimesheetHeaderScroll } from "./timesheetHeaderScroll";
 import { useTimesheetClipboard, type TimesheetClipboardChange } from "./useTimesheetClipboard";
 import { createImportOrderRank } from "./importOrderSorting";
+import { orderPersonnelTimesheetEmployees } from "./personnelTimesheetOrder";
 
 type TimesheetEmployee = {
   id: number;
@@ -25,6 +26,7 @@ type TimesheetEmployee = {
   employmentType: string;
   department: string;
   position: string;
+  timesheetOrder?: number | null;
 };
 
 type TimesheetEntry = {
@@ -246,6 +248,10 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDi
   const [error, setError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
   const rowOrder = useWorkspaceTableOrder();
+  const rowOrderScopeKey = `${siteId}:${month}`;
+  const [rowOrderMode, setRowOrderMode] = useState({ key: rowOrderScopeKey, manual: false });
+  if (rowOrderMode.key !== rowOrderScopeKey) setRowOrderMode({ key: rowOrderScopeKey, manual: false });
+  const useManualRowOrder = rowOrderMode.key === rowOrderScopeKey && rowOrderMode.manual;
   const [headerActionsTarget, setHeaderActionsTarget] = useState<HTMLElement | null>(null);
   const [codesOpen, setCodesOpen] = useState(false);
   const [editor, setEditor] = useState<EditorCell | null>(null);
@@ -422,10 +428,14 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDi
     { colId: "reports", headerName: "Отчёты", kind: "number", getValue: employee => rowMetricsByEmployee.get(employee.id)?.reports ?? 0 },
     { colId: "difference", headerName: "Разница", kind: "number", getValue: employee => rowMetricsByEmployee.get(employee.id)?.difference ?? 0 },
   ], [days, entriesByCell, marksByCell, month, rowMetricsByEmployee]);
-  const filterRows = useMemo(() => rowOrder?.order(payload?.employees ?? [], employee => employee.id) ?? payload?.employees ?? [], [payload?.employees, rowOrder]);
+  const filterRows = useMemo(() => {
+    const employees = payload?.employees ?? [];
+    const ordered = rowOrder && (useManualRowOrder || rowOrder.hasSavedOrder) ? rowOrder.order(employees, employee => employee.id) : employees;
+    return useManualRowOrder ? ordered : orderPersonnelTimesheetEmployees(ordered);
+  }, [payload?.employees, rowOrder, useManualRowOrder]);
   const importRank = useMemo(() => createImportOrderRank(payload?.employees ?? [], rowOrder?.importIds ?? [], employee => employee.id), [payload?.employees, rowOrder?.importIds]);
   const filters = useTimesheetFilters({ rows: filterRows, columns: filterColumns, getRowId: employeeFilterRowId, resetKey: `${siteId}:${month}`, importOrder: {
-    rank: importRank, activation: rowOrder?.importOrderRevision ?? 0, ready: rowOrder?.ready ?? false, defaultSort: Boolean(rowOrder?.hasImportOrder && !rowOrder.hasSavedOrder),
+    rank: importRank, activation: 0, ready: rowOrder?.ready ?? false, defaultSort: false,
   } });
   const visibleEmployees = filters.rows;
   const visibleEmployeeIds = useMemo(() => new Set(visibleEmployees.map((employee) => employee.id)), [visibleEmployees]);
@@ -469,7 +479,16 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDi
   const employeesWithReports = useMemo(() => new Set(visibleEntries.map((entry) => entry.employeeId)).size, [visibleEntries]);
   const editingEmployee = editor ? employeeById.get(editor.employeeId) : undefined;
   const editingMark = editor ? marksByCell.get(cellKey(editor.employeeId, editor.workDate)) : undefined;
-  const rowMoves = useNativeRowMoves(rowOrder, filters.isActive, Boolean(editor || inlineEditor || savingMark || savingBulkMarks || loading), { key: `${siteId}:${month}`, ids: visibleEmployees.map(employee => employee.id) });
+  const displayedRowIds = useMemo(() => visibleEmployees.map(employee => employee.id), [visibleEmployees]);
+  const manualRowOrder = useMemo(() => rowOrder ? { ...rowOrder, move: async (operation: Parameters<NonNullable<typeof rowOrder>["move"]>[0]) => {
+    const scopeVersion = activeScopeVersion.current;
+    const saved = await rowOrder.move({ ...operation, displayedIds: displayedRowIds });
+    // A successful explicit move changes this open tab only. Reopening a month
+    // starts with its organizational order; late writes cannot change another view.
+    if (saved && activeScope.current === rowOrderScopeKey && activeScopeVersion.current === scopeVersion) setRowOrderMode({ key: rowOrderScopeKey, manual: true });
+    return saved;
+  } } : null, [rowOrder, displayedRowIds, rowOrderScopeKey]);
+  const rowMoves = useNativeRowMoves(manualRowOrder, filters.isActive, Boolean(editor || inlineEditor || savingMark || savingBulkMarks || loading), { key: rowOrderScopeKey, ids: displayedRowIds });
   const rowOrderKey = useMemo(() => `${siteId}:${month}:${visibleEmployees.map((employee) => employee.id).join("|")}`, [siteId, month, visibleEmployees]);
   const pinnedEmployeeId = inlineEditor?.employeeId ?? editor?.employeeId;
   const viewport = useTableViewport(visibleEmployees.length, rowOrderKey, !loading && !error,

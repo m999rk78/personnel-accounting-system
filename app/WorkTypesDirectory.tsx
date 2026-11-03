@@ -17,6 +17,7 @@ type Props = {
   siteId: number; projectName: string; mainWorkTypes: WorkTypeOption[]; subworkTypes: WorkTypeOption[];
   canCreate: boolean; canUpdate: boolean; canDelete: boolean; loading?: boolean; onRefresh: () => Promise<void>; onBack: () => void;
   onDirtyChange?: (dirty: boolean) => void;
+  headerActionsTargetId?: string;
 };
 type Archive = ReturnType<typeof workTypesArchiveSelection>;
 const count = (value: number) => new Intl.NumberFormat("ru-RU").format(value);
@@ -59,6 +60,7 @@ export function WorkTypesDirectory(props: Props) {
   useEffect(() => { editsRef.current = edits; }, [edits]);
   const [selectionVersion, setSelectionVersion] = useState(0);
   const [query, setQuery] = useState("");
+  const [headerActionsTarget, setHeaderActionsTarget] = useState<HTMLElement | null>(null);
   const [archive, setArchive] = useState<Archive | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -74,6 +76,11 @@ export function WorkTypesDirectory(props: Props) {
   const batchError = useRef("");
   const dirty = Object.keys(edits).length > 0;
   const locked = Boolean(busy || props.loading);
+  const headerActionsTargetId = props.headerActionsTargetId;
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setHeaderActionsTarget(headerActionsTargetId ? document.getElementById(headerActionsTargetId) : null));
+    return () => cancelAnimationFrame(frame);
+  }, [headerActionsTargetId]);
   const workspace = useMemo(() => workTypesWorkspace(props.mainWorkTypes, props.subworkTypes, edits), [props.mainWorkTypes, props.subworkTypes, edits]);
   const errors = useMemo(() => validate ? workTypesDraftErrors(props.mainWorkTypes, props.subworkTypes, edits) : {}, [validate, props.mainWorkTypes, props.subworkTypes, edits]);
   useEffect(() => {
@@ -197,22 +204,23 @@ export function WorkTypesDirectory(props: Props) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось импортировать файл."); }
     finally { busyRef.current = false; setBusy(false); if (fileInput.current) fileInput.current.value = ""; }
   }
+  const searchControl = <input className="work-types-search" type="search" aria-label="Поиск видов и подвидов работ" placeholder="Найти вид или подвид работы…" value={query} disabled={locked} onChange={event => setQuery(event.target.value)}/>;
+  const excelControls = <div className="work-types-toolbar-actions">
+    <span className="work-types-totals">Видов: <strong>{count(props.mainWorkTypes.length)}</strong> · Подвидов: <strong>{count(props.subworkTypes.length)}</strong></span>
+    <ExcelActionsMenu actions={[
+      { label: "Экспорт в Excel", disabled: locked || dirty || editing, onSelect: () => exportExcel() },
+      ...(props.canCreate && props.canUpdate ? [
+        { label: "Импорт из Excel", disabled: locked || dirty || editing, onSelect: () => fileInput.current?.click() },
+        { label: "Скачать шаблон", disabled: locked, onSelect: () => exportExcel(true) },
+      ] : []),
+    ]}/>
+  </div>;
   return <section className="users-settings admin-section reference-section work-types-directory" aria-label="Виды и подвиды работ" aria-busy={locked}>
-    <div className="settings-toolbar">
+    {headerActionsTargetId ? headerActionsTarget && createPortal(<div className="work-types-heading-actions">{searchControl}{excelControls}</div>, headerActionsTarget) : <div className="settings-toolbar">
       <button type="button" className="back-button" disabled={locked || dirty || editing} onClick={props.onBack}>← К настройкам проекта</button>
-      <input className="work-types-search" type="search" aria-label="Поиск видов и подвидов работ" placeholder="Найти вид или подвид работы…" value={query} disabled={locked} onChange={event => setQuery(event.target.value)}/>
-      <div className="work-types-toolbar-actions">
-        <span className="work-types-totals">Видов: <strong>{count(props.mainWorkTypes.length)}</strong> · Подвидов: <strong>{count(props.subworkTypes.length)}</strong></span>
-        <ExcelActionsMenu actions={[
-          { label: "Экспорт в Excel", disabled: locked || dirty || editing, onSelect: () => exportExcel() },
-          ...(props.canCreate && props.canUpdate ? [
-            { label: "Импорт из Excel", disabled: locked || dirty || editing, onSelect: () => fileInput.current?.click() },
-            { label: "Скачать шаблон", disabled: locked, onSelect: () => exportExcel(true) },
-          ] : []),
-        ]}/>
-      </div>
-      <input ref={fileInput} hidden type="file" accept=".xlsx" onChange={event => { const file = event.target.files?.[0]; if (file) void importExcel(file); }}/>
-    </div>
+      {searchControl}{excelControls}
+    </div>}
+    <input ref={fileInput} hidden type="file" accept=".xlsx" onChange={event => { const file = event.target.files?.[0]; if (file) void importExcel(file); }}/>
     {error && !archive && <div role="alert" className="message error inline-message"><strong>Проверьте данные</strong><span>{error}</span></div>}
     {notice && <div role="status" className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
     <WorkTypesTable masters={workspace.masters} details={workspace.details} drafts={edits} errors={errors} query={query} loading={props.loading} disabled={locked} canCreate={props.canCreate} canUpdate={props.canUpdate} canDelete={props.canDelete} selectionVersion={selectionVersion} onEdit={editRows} onPatch={patch} onAdd={add} onArchive={askArchive} onSave={() => void save()} onCancel={() => { stopEditors(true); reset(); setError(""); }} registerGrid={registerGrid}

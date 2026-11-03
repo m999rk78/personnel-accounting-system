@@ -18,7 +18,12 @@ COPY --from=builder --chown=personnel:nodejs /app/dist/standalone ./
 COPY --from=builder --chown=personnel:nodejs /app/drizzle-postgres ./drizzle-postgres
 COPY --from=builder --chown=personnel:nodejs /app/scripts/apply-postgres-migrations.mjs ./scripts/apply-postgres-migrations.mjs
 COPY --from=builder --chown=personnel:nodejs /app/scripts/start-production.mjs ./scripts/start-production.mjs
+COPY --from=builder --chown=personnel:nodejs /app/scripts/maintenance-gateway.mjs ./scripts/maintenance-gateway.mjs
+COPY --from=builder --chown=personnel:nodejs /app/scripts/maintenance-control.mjs ./scripts/maintenance-control.mjs
+COPY --from=builder --chown=personnel:nodejs /app/scripts/maintenance-assets.mjs ./scripts/maintenance-assets.mjs
+COPY --from=builder --chown=personnel:nodejs /app/public/maintenance.html ./public/maintenance.html
 COPY --from=dependencies --chown=personnel:nodejs /app/node_modules/drizzle-orm ./node_modules/drizzle-orm
+RUN mkdir -p /app/.runtime && chown personnel:nodejs /app/.runtime
 USER personnel
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

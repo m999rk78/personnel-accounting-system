@@ -55,8 +55,9 @@ test("stores permissions, exposes a separate settings page, and enforces them in
   assert.match(dataApi, /workers_report", "delete"/);
   assert.match(equipmentApi, /equipment_report", entryId \? "update" : "create"/);
   assert.match(timesheetApi, /existingMark \? "update" : "create"/);
-  assert.match(app, /title: "Пользователи системы"/);
-  assert.match(app, /title: "Права доступа"/);
+  assert.match(app, /title: "Пользователи и права"/);
+  assert.match(app, /canViewUsers=\{may\("system_users"\)\} canViewRoles=\{may\("access_rights"\)\}/);
+  assert.match(app, /<RolesSettingsView/);
   assert.match(view, /className="access-preset-bar"/);
   assert.match(view, /onClick=\{applyViewOnly\}/);
   assert.match(view, /onClick=\{applyFullAccess\}/);

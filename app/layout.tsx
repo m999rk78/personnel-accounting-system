@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { AgGridEnterpriseProvider } from "./AgGridEnterpriseProvider";
+import { MaintenanceBoundary } from "./MaintenanceBoundary";
 import "./globals.css";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -26,5 +27,5 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <link rel="icon" href="/tps-favicon-v4.ico" sizes="any" />
     <link rel="icon" type="image/png" href="/tps-favicon-v4-32.png" sizes="32x32" />
     <link rel="apple-touch-icon" href="/tps-favicon-v4-64.png" sizes="64x64" />
-  </head><body><AgGridEnterpriseProvider licenseKey={agGridLicenseKey}>{children}</AgGridEnterpriseProvider></body></html>;
+  </head><body><MaintenanceBoundary><AgGridEnterpriseProvider licenseKey={agGridLicenseKey}>{children}</AgGridEnterpriseProvider></MaintenanceBoundary></body></html>;
 }

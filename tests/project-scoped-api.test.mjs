@@ -34,6 +34,7 @@ const replacements = {
   "../../workTypeHierarchyServer": noop(["saveSubworkDirectory"]),
   "../../excelDirectoryImports": noop(["importProjectDirectoryExcel", "importProjectEmployeesExcel", "normalizeExcelDirectoryName", "prepareEmployeeExcelImport"]),
   "../../personnelImportOrderServer": fileUrl("personnelImportOrderServer"),
+  "../../personnelTimesheetReference.server": fileUrl("personnelTimesheetReference.server"),
   "../../bitrix24Sync": noop(["compareBitrixEmployees", "fetchBitrixEmployeeSnapshot", "normalizeBitrixText", "selectBitrixEmployeesForImport", "suggestBitrixEmployeeLinks"]),
   "../../equipmentAvailability": fileUrl("equipmentAvailability"),
   "../../equipmentImportServer": noop(["importEquipmentEntries"]),

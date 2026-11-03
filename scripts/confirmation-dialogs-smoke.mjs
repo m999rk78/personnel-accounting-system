@@ -35,7 +35,7 @@ await page.route("**/api/**", async route => {
   assert.equal(request.method(), "GET", "Confirmation must not save or delete records");
   const url = new URL(request.url());
   let data;
-  if (url.pathname === "/api/data") data = { sites, employees: [], projectEmployees: [], placementEmployees: [], reportEmployees: [], positionCatalog: [], employmentTypes: [], departments: [], positions: [], users: [], shifts: [], zones: [], mainWorkTypes: [], subworkTypes: [], masters: [], entries: [], filledDates: [], employeeUsage: [], foremanProgress: [], timesheetMarks: [], reportSubmitted: false };
+  if (url.pathname === "/api/data") data = { sites, employees: [], projectEmployees: [], placementEmployees: [], reportEmployees: [], positionCatalog: [], employmentTypes: [], departments: [], positions: [], users: rightsUsers, shifts: [], zones: [], mainWorkTypes: [], subworkTypes: [], masters: [], entries: [], filledDates: [], employeeUsage: [], foremanProgress: [], timesheetMarks: [], reportSubmitted: false };
   else if (url.pathname === "/api/table-order") data = { ids: [], canWrite: false, hasSavedOrder: false };
   else if (url.pathname === "/api/equipment") data = { siteName: sites[0].name, units: [], shifts: [], zones: [], mainWorkTypes: [], subworkTypes: [] };
   else if (url.pathname.endsWith("-report")) data = { reports: [], entries: [], canReview: true, from: null, to: null, availabilityMarks: [] };
@@ -97,37 +97,39 @@ try {
   console.log("PASS: equipment report project change awaits app confirmation");
 
   await nav("Общие настройки").click();
-  await page.locator(".settings-list-item").filter({ hasText: "Права доступа" }).click();
+  await page.locator(".settings-list-item").filter({ hasText: "Пользователи и права" }).click();
+  await page.getByRole("button", { name: "Открыть пользователя Первый пользователь", exact: true }).click();
+  await page.getByRole("dialog", { name: "Первый пользователь", exact: true }).getByRole("button", { name: "Индивидуальные права", exact: true }).click();
+  const userAccess = page.getByRole("dialog", { name: "Индивидуальные права", exact: true });
   const permission = page.getByRole("checkbox", { name: "Удаление: Отчёт рабочих", exact: true });
   await permission.locator("..").click();
-  const targetUser = page.locator(".access-user-list button").filter({ hasText: "Второй пользователь" });
-  await targetUser.click(); await assertModal(); await cancel();
+  await page.keyboard.press("Escape"); await assertModal();
+  await cancel();
   assert.equal(await permission.isChecked(), false);
-  assert.match(await page.locator(".access-user-list button.selected").innerText(), /Первый пользователь/);
-  await targetUser.click(); await assertModal(); await accept();
-  await page.waitForFunction(() => document.querySelector('input[aria-label="Удаление: Отчёт рабочих"]')?.checked);
-  assert.equal(await permission.isChecked(), true, "Accepted switch loads that user's saved rights");
-  await permission.locator("..").click();
   const reads = rightsReads;
-  await page.getByRole("button", { name: "Обновить", exact: true }).click(); await assertModal(); await cancel();
+  await userAccess.getByRole("button", { name: "Обновить", exact: true }).click(); await assertModal(); await cancel();
   assert.equal(rightsReads, reads);
-  await page.getByRole("button", { name: "Обновить", exact: true }).click(); await assertModal(); await accept();
+  await userAccess.getByRole("button", { name: "Обновить", exact: true }).click(); await assertModal(); await accept();
   await page.waitForFunction(() => document.querySelector('input[aria-label="Удаление: Отчёт рабочих"]')?.checked);
+  await page.waitForFunction(() => [...document.querySelectorAll(".embedded-user-access button")].find(button => button.textContent === "Сохранить доступ")?.disabled);
   assert.ok(rightsReads > reads);
-  console.log("PASS: access user switch and refresh discard only after confirmation");
+  await userAccess.getByRole("button", { name: "Закрыть", exact: true }).click(); await userAccess.waitFor({ state: "detached" });
+  console.log("PASS: individual access stays in the chosen profile; Escape/refresh preserve unsaved rights on Cancel");
 
-  await page.getByRole("button", { name: "Добавить роль", exact: true }).click();
-  const roleDialog = page.getByRole("dialog", { name: "Добавить роль", exact: true });
+  await page.getByRole("tab", { name: "Роли и права", exact: true }).click();
+  await page.locator(".roles-sidebar footer button").click();
+  const roleDialog = page.locator(".roles-permissions-panel");
   await roleDialog.getByRole("textbox", { name: "Название роли", exact: true }).fill("Несохранённая роль");
   for (const viewport of [{ width: 913, height: 953 }, { width: 1280, height: 720 }, { width: 390, height: 844 }, { width: 390, height: 480 }]) {
     await page.setViewportSize(viewport);
+    if (viewport.width < 680 && await page.getByRole("button", { name: "Свернуть меню", exact: true }).count()) await page.getByRole("button", { name: "Свернуть меню", exact: true }).click();
     for (const name of ["Просмотр: Техника проекта", "Редактирование: Отчёт рабочих", "Удаление: Справочники проекта"]) {
       const checkbox = roleDialog.getByRole("checkbox", { name, exact: true });
       await checkbox.locator("..").click();
       await checkbox.focus();
       await page.keyboard.press("Space");
       const layout = await roleDialog.evaluate(dialog => {
-        const box = dialog.getBoundingClientRect(), header = dialog.querySelector(".role-editor-heading").getBoundingClientRect(), footer = dialog.querySelector(".role-editor-footer").getBoundingClientRect();
+        const box = dialog.getBoundingClientRect(), header = dialog.querySelector(".roles-panel-heading").getBoundingClientRect(), footer = dialog.querySelector(".roles-panel-footer").getBoundingClientRect();
         const input = document.activeElement, inputBox = input.getBoundingClientRect(), label = input.closest("label").getBoundingClientRect();
         return { scrollTop: dialog.scrollTop, top: box.top, bottom: box.bottom, headerTop: header.top, footerBottom: footer.bottom,
           inputContained: inputBox.top >= label.top - 1 && inputBox.bottom <= label.bottom + 1 };
@@ -139,21 +141,24 @@ try {
   }
   await page.setViewportSize({ width: 913, height: 953 });
   await page.screenshot({ path: "/tmp/role-editor-layout-fixed.png" });
-  console.log("PASS: role header/footer stay in place when clicking/focusing permissions on desktop, mobile and short viewports");
-  await roleDialog.getByRole("button", { name: "Закрыть окно роли", exact: true }).click(); await assertModal();
+  console.log("PASS: inline role header/footer stay in place when focusing permissions on desktop, mobile and short viewports");
+  await page.getByRole("tab", { name: "Пользователи", exact: true }).click(); await assertModal();
   await page.keyboard.press("Escape"); await popup().waitFor({ state: "detached" });
   assert.equal(await roleDialog.getByRole("textbox", { name: "Название роли", exact: true }).inputValue(), "Несохранённая роль");
-  await roleDialog.getByRole("button", { name: "Закрыть окно роли", exact: true }).click(); await assertModal();
+  await page.getByRole("tab", { name: "Пользователи", exact: true }).click(); await assertModal();
   await page.setViewportSize({ width: 390, height: 844 });
   const bounds = await popup().boundingBox();
   assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390 && bounds.y >= 0 && bounds.y + bounds.height <= 844);
   await page.screenshot({ path: "/tmp/app-confirmation-mobile.png" });
   await accept(); await roleDialog.waitFor({ state: "detached" });
-  console.log("PASS: nested role confirmation, focus trap, Escape and mobile layout");
+  console.log("PASS: tab changes use app confirmation, focus trap, Escape and mobile layout");
   await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole("tab", { name: "Роли и права", exact: true }).click();
+  await page.locator(".roles-sidebar footer button").click();
+  const previousPermission = await permission.isChecked();
   await permission.locator("..").click();
   await page.getByRole("button", { name: "← К общим настройкам", exact: true }).click(); await assertModal(); await cancel();
-  assert.equal(await permission.isChecked(), false);
+  assert.equal(await permission.isChecked(), !previousPermission);
   await page.getByRole("button", { name: "← К общим настройкам", exact: true }).click(); await assertModal(); await accept();
   assert.equal(new URL(page.url()).pathname, "/settings/general");
   assert.deepEqual(errors, []);

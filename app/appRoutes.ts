@@ -91,10 +91,9 @@ export function workspaceTitle(view: WorkspaceView, directoryFocus: WorkspaceDir
   if (view === "employees") return "Сотрудники";
   if (view === "equipmentRegistry") return "Реестр техники";
   if (view === "positions") return "Список должностей";
-  if (view === "users") return "Пользователи системы";
+  if (view === "users" || view === "accessRights") return "Пользователи и права";
   if (view === "projects") return "Проекты";
   if (view === "auditLog") return "Журнал действий";
-  if (view === "accessRights") return "Права доступа";
   if (view === "projectEmployees") return "Сотрудники проекта";
   if (view === "projectEquipment") return "Техника проекта";
   if (directoryFocus === "zone") return "Зоны";

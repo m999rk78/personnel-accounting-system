@@ -165,7 +165,7 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
       dates.add(row.workDate);
       next.rows++;
       if (row.status !== "approved") next.unapprovedRows++;
-      const employeeId = row.draft?.employeeId || row.entry?.employeeId;
+      const employeeId = row.draft ? row.draft.employeeId : row.entry?.employeeId;
       if (employeeId) employeeIds.add(String(employeeId));
       const hours = Number(valueFor(row, "hours", propsRef.current));
       if (Number.isFinite(hours) && (!row.draft || !personnelCellErrors(row.draft, propsRef.current).hours)) { next.hours += hours; next[row.status] += hours; }

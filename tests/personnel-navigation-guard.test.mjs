@@ -55,7 +55,7 @@ function harness({ view = "directories", focus = "zone", month = "2026-11" } = {
     equipmentSettingsDirtyRef: { current: false }, accessRightsDirtyRef: { current: false }, nativeTimesheetDirtyRef: { current: false },
     personnelReportLocationRef: { current: location.pathname },
     viewAllowed: () => true, fallbackView: "placement", workDate: "2026-11-02", selectedMonth: month, initialToday: "2026-11-02",
-    siteId: 1, mayViewAllProjects: true, currentUser: { id: 1 }, view, directoryFocus: focus,
+    siteId: 1, mayViewAllProjects: true, currentUser: { id: 1 }, view, directoryFocus: focus, settingsBackTarget: "settings",
     canAccessProject: () => true, rememberCurrentReportDraftSession() {}, takeReportDraftSession: () => null,
     workspaceNavigationDiscards: decisions, pendingWorkspaceGridInput: () => empty,
     workspaceUrl, parseWorkspaceLocation: () => trace.nextLocation,
@@ -93,14 +93,20 @@ for (const accepted of [false, true]) test(`actual sidebar navigation ${accepted
 test("actual settings sidebar and Back button handlers cannot clear drafts before async navigation is accepted", async () => {
   const handlers = nodes.filter(ts.isJsxOpeningElement).filter(node => node.tagName.getText(ast) === "button").flatMap(node => {
     const attributes = node.attributes.properties.filter(ts.isJsxAttribute);
-    const relevant = attributes.some(attribute => attribute.name.getText(ast) === "className" && attribute.initializer?.getText(ast) === '"back-button"'
-      || attribute.name.getText(ast) === "aria-label" && ['"Общие настройки"', '"Настройки проекта"'].includes(attribute.initializer?.getText(ast)));
+    const value = name => {
+      const initializer = attributes.find(attribute => attribute.name.getText(ast) === name)?.initializer;
+      return initializer && ts.isStringLiteral(initializer) ? initializer.text : undefined;
+    };
+    const control = value("aria-label") ?? value("className");
+    const relevant = ["back-button", "page-heading-back"].includes(value("className")) || ["Общие настройки", "Настройки проекта"].includes(value("aria-label"));
     const expression = attributes.find(attribute => attribute.name.getText(ast) === "onClick")?.initializer;
     const handler = expression && ts.isJsxExpression(expression) && expression.expression;
-    return relevant && handler?.getText(ast).includes("navigateTo(") ? [handler.getText(ast)] : [];
+    return relevant && handler?.getText(ast).includes("navigateTo(") ? [{ handler: handler.getText(ast), control }] : [];
   });
-  assert.ok(handlers.length >= 8, "Cover both sidebar settings links and all table Back buttons");
-  for (const handler of handlers) {
+  for (const control of ["Общие настройки", "Настройки проекта", "page-heading-back"]) {
+    assert.ok(handlers.some(item => item.control === control), `Cover the actual navigation control: ${control}`);
+  }
+  for (const { handler } of handlers) {
     const ui = harness();
     const environment = { ...ui.environment, navigateTo: ui.navigate };
     const compiled = ts.transpileModule(`const handler = ${handler};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;

@@ -7,8 +7,11 @@
   },
   "scripts": {
     "dev": "vinext dev",
-    "build": "vinext build",
-    "start": "node dist/standalone/server.js",
+    "build": "node scripts/build-maintenance-page.mjs && vinext build",
+    "start": "node scripts/start-production.mjs",
+    "maintenance:on": "node scripts/maintenance-control.mjs on",
+    "maintenance:off": "node scripts/maintenance-control.mjs off",
+    "maintenance:status": "node scripts/maintenance-control.mjs status",
     "test": "npm run build && node --experimental-strip-types --test tests/*.test.mjs",
     "test:stress": "node --env-file=.env.local scripts/stress-test.mjs",
     "test:tables": "node scripts/table-smoke.mjs",

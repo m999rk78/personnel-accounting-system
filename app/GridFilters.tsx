@@ -392,7 +392,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     if (firstLoad) importDefaultApplied.current = api;
     if (shouldApplyImportOrder({ activated, firstLoad, defaultImport: defaultImportSort, sorted: api.getColumnState().some(column => Boolean(column.sort)) })) api.applyColumnState(importOrderColumnState());
   }, [api, importActivation, importReady, defaultImportSort, orderedColumns]);
-  const previousEditState = useRef<{ api: GridApi<TData>; rows: Set<string>; blocked: boolean } | null>(null);
+  const previousEditState = useRef<{ api: GridApi<TData>; rows: Set<string> } | null>(null);
   const { rowData: sourceRows, getRowId: sourceGetRowId, context: sourceContext } = props;
   useEffect(() => {
     if (!api || api.isDestroyed() || !nativeFilters) return;
@@ -400,13 +400,12 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       `${row.kind}:${sourceGetRowId?.({ data: row, api, context: sourceContext, level: 0, parentKeys: undefined }) ?? index}`,
     ]));
     const previous = previousEditState.current?.api === api ? previousEditState.current : null;
-    previousEditState.current = { api, rows, blocked: rowOrderBlocked };
-    // Native filters evaluate drafts just like saved rows. Clear only when an
-    // editor opens or new draft rows appear, so a blank draft stays accessible.
-    // Ordinary refreshes and typing in an existing draft keep the user's filter.
-    const startedEditing = rowOrderBlocked && !previous?.blocked || [...rows].some(key => !previous?.rows.has(key));
-    if (startedEditing && api.isAnyFilterPresent()) api.setFilterModel(null);
-  }, [api, nativeFilters, sourceRows, sourceGetRowId, sourceContext, rowOrderBlocked]);
+    previousEditState.current = { api, rows };
+    // Reveal newly created draft/full-row editors. Opening a cell only blocks
+    // row moves and must preserve the filters applied to existing report rows.
+    const addedEditableRows = [...rows].some(key => !previous?.rows.has(key));
+    if (addedEditableRows && api.isAnyFilterPresent()) api.setFilterModel(null);
+  }, [api, nativeFilters, sourceRows, sourceGetRowId, sourceContext]);
   const [selection, setSelection] = useState<SpreadsheetSelection | null>(null);
   const [spreadsheetStatus, setSpreadsheetStatus] = useState("");
   const [contextMenu, setContextMenu] = useState<(SpreadsheetContextPayload<TData> & { x: number; y: number; error: string }) | null>(null);

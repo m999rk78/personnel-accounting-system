@@ -1,0 +1,36 @@
+# Independent of the application deployment: keep this small fallback running
+# while Coolify replaces the application container. No public port or database.
+name: personnel-maintenance
+services:
+  maintenance:
+    build:
+      context: ../..
+      dockerfile: ops/maintenance/Dockerfile
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    cpus: 0.25
+    expose:
+      - "8099"
+    volumes:
+      - type: bind
+        source: ${PERSONNEL_STATIC_ARCHIVE:?Set the absolute shared public static archive path}
+        target: /opt/maintenance/static
+        read_only: true
+    labels:
+      traefik.enable: "false"
+    networks:
+      coolify:
+        aliases:
+          - personnel-maintenance
+networks:
+  coolify:
+    external: true
+    name: ${COOLIFY_NETWORK:-coolify}

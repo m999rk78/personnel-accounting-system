@@ -11,19 +11,22 @@ const COMPACT_ACTION_LABELS: Record<PermissionAction, string> = {
 
 type CellPolicy = { allowed?: boolean; locked?: boolean; title?: string };
 
-export function PermissionMatrix({ label, value, disabled = false, onChange, cellPolicy, compact = false }: {
+export function PermissionMatrix({ label, value, disabled = false, onChange, cellPolicy, compact = false, search = "" }: {
   label: string;
   value: PermissionSet;
   disabled?: boolean;
   onChange?: (resource: PermissionResource, action: PermissionAction, enabled: boolean) => void;
   cellPolicy?: (resource: PermissionResource, action: PermissionAction) => CellPolicy;
   compact?: boolean;
+  search?: string;
 }) {
+  const query = search.trim().toLocaleLowerCase("ru-RU");
+  const definitions = PERMISSION_CATALOG.filter(item => !query || `${item.title} ${item.description} ${PERMISSION_GROUP_LABELS[item.group]}`.toLocaleLowerCase("ru-RU").includes(query));
   return <div className={`permission-matrix${compact ? " compact" : ""}`} role="table" aria-label={label}>
     <div className="permission-matrix-header" role="row"><span role="columnheader">Раздел системы</span>{PERMISSION_ACTIONS.map(action => <span role="columnheader" data-compact-label={COMPACT_ACTION_LABELS[action]} key={action}>{PERMISSION_ACTION_LABELS[action]}</span>)}</div>
-    {(["reports", "timesheets", "general", "project"] as const).map(group => <section className="permission-group" key={group}>
+    {(["reports", "timesheets", "general", "project"] as const).filter(group => definitions.some(item => item.group === group)).map(group => <section className="permission-group" key={group}>
       <h3>{PERMISSION_GROUP_LABELS[group]}</h3>
-      {PERMISSION_CATALOG.filter(item => item.group === group).map(definition => <div className="permission-row" role="row" key={definition.key}>
+      {definitions.filter(item => item.group === group).map(definition => <div className="permission-row" role="row" key={definition.key}>
         <div role="cell"><strong>{definition.title}</strong>{!compact && <span>{definition.description}</span>}</div>
         {PERMISSION_ACTIONS.map(action => {
           const supported = definition.actions.includes(action);
@@ -37,5 +40,6 @@ export function PermissionMatrix({ label, value, disabled = false, onChange, cel
         })}
       </div>)}
     </section>)}
+    {!definitions.length && <p className="roles-no-results">Разделы не найдены</p>}
   </div>;
 }

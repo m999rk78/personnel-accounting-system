@@ -140,6 +140,10 @@ BITRIX24_PROJECT_MAP={"123":"GPZ-U2","Объект 1":"GPZ-U2"}
 - `npm run dev` — локальная разработка.
 - `npm run build` — production-сборка.
 - `npm start` — запуск standalone-сборки.
+- `npm run maintenance:on` / `maintenance:off` / `maintenance:status` — управление
+  техническими работами из корня репозитория. В Docker используется
+  `node scripts/maintenance-control.mjs on|off|status`; настройка описана в
+  [инструкции Coolify](./DEPLOY_SELECTEL_COOLIFY.md#технические-работы-и-безопасная-замена-контейнера).
 - `npm run lint` — проверка кода.
 - `npm test` — сборка и тесты.
 - `npm run test:stress` — изолированный нагрузочный тест PostgreSQL на 100 000

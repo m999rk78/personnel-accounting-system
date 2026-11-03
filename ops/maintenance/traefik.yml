@@ -1,0 +1,51 @@
+# Review and install through this server's Coolify Dynamic Configurations.
+# This file affects only the two personnel-accounting application domains.
+# Append personnel-maintenance-errors@file to the EXISTING application's router
+# middleware lists; preserve their generated TLS, redirect and service labels.
+# Error-pages schema: https://doc.traefik.io/traefik/reference/routing-configuration/http/middlewares/errorpages/
+http:
+  routers:
+    personnel-static-https:
+      rule: (Host(`resurs-otchet.ru`) || Host(`www.resurs-otchet.ru`)) && PathPrefix(`/_next/static/`) && (Method(`GET`) || Method(`HEAD`))
+      entryPoints:
+        - https
+      priority: 2000
+      tls:
+        certResolver: letsencrypt
+      service: personnel-maintenance-fallback
+    personnel-maintenance-http:
+      rule: Host(`resurs-otchet.ru`) || Host(`www.resurs-otchet.ru`)
+      entryPoints:
+        - http
+      priority: 1
+      middlewares:
+        - personnel-maintenance-https
+      service: personnel-maintenance-fallback
+    personnel-maintenance-https:
+      rule: Host(`resurs-otchet.ru`) || Host(`www.resurs-otchet.ru`)
+      entryPoints:
+        - https
+      priority: 1
+      tls:
+        certResolver: letsencrypt
+      service: personnel-maintenance-fallback
+  middlewares:
+    personnel-maintenance-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+    personnel-maintenance-errors:
+      errors:
+        status:
+          - "502-504"
+        statusRewrites:
+          "502-504": 503
+        service: personnel-maintenance-fallback
+        query: /maintenance?request={url}
+        errorRequestHeaders: []
+  services:
+    personnel-maintenance-fallback:
+      loadBalancer:
+        passHostHeader: false
+        servers:
+          - url: http://personnel-maintenance:8099

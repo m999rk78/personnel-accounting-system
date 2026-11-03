@@ -3,6 +3,7 @@ import { getDatabase } from "../../../db/client";
 import { withAuditTrail } from "../../auditLog";
 import { assertSameOrigin, getAuthUser } from "../../auth";
 import { hasPermission } from "../../permissionModel";
+import { orderPersonnelTimesheetReferenceEmployees } from "../../personnelTimesheetReference.server";
 
 type TimesheetEmployee = {
   id: number;
@@ -140,7 +141,7 @@ export async function GET(request: Request) {
           SELECT tm.employee_id FROM timesheet_marks tm
           WHERE tm.site_id = ? AND tm.work_date >= ? AND tm.work_date < ?
         )
-        ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId, siteId, startDate, endDate, siteId, startDate, endDate),
+        ORDER BY e.sort_order, e.id`).bind(siteId, siteId, startDate, endDate, siteId, startDate, endDate),
         transaction.prepare(`SELECT pe.employee_id AS employeeId, pe.work_date AS workDate,
           SUM(pe.hours)::int AS hours,
           TRUE AS reportTracked,
@@ -170,7 +171,7 @@ export async function GET(request: Request) {
       canCreate: authUser.role !== "viewer" && hasPermission(authUser.permissions, "workers_timesheet", "create"),
       canUpdate: authUser.role !== "viewer" && hasPermission(authUser.permissions, "workers_timesheet", "update"),
       canDelete: authUser.role !== "viewer" && hasPermission(authUser.permissions, "workers_timesheet", "delete"),
-      employees: employeesResult.results as TimesheetEmployee[],
+      employees: orderPersonnelTimesheetReferenceEmployees(employeesResult.results as TimesheetEmployee[]),
       entries: entriesResult.results as TimesheetEntry[],
       marks: marksResult.results as TimesheetMark[],
     });

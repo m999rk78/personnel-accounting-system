@@ -51,6 +51,8 @@ test("marks protected route families and serves direct workspace links", async (
   assert.equal(workspaceTitle("directories", "zone"), "Зоны");
   assert.equal(workspaceDocumentTitle("equipmentTimesheet"), "Ресурсный отчёт | Табель техники");
   assert.equal(workspaceDocumentTitle("employees"), "Ресурсный отчёт | Сотрудники");
+  assert.equal(workspaceDocumentTitle("users"), "Ресурсный отчёт | Пользователи и права");
+  assert.equal(workspaceDocumentTitle("accessRights"), "Ресурсный отчёт | Пользователи и права");
 
   const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
   const catchAll = await readFile(new URL("../app/[...route]/page.tsx", import.meta.url), "utf8");

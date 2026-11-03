@@ -11,7 +11,7 @@ const confirmationUrl = dataUrl("export function useConfirmationDialog(){return 
 const fileUrl = name => new URL(`../app/${name}.ts`, import.meta.url).href;
 async function compile(name, replacements = {}) {
   let code = ts.transpileModule(await readFile(new URL(`../app/${name}.tsx`, import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX } }).outputText;
-  for (const [specifier, replacement] of Object.entries({ react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"), "./permissionModel": fileUrl("permissionModel"), "./customRoles.css": dataUrl(""), "./useConfirmationDialog": confirmationUrl, ...replacements })) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(replacement));
+  for (const [specifier, replacement] of Object.entries({ react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"), "./permissionModel": fileUrl("permissionModel"), "./customRoles.css": dataUrl(""), "./usersRights.css": dataUrl(""), "./useConfirmationDialog": confirmationUrl, ...replacements })) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(replacement));
   return dataUrl(code);
 }
 const matrixUrl = await compile("PermissionMatrix");
@@ -51,6 +51,130 @@ const button = (tree, text) => find(tree, node => node.type === "button" && text
 const matrix = tree => find(tree, node => node.type === PermissionMatrix);
 const catalog = tree => find(tree, node => node.type?.name === "RoleCatalog");
 const role = { id: 31, name: "Контроль проекта", baseRole: "viewer", permissions: rolePermissionTemplate("viewer"), revision: 1 };
+
+test("unified settings expose only permitted tabs and keep roles out of the users list", async () => {
+  const { UsersRightsNavigation } = await import(await compile("UsersRightsNavigation"));
+  for (const [canViewUsers, canViewRoles] of [[true, false], [false, true], [true, true]]) {
+    const html = renderToStaticMarkup(createElement(UsersRightsNavigation, { active: canViewUsers ? "users" : "roles", canViewUsers, canViewRoles, onSelect() {}, onBack() {} }));
+    assert.equal(html.includes('id="users-rights-tab-users"'), canViewUsers);
+    assert.equal(html.includes('id="users-rights-tab-roles"'), canViewRoles);
+    assert.match(html, /role="tablist"/);
+  }
+  const harness = await componentHarness("UserAccessCards");
+  const user = { id: 8, fullName: "Иванов Иван", email: "private@invalid.test", role: "engineer", assignedSiteId: null, projectAccess: { mode: "all", siteIds: [] }, status: "active" };
+  const props = { layout: "list", rows: [user], drafts: [], sites: [], selectedIds: [], readOnly: true, canUpdate: false, canDelete: false, onEdit() {}, onSelectionChange() {}, onPatchDraft() {}, onCancelEditing() {}, onSave() {}, saving: false };
+  let tree = harness.render(props);
+  assert.equal(allNodes(tree).some(node => node.type === "th" && textOf(node) === "ФИО"), true);
+  assert.equal(allNodes(tree).some(node => node.type === "input" && node.props.type === "checkbox"), false);
+  assert.equal(textOf(tree).includes(user.email), true, "The list shows email to distinguish users with similar names");
+  assert.equal(textOf(tree).includes("Активен"), true, "Account status remains readable without opening the profile");
+  find(tree, node => node.props["aria-label"] === `Открыть пользователя ${user.fullName}`).props.onClick();
+  tree = harness.render(props);
+  const details = find(tree, node => node.type?.name === "UserDetailsDialog");
+  assert.equal(details.props.user.email, user.email);
+  assert.equal(details.props.onEdit, undefined);
+  assert.equal(details.props.onEditRole, undefined);
+  assert.equal(details.props.onOpenPermissions, undefined);
+});
+
+test("delegated rights managers retain user permission editing without system user access", async () => {
+  const source = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const ast = ts.createSourceFile("PersonnelApp.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let route;
+  const visit = node => {
+    if (ts.isJsxExpression(node) && node.expression?.getText(ast).startsWith('view === "accessRights"')) route = node.expression;
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  assert.ok(route, "Expected the actual access-rights route");
+  const compiled = ts.transpileModule(`function render(){return (${route.getText(ast)});}`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } }).outputText;
+  const AccessRightsView = () => null, RolesSettingsView = () => null;
+  const onDirtyChange = () => {}, onBusyChange = () => {}, navigated = [];
+  const render = (usersAllowed, rightsAllowed) => new Function("React", "view", "may", "AccessRightsView", "RolesSettingsView", "onAccessRightsDirty", "onChildNavigationBusy", "navigateTo", "adminDataLoaded", `${compiled}\nreturn render();`)(
+    { createElement }, "accessRights", resource => resource === "system_users" ? usersAllowed : rightsAllowed,
+    AccessRightsView, RolesSettingsView, onDirtyChange, onBusyChange, view => navigated.push(view), { current: {} },
+  );
+  const fallback = find(render(false, true), node => node.type === AccessRightsView);
+  assert.equal(fallback.props.onDirtyChange, onDirtyChange, "Unsaved individual rights still guard navigation");
+  assert.equal(fallback.props.onBusyChange, onBusyChange, "Saving individual rights still blocks navigation");
+  fallback.props.onBack();
+  assert.deepEqual(navigated, ["settings"]);
+  assert.equal(allNodes(render(false, true)).some(node => node.type === RolesSettingsView), false);
+  assert.equal(find(render(true, true), node => node.type === RolesSettingsView).props.onDirtyChange, onDirtyChange);
+  assert.equal(render(false, false), false, "The fallback must still require access_rights.view");
+});
+
+test("inline roles editor protects superadmin, confirms switching, and keeps unsaved revisions after conflicts", async context => {
+  let allowDiscard = false;
+  context.mock.method(globalThis, "fetch", async (url, init) => {
+    assert.equal(url, "/api/roles");
+    if (!init?.method) return Response.json({ roles: [role], canManage: true });
+    assert.equal(init.method, "PATCH");
+    const payload = JSON.parse(init.body);
+    assert.equal(payload.roleId, role.id); assert.equal(payload.revision, 1);
+    assert.equal(payload.permissions.workers_report.update, true);
+    return Response.json({ error: "Роль уже изменена другим пользователем." }, { status: 409 });
+  });
+  const previousConfirm = globalThis.customRoleUiConfirm;
+  globalThis.customRoleUiConfirm = () => allowDiscard;
+  context.after(() => { if (previousConfirm === undefined) delete globalThis.customRoleUiConfirm; else globalThis.customRoleUiConfirm = previousConfirm; });
+  const harness = await componentHarness("RolesSettingsView");
+  const props = {};
+  harness.render(props); await harness.load();
+  let tree = harness.render(props);
+  assert.equal(matrix(tree).props.disabled, true);
+  assert.equal(allNodes(tree).some(node => node.type === "button" && textOf(node) === "Удалить роль"), false);
+  await find(tree, node => node.type === "button" && node.props.className?.includes("roles-sidebar-item") && textOf(node).includes(role.name)).props.onClick();
+  tree = harness.render(props);
+  const nameInput = () => find(tree, node => node.type === "input" && node.props.maxLength === 80);
+  nameInput().props.onChange({ target: { value: "Изменённая роль" } });
+  tree = harness.render(props);
+  matrix(tree).props.onChange("workers_report", "update", true);
+  tree = harness.render(props);
+  const root = () => find(tree, node => node.type === "button" && node.props.className?.includes("roles-sidebar-item") && textOf(node).includes("Супер-админ"));
+  await root().props.onClick();
+  tree = harness.render(props);
+  assert.equal(nameInput().props.value, "Изменённая роль");
+  const save = button(tree, "Сохранить изменения");
+  assert.equal(save.props.disabled, false);
+  find(tree, node => node.type === "form").props.onSubmit({ preventDefault() {} });
+  await flush(); tree = harness.render(props);
+  assert.match(textOf(find(tree, node => node.props.role === "alert")), /уже изменена/);
+  assert.equal(nameInput().props.value, "Изменённая роль");
+  assert.equal(matrix(tree).props.value.workers_report.update, true);
+  allowDiscard = true;
+  await root().props.onClick(); await flush(); tree = harness.render(props);
+  assert.equal(matrix(tree).props.disabled, true);
+});
+
+test("inline roles editor cannot mutate without server permission and failed in-use deletion retains the role", async context => {
+  let canManage = false, writes = 0;
+  context.mock.method(globalThis, "fetch", async (_url, init) => {
+    if (!init?.method) return Response.json({ roles: [role], canManage });
+    writes++;
+    assert.equal(init.method, "DELETE");
+    return Response.json({ error: "Сначала назначьте пользователям другую роль." }, { status: 409 });
+  });
+  const readonly = await componentHarness("RolesSettingsView");
+  readonly.render({}); await readonly.load();
+  let tree = readonly.render({});
+  await find(tree, node => node.type === "button" && node.props.className?.includes("roles-sidebar-item") && textOf(node).includes(role.name)).props.onClick();
+  tree = readonly.render({});
+  assert.equal(matrix(tree).props.disabled, true);
+  assert.equal(allNodes(tree).some(node => node.type === "button" && /Создать роль|Удалить роль|Сохранить изменения/.test(textOf(node))), false);
+  assert.equal(writes, 0);
+  canManage = true;
+  const previousConfirm = globalThis.customRoleUiConfirm;
+  globalThis.customRoleUiConfirm = () => true;
+  context.after(() => { if (previousConfirm === undefined) delete globalThis.customRoleUiConfirm; else globalThis.customRoleUiConfirm = previousConfirm; });
+  const editable = await componentHarness("RolesSettingsView");
+  editable.render({}); await editable.load(); tree = editable.render({});
+  await find(tree, node => node.type === "button" && node.props.className?.includes("roles-sidebar-item") && textOf(node).includes(role.name)).props.onClick();
+  tree = editable.render({}); await button(tree, "Удалить роль").props.onClick(); await flush(); tree = editable.render({});
+  assert.equal(writes, 1);
+  assert.match(textOf(find(tree, node => node.props.role === "alert")), /другую роль/);
+  assert.equal(find(tree, node => node.type === "input" && node.props.maxLength === 80).props.value, role.name);
+});
 
 test("the shared permissions matrix names every checkbox and keeps unsupported/locked actions disabled", () => {
   const permissions = normalizePermissionSet({ workers_report: { create: true }, access_rights: { update: true } });
@@ -158,6 +282,26 @@ test("Access Rights uses a custom role template and creating a role preserves un
   tree = readonlyHarness.render(props);
   assert.equal(allNodes(tree).some(node => node.type === "button" && textOf(node).includes("Добавить роль")), false);
   assert.equal(matrix(tree).props.disabled, true);
+});
+
+test("profile permissions load only the requested user and refresh clears the dirty state", async context => {
+  const user = { id: 8, fullName: "Проверяемый пользователь", email: "qa@invalid.test", role: "engineer", assignedSiteId: null, projectAccess: { mode: "all", siteIds: [] }, permissions: rolePermissionTemplate("engineer"), customized: false };
+  context.mock.method(globalThis, "fetch", async url => { assert.equal(url, "/api/access-rights"); return Response.json({ users: [user], sites: [], canManage: true, currentUserId: 1 }); });
+  const previousConfirm = globalThis.customRoleUiConfirm;
+  globalThis.customRoleUiConfirm = () => true;
+  context.after(() => { if (previousConfirm === undefined) delete globalThis.customRoleUiConfirm; else globalThis.customRoleUiConfirm = previousConfirm; });
+  const harness = await componentHarness("AccessRightsView");
+  const props = { embedded: true, initialUserId: 8, onBack() {} };
+  harness.render(props); await harness.load();
+  let tree = harness.render(props);
+  assert.deepEqual(matrix(tree).props.value, normalizePermissionSet(user.permissions));
+  assert.equal(button(tree, "Сохранить доступ").props.disabled, true);
+  matrix(tree).props.onChange("workers_report", "delete", false);
+  tree = harness.render(props);
+  assert.equal(button(tree, "Сохранить доступ").props.disabled, false);
+  await button(tree, "Обновить").props.onClick(); await flush(); tree = harness.render(props);
+  assert.equal(matrix(tree).props.value.workers_report.delete, true);
+  assert.equal(button(tree, "Сохранить доступ").props.disabled, true);
 });
 
 test("user role selection keeps custom identity, resets viewer project grants and can return to a builtin role", async context => {

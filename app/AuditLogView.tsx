@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { CustomSelect } from "./CustomSelect";
 import { isUserRole, ROLE_LABELS } from "./roles";
 
@@ -39,13 +40,19 @@ function detailText(value: unknown) {
   return JSON.stringify(value, null, 2);
 }
 
-export function AuditLogView({ onBack }: { onBack: () => void }) {
+export function AuditLogView({ onBack, headerActionsTargetId }: { onBack: () => void; headerActionsTargetId?: string }) {
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [headerActionsTarget, setHeaderActionsTarget] = useState<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const task = window.setTimeout(() => setHeaderActionsTarget(headerActionsTargetId ? document.getElementById(headerActionsTargetId) : null), 0);
+    return () => window.clearTimeout(task);
+  }, [headerActionsTargetId]);
 
   const requestEvents = useCallback(async () => {
     const response = await fetch("/api/audit-log?limit=500", { cache: "no-store" });
@@ -86,14 +93,16 @@ export function AuditLogView({ onBack }: { onBack: () => void }) {
     });
   }, [category, events, search]);
 
+  const headerActions = <div className="audit-log-toolbar-actions">
+    <span className="audit-log-count" aria-live="polite">{visibleEvents.length} событий</span>
+    <button type="button" className="back-button" onClick={() => void loadEvents()} disabled={loading}>{loading ? "Обновляем…" : "Обновить"}</button>
+  </div>;
+
   return <section className="audit-log-page">
-    <div className="settings-toolbar audit-log-toolbar">
+    {headerActionsTargetId ? headerActionsTarget && createPortal(headerActions, headerActionsTarget) : <div className="settings-toolbar audit-log-toolbar">
       <button type="button" className="back-button" onClick={onBack}>← К общим настройкам</button>
-      <div className="audit-log-toolbar-actions">
-        <span className="audit-log-count" aria-live="polite">{visibleEvents.length} событий</span>
-        <button type="button" className="back-button" onClick={() => void loadEvents()} disabled={loading}>{loading ? "Обновляем…" : "Обновить"}</button>
-      </div>
-    </div>
+      {headerActions}
+    </div>}
     <div className="audit-log-filters">
       <label className="audit-log-filter-field"><span>Поиск</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Сотрудник, действие или проект" /></label>
       <div className="audit-log-filter-field"><span>Раздел</span><CustomSelect className="audit-log-category-select" value={category} ariaLabel="Раздел журнала" onChange={setCategory} options={[{ value: "all", label: "Все разделы" }, ...categories.map((value) => ({ value, label: CATEGORY_LABELS[value] ?? value }))]} /></div>

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><meta name="color-scheme" content="light"><title>Технические работы · Ресурсный отчёт</title><style>.maintenance-dialog {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: #f7f7f5;
+  color: #292927;
+  overflow: auto;
+  box-sizing: border-box;
+}
+.maintenance-dialog:not([open]) { display: none; }
+.maintenance-dialog::backdrop { background: #f7f7f5; }
+.maintenance-page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  box-sizing: border-box;
+  background: #f7f7f5;
+  color: #292927;
+  font-family: Arial, Helvetica, sans-serif;
+}
+.maintenance-card {
+  width: 100%;
+  max-width: 420px;
+  padding: 32px;
+  box-sizing: border-box;
+  border: 1px solid #e6e6e1;
+  border-radius: 14px;
+  background: #fff;
+  text-align: center;
+}
+.maintenance-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 26px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.maintenance-brand img { width: 28px; height: 30px; object-fit: contain; flex: none; }
+.maintenance-content h1 { margin: 0 0 12px; font-size: 26px; font-weight: 600; line-height: 1.2; letter-spacing: -.6px; }
+.maintenance-description { margin: 0; color: #73736e; font-size: 14px; line-height: 1.6; }
+.maintenance-retry { min-height: 38px; margin-top: 24px; padding: 9px 16px; border: 1px solid #dcdcd5; border-radius: 7px; background: #fafaf8; color: #3c3c37; font: 600 12px Arial, Helvetica, sans-serif; cursor: pointer; }
+.maintenance-retry:hover { background: #f1f1ec; }
+.maintenance-retry:focus-visible { outline: 2px solid #b98c31; outline-offset: 3px; }
+.maintenance-retry:disabled { cursor: wait; opacity: .6; }
+.maintenance-preservation { max-width: 290px; margin: 22px auto 0; color: #92928b; font-size: 11px; line-height: 1.6; }
+.maintenance-status { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (max-width: 480px) {
+  .maintenance-page { padding: 18px; }
+  .maintenance-card { padding: 28px 22px; }
+  .maintenance-content h1 { font-size: 24px; }
+}
+</style></head>
+<body style="margin:0"><div class="maintenance-page">
+<div class="maintenance-card"><header class="maintenance-brand"><img src="data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz48c3ZnIGlkPSJMYXllcl8xIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyMTU2IDIzMjciPjxkZWZzPjxzdHlsZT4uY2xzLTF7ZmlsbDojZjY5NDFkfS5jbHMtMSwuY2xzLTIsLmNscy0zLC5jbHMtNHtzdHJva2U6IzNhM2EzYztzdHJva2UtbGluZWpvaW46cm91bmQ7c3Ryb2tlLXdpZHRoOjE0cHh9LmNscy01LC5jbHMtNHtmaWxsOiNmZGIwNDF9LmNscy02e2ZpbGw6IzNhM2EzY30uY2xzLTd7ZmlsbDojZGY3ODFlfS5jbHMtOHtmaWxsOiNmNjgyMWR9LmNscy0ye2ZpbGw6I2ZmZn0uY2xzLTN7ZmlsbDpub25lfTwvc3R5bGU+PC9kZWZzPjxwb2x5Z29uIGNsYXNzPSJjbHMtMSIgcG9pbnRzPSIxMDc4IDIzMjAgMjE0OSAxODI1IDIxNDkgNTAyIDEwNzggOTk4IDEwNzggMjMyMCIvPjxwb2x5Z29uIGNsYXNzPSJjbHMtNCIgcG9pbnRzPSI3IDUwMiAxMDc4IDk5OCAxMDc4IDIzMjAgNyAxODI1IDcgNTAyIi8+PHBvbHlnb24gY2xhc3M9ImNscy0yIiBwb2ludHM9IjIxNDkgNTAyIDEwNzggNyA3IDUwMiAxMDc4IDk5OCAyMTQ5IDUwMiIvPjxwb2x5bGluZSBjbGFzcz0iY2xzLTYiIHBvaW50cz0iNzA5IDUwMiAxMDc4IDMzMSAxMDc4IDY4MiA3MDkgNTAyIi8+PHBvbHlsaW5lIGNsYXNzPSJjbHMtNSIgcG9pbnRzPSIxNDQ2Ljk5IDUwMiAxMDc3Ljk5IDMzMSAxMDc3Ljk5IDY4MiAxNDQ2Ljk5IDUwMiIvPjxwb2x5Z29uIGNsYXNzPSJjbHMtMyIgcG9pbnRzPSI3MDkgNTAyIDEwNzcuOTkgMzMxIDE0NDcgNTAyIDEwNzcuOTkgNjgyIDcwOSA1MDIiLz48bGluZSBjbGFzcz0iY2xzLTMiIHgxPSIxMDc3Ljk5IiB5MT0iMzMxIiB4Mj0iMTc5OCIgeTI9IjY2NCIvPjxwb2x5Z29uIGNsYXNzPSJjbHMtNyIgcG9pbnRzPSIxNDI5IDEyNzYgMTQyOSAxNzE3IDE3ODkgMTU1NSAxNDI5IDEyNzYiLz48cG9seWdvbiBjbGFzcz0iY2xzLTYiIHBvaW50cz0iMTc4OSAxMTE0IDE0MjkgMTI3NiAxNzg5IDE1NTUgMTc4OSAxMTE0Ii8+PHBvbHlnb24gY2xhc3M9ImNscy0zIiBwb2ludHM9IjE3ODkgMTU1NSAxNDI5IDE3MTcgMTQyOSAxMjc2IDE3ODkgMTExNCAxNzg5IDE1NTUiLz48bGluZSBjbGFzcz0iY2xzLTMiIHgxPSIxNDI5IiB5MT0iMTI3NiIgeDI9IjIxNDkiIHkyPSI5NTIiLz48cG9seWdvbiBjbGFzcz0iY2xzLTgiIHBvaW50cz0iNzI3IDEyNzYgNzI3IDE3MTcgMzY3IDE1NTUgNzI3IDEyNzYiLz48cG9seWdvbiBjbGFzcz0iY2xzLTYiIHBvaW50cz0iMzY3IDExMTQgNzI3IDEyNzYgMzY3IDE1NTUgMzY3IDExMTQiLz48cG9seWdvbiBjbGFzcz0iY2xzLTMiIHBvaW50cz0iMzY3IDE1NTUgNzI3IDE3MTcgNzI3IDEyNzYgMzY3IDExMTQgMzY3IDE1NTUiLz48bGluZSBjbGFzcz0iY2xzLTMiIHgxPSIxMDc1Ljk0IiB5MT0iMTQzMy4wMiIgeDI9IjM2NyIgeTI9IjExMTQiLz48L3N2Zz4K" alt="Югмонтажстрой" width="28" height="30"><span>Ресурсный отчёт</span></header>
+<main class="maintenance-content"><h1>Технические работы</h1><p class="maintenance-description">Доступ к системе скоро возобновится.</p><button class="maintenance-retry" type="button" id="maintenance-retry">Проверить доступ</button><p class="maintenance-preservation">Не закрывайте вкладку с незавершёнными изменениями.</p><span id="maintenance-status" class="maintenance-status" role="status" aria-live="polite">Проверяем автоматически</span></main></div></div>
+<script>
+(() => {
+  const button = document.getElementById('maintenance-retry');
+  const status = document.getElementById('maintenance-status');
+  let checking = false;
+  async function check() {
+    if (checking) return;
+    checking = true; button.disabled = true; status.textContent = 'Проверяем доступ…';
+    try {
+      const response = await fetch('/api/maintenance/status', { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+      const state = response.ok ? await response.json() : null;
+      // This document has no form or application drafts. Mounted workspaces use
+      // MaintenanceBoundary instead and NEVER reload when service resumes.
+      if (state?.maintenance === false && state.phase === 'ready') { if (location.pathname === '/maintenance.html') location.replace('/'); else location.reload(); return; }
+      status.textContent = 'Работы ещё продолжаются';
+    } catch { status.textContent = 'Проверяем автоматически'; }
+    finally { checking = false; button.disabled = false; }
+  }
+  button.addEventListener('click', check);
+  window.addEventListener('online', check);
+  window.setInterval(() => { if (!document.hidden) void check(); }, 5000);
+})();
+</script></body></html>
