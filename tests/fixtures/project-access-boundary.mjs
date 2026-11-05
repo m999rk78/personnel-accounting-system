@@ -1,15 +1,12 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import ts from "typescript";
+import { compileModuleGraph } from "./compile-module-graph.mjs";
 import { effectiveProjectAccess } from "../../app/roles.ts";
 
 const root = new URL("../../", import.meta.url);
 const sourceUrl = value => `data:text/javascript;base64,${Buffer.from(value).toString("base64")}`;
 const appUrl = name => new URL(`app/${name}.ts`, root).href;
 async function compile(path, replacements) {
-  let code = ts.transpileModule(await readFile(new URL(path, root), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
-  for (const [specifier, target] of Object.entries(replacements)) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(target));
-  return sourceUrl(code);
+  return compileModuleGraph(new URL(path, root), replacements);
 }
 
 export function memoryProjectAccessDatabase() {

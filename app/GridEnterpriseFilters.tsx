@@ -156,6 +156,7 @@ export function enterpriseFilterParams(params: IFilterParams, options: Enterpris
     filter: "agSetColumnFilter", title: "Состояние ячейки", display: "accordion",
     filterValueGetter: params => stateFilter.getValue(params.data),
     filterParams: {
+      excelMode: "windows",
       values: stateFilter.values.map(item => item.value), suppressSorting: true, showTooltips: true, cellHeight: 34,
       textFormatter: normalizeFilterText,
       valueFormatter: ({ value }: { value: unknown }) => stateFilter.values.find(item => item.value === value)?.label ?? String(value ?? ""),

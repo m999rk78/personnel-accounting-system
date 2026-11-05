@@ -11,7 +11,7 @@ import { TableOrderProvider } from "../../app/TableRowMoves";
 import { moveRowBlock, reconcileRowOrder } from "../../app/tableRowOrder";
 import "../../app/globals.css";
 
-type Screen = "workers" | "equipment" | "grid";
+type Screen = "workers" | "equipment" | "grid" | "legacy";
 type WorkerMark = { employeeId: number; workDate: string; hours: number | null; code: string | null; note: string; updatedBy: string };
 type EquipmentMark = { equipmentId: number; workDate: string; productiveHours: number; downtimeHours: number; note: string; updatedBy: string };
 const employees = [
@@ -109,7 +109,7 @@ window.fetch = async (input, init) => {
 };
 
 type ExampleRow = { id: number; kind: "entry"; name: string; organization: string; hours: number; date: string };
-function ExampleGrid({ month }: { month: string }) {
+function ExampleGrid({ month, enterprise = true }: { month: string; enterprise?: boolean }) {
   const [rows, setRows] = useState<ExampleRow[]>(() => employees.map((employee, index) => ({ id: employee.id, kind: "entry", name: employee.fullName, organization: units[index].organization, hours: [0, 4, 8, 12][index], date: `${month}-0${index + 1}` })));
   const columns = useMemo<ColDef<ExampleRow>[]>(() => [
     { field: "name", headerName: "Сотрудник", minWidth: 260, flex: 2 },
@@ -118,7 +118,7 @@ function ExampleGrid({ month }: { month: string }) {
     { field: "date", headerName: "Дата", width: 150, filterParams: { ...personnelFilterParams, kind: "date" } },
   ], []);
   const defaults = useMemo<ColDef<ExampleRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, headerComponentParams: pinnableHeader, sortable: true, resizable: true, editable: true, suppressHeaderMenuButton: true }), []);
-  return <div className="ag-grid-shell ag-admin-grid unified-example-grid"><LocalizedGrid<ExampleRow> theme={gridTheme} enterpriseFilters rowData={rows} columnDefs={columns} defaultColDef={defaults} getRowId={({ data }) => String(data.id)} getRowOrderId={row => row.id} rowHeight={54} headerHeight={48} onCellValueChanged={event => { if (event.data) setRows(current => current.map(row => row.id === event.data!.id ? { ...event.data! } : row)); }} /></div>;
+  return <div className="ag-grid-shell ag-admin-grid unified-example-grid"><LocalizedGrid<ExampleRow> theme={gridTheme} enterpriseFilters={enterprise} rowData={rows} columnDefs={columns} defaultColDef={defaults} getRowId={({ data }) => String(data.id)} getRowOrderId={row => row.id} rowHeight={54} headerHeight={48} onCellValueChanged={event => { if (event.data) setRows(current => current.map(row => row.id === event.data!.id ? { ...event.data! } : row)); }} /></div>;
 }
 const styles = `
   .unified-fixture { height:100vh; min-height:0; display:flex; flex-direction:column; gap:10px; padding:14px 18px; overflow:hidden; }
@@ -138,18 +138,19 @@ function Fixture() {
   const [month, setMonth] = useState("2026-10");
   const [version, setVersion] = useState(0);
   const key = `${screen}:${siteId}:${month}:${version}`;
+  const gridScreen = screen === "grid" || screen === "legacy";
   return <AgGridProvider modules={[AllEnterpriseModule]}><style>{styles}</style><main className="unified-fixture">
     <nav className="unified-fixture-controls" aria-label="Тестовые таблицы"><strong>Единые фильтры — изолированный стенд</strong>
-      {([['workers', 'Табель рабочих'], ['equipment', 'Табель техники'], ['grid', 'AG Grid']] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={screen === value} onClick={() => setScreen(value)}>{label}</button>)}
+      {([['workers', 'Табель рабочих'], ['equipment', 'Табель техники'], ['grid', 'AG Grid'], ['legacy', 'Без Enterprise']] as const).map(([value, label]) => <button type="button" key={value} aria-pressed={screen === value} onClick={() => setScreen(value)}>{label}</button>)}
       <select aria-label="Тестовый проект" value={siteId} onChange={event => setSiteId(Number(event.target.value))}><option value={1}>Проект 1</option><option value={2}>Проект 2</option></select>
       <select aria-label="Тестовый месяц" value={month} onChange={event => setMonth(event.target.value)}><option value="2026-10">Октябрь 2026</option><option value="2026-09">Сентябрь 2026</option></select>
       <button type="button" onClick={() => { stores.clear(); orders.clear(); setVersion(value => value + 1); }}>Сбросить тестовые данные</button>
     </nav>
     <p className="unified-fixture-note">По 4 строки. Данные 1–2 числа: часы, код В, ручные правки, расхождения, простой и пустые дни. Все изменения остаются в памяти браузера.</p>
     <div className="unified-fixture-content timesheet-workspace-page">
-      {screen !== "grid" && <div id={screen === "workers" ? "personnel-timesheet-actions" : "equipment-timesheet-actions"} className="unified-fixture-actions"/>}
+      {!gridScreen && <div id={screen === "workers" ? "personnel-timesheet-actions" : "equipment-timesheet-actions"} className="unified-fixture-actions"/>}
       <TableOrderProvider key={key} scope={screen === "equipment" ? "project-equipment" : "project-personnel"} siteId={siteId}>
-        {screen === "workers" ? <TimesheetView siteId={siteId} initialMonth={month} today="2026-10-29" onMonthChange={setMonth}/> : screen === "equipment" ? <EquipmentAccountingView siteId={siteId} initialDate={`${month}-29`} initialMonth={month} today="2026-10-29" mode="month" onMonthChange={setMonth}/> : <ExampleGrid month={month}/>}
+        {screen === "workers" ? <TimesheetView siteId={siteId} initialMonth={month} today="2026-10-29" onMonthChange={setMonth}/> : screen === "equipment" ? <EquipmentAccountingView siteId={siteId} initialDate={`${month}-29`} initialMonth={month} today="2026-10-29" mode="month" onMonthChange={setMonth}/> : <ExampleGrid month={month} enterprise={screen !== "legacy"}/>}
       </TableOrderProvider>
     </div>
   </main></AgGridProvider>;

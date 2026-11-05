@@ -1,3 +1,4 @@
+import { readWorkspaceImplementation, readDataImplementation } from "./fixtures/read-implementation.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -42,10 +43,10 @@ test("keeps workers report actions independent when deletion is disabled", () =>
 test("stores permissions, exposes a separate settings page, and enforces them in APIs", async () => {
   const migration = await readFile(new URL("../drizzle-postgres/0015_user_permissions.sql", import.meta.url), "utf8");
   const accessApi = await readFile(new URL("../app/api/access-rights/route.ts", import.meta.url), "utf8");
-  const dataApi = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+  const dataApi = await readDataImplementation();
   const equipmentApi = await readFile(new URL("../app/api/equipment/route.ts", import.meta.url), "utf8");
   const timesheetApi = await readFile(new URL("../app/api/timesheet/route.ts", import.meta.url), "utf8");
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
   const view = await readFile(new URL("../app/AccessRightsView.tsx", import.meta.url), "utf8");
 
   assert.match(migration, /CREATE TABLE IF NOT EXISTS "user_permissions"/);
@@ -68,18 +69,18 @@ test("stores permissions, exposes a separate settings page, and enforces them in
 });
 
 test("keeps create, update, and delete independent across every editable table", async () => {
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
   const adminFooter = await readFile(new URL("../app/AdminGridFooter.tsx", import.meta.url), "utf8");
   const equipment = await readFile(new URL("../app/EquipmentAccountingView.tsx", import.meta.url), "utf8");
   const grids = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
-  const dataApi = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+  const dataApi = await readDataImplementation();
   const timesheetApi = await readFile(new URL("../app/api/timesheet/route.ts", import.meta.url), "utf8");
   const equipmentApi = await readFile(new URL("../app/api/equipment/route.ts", import.meta.url), "utf8");
 
   assert.match(app, /import \{ AdminGridFooter \} from "\.\/AdminGridFooter"/);
   assert.match(adminFooter, /\{canUpdate && onEditSelection && <button/);
   assert.match(adminFooter, /\{canDelete && <button[^>]+onClick=\{onDelete\}/);
-  assert.match(app, /<PlacementAgGrid[\s\S]*canCreate=\{canCreateReportDate\}[\s\S]*canUpdate=\{canUpdateReportDate\}[\s\S]*canDelete=\{canDeleteReportDate\}/);
+  assert.match(app, /<PersonnelReportWorkspace[^\n]*permissions=\{\{ create: mayCreateWorkersReport, update: mayUpdateWorkersReport, delete: mayDeleteWorkersReport \}\}/);
   assert.match(equipment, /<EquipmentDailyAgGrid[\s\S]*canCreate=\{Boolean\(payload\?\.canCreateDaily\)\}[\s\S]*canUpdate=\{Boolean\(payload\?\.canUpdateDaily\)\}[\s\S]*canDelete=\{Boolean\(payload\?\.canDeleteDaily\)\}/);
   assert.match(grids, /row\.kind === "draft" \? !current\.canCreate : !current\.canUpdate/);
   assert.match(dataApi, /const creates = rows\.some\(\(row\) => !asPositiveInteger\(row\.directoryId\)\)/);

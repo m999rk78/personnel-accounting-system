@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import ts from "typescript";
+import { compileModuleGraph } from "./fixtures/compile-module-graph.mjs";
 import { rolePermissionTemplate } from "../app/permissionModel.ts";
 import { noCustomRolesUrl, noPermissionChangesUrl } from "./fixtures/custom-role-imports.mjs";
 
@@ -28,9 +27,7 @@ const replacements = {
   "../../equipmentImportServer": noop(["importEquipmentEntries"]),
 };
 async function route(path) {
-  let code = ts.transpileModule(await readFile(new URL(path, import.meta.url), "utf8"), {compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
-  for(const [specifier,target] of Object.entries(replacements)) code=code.replaceAll(JSON.stringify(specifier),JSON.stringify(target));
-  return import(moduleUrl(code));
+  return import(await compileModuleGraph(new URL(path, import.meta.url), replacements));
 }
 process.env.NODE_ENV="production";
 delete process.env.DATABASE_RUNTIME_BOOTSTRAP;

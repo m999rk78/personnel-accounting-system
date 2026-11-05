@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { moveRowBlock } from "../app/tableRowOrder.ts";
 import { rolePermissionTemplate } from "../app/permissionModel.ts";
+import { isPersonnelTimesheetValue } from "../app/personnelTimesheetValues.ts";
 
 let port = 3142;
 let buildOnly = false;
@@ -135,7 +136,7 @@ const config = {
                 || body.productiveHours + body.downtimeHours > 20) throw new Error("Допустимо не более 20 часов.");
               mark = { equipmentId: 1, workDate: body.workDate, productiveHours: body.productiveHours, downtimeHours: body.downtimeHours, note: body.note ?? "", updatedBy: actor.fullName };
             } else if (!equipment && body.value) {
-              if (!/^(?:[1-9]|10|В|ДО|МО|ПЕ|УВ|ПР)$/.test(body.value)) throw new Error("Допустимы 1–10 часов или табельный код.");
+              if (!isPersonnelTimesheetValue(body.value)) throw new Error("Допустимы 1–10 часов или табельный код.");
               mark = { employeeId: 1, workDate: body.workDate, hours: /^\d+$/.test(body.value) ? Number(body.value) : null, code: /^\d+$/.test(body.value) ? null : body.value, note: body.note ?? "", updatedBy: actor.fullName };
             }
             if (mark) marks.set(key, mark); else marks.delete(key);

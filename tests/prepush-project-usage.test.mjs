@@ -6,9 +6,10 @@ import ts from "typescript";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { projectForemanCounts } from "../app/projectUserUsage.ts";
+import { readDataImplementation } from "./fixtures/read-implementation.mjs";
 
 const routePath = new URL("../app/api/data/route.ts", import.meta.url);
-const route = ts.createSourceFile(routePath.pathname, await readFile(routePath, "utf8"), ts.ScriptTarget.Latest, true);
+const route = ts.createSourceFile(routePath.pathname, await readDataImplementation(), ts.ScriptTarget.Latest, true);
 const queries = [];
 function visit(node) {
   if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "prepare"
@@ -91,6 +92,7 @@ test("project overview uses server counts even when personal catalogs are intent
   for (const [specifier, replacement] of Object.entries({
     react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"),
     "./projectUserUsage": new URL("../app/projectUserUsage.ts", import.meta.url).href,
+    "./useTableEscapeSelection": new URL("../app/useTableEscapeSelection.ts", import.meta.url).href,
   })) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(replacement));
   const { ProjectCards } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
   const html = renderToStaticMarkup(createElement(ProjectCards, {

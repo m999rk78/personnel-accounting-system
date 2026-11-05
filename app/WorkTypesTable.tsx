@@ -12,6 +12,8 @@ import { SelectionRowDragRenderer } from "./SelectionRowDragRenderer";
 import { enterpriseFilterParams } from "./GridEnterpriseFilters";
 import type { WorkTypeDraft, WorkTypeEdits, WorkTypeRow } from "./workTypesWorkspace";
 import "./gridFilters.css";
+import { useEmptyGridRows } from "./useEmptyGridRows";
+import { useTableEscapeSelection } from "./useTableEscapeSelection";
 
 type Props = {
   masters: WorkTypeRow[];
@@ -63,7 +65,18 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
   const orderedRows = useMemo(() => order ? order.order(rows, workTypesOrderId) : rows, [rows, order]);
   const [api, setApi] = useState<GridApi<WorkTypeRow> | null>(null);
   const gridElement = useRef<HTMLDivElement>(null);
+  useEmptyGridRows(gridElement, api, 54);
   const [selected, setSelected] = useState<WorkTypeRow[]>([]);
+  useTableEscapeSelection({
+    hasSelection: () => Boolean(api && !api.isDestroyed() && (api.getSelectedNodes().length || api.getFocusedCell() || api.isModuleRegistered("CellSelectionModule") && api.getCellRanges()?.length)),
+    isEditing: () => Boolean(api && !api.isDestroyed() && api.getEditingCells().length),
+    clearSelection: () => {
+      if (!api || api.isDestroyed()) return;
+      api.deselectAll();
+      if (api.isModuleRegistered("CellSelectionModule")) api.clearCellSelection();
+      api.clearFocusedCell();
+    },
+  });
   const assignment = useRef<WorkTypeRow[]>([]);
   const [assigningCount, setAssigningCount] = useState(0);
   const [filtered, setFiltered] = useState(false);
@@ -209,7 +222,7 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
   const pendingCount = master ? pending.length : localPending.length;
   const canAdd = props.canCreate && !props.disabled && (master || parentKey !== "unassigned");
   return <div className={master ? "work-types-master" : "work-types-detail-content"}>
-    <div ref={gridElement} className={`ag-grid-shell ag-admin-grid ag-reference-grid ${master ? "work-types-master-grid" : "work-types-detail-grid"}`} aria-busy={props.disabled}>
+    <div ref={gridElement} className={`ag-grid-shell ag-admin-grid ag-reference-grid ag-grid-empty-rows ${master ? "work-types-master-grid" : "work-types-detail-grid"}`} aria-busy={props.disabled}>
       <AgGridReact<WorkTypeRow>
         theme={gridTheme} localeText={gridLocaleRu} rowData={orderedRows} columnDefs={columns} defaultColDef={defaultColDef}
         getRowId={({ data }) => data.key} rowHeight={54} headerHeight={48} animateRows={false} rowBuffer={6}

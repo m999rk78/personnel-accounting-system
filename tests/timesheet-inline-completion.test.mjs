@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
+import { isPersonnelTimesheetValue } from "../app/personnelTimesheetValues.ts";
 
 const js = text => ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 const variants = [
@@ -46,7 +47,7 @@ function harness(variant, value = "8", mode = "success") {
     inlineEditor: editor, timesheetInlineEditor: editor,
     setInlineEditor: update, setTimesheetInlineEditor: update,
     activeScope: { current: "1:2026-11" }, activeScopeVersion: { current: 0 },
-    CODE_VALUES: new Set(["В"]),
+    isPersonnelTimesheetValue,
     marksByCell: new Map(), timesheetMarksByCell: new Map(), entriesByCell: new Map(),
     cellKey: (id, date) => `${id}:${date}`, equipmentCellKey: (id, date) => `${id}:${date}`,
     persistMark: persist, persistEquipmentTimesheetMark: persist,
@@ -54,6 +55,7 @@ function harness(variant, value = "8", mode = "success") {
     restoreEquipmentTimesheetFocus: () => { state.focus++; },
     focusClipboardCell: () => { state.moves++; }, notifyTimesheetClipboard() {},
     savingMark: false, savingTimesheetMark: false,
+    savingBulkMarks: false, savingBulkTimesheetMarks: false, loading: false,
     payload: { canCreate: true, canUpdate: true, canCreateTimesheet: true, canUpdateTimesheet: true },
     inlineInputRef: { current: { focus: () => { state.focus++; } } },
     timesheetInlineInput: { current: { focus: () => { state.focus++; } } },

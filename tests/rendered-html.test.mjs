@@ -1,3 +1,4 @@
+import { readWorkspaceImplementation, readDataImplementation } from "./fixtures/read-implementation.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -27,18 +28,14 @@ test("server-renders the protected personnel accounting workspace", async () => 
   assert.doesNotMatch(html, /compact-pagination/);
   assert.doesNotMatch(html, /Your site is taking shape|Building your site/i);
 
-  const app = await readFile(
-    new URL("../app/PersonnelApp.tsx", import.meta.url),
-    "utf8",
-  );
+  const app = await readWorkspaceImplementation();
   const authGate = await readFile(
     new URL("../app/AuthGate.tsx", import.meta.url),
     "utf8",
   );
   assert.match(app, /Отчёт персонала/);
-  assert.match(app, /PlacementAgGrid/);
-  assert.match(app, /Общее количество часов ОПР/);
-  assert.match(app, /aria-label="Дата отчёта"/);
+  assert.match(app, /PersonnelReportWorkspace/);
+  assert.doesNotMatch(app, /useUnifiedPersonnelReport|useDailyRosterReport|useUserAccessCardLayout|useProjectCardLayout/);
   assert.match(authGate, /useSyncExternalStore\(subscribeToHydration, hydratedInBrowser, hydratingOnServer\)/);
   assert.match(authGate, /if \(!hydrated \|\| checking \|\| !user\)/);
 
@@ -54,7 +51,6 @@ test("server-renders the protected personnel accounting workspace", async () => 
   assert.match(grid, /AgGridReact/);
   assert.match(grid, /headerName: "Подвид работы"/);
   assert.match(grid, /headerName: "Должность"/);
-  assert.match(grid, /pinned: "right"/);
   assert.doesNotMatch(grid, /AllCommunityModule/);
   assert.doesNotMatch(grid, /AgGridProvider/);
   assert.match(gridProvider, /AllCommunityModule/);
@@ -71,11 +67,11 @@ test("server-renders the protected personnel accounting workspace", async () => 
 
 test("protects access with invitations, password hashing, and server sessions", async () => {
   const auth = await readFile(new URL("../app/auth.ts", import.meta.url), "utf8");
-  const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+  const api = await readDataImplementation();
   const login = await readFile(new URL("../app/login/page.tsx", import.meta.url), "utf8");
   const invitation = await readFile(new URL("../app/invite/page.tsx", import.meta.url), "utf8");
   const password = await readFile(new URL("../app/api/auth/password/route.ts", import.meta.url), "utf8");
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
 
   assert.match(auth, /PBKDF2/);
   assert.match(auth, /PASSWORD_ITERATIONS = 600_000/);
@@ -100,10 +96,7 @@ test("protects access with invitations, password hashing, and server sessions", 
 });
 
 test("keeps business validation in the data API", async () => {
-  const api = await readFile(
-    new URL("../app/api/data/route.ts", import.meta.url),
-    "utf8",
-  );
+  const api = await readDataImplementation();
 
   assert.match(api, /hours < 1 \|\| hours > 10/);
   assert.match(api, /used \+ hours > 10/);
@@ -153,10 +146,7 @@ test("keeps business validation in the data API", async () => {
   assert.equal(reportDayWrites.length, 2);
   assert.ok(reportDayWrites.every(([statement]) => statement.endsWith(".all()")), "composite report-day writes must not request a nonexistent id column");
 
-  const app = await readFile(
-    new URL("../app/PersonnelApp.tsx", import.meta.url),
-    "utf8",
-  );
+  const app = await readWorkspaceImplementation();
   assert.match(app, /Общие настройки/);
   assert.match(app, /Настройки проекта/);
   assert.match(app, /Виды работ/);
@@ -170,15 +160,9 @@ test("keeps business validation in the data API", async () => {
   assert.doesNotMatch(app, /project-settings-summary/);
 });
 
-test("loads daily reports without reloading all reference data", async () => {
-  const api = await readFile(
-    new URL("../app/api/data/route.ts", import.meta.url),
-    "utf8",
-  );
-  const app = await readFile(
-    new URL("../app/PersonnelApp.tsx", import.meta.url),
-    "utf8",
-  );
+test("loads report catalogs once without requesting the removed daily report interface", async () => {
+  const api = await readDataImplementation();
+  const app = await readWorkspaceImplementation();
   const auth = await readFile(new URL("../app/auth.ts", import.meta.url), "utf8");
   const database = await readFile(new URL("../db/client.ts", import.meta.url), "utf8");
 
@@ -186,9 +170,8 @@ test("loads daily reports without reloading all reference data", async () => {
   assert.match(api, /scope === "workspace"/);
   assert.match(api, /personnelDatabaseInitializationPromise/);
   assert.match(api, /DATABASE_RUNTIME_BOOTSTRAP/);
-  assert.match(app, /scope=entries/);
-  assert.match(app, /scope=workspace/);
-  assert.match(app, /const loadEntries = useCallback/);
+  assert.match(app, /scope=report-catalog/);
+  assert.doesNotMatch(app, /scope=entries|scope=carryover|const loadEntries = useCallback/);
   assert.match(auth, /personnelAuthSchemaPromise/);
   assert.match(auth, /DATABASE_RUNTIME_BOOTSTRAP/);
   assert.doesNotMatch(database, /client\.query\("SELECT 1"\)/);
@@ -196,42 +179,6 @@ test("loads daily reports without reloading all reference data", async () => {
   assert.match(database, /async readBatch/);
   assert.match(api, /env\.DB\.readBatch/);
   assert.match(api, /id = ANY\(\?\)/);
-  assert.match(app, /JSON\.stringify\(\{ ids: pendingDeletes \}\)/);
-});
-
-test("fills the quick date bar and shifts it five days at a time", async () => {
-  const api = await readFile(
-    new URL("../app/api/data/route.ts", import.meta.url),
-    "utf8",
-  );
-  const app = await readFile(
-    new URL("../app/PersonnelApp.tsx", import.meta.url),
-    "utf8",
-  );
-  const styles = await readFile(
-    new URL("../app/globals.css", import.meta.url),
-    "utf8",
-  );
-
-  assert.match(app, /function recentDateKeys\(endDate: string, count = 14\)/);
-  assert.match(app, /<ReportDateNavigation dates=\{recentDates\}/);
-  assert.match(app, /filledDates\.has\(date\)/);
-  assert.match(app, /className="calendar-popover"/);
-  assert.match(app, /onRangeChange\(moveDate\(rangeEnd, -5\)\)/);
-  assert.match(app, /onRangeChange\(moveDate\(rangeEnd, 5\)\)/);
-  assert.match(app, /setRangeMotion\("older"\)/);
-  assert.match(app, /setRangeMotion\("newer"\)/);
-  assert.doesNotMatch(app, /className="archive-date"/);
-  assert.match(app, /rangeStart=\$\{recentDates\[0\]\}&rangeEnd=\$\{reportRangeEnd\}/);
-  assert.match(api, /function filledDatesStatement/);
-  assert.match(api, /SELECT work_date AS "workDate" FROM placement_report_days[\s\S]*UNION[\s\S]*FROM placement_entries/);
-  assert.match(api, /deleted_at IS NULL/);
-  assert.match(styles, /\.quick-date\.filled/);
-  assert.match(styles, /background:#ddefe2/);
-  assert.match(styles, /box-shadow:inset 0 0 0 2px #78b489/);
-  assert.match(styles, /\.report-date-bar/);
-  assert.match(styles, /@keyframes quick-dates-from-left/);
-  assert.match(styles, /@keyframes quick-dates-from-right/);
 });
 
 test("uses the shared accessible select instead of native dropdowns", async () => {
@@ -271,7 +218,6 @@ test("keeps the employee grid compact without duplicated filter controls", async
   assert.match(grid, /field: "siteName", headerName: "Проект"/);
   assert.match(grid, /rowSelection=\{[^\n]*?\{ mode: "multiRow"/);
   assert.match(grid, /onSelectionChanged=/);
-  assert.match(grid, /if \(!row \|\| row\.kind === "entry"\) return null/);
   assert.doesNotMatch(grid, /headerName: "Сотрудник"/);
   assert.doesNotMatch(grid, /headerName: "Кадровые данные"/);
   assert.doesNotMatch(grid, /field: "siteName", headerName: "Назначение"/);
@@ -289,8 +235,8 @@ test("keeps the employee grid compact without duplicated filter controls", async
 });
 
 test("selects employees with checkboxes and deletes them in one validated request", async () => {
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
-  const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
+  const api = await readDataImplementation();
 
   assert.match(app, /selectedIds=\{employeePendingDeletes\}/);
   assert.match(app, /onSelectionChange=\{\(ids\)/);
@@ -305,7 +251,7 @@ test("selects employees with checkboxes and deletes them in one validated reques
 });
 
 test("separates full-row editing from validated bulk editing and can clear the selection", async () => {
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
   const adminFooter = await readFile(new URL("../app/AdminGridFooter.tsx", import.meta.url), "utf8");
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
@@ -333,8 +279,6 @@ test("separates full-row editing from validated bulk editing and can clear the s
   assert.match(adminFooter, /employee-footer-base/);
   assert.match(adminFooter, /bulk-edit-selection-button/);
   assert.match(grid, /fullRowEditIds/);
-  assert.match(grid, /const showEmployeeRowCancelActions = false/);
-  assert.match(grid, /showEmployeeRowCancelActions && props\.drafts\.length/);
   assert.match(grid, /function EditableCellDisplay/);
   assert.match(grid, /onSpreadsheetEdit=\{\(\{ row, columnId \}\) => openCellEditor\(row, columnId\)\}/);
   assert.match(styles, /\.employee-selection-actions \.bulk-edit-selection-button/);
@@ -347,7 +291,6 @@ test("edits rows on double click and provides spreadsheet-style copy and paste",
   const styles = await readFile(new URL("../app/gridFilters.css", import.meta.url), "utf8");
   const globalStyles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
-  assert.match(grid, /!current\.rosterMode && current\.draftRows\.length > 0/);
   assert.match(grid, /onCellDoubleClicked/);
   assert.match(grid, /onSpreadsheetEdit/);
   assert.match(grid, /activeEditor\?\.rowKey === row\.rowKey/);
@@ -400,8 +343,6 @@ test("edits rows on double click and provides spreadsheet-style copy and paste",
   assert.doesNotMatch(textEditor, /onChange=\{/);
   assert.match(filters, /suppressKeyboardEvent:.*isInteractiveTarget/);
   assert.match(textEditor, /event\.key !== "Enter"/);
-  assert.match(grid, /spreadsheetSelectionResetKey=\{rowStructureKey\}/);
-  assert.match(grid, /rowData\.map\(\(row\) => row\.rowKey\)\.sort\(\)\.join\("\|"\)/);
   assert.match(styles, /ag-excel-selected/);
   assert.match(globalStyles, /ag-cell-editor-host/);
   assert.match(globalStyles, /\.ag-employee-grid \.editable-row \.ag-cell \{ background:#fafafa; \}/);
@@ -412,8 +353,8 @@ test("adds richer filters, multi-column sorting, and persistent employee row ord
   const filters = await readFile(new URL("../app/GridFilters.tsx", import.meta.url), "utf8");
   const filterModel = await readFile(new URL("../app/gridFilterModel.ts", import.meta.url), "utf8");
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
-  const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
+  const api = await readDataImplementation();
   const migration = await readFile(new URL("../drizzle-postgres/0018_employee_manual_order.sql", import.meta.url), "utf8");
 
   assert.match(filterModel, /containsAllWords/);
@@ -441,7 +382,7 @@ test("adds richer filters, multi-column sorting, and persistent employee row ord
 });
 
 test("validates employee cells before saving directory changes", async () => {
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
   assert.match(app, /const validEmploymentTypes = new Set/);
   assert.match(app, /const validDepartments = new Set/);
   assert.match(app, /const validPositions = new Set/);
@@ -451,25 +392,11 @@ test("validates employee cells before saving directory changes", async () => {
   assert.match(app, /onValidationError=/);
 });
 
-test("saves edited placement rows as one validated batch", async () => {
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
-  const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
-  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-
-  assert.match(app, /const \[editingRows, setEditingRows\]/);
-  assert.match(app, /entries: editingRows\.map/);
-  assert.match(app, /onSaveEditing=\{\(\) => void saveEditing\(\)\}/);
-  assert.match(api, /Array\.isArray\(payload\.entries\)/);
-  assert.match(api, /validateBulkPayloads\(db, placementUpdates, existing\.results\)/);
-  assert.match(api, /existingRows: ExistingPlacementEntry\[\] = \[\]/);
-  assert.match(styles, /\.save-edits-button/);
-});
-
 test("supports bulk editing in every reference table and refreshes master details", async () => {
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
   const adminFooter = await readFile(new URL("../app/AdminGridFooter.tsx", import.meta.url), "utf8");
-  const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+  const api = await readDataImplementation();
 
   assert.match(grid, /const draftEmployeeIds = props\.drafts\.map/);
   assert.match(grid, /usage = EMPTY_EMPLOYEE_USAGE/);
@@ -490,69 +417,51 @@ test("supports bulk editing in every reference table and refreshes master detail
   assert.match(api, /await env\.DB\.batch\(statements\)/);
 });
 
-test("uses the employee spreadsheet workflow in every general reference table", async () => {
+test("uses spreadsheet editing for positions and the active reference tables", async () => {
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
 
   assert.match(app, /const \[positionFullRowEditIds, setPositionFullRowEditIds\]/);
-  assert.match(app, /const \[userFullRowEditIds, setUserFullRowEditIds\]/);
-  assert.match(app, /const \[siteFullRowEditIds, setSiteFullRowEditIds\]/);
   assert.match(app, /<PositionAgGrid[^>]*fullRowEditIds=\{positionFullRowEditIds\}[^>]*onSelectionChange=/);
-  assert.match(app, /<UserAgGrid[^\n]*fullRowEditIds=\{userFullRowEditIds\}[^\n]*onSelectionChange=/);
-  assert.match(app, /<ProjectAgGrid[^\n]*fullRowEditIds=\{siteFullRowEditIds\}[^\n]*onSelectionChange=/);
-  assert.ok([...grid.matchAll(/rowSelection=\{[^\n]*?\{ mode: "multiRow"/g)].length >= 4);
-  assert.ok([...grid.matchAll(/onCellDoubleClicked=/g)].length >= 4);
-  assert.ok([...grid.matchAll(/onSpreadsheetPaste=\{pasteIntoRow\}/g)].length >= 4);
+  assert.ok([...grid.matchAll(/rowSelection=\{[^\n]*?\{ mode: "multiRow"/g)].length >= 2);
+  assert.ok([...grid.matchAll(/onCellDoubleClicked=/g)].length >= 2);
+  assert.ok([...grid.matchAll(/onSpreadsheetPaste=\{pasteIntoRow\}/g)].length >= 2);
   assert.ok([...app.matchAll(/uniformActions/g)].length >= 4);
 });
 
 test("uses checkbox selection and footer actions in reports and project settings tables", async () => {
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
 
-  const placementGrid = grid.slice(grid.indexOf("export function PlacementAgGrid"), grid.indexOf("type EmployeeTableRow"));
+  const reportGrid = await readFile(new URL("../app/PersonnelReportGrid.tsx", import.meta.url), "utf8");
   const projectEmployeeGrid = grid.slice(grid.indexOf("export function ProjectEmployeeAgGrid"), grid.indexOf("type DirectoryTableRow"));
   const directoryGrid = grid.slice(grid.indexOf("export function DirectoryAgGrid"), grid.indexOf("type PositionGridProps"));
 
-  for (const source of [placementGrid, projectEmployeeGrid, directoryGrid]) {
+  for (const source of [reportGrid, projectEmployeeGrid, directoryGrid]) {
     assert.match(source, /rowSelection=\{[^\n]*?\{ mode: "multiRow"/);
     assert.match(source, /onSelectionChanged=/);
     assert.doesNotMatch(source, /colId: "actions"/);
   }
-  assert.match(app, /function ReportGridFooter/);
-  assert.match(app, /onSelectionChange=\{\(ids\) => \{ changeReportSelection\(ids\)/);
   assert.match(app, /onSelectionChange=\{changeDirectorySelection\}/);
-  assert.match(app, /function editSelectedReportRows\(\)[\s\S]*setEditingRows\(\(current\)/);
-  assert.match(app, /selectedSavedEntries && canUpdate && <button[^>]+onClick=\{onEditSelection\}/);
-  assert.match(app, /\{canDelete && <button[^>]+onClick=\{onDelete\}/);
   assert.match(app, /function editSelectedDirectoryItems\(\)[\s\S]*setDirectoryDrafts\(\(current\)/);
   assert.doesNotMatch(app, /selected\.forEach\(\(entry\) => startEdit\(entry\)\)/);
-  assert.match(grid, /const editingStructureKey = props\.editing\.map/);
   assert.match(grid, /api\.refreshClientSideRowModel\("everything"\)/);
-  assert.match(app, /Снять выделение/);
-  assert.match(app, /Отменить редактирование/);
 });
 
 test("offers permission-aware right-click actions throughout system tables", async () => {
-  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
   const filters = await readFile(new URL("../app/GridFilters.tsx", import.meta.url), "utf8");
   const clipboard = await readFile(new URL("../app/useTimesheetClipboard.ts", import.meta.url), "utf8");
   const timesheet = await readFile(new URL("../app/TimesheetView.tsx", import.meta.url), "utf8");
   const equipment = await readFile(new URL("../app/EquipmentAccountingView.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  const placementGrid = grid.slice(grid.indexOf("export function PlacementAgGrid"), grid.indexOf("type EmployeeTableRow"));
+  const reportGrid = await readFile(new URL("../app/PersonnelReportGrid.tsx", import.meta.url), "utf8");
 
+  assert.match(reportGrid, /Скопировать строку на сегодня/);
   assert.match(filters, /onContextMenu=\{openContextMenu\}/);
   assert.match(filters, /Копировать ячейку/);
   assert.match(filters, /Вставить в ячейку/);
   assert.match(filters, /Редактировать ячейку/);
   assert.match(filters, /Выбрать строку для действий/);
-  assert.match(placementGrid, /getSpreadsheetContextActions=\{placementContextActions\}/);
-  assert.match(placementGrid, /Редактировать строку/);
-  assert.match(placementGrid, /Убрать из отчёта/);
-  assert.match(placementGrid, /canDeleteEntry[\s\S]*current\.canDelete/);
-  assert.match(app, /onRequestDeleteEntry=\{requestDeleteReportEntry\}/);
   assert.match(clipboard, /onContextMenu: \(event: MouseEvent<HTMLTableCellElement>\)/);
   assert.match(clipboard, /Удалить ручное значение/);
   assert.match(timesheet, /contextMenu: clipboardContextMenu/);
@@ -561,7 +470,7 @@ test("offers permission-aware right-click actions throughout system tables", asy
 });
 
 test("keeps creation, selection, and editing as exclusive table modes", async () => {
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
   const adminFooter = await readFile(new URL("../app/AdminGridFooter.tsx", import.meta.url), "utf8");
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
   const projects = await readFile(new URL("../app/ProjectCards.tsx", import.meta.url), "utf8");
@@ -569,93 +478,22 @@ test("keeps creation, selection, and editing as exclusive table modes", async ()
 
   assert.match(adminFooter, /const showAdd = canCreate && !editorOpen && !editingExisting && deletingCount === 0/);
   assert.match(adminFooter, /!editorOpen && deletingCount === 0 && <div className="employee-footer-base">/);
-  assert.match(app, /changedCount === 0 && selectedCount === 0 && <div className="employee-footer-base">/);
-  assert.match(app, /!editorOpen && selectedCount === 0 && <div className="employee-footer-base">/);
-  assert.match(app, /editingCount === 0 && newCount === 0 && selectedCount === 0[^\n]+Добавить запись/);
   assert.ok([...app.matchAll(/editingExisting=\{[^}]+\.some\(\(draft\) => Boolean\(draft\.id\)\)\}/g)].length >= 5);
-  assert.match(app, /function addRow[\s\S]*if \(!canCreateReportDate \|\| \(!rosterMode && editingRows\.length\)\) return/);
   assert.match(app, /function addDirectoryItem[\s\S]*directoryDrafts\.some\(\(draft\) => Boolean\(draft\.id\)\)/);
-  assert.match(grid, /current\.rosterMode \|\| current\.draftRows\.length === 0 && current\.editing\.length === 0/);
-  assert.match(grid, /params\.data\?\.kind === "draft" \? current\.canCreate : Boolean\(params\.data\?\.entry\) && \(current\.canUpdate \|\| current\.canDelete\)/);
-  assert.ok([...grid.matchAll(/propsRef\.current\.drafts\.length === 0 && params\.data\?\.kind === "entry"/g)].length >= 5);
-  assert.ok([...grid.matchAll(/row\.kind === "entry" && [^\n]+\.drafts\.some\(\(draft\) => !draft\.id\)/g)].length >= 4);
+  assert.ok([...grid.matchAll(/propsRef\.current\.drafts\.length === 0 && params\.data\?\.kind === "entry"/g)].length >= 3);
+  assert.ok([...grid.matchAll(/row\.kind === "entry" && [^\n]+\.drafts\.some\(\(draft\) => !draft\.id\)/g)].length >= 2);
   for (const source of [projects, users]) {
     assert.match(source, /const editorOpen = drafts\.length > 0/);
     assert.match(source, /disabled=\{editorOpen\}/);
   }
 });
 
-test("builds a foreman's report from the last personal submission and keeps project workers available", async () => {
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
-  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
-  const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
-  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-
-  assert.match(app, /const useUnifiedPersonnelReport = true/);
-  assert.match(app, /const useDailyRosterReport = !useUnifiedPersonnelReport/);
-  assert.match(app, /<PersonnelReportWorkspace/);
-  assert.match(app, /function buildRosterDraftRows[\s\S]*data\.reportEmployees/);
-  assert.match(app, /<RosterReportFooter mode=\{role === "foreman" \? "foreman" : "engineer"\}/);
-  assert.match(app, /editorOpen=\{rosterEditorOpen\}/);
-  assert.match(app, /const rosterEditorOpen = editingRows\.length > 0 \|\| draftRows\.some\(\(row\) => !row\.carriedFromPreviousDay\)/);
-  assert.match(app, /!editorOpen && <button[^>]+>Добавить сотрудника<\/button>/);
-  assert.match(app, /editorOpen && canCreate && <button[^>]+onClick=\{onAdd\}[^>]+>Добавить сотрудника<\/button>/);
-  assert.match(app, /editingCount === 0 && newCount === 0 && selectedCount === 0/);
-  assert.match(app, /page-content personnel-report-page table-workspace-page/);
-  assert.match(styles, /\.personnel-report-page,\.table-workspace-page \{ height:100vh;[\s\S]*overflow:hidden/);
-  assert.match(styles, /\.personnel-report-page \.personnel-table-card > \.ag-placement-grid \{ height:auto; min-height:0; flex:1;/);
-  assert.match(styles, /\.table-workspace-page > \.admin-section \{ min-height:0; flex:1; display:flex; flex-direction:column;/);
-  assert.match(app, /"Сохранить мою часть" : "Принять отчёт за день"/);
-  assert.match(app, /Добавить сотрудника/);
-  assert.match(app, /Убрать из отчёта/);
-  assert.match(app, /function makeCarriedDraft[\s\S]*carriedFromPreviousDay: true/);
-  assert.match(app, /function buildRosterDraftRows[\s\S]*firstRowByEmployee/);
-  assert.match(app, /scope=carryover&beforeDate=\$\{workDate\}/);
-  assert.match(app, /const reportDraftSessions = useRef\(new Map<string, ReportDraftSession>\(\)\)/);
-  assert.match(app, /function changeWorkDate[\s\S]*rememberCurrentReportDraftSession\(\)[\s\S]*takeReportDraftSession\(siteId, nextDate\)/);
-  assert.match(app, /function takeReportDraftSession[\s\S]*initializedRosterSession\.current = key/);
-  assert.match(app, /function saveRosterReport[\s\S]*clearCurrentReportDraftSession\(\)[\s\S]*setDraftRows\(\[\]\)/);
-  assert.doesNotMatch(app, /roster-carryover-banner/);
-  assert.match(app, /canUpdateReportDate \? role === "foreman" \? \{ submitOwnReport: \{ siteId, workDate \} \} : \{ finalizeReport: \{ siteId, workDate \} \} : \{\}/);
-  assert.match(app, /setEditingRows\(\[\]\)/);
-  assert.match(app, /if \(data\.reportSubmitted\) return \[\];/);
-  assert.match(app, /setDraftRows\(\[\]\);\s*setEditingRows\(\[\]\);\s*setSelectedRosterDraftKeys\(\[\]\);/);
-  assert.match(app, /showReviewActions=\{editingRows\.length > 0 \|\| draftRows\.length > 0 \|\| \(canUpdateReportDate && !data\?\.reportSubmitted\)\}/);
-  assert.doesNotMatch(app, /reviewed\??:/);
-  assert.doesNotMatch(app, /function confirmSelectedCarriedEmployees/);
-  assert.match(app, /showCarryoverProgress && total > 0 && <div className="roster-report-progress">/);
-  assert.match(app, /Готово к сохранению: \{completed\} из \{total\}/);
-  assert.match(app, /const rosterTotal = carriedRowsByEmployee\.size/);
-  assert.match(app, /rows\.every\(draftRowComplete\)/);
-  assert.match(app, /Если всё как вчера, сразу сохраните/);
-  assert.doesNotMatch(app, /unreviewedCarriedEmployees/);
-  assert.match(app, /const newRows = draftRows\.filter\(draftRowComplete\)/);
-  assert.match(app, /showCarryoverProgress=\{showCarryoverProgress\}/);
-  assert.match(grid, /draft\.lockedEmployee[\s\S]*ag-roster-employee/);
-  assert.match(grid, /"carried-row"[\s\S]*carriedFromPreviousDay/);
-  assert.doesNotMatch(grid, /reviewed-row/);
-  assert.match(grid, /onDraftSelectionChange/);
-  assert.match(grid, /if \(!props\.rosterMode\) return rows/);
-  assert.match(api, /scope === "carryover"/);
-  assert.match(api, /status = 'submitted' AND work_date < \?/);
-  assert.match(api, /ORDER BY work_date DESC LIMIT 1/);
-  assert.match(api, /const placementCreates = Array\.isArray\(payload\.newEntries\)/);
-  assert.match(api, /submitOwnReport\?: ReportFinalizationPayload/);
-  assert.match(api, /finalizeReport\?: ReportFinalizationPayload/);
-  assert.match(api, /updatedCount,\s*createdCount: createRows\.length/);
-});
-
-test("shows users as a compact list with profile editing while keeping the grid fallback", async () => {
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+test("shows users as a compact list with profile editing", async () => {
+  const app = await readWorkspaceImplementation();
   const cards = await readFile(new URL("../app/UserAccessCards.tsx", import.meta.url), "utf8");
-  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
-  assert.match(app, /const useUserAccessCardLayout = true/);
-  assert.match(app, /useUserAccessCardLayout\s*\? <UserAccessCards/);
   assert.match(app, /<UserAccessCards layout="list"/);
-  assert.match(app, /: <UserAgGrid/);
-  assert.match(grid, /export function UserAgGrid/);
   assert.match(cards, /Пользователи системы/);
   assert.match(cards, />Редактировать</);
   assert.match(cards, /function UserEditorDialog/);
@@ -668,20 +506,13 @@ test("shows users as a compact list with profile editing while keeping the grid 
   assert.match(cards, /Создать пользователя/);
   assert.match(cards, /onSelectionChange/);
   assert.match(styles, /\.user-access-card\.selected/);
-  assert.match(styles, /\.user-access-editor/);
   assert.match(styles, /\.user-create-dialog/);
 });
 
-test("shows projects as portfolio cards while keeping the grid fallback", async () => {
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+test("shows projects as portfolio cards", async () => {
   const cards = await readFile(new URL("../app/ProjectCards.tsx", import.meta.url), "utf8");
-  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
-  assert.match(app, /const useProjectCardLayout = true/);
-  assert.match(app, /useProjectCardLayout\s*\? <ProjectCards/);
-  assert.match(app, /: <ProjectAgGrid/);
-  assert.match(grid, /export function ProjectAgGrid/);
   assert.match(cards, /Портфель проектов/);
   assert.match(cards, /Текущий проект/);
   assert.match(cards, /employeeCounts/);
@@ -698,9 +529,9 @@ test("shows projects as portfolio cards while keeping the grid fallback", async 
 });
 
 test("checks Bitrix24 read-only and links only explicitly confirmed employee matches", async () => {
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
   const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
-  const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+  const api = await readDataImplementation();
   assert.match(app, /Проверить с Битрикс24/);
   assert.match(app, /ДАННЫЕ НЕ ИЗМЕНЕНЫ/);
   assert.match(app, /Нужно проверить сотрудников/);
@@ -792,7 +623,7 @@ test("writes worksheet elements in Excel-compatible order", async () => {
 
 test("selects personnel and equipment export ranges directly in one calendar", async () => {
   const preview = await readFile(new URL("../app/ExcelExportPreview.tsx", import.meta.url), "utf8");
-  const api = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+  const api = await readDataImplementation();
   const equipmentApi = await readFile(new URL("../app/api/equipment/route.ts", import.meta.url), "utf8");
   const equipmentView = await readFile(new URL("../app/EquipmentAccountingView.tsx", import.meta.url), "utf8");
   const xlsx = await readFile(new URL("../app/placementXlsx.ts", import.meta.url), "utf8");
@@ -850,7 +681,7 @@ test("previews personnel and equipment timesheets before downloading Excel", asy
 });
 
 test("previews every settings table export before downloading Excel", async () => {
-  const personnel = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const personnel = await readWorkspaceImplementation();
   const equipment = await readFile(new URL("../app/EquipmentAccountingView.tsx", import.meta.url), "utf8");
 
   assert.match(personnel, /function openSettingsExportPreview/);

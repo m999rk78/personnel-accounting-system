@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
+import { isPersonnelTimesheetValue } from "../app/personnelTimesheetValues.ts";
 import { createIdlePageRefresh } from "../app/idlePageRefresh.ts";
+import { createTimesheetBatchSave } from "../app/timesheetBatchSave.ts";
 
 function page() {
   const pageWindow = new EventTarget();
@@ -42,21 +44,26 @@ test("duplicate focus while loading does not refetch; a real hide/return queues 
 
 const path = new URL("../app/TimesheetView.tsx", import.meta.url);
 const source = ts.createSourceFile(path.pathname, await readFile(path, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-let refreshEffect, pasteDeclaration, singleDeclaration;
+let refreshEffect, pasteDeclaration, singleDeclaration, savedDeclaration, batchOptions;
 function visit(node) {
   if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "useEffect"
     && node.arguments[0]?.getText(source).includes("const control = createIdlePageRefresh")) refreshEffect = node.arguments[0];
   if (ts.isFunctionDeclaration(node) && node.name?.text === "pasteTimesheetCells") pasteDeclaration = node;
   if (ts.isFunctionDeclaration(node) && node.name?.text === "persistMark") singleDeclaration = node;
+  if (ts.isFunctionDeclaration(node) && node.name?.text === "applySavedTimesheetCells") savedDeclaration = node;
+  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "useTimesheetBatchSave") batchOptions = node.arguments[0];
   ts.forEachChild(node, visit);
 }
 visit(source);
 assert.ok(refreshEffect, "Expected actual page-return fetch effect");
 assert.ok(pasteDeclaration, "Expected actual bulk write callback");
 assert.ok(singleDeclaration, "Expected actual individual mark callback");
+assert.ok(savedDeclaration && batchOptions, "Expected actual shared batch lifecycle and successful-cell merge");
 const effectCode = ts.transpileModule(`const run = ${refreshEffect.getText(source)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 const pasteCode = ts.transpileModule(pasteDeclaration.getText(source), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 const singleCode = ts.transpileModule(singleDeclaration.getText(source), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const savedCode = ts.transpileModule(savedDeclaration.getText(source), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const batchCode = ts.transpileModule(`const batchSave = createTimesheetBatchSave(${batchOptions.getText(source)});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
 function harness() {
   const env = page();
@@ -121,49 +128,57 @@ test("a failed background read keeps visible data, allows retry, and revoked acc
 });
 
 test("bulk marks hold the refresh guard until all requests settle, including partial failures", async () => {
-  const pending = []; let requested = 0, bulkSaving = false, settled = false;
-  const markWrites = { current: 0 }, markRevision = { current: 0 };
-  const bindings = { payload: { canEdit: true, canCreate: true, canDelete: true, canUpdate: true, siteId: 2, month: "2026-11" }, activeScope: { current: "2:2026-11" }, activeScopeVersion: { current: 0 },
-    visibleEmployees: [{ id: 7 }], days: [1, 2], month: "2026-11", dateForDay: (month, day) => `${month}-${String(day).padStart(2, "0")}`,
-    CODE_VALUES: new Set(), marksByCell: new Map(), cellKey: (id, date) => `${id}:${date}`, markWrites, markRevision,
-    setSavingBulkMarks(value) { bulkSaving = value; }, refreshControl: { current: { request() { requested++; }, flush() {} } },
-    setPayload() { assert.fail("A partial batch must re-read actual saved marks before replacing its snapshot"); },
-    fetch() { return new Promise(resolve => pending.push(resolve)); }, window: { location: { replace() {} } },
-  };
-  const paste = new Function(...Object.keys(bindings), `${pasteCode}; return pasteTimesheetCells;`)(...Object.values(bindings));
-  const result = paste([{ rowIndex: 0, columnIndex: 0, value: "8" }, { rowIndex: 0, columnIndex: 1, value: "6" }]);
+  const state = writeHarness(); let settled = false;
+  const changes = [{ rowIndex: 0, columnIndex: 0, value: "8" }, { rowIndex: 0, columnIndex: 1, value: "6" }];
+  const result = state.bulk(changes);
   result.finally(() => { settled = true; }).catch(() => {});
-  assert.equal(markWrites.current, 1); assert.equal(bulkSaving, true); assert.equal(markRevision.current, 1);
-  pending[0]({ status: 409, ok: false, json: async () => ({ error: "Конфликт" }) });
+  assert.equal(state.markWrites.current, 1); assert.equal(state.batch.getSnapshot().busy, true); assert.equal(state.markRevision.current, 1);
+  state.requests[0].resolve({ status: 409, ok: false, json: async () => ({ error: "Конфликт" }) });
   for (let step = 0; step < 8; step++) await Promise.resolve();
-  assert.equal(settled, false); assert.equal(markWrites.current, 1);
-  pending[1]({ status: 200, ok: true, json: async () => ({ mark: { employeeId: 7, workDate: "2026-11-02", hours: 6 } }) });
-  await assert.rejects(result, /Конфликт/);
-  assert.equal(requested, 1); assert.equal(markWrites.current, 0); assert.equal(bulkSaving, false);
+  assert.equal(settled, false); assert.equal(state.markWrites.current, 1);
+  state.respond(1);
+  assert.deepEqual(await result, { savedChanges: [changes[1]], failedChanges: [changes[0]] });
+  assert.equal(state.markWrites.current, 0); assert.equal(state.batch.getSnapshot().busy, false);
+  assert.deepEqual(state.result().marks, [{ employeeId: 7, workDate: "2026-11-02", hours: 6 }], "Acknowledged successes are merged even when a sibling fails");
+  assert.equal(state.batch.getCellState("7:2026-11-01").state, "error");
+  assert.equal(state.batch.getCellState("7:2026-11-02").state, "saved");
+  assert.equal(state.flushes(), 1, "Deferred page refresh is released after the entire batch settles");
+
+  const retry = state.batch.retry();
+  assert.equal(state.requests.length, 3, "Only the failed cell is retried");
+  assert.equal(state.markWrites.current, 1); assert.equal(state.markRevision.current, 2);
+  state.respond(2); await retry;
+  assert.equal(state.result().marks.length, 2); assert.equal(state.markWrites.current, 0);
+  assert.equal(state.batch.getSnapshot().status.failed, 0);
 });
 
 function writeHarness() {
   const sourcePayload = { canEdit: true, canCreate: true, canDelete: true, canUpdate: true, siteId: 2, month: "2026-11", marks: [] };
   let current = structuredClone(sourcePayload);
-  const requests = [], undo = [];
+  const requests = [], undo = []; let flushes = 0;
   const activeScope = { current: "2:2026-11" }, activeScopeVersion = { current: 0 };
-  const bindings = { payload: sourcePayload, activeScope, activeScopeVersion, markWrites: { current: 0 }, markRevision: { current: 0 },
-    visibleEmployees: [{ id: 7 }], days: [1, 2], month: "2026-11", dateForDay: (month, day) => `${month}-${String(day).padStart(2, "0")}`,
-    CODE_VALUES: new Set(), marksByCell: new Map(), cellKey: (id, date) => `${id}:${date}`,
+  const markWrites = { current: 0 }, markRevision = { current: 0 };
+  const bindings = { payload: sourcePayload, activeScope, activeScopeVersion, markWrites, markRevision,
+    visibleEmployees: [{ id: 7, fullName: "Учебный сотрудник" }], days: [1, 2], month: "2026-11", siteId: 2,
+    savingBulkMarks: false, navigationBusy: false, loading: false, createTimesheetBatchSave,
+    dateForDay: (month, day) => `${month}-${String(day).padStart(2, "0")}`, dateLabel: date => date,
+    isPersonnelTimesheetValue, marksByCell: new Map(), cellKey: (id, date) => `${id}:${date}`,
     markValue: mark => String(mark?.hours ?? mark?.code ?? ""), setSavingMark() {}, setSavingBulkMarks() {},
-    refreshControl: { current: { request() {}, flush() {} } },
+    refreshControl: { current: { request() {}, flush() { flushes++; } } },
     setPayload(update) { current = update(current); }, rememberTimesheetUndo(value) { undo.push(value); },
+    forgetTimesheetUndo() {},
     fetch(url, options) { return new Promise(resolve => requests.push({ body: JSON.parse(options.body), resolve })); }, window: { location: { replace() {} } },
   };
-  const single = new Function(...Object.keys(bindings), `${singleCode}; return persistMark;`)(...Object.values(bindings));
-  const bulk = new Function(...Object.keys(bindings), `${pasteCode}; return pasteTimesheetCells;`)(...Object.values(bindings));
-  return { single, bulk, requests, undo, result: () => current,
+  const { single, bulk, batch } = new Function(...Object.keys(bindings), `${singleCode}\n${savedCode}\n${pasteCode}\n${batchCode}; return { single: persistMark, bulk: pasteTimesheetCells, batch: batchSave };`)(...Object.values(bindings));
+  return { single, bulk, batch, markWrites, markRevision, requests, undo, flushes: () => flushes, result: () => current,
     scope(siteId, month) {
+      // The actual hook deactivates its old controller when scopeKey changes.
+      batch.deactivate();
       activeScope.current = `${siteId}:${month}`; activeScopeVersion.current++;
       current = { ...structuredClone(sourcePayload), siteId, month, marks: [{ employeeId: 7, workDate: `${month}-01`, hours: 3 }] };
       return structuredClone(current);
     },
-    respond(index) { requests[index].resolve({ status: 200, ok: true, json: async () => ({ mark: { employeeId: 7, workDate: "2026-11-01", hours: 8 } }) }); },
+    respond(index) { const body = requests[index].body; requests[index].resolve({ status: 200, ok: true, json: async () => ({ mark: { employeeId: body.employeeId, workDate: body.workDate, hours: Number(body.value) } }) }); },
   };
 }
 
@@ -179,7 +194,7 @@ for (const [siteId, month] of [[3, "2026-11"], [2, "2026-12"]]) {
     const state = writeHarness();
     const write = state.bulk([{ rowIndex: 0, columnIndex: 0, value: "8" }]);
     const destination = state.scope(siteId, month); state.respond(0);
-    assert.equal(await write, 0, "zero suppresses clipboard undo for a no-longer-visible scope");
+    assert.deepEqual(await write, { savedChanges: [], failedChanges: [] }, "No successful coordinates from a no-longer-visible scope enter clipboard undo");
     assert.deepEqual(state.result(), destination); assert.deepEqual(state.undo, []);
   });
 }

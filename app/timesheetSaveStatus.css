@@ -1,0 +1,43 @@
+.timesheet-save-status {
+  flex:none;
+  min-width:0;
+  margin:0 0 10px;
+  overflow:hidden;
+  border:1px solid #cfe6d8;
+  border-radius:10px;
+  background:#f4faf6;
+  color:#245d3c;
+  font-size:12px;
+}
+.timesheet-save-status.has-errors { border-color:#f0c8c3; background:#fff7f5; color:#842e24; }
+.timesheet-save-status-main { display:flex; align-items:center; gap:10px; padding:10px 12px; }
+.timesheet-save-status-icon { display:grid; flex:none; width:24px; height:24px; place-items:center; border-radius:50%; background:#e0f0e6; font-size:15px; font-weight:800; }
+.has-errors .timesheet-save-status-icon { background:#fbe4de; }
+.timesheet-save-status-copy { display:grid; min-width:0; gap:3px; }
+.timesheet-save-status-copy strong { font-size:12px; font-weight:750; }
+.timesheet-save-status-copy span { font-size:11px; line-height:1.45; }
+.timesheet-save-status-actions { display:flex; flex:none; align-items:center; gap:8px; margin-left:auto; }
+.timesheet-save-retry { min-height:32px; padding:7px 10px; border:1px solid #ddafa6; border-radius:7px; background:#fff; color:#842e24; font:inherit; font-weight:650; cursor:pointer; }
+.timesheet-save-retry:hover:not(:disabled) { border-color:#b86657; background:#fff4ef; }
+.timesheet-save-retry:disabled { opacity:.6; cursor:wait; }
+.timesheet-save-retry:focus-visible,.timesheet-save-dismiss:focus-visible,.timesheet-save-failures summary:focus-visible { outline:2px solid #1677ff; outline-offset:2px; }
+.timesheet-save-dismiss { width:28px; height:28px; padding:0; border:0; border-radius:6px; background:transparent; color:inherit; font-size:20px; cursor:pointer; }
+.timesheet-save-dismiss:hover { background:#e0f0e6; }
+.timesheet-save-failures { padding:0 12px 10px 46px; }
+.timesheet-save-failures summary { width:fit-content; max-width:100%; cursor:pointer; font-size:11px; font-weight:650; }
+.timesheet-save-failure-list { display:grid; gap:8px; max-height:150px; margin:10px 0 0; padding:0 8px 0 0; overflow:auto; list-style:none; }
+.timesheet-save-failure-list li { display:grid; gap:3px; min-width:0; padding-top:8px; border-top:1px solid #efdcd7; overflow-wrap:anywhere; font-size:11px; }
+.timesheet-save-failure-list li strong { font-weight:650; }
+.timesheet-table td.timesheet-cell-save-error { box-shadow:inset 0 0 0 2px #d45242; }
+.timesheet-table td.timesheet-cell-save-saving { background-image:linear-gradient(135deg,transparent 70%,#d7e6f7 70%); }
+.timesheet-cell-save-indicator { position:absolute; top:2px; left:2px; display:grid; place-items:center; width:11px; height:11px; border-radius:50%; color:#fff; font-size:8px; font-weight:800; line-height:1; pointer-events:none; }
+.timesheet-cell-save-error .timesheet-cell-save-indicator { background:#bc3d2d; }
+.timesheet-cell-save-saved .timesheet-cell-save-indicator { background:#268153; }
+.timesheet-cell-save-saving .timesheet-cell-save-indicator { color:#4d6785; background:#e0eaf7; }
+@media(max-width:700px) {
+  .timesheet-save-status-main { flex-wrap:wrap; align-items:flex-start; gap:8px; }
+  .timesheet-save-status-copy { flex:1; }
+  .timesheet-save-status-actions:has(.timesheet-save-retry) { flex-basis:100%; margin-left:32px; }
+  .timesheet-save-retry { white-space:normal; text-align:left; }
+  .timesheet-save-failures { padding-left:44px; }
+}

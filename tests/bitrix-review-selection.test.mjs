@@ -19,7 +19,7 @@ test("select all uses the full server ID set, not the 100-row preview", () => {
 
 async function serverHarness(rows, failIds = []) {
   // Exercise the existing real batch coordinator without loading server/env/DB modules.
-  const route = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+  const route = await readFile(new URL("../app/server/data/bitrixReview.ts", import.meta.url), "utf8");
   const source = ts.createSourceFile("route.ts", route, ts.ScriptTarget.Latest, true);
   const fn = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "updateSelectedBitrixEmployees");
   assert.ok(fn);
@@ -34,7 +34,7 @@ async function serverHarness(rows, failIds = []) {
       return {id,name:card.fullName};
     }
     async function buildBitrixInspection(){return {response:{status:'mismatch',differences:[]}}}
-    ${fn.getText(source)}
+    ${fn.getText(source).replace(/^export /, "")}
     export {updateSelectedBitrixEmployees};
   `;
   const code = ts.transpileModule(fixture, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;

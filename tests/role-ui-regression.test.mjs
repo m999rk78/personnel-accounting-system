@@ -9,7 +9,8 @@ import { profileProjectChangeAllowed } from "../app/userAccessModel.ts";
 const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 async function compile(path,replacements={}) {
   let source=ts.transpileModule(await readFile(new URL(path,import.meta.url),"utf8"),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext,jsx:ts.JsxEmit.ReactJSX}}).outputText;
-  for(const [specifier,replacement] of Object.entries({react:import.meta.resolve("react"),"react-dom":import.meta.resolve("react-dom"),"react/jsx-runtime":import.meta.resolve("react/jsx-runtime"),"./customRoles.css":moduleUrl(""),"./usersRights.css":moduleUrl(""),...replacements})) source=source.replaceAll(JSON.stringify(specifier),JSON.stringify(replacement));
+  // Selection keyboard handling is tested separately; this harness exercises roles.
+  for(const [specifier,replacement] of Object.entries({react:import.meta.resolve("react"),"react-dom":import.meta.resolve("react-dom"),"react/jsx-runtime":import.meta.resolve("react/jsx-runtime"),"./customRoles.css":moduleUrl(""),"./usersRights.css":moduleUrl(""),"./useTableEscapeSelection":moduleUrl("export function useTableEscapeSelection(){}"),...replacements})) source=source.replaceAll(JSON.stringify(specifier),JSON.stringify(replacement));
   return moduleUrl(source);
 }
 const pickerUrl=await compile("../app/ProjectAccessPicker.tsx");

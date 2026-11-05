@@ -1,0 +1,74 @@
+"use client";
+
+import { CustomSelect } from "../CustomSelect";
+import { BitrixReviewEmployeeList } from "../BitrixReviewEmployeeList";
+import type { useBitrixReview } from "./useBitrixReview";
+import type { BitrixCheckDifference, DataSet, Site } from "./types";
+
+const BITRIX_DIFFERENCE_LABELS: Record<BitrixCheckDifference["kind"], string> = {
+  missing_locally: "Нет в системе",
+  changed: "Данные отличаются",
+  outside_scope: "Вне выбранных стадий",
+  missing_in_bitrix: "Нет в Битрикс24",
+  dismissed_in_bitrix: "Уволен в Битрикс24",
+  incomplete: "Не заполнены поля",
+  unknown_stage: "Неизвестная стадия",
+};
+
+const BITRIX_DIFFERENCE_SUMMARY_LABELS: Record<BitrixCheckDifference["kind"], string> = {
+  missing_locally: "Нет в нашей системе",
+  changed: "Отличаются данные",
+  outside_scope: "Вне выбранного контура",
+  missing_in_bitrix: "Нет в Битрикс24",
+  dismissed_in_bitrix: "Уволены",
+  incomplete: "Неполные карточки",
+  unknown_stage: "Неизвестная стадия",
+};
+
+export function BitrixReviewDialogs({ review, data, visibleSites, mayInspectBitrix24, mayCreateEmployees, mayUpdateEmployees, mayDeleteEmployees, error }: {
+  review: ReturnType<typeof useBitrixReview>;
+  data: DataSet | null;
+  visibleSites: Site[];
+  mayInspectBitrix24: boolean;
+  mayCreateEmployees: boolean;
+  mayUpdateEmployees: boolean;
+  mayDeleteEmployees: boolean;
+  error: string;
+}) {
+  const { linkingBitrix24, bitrixCheckResult, setBitrixCheckResult, setSelectedBitrixDifferenceIndex, bitrixReviewSelectedIds, setBitrixReviewSelectedIds, bitrixReviewProgress, bitrixReviewUpdatedCount, bitrixReviewNotice, setBitrixManualLinks, bitrixEmployeeCreateDraft, setBitrixEmployeeCreateDraft, bitrixEmployeeCreateError, setBitrixEmployeeCreateError, creatingBitrixEmployee, bitrixEmployeeAction, setBitrixEmployeeAction, processingBitrixEmployee, bitrixAvailableEmployeeOptions, linkBitrix24Employees, openBitrixEmployeeCreate, createBitrix24Employee, applyBitrixEmployeeAction, acknowledgeBitrixDifference, updateBitrixReviewSelection, selectedBitrixDifferenceSafeIndex, selectedBitrixDifference, bitrixReviewUpdateIdsForAll, bitrixReviewSelectedCount, selectedBitrixEmployeeId, canLinkSelectedBitrixEmployee, canCreateSelectedBitrixEmployee, canUpdateSelectedBitrixEmployee, canDeleteSelectedBitrixEmployee, canAcknowledgeSelectedBitrixEmployee, selectedBitrixDifferenceDetails } = review;
+  return <>
+    {mayInspectBitrix24 && bitrixCheckResult && <div className="bitrix-check-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !linkingBitrix24 && !creatingBitrixEmployee && !processingBitrixEmployee && !bitrixEmployeeCreateDraft && !bitrixEmployeeAction) setBitrixCheckResult(null); }}><section className={`bitrix-check-dialog ${bitrixCheckResult.status}`} role="dialog" aria-modal="true" aria-labelledby="bitrix-check-title">
+      <div className="bitrix-check-heading"><span className="bitrix-check-icon" aria-hidden="true">{bitrixCheckResult.status === "ok" ? "✓" : "!"}</span><div><small>{bitrixReviewUpdatedCount ? "ДАННЫЕ ОБНОВЛЕНЫ" : bitrixCheckResult.linked ? "СОПОСТАВЛЕНИЕ ЗАВЕРШЕНО" : "ДАННЫЕ НЕ ИЗМЕНЕНЫ"}</small><h2 id="bitrix-check-title">{bitrixCheckResult.status === "ok" ? "Всё в порядке" : "Нужно проверить сотрудников"}</h2><p>{bitrixCheckResult.linked ? `Связано сотрудников: ${bitrixCheckResult.linked}.` : bitrixCheckResult.status === "ok" ? "Активных расхождений с Битрикс24 нет." : `Требуют внимания: ${bitrixCheckResult.totalDifferences}. Выберите сотрудников для обновления или действие в нужной строке.`}</p></div><button type="button" className="bitrix-check-close" aria-label="Закрыть результат проверки" onClick={() => setBitrixCheckResult(null)} disabled={linkingBitrix24 || creatingBitrixEmployee || processingBitrixEmployee || Boolean(bitrixEmployeeCreateDraft) || Boolean(bitrixEmployeeAction)}>×</button></div>
+      <div className="bitrix-check-summary"><div className="matched"><span>Совпадают</span><strong>{bitrixCheckResult.matched}</strong></div><div className="attention"><span>Требуют внимания</span><strong>{bitrixCheckResult.totalDifferences}</strong></div>{Boolean(bitrixCheckResult.acknowledgedDifferences) && <div className="accepted"><span>Подтверждено</span><strong>{bitrixCheckResult.acknowledgedDifferences}</strong></div>}</div>
+      {bitrixCheckResult.differenceCounts && <div className="bitrix-check-breakdown">{(Object.entries(bitrixCheckResult.differenceCounts) as [BitrixCheckDifference["kind"], number][]).flatMap(([kind, count]) => count > 0 ? [<span className={kind} key={kind}>{BITRIX_DIFFERENCE_SUMMARY_LABELS[kind]}: <strong>{count}</strong></span>] : [])}</div>}
+      {mayUpdateEmployees && (bitrixReviewUpdateIdsForAll.length > 0 || bitrixReviewProgress) && <div className="bitrix-review-selection-bar">
+        <div className="bitrix-review-selection-copy"><strong>{bitrixReviewProgress ? `Обработано: ${bitrixReviewProgress.done} / ${bitrixReviewProgress.total}` : `Выбрано: ${bitrixReviewSelectedCount} · Доступно для обновления: ${bitrixReviewUpdateIdsForAll.length}`}</strong><span>Данные — из личной карточки каждого сотрудника. Добавление и удаление — отдельно.</span></div>
+        <div className="bitrix-review-selection-actions"><button type="button" disabled={!bitrixReviewSelectedCount || processingBitrixEmployee || linkingBitrix24 || creatingBitrixEmployee} onClick={() => setBitrixReviewSelectedIds([])}>Снять выбор</button><button type="button" className="bitrix-review-bulk-update" disabled={!bitrixReviewSelectedCount || processingBitrixEmployee || linkingBitrix24 || creatingBitrixEmployee} onClick={() => void updateBitrixReviewSelection()}>{bitrixReviewProgress ? "Обновляем…" : `Обновить из Битрикс24 (${bitrixReviewSelectedCount})`}</button></div>
+      </div>}
+      {bitrixReviewNotice && <div className="bitrix-review-notice" role="status">{bitrixReviewNotice}</div>}
+      {selectedBitrixDifference && <div className="bitrix-review-layout">
+        <BitrixReviewEmployeeList differences={bitrixCheckResult.differences} total={bitrixCheckResult.totalDifferences} updateIds={bitrixReviewUpdateIdsForAll} selectedIds={bitrixReviewSelectedIds} activeIndex={selectedBitrixDifferenceSafeIndex} canUpdate={mayUpdateEmployees} busy={processingBitrixEmployee || linkingBitrix24 || creatingBitrixEmployee} getLabel={item => BITRIX_DIFFERENCE_LABELS[item.kind as BitrixCheckDifference["kind"]] ?? item.kind} onSelect={setBitrixReviewSelectedIds} onActiveChange={setSelectedBitrixDifferenceIndex} />
+        <section className={`bitrix-review-detail ${selectedBitrixDifference.kind}${selectedBitrixDifference.acknowledged ? " acknowledged" : ""}`}><div className="bitrix-review-detail-heading"><div><span>Выбранный сотрудник</span><h3>{selectedBitrixDifference.employeeName}</h3></div><em>{selectedBitrixDifference.acknowledged ? "Подтверждено" : BITRIX_DIFFERENCE_LABELS[selectedBitrixDifference.kind]}</em></div><div className="bitrix-review-reason"><span>Что обнаружено</span><p>{selectedBitrixDifferenceDetails}</p></div>{canLinkSelectedBitrixEmployee && <div className="bitrix-review-link"><span>Сопоставить с существующим</span><div className="bitrix-manual-link"><CustomSelect searchable className="bitrix-manual-select" value={selectedBitrixEmployeeId} ariaLabel={`Сотрудник системы для ${selectedBitrixDifference.employeeName}`} onChange={(employeeId) => setBitrixManualLinks((current) => ({ ...current, [selectedBitrixDifference.bitrix24Id!]: employeeId }))} options={bitrixAvailableEmployeeOptions} /><button type="button" disabled={!selectedBitrixEmployeeId || linkingBitrix24 || creatingBitrixEmployee || processingBitrixEmployee} onClick={() => void linkBitrix24Employees([{ bitrix24Id: selectedBitrixDifference.bitrix24Id!, employeeId: Number(selectedBitrixEmployeeId) }])}>{linkingBitrix24 ? "Сопоставляем…" : "Сопоставить"}</button></div></div>}<div className="bitrix-review-detail-actions"><div>{canCreateSelectedBitrixEmployee && <button type="button" className="bitrix-add-employee-button" onClick={() => openBitrixEmployeeCreate(selectedBitrixDifference)} disabled={linkingBitrix24 || creatingBitrixEmployee || processingBitrixEmployee}>Добавить сотрудника</button>}{canUpdateSelectedBitrixEmployee && <button type="button" className="bitrix-update-employee-button" onClick={() => setBitrixEmployeeAction({ kind: "update", difference: selectedBitrixDifference })} disabled={processingBitrixEmployee}>Обновить из Битрикс24</button>}{canDeleteSelectedBitrixEmployee && <button type="button" className="bitrix-delete-employee-button" onClick={() => setBitrixEmployeeAction({ kind: "delete", difference: selectedBitrixDifference })} disabled={processingBitrixEmployee}>Удалить из системы</button>}</div>{canAcknowledgeSelectedBitrixEmployee && <button type="button" className="bitrix-acknowledge-button" onClick={() => void acknowledgeBitrixDifference(selectedBitrixDifference)} disabled={processingBitrixEmployee}>Оставить как есть</button>}</div></section>
+      </div>}
+      {error && <div className="bitrix-link-error" role="alert">{error}</div>}
+      <div className="bitrix-check-footer"><span>{bitrixCheckResult.autoLinkable > 0 ? `Можно автоматически сопоставить: ${bitrixCheckResult.autoLinkable}` : bitrixCheckResult.totalDifferences ? "Изменения применяются только после выбора действия." : "Проверка завершена."}</span><div>{mayUpdateEmployees && bitrixCheckResult.autoLinkable > 0 && <button type="button" className="bitrix-auto-link-button" onClick={() => void linkBitrix24Employees()} disabled={linkingBitrix24 || creatingBitrixEmployee || processingBitrixEmployee}>{linkingBitrix24 ? "Сопоставляем…" : `Сопоставить автоматически: ${bitrixCheckResult.autoLinkable}`}</button>}<button type="button" onClick={() => setBitrixCheckResult(null)} disabled={linkingBitrix24 || creatingBitrixEmployee || processingBitrixEmployee || Boolean(bitrixEmployeeCreateDraft) || Boolean(bitrixEmployeeAction)}>Закрыть</button></div></div>
+    </section></div>}
+    {mayInspectBitrix24 && mayCreateEmployees && bitrixEmployeeCreateDraft && <div className="confirmation-backdrop bitrix-employee-create-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !creatingBitrixEmployee) setBitrixEmployeeCreateDraft(null); }}><form className="bitrix-employee-create-dialog" role="dialog" aria-modal="true" aria-labelledby="bitrix-employee-create-title" onSubmit={(event) => void createBitrix24Employee(event)}>
+      <div className="bitrix-employee-create-heading"><div><small>НОВАЯ КАРТОЧКА СОТРУДНИКА</small><h2 id="bitrix-employee-create-title">Добавить из Битрикс24</h2><p>ФИО и связь с Битрикс24 заполнятся автоматически. Выберите данные, которые будут использоваться в нашей системе.</p></div><button type="button" className="bulk-edit-close" aria-label="Закрыть добавление сотрудника" onClick={() => setBitrixEmployeeCreateDraft(null)} disabled={creatingBitrixEmployee}>×</button></div>
+      <div className="bitrix-employee-source-card"><span>Сотрудник</span><strong>{bitrixEmployeeCreateDraft.fullName}</strong><p>{[bitrixEmployeeCreateDraft.sourceEmploymentType, bitrixEmployeeCreateDraft.sourceDepartment, bitrixEmployeeCreateDraft.sourcePosition].filter(Boolean).join(" · ") || "Кадровые данные в Битрикс24 не заполнены полностью"}</p></div>
+      <div className="bitrix-employee-create-fields">
+        <div><span>Должность в системе</span><CustomSelect searchable value={bitrixEmployeeCreateDraft.positionId} ariaLabel="Должность нового сотрудника" onChange={(positionId) => { setBitrixEmployeeCreateDraft((current) => current ? { ...current, positionId } : current); setBitrixEmployeeCreateError(""); }} options={[{ value: "", label: "Выберите должность" }, ...(data?.positionCatalog ?? []).map((position) => ({ value: String(position.id), label: `${position.employmentType} · ${position.department} · ${position.position}` }))]} /></div>
+        <div><span>Объект</span><CustomSelect searchable value={bitrixEmployeeCreateDraft.projectSiteId} ariaLabel="Объект нового сотрудника" onChange={(projectSiteId) => { setBitrixEmployeeCreateDraft((current) => current ? { ...current, projectSiteId } : current); setBitrixEmployeeCreateError(""); }} options={[{ value: "", label: "Выберите объект" }, { value: "__unassigned__", label: "Без объекта" }, ...visibleSites.map((site) => ({ value: String(site.id), label: site.name }))]} /></div>
+      </div>
+      {bitrixEmployeeCreateDraft.sourceProjectKeys.length > 0 && <p className="bitrix-employee-project-hint">В карточке Битрикс24: {bitrixEmployeeCreateDraft.sourceProjectKeys.join(", ")}</p>}
+      {bitrixEmployeeCreateError && <div className="bulk-edit-error" role="alert">{bitrixEmployeeCreateError}</div>}
+      <div className="bitrix-employee-create-actions"><button type="button" className="secondary-button" onClick={() => setBitrixEmployeeCreateDraft(null)} disabled={creatingBitrixEmployee}>Отмена</button><button type="submit" className="save-edits-button" disabled={creatingBitrixEmployee || !bitrixEmployeeCreateDraft.positionId || !bitrixEmployeeCreateDraft.projectSiteId}>{creatingBitrixEmployee ? "Добавляем…" : "Добавить сотрудника"}</button></div>
+    </form></div>}
+    {mayInspectBitrix24 && (bitrixEmployeeAction?.kind === "delete" ? mayDeleteEmployees : mayUpdateEmployees) && bitrixEmployeeAction && <div className="confirmation-backdrop bitrix-employee-action-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !processingBitrixEmployee) setBitrixEmployeeAction(null); }}><section className="confirmation-dialog bitrix-employee-action-dialog" role="dialog" aria-modal="true" aria-labelledby="bitrix-employee-action-title">
+      <h2 id="bitrix-employee-action-title">{bitrixEmployeeAction.kind === "update" ? "Применить изменения из Битрикс24?" : "Удалить сотрудника из справочника?"}</h2>
+      <strong>{bitrixEmployeeAction.difference.employeeName}</strong>
+      <p>{bitrixEmployeeAction.kind === "update" ? bitrixEmployeeAction.difference.details : "Карточка больше не найдена в Битрикс24. Сотрудник исчезнет из активного справочника и текущих проектов, но ранее заполненные отчёты и табели сохранятся без изменений."}</p>
+      <div><button type="button" className="secondary-button" onClick={() => setBitrixEmployeeAction(null)} disabled={processingBitrixEmployee}>Отмена</button><button type="button" className={bitrixEmployeeAction.kind === "delete" ? "delete-rows-button" : "save-edits-button"} onClick={() => void applyBitrixEmployeeAction()} disabled={processingBitrixEmployee}>{processingBitrixEmployee ? "Выполняем…" : bitrixEmployeeAction.kind === "update" ? "Применить изменения" : "Удалить сотрудника"}</button></div>
+    </section></div>}
+  </>;
+}

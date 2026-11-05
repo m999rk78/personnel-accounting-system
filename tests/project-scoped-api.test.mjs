@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import ts from "typescript";
+import { compileModuleGraph } from "./fixtures/compile-module-graph.mjs";
 import { rolePermissionTemplate } from "../app/permissionModel.ts";
 import { scopedDataActionAllowed, projectEntitiesAllowed } from "../app/projectScopedData.ts";
 import { noCustomRolesUrl, noPermissionChangesUrl } from "./fixtures/custom-role-imports.mjs";
@@ -43,10 +42,7 @@ const replacements = {
   "../../equipmentReportWorkflow": fileUrl("equipmentReportWorkflow"),
 };
 async function loadRoute(path) {
-  const source = await readFile(new URL(path, import.meta.url), "utf8");
-  let code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
-  for (const [specifier, replacement] of Object.entries(replacements)) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(replacement));
-  return import(moduleUrl(code));
+  return import(await compileModuleGraph(new URL(path, import.meta.url), replacements));
 }
 process.env.NODE_ENV = "production";
 delete process.env.DATABASE_RUNTIME_BOOTSTRAP;

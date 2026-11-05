@@ -15,9 +15,26 @@
 .users-rights-tabs button:hover { color:var(--ur-text); border-bottom-color:#d4d4d8; }
 .users-rights-tabs button[aria-selected="true"] { color:#18181b; border-bottom-color:var(--ur-accent); background:transparent; box-shadow:none; font-weight:650; }
 .users-rights-tabs button:focus-visible,.roles-workspace button:focus-visible,.users-table-open:focus-visible,.users-table-selection input:focus-visible { outline:2px solid var(--ur-accent); outline-offset:3px; }
-.page-heading.users-rights-page-heading { justify-content:flex-start; column-gap:20px; }
-.users-rights-page-heading > .users-rights-navigation { flex:none; align-self:center; margin:0; gap:0; }
-.users-rights-page-heading .excel-menu-trigger { height:38px; border-radius:8px; }
+
+/* A separate breadcrumb keeps the title, section switcher and action on one axis. */
+.users-rights-workspace .page-heading.workspace-page-heading.users-rights-page-heading {
+  display:grid;
+  grid-template-columns:max-content max-content minmax(87px,1fr);
+  grid-template-areas:"back back back" "title tabs actions";
+  align-items:center;
+  gap:8px 10px;
+  min-height:0;
+  padding:0;
+}
+.users-rights-workspace .workspace-page-heading.users-rights-page-heading > .page-heading-back { grid-area:back; justify-self:start; }
+.users-rights-workspace .workspace-page-heading.users-rights-page-heading > .page-heading-title { grid-area:title; align-self:center; justify-content:center; min-height:38px; padding:0; }
+.users-rights-workspace .workspace-page-heading.users-rights-page-heading h1 { margin:0; white-space:nowrap; }
+.users-rights-workspace .workspace-page-heading.users-rights-page-heading > .users-rights-navigation { grid-area:tabs; align-self:center; justify-self:start; margin:0; gap:0; }
+.users-rights-workspace .workspace-page-heading.users-rights-page-heading > .settings-heading-actions { grid-area:actions; justify-self:end; align-self:center; width:auto; margin:0; }
+.users-rights-workspace .users-rights-page-heading .users-rights-tabs { align-items:center; gap:2px; height:38px; padding:3px; border:1px solid #e4e4e7; border-radius:10px; background:#f4f4f5; }
+.users-rights-workspace .users-rights-page-heading .users-rights-tabs button { height:30px; padding:0 6px; border:1px solid transparent; border-radius:7px; font-size:12px; line-height:18px; font-weight:550; }
+.users-rights-workspace .users-rights-page-heading .users-rights-tabs button:hover { border-color:transparent; background:#ffffff80; color:#27272a; }
+.users-rights-workspace .users-rights-page-heading .users-rights-tabs button[aria-selected="true"] { border-color:#e4e4e7; background:#fff; color:#18181b; box-shadow:0 1px 2px #18181b08; font-weight:650; }
 
 /* Users: one toolbar, one table, one footer. */
 .user-access-shell.users-list-shell { overflow:hidden; border:1px solid var(--ur-border); border-radius:12px; background:#fff; box-shadow:none; }
@@ -29,6 +46,7 @@
 .users-list-shell .user-access-search { width:280px; min-width:180px; max-width:50%; height:38px; flex:0 1 280px; }
 .users-list-shell .user-access-search input { height:38px; border-color:var(--ur-border); border-radius:8px; background:var(--ur-soft); font-size:12px; }
 .users-list-shell .user-access-search input:focus { border-color:#a1a1aa; background:#fff; box-shadow:0 0 0 3px #18181b08; }
+/* Users and roles intentionally keep compact lists, without decorative blank cells. */
 .users-table-wrap { width:100%; min-height:0; max-height:calc(100dvh - 280px); overflow:auto; }
 .users-table { width:100%; border-collapse:collapse; table-layout:fixed; text-align:left; }
 .users-table th { position:sticky; top:0; z-index:1; height:42px; padding:10px 18px; border-bottom:1px solid var(--ur-border); background:var(--ur-soft); color:var(--ur-muted); font-size:11px; font-weight:600; }
@@ -50,7 +68,7 @@
 .users-table-status > .is-active { background:#57a875; }
 .users-table-status > .is-invited { background:#d4a244; }
 .users-rights-workspace .user-access-section > .uniform-footer-actions { padding:12px 18px; border-color:var(--ur-border); border-radius:0 0 12px 12px; background:var(--ur-soft); box-shadow:none; }
-.users-rights-workspace .user-access-section .uniform-footer-actions > .employee-footer-base:last-child { min-height:38px; padding:0; }
+.users-rights-workspace .user-access-section .uniform-footer-actions > .employee-footer-base:last-child { min-height:38px; padding:0; flex-wrap:wrap; }
 .users-rights-workspace .user-access-section .employee-total-count { color:var(--ur-muted); font-size:11px; }
 .users-rights-workspace .user-access-section .employee-add-button { height:38px; padding-inline:14px; border-color:#18181b; border-radius:8px; background:#18181b; color:#fff; font-size:12px; font-weight:600; }
 
@@ -160,11 +178,20 @@
   .roles-sidebar-item { flex:0 0 170px; width:170px; min-height:62px; padding:8px 10px; }
   .roles-permissions-panel { height:calc(100dvh - 326px); min-height:480px; max-height:760px; }
 }
-@media (max-width:1000px) {
-  .page-heading.users-rights-page-heading { column-gap:8px; }
-  .users-rights-page-heading .users-rights-tabs { gap:8px; }
-  .users-rights-page-heading .users-rights-tabs button { padding-inline:2px; font-size:12px; }
-  .users-rights-page-heading .excel-menu-trigger { padding-inline:8px; }
+@media (min-width:1101px) {
+  .users-rights-workspace .page-heading.workspace-page-heading.users-rights-page-heading { column-gap:18px; }
+  .users-rights-workspace .users-rights-page-heading .users-rights-tabs button { padding-inline:10px; }
+}
+@media (max-width:820px) {
+  .users-rights-workspace .page-heading.workspace-page-heading.users-rights-page-heading { grid-template-columns:minmax(0,1fr) auto; grid-template-areas:"back back" "title title" "tabs actions"; gap:10px 12px; }
+  .users-rights-workspace .workspace-page-heading.users-rights-page-heading h1 { white-space:normal; }
+}
+@media (max-width:680px) {
+  .sidebar-collapsed .users-rights-workspace .workspace-page-heading.users-rights-page-heading > .page-heading-back { min-height:32px; margin-left:40px; }
+  .sidebar-collapsed .users-rights-workspace .workspace-page-heading.users-rights-page-heading > .page-heading-title { padding-left:0; }
+}
+@media (max-width:520px) {
+  .users-rights-workspace .workspace-page-heading.users-rights-page-heading h1 { font-size:24px; line-height:32px; }
 }
 @media (max-width:680px) {
   .users-rights-workspace > section[role="tabpanel"] { margin-top:12px; }
@@ -191,10 +218,12 @@
   .user-create-dialog .user-create-actions { padding:14px 16px; }
 }
 @media (max-width:430px) {
-  .users-rights-page-heading .users-rights-tabs { gap:12px; }
   .roles-matrix-toolbar { flex-wrap:wrap; }
   .roles-matrix-toolbar label { flex-basis:100%; }
   .roles-sidebar-item { flex-basis:160px; width:160px; }
   .user-create-dialog .user-create-actions { align-items:stretch; flex-direction:column; }
   .user-create-dialog .user-create-actions > div { display:flex; justify-content:flex-end; }
+}
+@media (max-width:380px) {
+  .users-rights-workspace .users-rights-page-heading .users-rights-tabs button { padding-inline:5px; font-size:11px; }
 }

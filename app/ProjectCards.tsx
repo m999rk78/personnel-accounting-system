@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ProjectAccessUser } from "./roles";
 import { projectForemanCounts } from "./projectUserUsage";
+import { useTableEscapeSelection } from "./useTableEscapeSelection";
 
 type Project = { id: number; name: string; code: string; timezone: string };
 type ProjectDraft = { key: string; id?: number; name: string; code: string; timezone: string };
@@ -78,6 +79,7 @@ function ProjectEditorDialog({ drafts, saving, onPatch, onCancel, onSave }: { dr
 export function ProjectCards({ rows, drafts, employees, users, projectStats, currentSiteId, selectedIds, onEdit, onSelectionChange, onPatchDraft, onCancelEditing, onSave, saving, readOnly = false, canCreate, canUpdate, canDelete }: ProjectCardsProps) {
   const [query, setQuery] = useState("");
   const editorOpen = drafts.length > 0;
+  useTableEscapeSelection({ hasSelection: () => selectedIds.length > 0, clearSelection: () => onSelectionChange([]), isEditing: () => editorOpen || saving });
   const mayCreate = canCreate ?? !readOnly;
   const mayUpdate = canUpdate ?? !readOnly;
   const mayDelete = canDelete ?? !readOnly;

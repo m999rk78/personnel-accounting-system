@@ -174,6 +174,7 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
   const selected = nativeSelectedRowIds(selection, key, context.ids);
   const dragged = useRef<NativeRowSelection>({ key: "", ids: [] });
   const trailingClick = useRef<{ key: string; id: number } | null>(null);
+  const selectionRevision = useRef(0);
   const [menuState, setMenu] = useState<{ key: string; id: number; x: number; y: number } | null>(null);
   if (selection.key !== key) {
     setSelection({ key, ids: [] });
@@ -187,7 +188,12 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
   const moves = useRowMoveActions(order, disabled || editing, key);
   const blocked = disabled || editing || !order?.canWrite || order.busy || access?.select === false;
   const canSelect = Boolean(order?.canWrite) && access?.select !== false;
-  const clearSelection = () => setSelection({ key, ids: [] });
+  const clearSelection = () => {
+    selectionRevision.current += 1;
+    dragged.current = { key, ids: [] };
+    trailingClick.current = null;
+    setSelection({ key, ids: [] });
+  };
   const closeMenu = () => setMenu(null);
   const openMenu = (event: React.MouseEvent, id: number) => {
     event.preventDefault(); event.stopPropagation();
@@ -209,8 +215,9 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
       const rect = event.currentTarget.getBoundingClientRect();
       const placement = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
       dragged.current = { key, ids: [] };
+      const revision = selectionRevision.current;
       void order?.move({ movingIds, placement, targetId: id }).then(saved => {
-        if (saved) setSelection(current => current.key === key ? { key, ids: movingIds } : current);
+        if (saved && selectionRevision.current === revision) setSelection(current => current.key === key ? { key, ids: movingIds } : current);
       });
     },
   });
@@ -218,7 +225,7 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
       onClick={(event) => setSelection(current => event.ctrlKey || event.metaKey
         ? toggleNativeRowSelection(current, key, context.ids, id, !nativeSelectedRowIds(current, key, context.ids).includes(id))
         : { key, ids: [id] })}
-      onKeyDown={(event) => { event.stopPropagation(); if (event.key === "Escape") clearSelection(); }}
+      onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}
       onPointerDown={() => { trailingClick.current = null; }} onMouseDown={() => { trailingClick.current = null; }}
       onClickCapture={(event) => stopTrailingClick(event, id)} onContextMenu={(event) => openMenu(event, id)}
       onDragStart={(event) => {
@@ -227,5 +234,5 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
         dragged.current = { key, ids: movingIds }; trailingClick.current = { key, id };
         event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", movingIds.join(","));
       }} onDragEnd={() => { dragged.current = { key, ids: [] }; }}>{number}</button> : number;
-  return { rowProps, handle, headerCheckbox: "№", getActions: (id: number, close: () => void) => moves.getActions(id, selected, close), ui: <>{moves.feedback}{selected.length > 0 && <div className="table-order-feedback">Выделено строк: {selected.length}<button type="button" onClick={clearSelection}>Снять выделение</button></div>}{menu && <TableContextMenu {...menu} caption="Порядок строк" value="Сотрудники и техника проекта" onClose={closeMenu} actions={moves.getActions(menu.id, selected, closeMenu)} />}</> };
+  return { rowProps, handle, clearSelection, hasSelection: selected.length > 0, headerCheckbox: "№", getActions: (id: number, close: () => void) => moves.getActions(id, selected, close), ui: <>{moves.feedback}{selected.length > 0 && <div className="table-order-feedback">Выделено строк: {selected.length}<button type="button" onClick={clearSelection}>Снять выделение</button></div>}{menu && <TableContextMenu {...menu} caption="Порядок строк" value="Сотрудники и техника проекта" onClose={closeMenu} actions={moves.getActions(menu.id, selected, closeMenu)} />}</> };
 }

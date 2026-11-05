@@ -114,7 +114,15 @@ test("fallback configuration is private, independent and restricted to personnel
   assert.ok(rules.every(rule => rule.includes("Host(`resurs-otchet.ru`)") && rule.includes("Host(`www.resurs-otchet.ru`)")));
   assert.match(rules[0], /PathPrefix\(`\/_next\/static\/`\).*Method\(`GET`\).*Method\(`HEAD`\)/);
   assert.equal([...traefik.matchAll(/^\s+priority: 1$/gm)].length, 2);
-  assert.match(traefik, /errorRequestHeaders: \[\]/);
+  const chain = traefik.match(/^ {4}personnel-maintenance-errors:\n {6}chain:\n {8}middlewares:\n((?: {10}- [^\n]+\n)+)/m);
+  assert.ok(chain, "The router's existing middleware name must keep the filtering chain.");
+  assert.deepEqual([...chain[1].matchAll(/- (.+)/g)].map(match => match[1]), ["personnel-maintenance-drop-marker", "personnel-maintenance-errors-handler"]);
+  assert.match(traefik, /^ {4}personnel-maintenance-drop-marker:\n {6}headers:\n {8}customRequestHeaders:\n {10}X-Personnel-Maintenance-Request: ""$/m);
+  assert.match(traefik, /^ {4}personnel-maintenance-errors-handler:\n {6}errors:/m);
+  const whitelist = traefik.match(/^ {8}errorRequestHeaders:\n((?: {10}- [^\n]+\n)+)/m);
+  assert.ok(whitelist, "A nonempty whitelist must survive Coolify's YAML normalization.");
+  assert.deepEqual([...whitelist[1].matchAll(/- (.+)/g)].map(match => match[1]), ["X-Personnel-Maintenance-Request"]);
+  assert.equal([...traefik.matchAll(/errorRequestHeaders:/g)].length, 1);
   assert.doesNotMatch(traefik, /HostRegexp/);
   assert.match(compose, /PERSONNEL_STATIC_ARCHIVE/);
   assert.match(compose, /target: \/opt\/maintenance\/static/);

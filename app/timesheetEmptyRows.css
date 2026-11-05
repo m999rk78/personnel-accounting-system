@@ -1,0 +1,43 @@
+/* Blank rows are paint only. Keep virtual spacers, row counts and totals intact. */
+.timesheet-grid-shell {
+  --timesheet-blank-row-height:46px;
+  --timesheet-blank-row-background:repeating-linear-gradient(
+    to bottom,
+    #fff 0,
+    #fff calc(var(--timesheet-blank-row-height) - 1px),
+    #e5e5e8 calc(var(--timesheet-blank-row-height) - 1px),
+    #e5e5e8 var(--timesheet-blank-row-height)
+  );
+}
+
+/* Empty personnel periods retain real column headers; the hint floats over the grid. */
+.timesheet-grid-shell.timesheet-grid-shell-reconciled:not([aria-busy="true"]) {
+  background-image:var(--timesheet-blank-row-background);
+}
+.timesheet-grid-shell.timesheet-grid-shell-reconciled > .timesheet-empty {
+  position:absolute;
+  z-index:3;
+  inset:88px auto 47px 0;
+  width:var(--native-empty-viewport-width,100%);
+  min-height:0;
+  transform:translateX(var(--native-empty-scroll-left,0px));
+  pointer-events:none;
+}
+
+/* The existing filler cell stretches only when actual rows leave free space. */
+.timesheet-grid-shell .timesheet-table tbody .timesheet-fill-row > td,
+.timesheet-grid-shell .timesheet-table tbody .timesheet-fill-row:hover > td,
+.equipment-timesheet-shell .equipment-month-table tbody > tr:has(> td > .equipment-table-empty) > td {
+  background-image:var(--native-empty-column-lines,linear-gradient(transparent,transparent)),var(--timesheet-blank-row-background);
+}
+
+/* Keep empty-state copy readable without hiding the surrounding blank lines. */
+.timesheet-grid-shell .timesheet-empty > strong,
+.timesheet-grid-shell .timesheet-empty > span,
+.equipment-timesheet-shell .equipment-table-empty > strong,
+.equipment-timesheet-shell .equipment-table-empty > span {
+  max-width:calc(100% - 24px);
+  padding:3px 8px;
+  background:#fff;
+  white-space:normal;
+}

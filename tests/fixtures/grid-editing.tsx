@@ -2,7 +2,7 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AllCommunityModule } from "ag-grid-community";
 import { AgGridProvider } from "ag-grid-react";
-import { DirectoryAgGrid, EquipmentRegistryAgGrid, EmployeeAgGrid, PositionAgGrid, UserAgGrid, ProjectAgGrid, type GridDirectoryDraft, type GridEquipmentRegistryDraft, type GridEmployeeDraft, type GridPositionDraft, type GridUserDraft, type GridSiteDraft } from "../../app/AgDataGrids";
+import { DirectoryAgGrid, EquipmentRegistryAgGrid, EmployeeAgGrid, PositionAgGrid, type GridDirectoryDraft, type GridEquipmentRegistryDraft, type GridEmployeeDraft, type GridPositionDraft } from "../../app/AgDataGrids";
 import "../../app/globals.css";
 
 function EditingSmoke() {
@@ -15,7 +15,7 @@ function EditingSmoke() {
   return <main style={{ padding: 16 }}>
     <h1>Таблицы — проверка непрерывного ввода</h1>
     <p>Только тестовые данные. Нет подключения к рабочей базе.</p>
-    <label>Раздел <select value={section} onChange={(event) => { setSection(event.target.value); setSelected([]); }}><option value="zones">Зоны</option><option value="equipment">Техника</option><option value="employees">Сотрудники</option><option value="positions">Должности</option><option value="users">Пользователи</option><option value="projects">Проекты</option></select></label>
+    <label>Раздел <select value={section} onChange={(event) => { setSection(event.target.value); setSelected([]); }}><option value="zones">Зоны</option><option value="equipment">Техника</option><option value="employees">Сотрудники</option><option value="positions">Должности</option></select></label>
     {section === "equipment" ? <>
       <button onClick={() => { setUnits(current => current.map(unit => ({ ...unit, ...equipmentDrafts.find(d => d.id === unit.id) }))); setEquipmentDrafts([]); }}>Сохранить технику</button>
       <button onClick={() => setEquipmentDrafts([])}>Отменить технику</button>
@@ -39,8 +39,8 @@ function EditingSmoke() {
   </main>;
 }
 
-type ReferenceDraft = GridEmployeeDraft & GridPositionDraft & GridUserDraft & GridSiteDraft;
-const reference = { id: 1, name: "Тестовый проект", code: "test", timezone: "Europe/Moscow", fullName: "Тестовый сотрудник", email: "test@example.invalid", role: "engineer" as const, assignedSiteId: null, employmentType: "ОПР", department: "Отдел", position: "Должность", source: "manual", siteId: null, siteName: null };
+type ReferenceDraft = GridEmployeeDraft & GridPositionDraft;
+const reference = { id: 1, fullName: "Тестовый сотрудник", employmentType: "ОПР", department: "Отдел", position: "Должность", source: "manual", siteId: null, siteName: null };
 function ReferenceFixture({ section }: { section: string }) {
   const [rows, setRows] = useState([reference]);
   const [drafts, setDrafts] = useState<ReferenceDraft[]>([]);
@@ -48,17 +48,17 @@ function ReferenceFixture({ section }: { section: string }) {
   const common = {
     rows, drafts, fullRowEditIds: [], selectedIds: selected, pendingDeletes: selected,
     onSelectionChange: setSelected,
-    onEdit: (row: { id: number }, changes: Partial<ReferenceDraft> = {}) => setDrafts([{ ...reference, ...row, assignedSiteId: "", projectSiteId: "", ...changes, key: `edit-${row.id}` }]),
+    onEdit: (row: { id: number }, changes: Partial<ReferenceDraft> = {}) => setDrafts([{ ...reference, ...row, projectSiteId: "", ...changes, key: `edit-${row.id}` }]),
     onPatchDraft: (key: string, changes: Partial<ReferenceDraft>) => setDrafts(current => current.map(d => d.key === key ? { ...d, ...changes } : d)),
     employmentTypes: [{ id: 1, name: "ОПР" }], departments: [{ id: 1, name: "Отдел" }], positions: [{ id: 1, name: "Должность" }], sites: [],
-    onVisibleIdsChange: () => {}, onValidationError: () => {}, onCancelDraft: () => setDrafts([]), onReorder: async () => {},
+    onVisibleIdsChange: () => {}, onValidationError: () => {}, onReorder: async () => {},
   };
   return <>
-    <button onClick={() => { setRows(current => current.map(row => { const draft = drafts.find(d => d.id === row.id); return draft ? { ...row, name: draft.name, fullName: draft.fullName, email: draft.email, position: draft.position } : row; })); setDrafts([]); }}>Сохранить справочник</button>
+    <button onClick={() => { setRows(current => current.map(row => { const draft = drafts.find(d => d.id === row.id); return draft ? { ...row, fullName: draft.fullName, employmentType: draft.employmentType, department: draft.department, position: draft.position } : row; })); setDrafts([]); }}>Сохранить справочник</button>
     <button onClick={() => setDrafts([])}>Отменить справочник</button>
     <output aria-label="Состояние черновика">{JSON.stringify(drafts)}</output>
     <div style={{ height: 450 }}>
-      {section === "employees" ? <EmployeeAgGrid {...common} /> : section === "positions" ? <PositionAgGrid {...common} /> : section === "users" ? <UserAgGrid {...common} /> : <ProjectAgGrid {...common} />}
+      {section === "employees" ? <EmployeeAgGrid {...common} /> : <PositionAgGrid {...common} />}
     </div>
   </>;
 }

@@ -1,15 +1,26 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import ts from "typescript";
-import { hasPermission, rolePermissionTemplate } from "../app/permissionModel.ts";
-import { canAccessProject, hasRestrictedProjectAccess } from "../app/roles.ts";
+import { rolePermissionTemplate } from "../app/permissionModel.ts";
+import { hasRestrictedProjectAccess } from "../app/roles.ts";
+import { compileModuleGraph } from "./fixtures/compile-module-graph.mjs";
 
 const root = new URL("../", import.meta.url);
 
 async function source(path) {
   return readFile(new URL(path, root), "utf8");
 }
+
+const moduleUrl = text => `data:text/javascript;base64,${Buffer.from(text).toString("base64")}`;
+const boundaryUrl = moduleUrl("export let database; export function configure(value){database=value;} export const env={get DB(){return database;}};");
+const boundary = await import(boundaryUrl);
+const placement = await import(await compileModuleGraph(new URL("../app/server/data/placement.ts", import.meta.url), {
+  "./context": boundaryUrl,
+  "../../../db/client": moduleUrl("export function getDatabase(){throw new Error('No real database in contribution tests');}"),
+}));
+const { canManagePlacement } = await import(await compileModuleGraph(new URL("../app/server/data/access.ts", import.meta.url), {
+  "./catalogs": moduleUrl("export function directoryTable(){return null;}"),
+}));
 
 function section(text, startMarker, endMarker) {
   const start = text.indexOf(startMarker);
@@ -40,7 +51,7 @@ test("stores report rows under a responsible foreman and tracks each personal su
 });
 
 test("carries forward the latest submitted report of the signed-in foreman", async () => {
-  const api = await source("app/api/data/route.ts");
+  const api = await source("app/server/data/readWorkspace.ts");
   const carryover = section(api, 'if (scope === "carryover")', 'if (scope === "entries")');
 
   assert.match(carryover, /const previous = authUser\.role === "foreman"/);
@@ -53,59 +64,43 @@ test("carries forward the latest submitted report of the signed-in foreman", asy
 });
 
 test("returns ownership, revision, shared usage, and foreman progress with report entries", async () => {
-  const api = await source("app/api/data/route.ts");
+  const [api, reads, updates] = await Promise.all([
+    source("app/server/data/placement.ts"), source("app/server/data/readWorkspace.ts"), source("app/server/data/updateData.ts"),
+  ]);
 
   assert.match(api, /pe\.responsible_user_id AS responsibleUserId, responsible\.full_name AS responsibleUserName, pe\.revision/);
-  assert.match(api, /const responsibleUserId = authUser\.role === "foreman" \? authUser\.id : undefined/);
+  assert.match(reads, /const responsibleUserId = authUser\.role === "foreman" \? authUser\.id : undefined/);
   assert.match(api, /function employeeUsageStatement\(workDate: string, siteId: number, user: AuthUser\)/);
-  assert.match(api, /employeeUsageStatement\(workDate, siteId, authUser\)/);
+  assert.match(reads, /employeeUsageStatement\(workDate, siteId, authUser\)/);
   assert.match(api, /assignment\.site_id = \? AND assignment\.active = 1[\s\S]*UNION[\s\S]*historical\.site_id = \?/);
   assert.match(api, /function foremanProgressStatement\(siteId: number, workDate: string\)/);
   assert.match(api, /contribution\.status = 'submitted' THEN 'submitted'[\s\S]*contribution\.status = 'draft' THEN 'draft' ELSE 'not_started'/);
-  assert.match(api, /employeeUsage: employeeUsage\.results/);
-  assert.match(api, /foremanProgress:.*foremanProgress\.results/);
-
-  const ownership = section(api, "function assertPlacementOwnership", "function assertEntryRevisions");
-  assert.match(ownership, /entry\.responsibleUserId !== user\.id/);
-  const revisions = section(api, "function assertEntryRevisions", "async function lockPlacementHours");
-  assert.match(revisions, /payload\.revision/);
-  assert.match(revisions, /existing\.revision !== expectedRevision/);
-  assert.match(revisions, /409/);
-  assert.match(revisions, /STALE_ENTRY/);
-  assert.match(api, /revision = revision \+ 1/);
+  assert.match(reads, /employeeUsage: employeeUsage\.results/);
+  assert.match(reads, /foremanProgress:.*foremanProgress\.results/);
+  const owner = { id: 17, role: "foreman", assignedSiteId: 1, permissions: rolePermissionTemplate("foreman") };
+  const entry = { id: 1, siteId: 1, workDate: "2026-09-01", responsibleUserId: 17, revision: 2 };
+  placement.assertPlacementOwnership(owner, [entry]);
+  assert.throws(() => placement.assertPlacementOwnership(owner, [{ ...entry, responsibleUserId: 18 }]), error => error.status === 403 && error.code === "ENTRY_OWNERSHIP_FORBIDDEN");
+  placement.assertEntryRevisions([{ id: 1, revision: 2 }], [entry]);
+  assert.throws(() => placement.assertEntryRevisions([{ id: 1, revision: 1 }], [entry]), error => error.status === 409 && error.code === "STALE_ENTRY");
+  assert.match(updates, /revision = revision \+ 1/);
 });
 
 test("allows permitted historical report actions without weakening foreman scope and ownership", async () => {
-  const [api, app] = await Promise.all([
-    source("app/api/data/route.ts"),
-    source("app/PersonnelApp.tsx"),
+  const [access, creates, updates] = await Promise.all([
+    source("app/server/data/access.ts"), source("app/server/data/createData.ts"), source("app/server/data/updateData.ts"),
   ]);
-
-  const permissionGuard = section(api, "function canManagePlacement", "function canRunAction");
+  const permissionGuard = section(access, "function canManagePlacement", "function canRunAction");
   assert.match(permissionGuard, /hasPermission\(user\.permissions, "workers_report", action\)/);
   assert.match(permissionGuard, /canAccessProject\(user, siteId\)/);
   assert.doesNotMatch(permissionGuard, /todayInMoscow|workDate\s*[!=]==?\s*today/);
 
-  assert.match(api, /canManagePlacement\(authUser, asPositiveInteger\(row\.siteId\) \?\? undefined, row\.workDate, "create"\)/);
-  assert.match(api, /canManagePlacement\(authUser, asPositiveInteger\(entry\.siteId\) \?\? undefined, entry\.workDate, "update"\)/);
-  assert.match(api, /if \(!entity\) return hasPermission\(user\.permissions, "workers_report", "delete"\)/);
-
-  const ownership = section(api, "function assertPlacementOwnership", "function assertEntryRevisions");
-  assert.match(ownership, /entry\.responsibleUserId !== user\.id/);
-
-  const clientPermissions = section(app, "const canCreateReportDate", "const entryTypeById");
-  assert.match(clientPermissions, /const canCreateReportDate = mayCreateWorkersReport/);
-  assert.match(clientPermissions, /const canUpdateReportDate = mayUpdateWorkersReport/);
-  assert.match(clientPermissions, /const canDeleteReportDate = mayDeleteWorkersReport/);
-  assert.match(clientPermissions, /const rosterMode = useDailyRosterReport && workDate === initialToday && canEditDate/);
-  assert.match(app, /<ReportGridFooter[\s\S]*canCreate=\{canCreateReportDate\}[\s\S]*canUpdate=\{canUpdateReportDate\}[\s\S]*canDelete=\{canDeleteReportDate\}/);
+  assert.match(creates, /canManagePlacement\(authUser, asPositiveInteger\(row\.siteId\) \?\? undefined, row\.workDate, "create"\)/);
+  assert.match(updates, /canManagePlacement\(authUser, asPositiveInteger\(entry\.siteId\) \?\? undefined, entry\.workDate, "update"\)/);
+  assert.match(access, /if \(!entity\) return hasPermission\(user\.permissions, "workers_report", "delete"\)/);
 });
 
 test("historical placement actions keep engineer project limits independent of resource overrides", async () => {
-  const api = await source("app/api/data/route.ts");
-  const guard = section(api, "function canManagePlacement", "function canRunAction");
-  const code = ts.transpileModule(guard, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const canManagePlacement = new Function("hasPermission", "validDate", "canAccessProject", `${code}\nreturn canManagePlacement;`)(hasPermission, value => /^\d{4}-\d{2}-\d{2}$/.test(value), canAccessProject);
   const actor = role => ({ role, assignedSiteId: role === "foreman" ? 1 : null, projectAccess: { mode: "selected", siteIds: [1] }, permissions: rolePermissionTemplate("superadmin") });
   for (const role of ["engineer", "foreman"]) for (const action of ["view", "create", "update", "delete"]) {
     assert.equal(canManagePlacement(actor(role), 1, "2026-09-01", action), true);
@@ -120,13 +115,10 @@ test("historical placement actions keep engineer project limits independent of r
 });
 
 test("shared hour warnings anonymize owners from other projects for scoped roles", async () => {
-  const api = await source("app/api/data/route.ts");
-  const statement = section(api, "function employeeUsageStatement", "function reportTimesheetMarksStatement");
-  const code = ts.transpileModule(statement, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const env = { DB: { prepare(sql) { return { bind(...values) { return { sql, values }; } }; } } };
-  const employeeUsageStatement = new Function("env", "hasRestrictedProjectAccess", `${code}\nreturn employeeUsageStatement;`)(env, hasRestrictedProjectAccess);
+  boundary.configure(env.DB);
   for (const actor of [{ role: "foreman", assignedSiteId: 1 }, { role: "engineer", projectAccess: { mode: "selected", siteIds: [1] } }, { role: "viewer", projectAccess: { mode: "selected", siteIds: [1] } }, { role: "engineer" }, { role: "superadmin" }]) {
-    const { sql, values } = employeeUsageStatement("2026-10-30", 1, actor);
+    const { sql, values } = placement.employeeUsageStatement("2026-10-30", 1, actor);
     assert.deepEqual(values, ["2026-10-30", 1, 1, "2026-10-30"]);
     if (hasRestrictedProjectAccess(actor)) {
       assert.match(sql, /CASE WHEN pe\.site_id = 1 THEN pe\.responsible_user_id ELSE NULL END/);
@@ -140,10 +132,10 @@ test("shared hour warnings anonymize owners from other projects for scoped roles
 });
 
 test("serializes daily-hour mutations and reports a conflict instead of overspending 10 hours", async () => {
-  const api = await source("app/api/data/route.ts");
+  const [api, patch, deletion, responses] = await Promise.all([
+    source("app/server/data/placement.ts"), source("app/server/data/updateData.ts"), source("app/server/data/deleteData.ts"), source("app/server/data/responses.ts"),
+  ]);
   const lock = section(api, "async function lockPlacementHours", "async function resolveResponsibleUsers");
-  const patch = section(api, "async function handlePATCH", "async function handleDELETE");
-  const deletion = section(api, "async function handleDELETE", "export async function POST");
 
   assert.match(lock, /placement-hours:\$\{key\}/);
   assert.match(lock, /\[\.\.\.keys\]\.sort\(\)/);
@@ -158,13 +150,11 @@ test("serializes daily-hour mutations and reports a conflict instead of overspen
   assert.match(api, /У сотрудника «\$\{employee\.fullName\}» уже учтено/);
   assert.doesNotMatch(api, /Строка \$\{index \+ 1\}: у сотрудника уже учтено/);
   assert.match(api, /new PlacementRequestError\([\s\S]*409,[\s\S]*"HOURS_CONFLICT"/);
-  assert.match(api, /status: error\.status/);
+  assert.match(responses, /status: error\.status/);
 });
 
 test("keeps personal submission separate from the engineer's global finalization", async () => {
-  const api = await source("app/api/data/route.ts");
-  const app = await source("app/PersonnelApp.tsx");
-  const grid = await source("app/AgDataGrids.tsx");
+  const api = await source("app/server/data/updateData.ts");
 
   assert.match(api, /submitOwnReport\?: ReportFinalizationPayload/);
   assert.match(api, /finalizeReport\?: ReportFinalizationPayload/);
@@ -172,14 +162,6 @@ test("keeps personal submission separate from the engineer's global finalization
   assert.match(api, /finalizeGlobalReport\(db, authUser, finalizationSiteId, finalizationWorkDate\)/);
   assert.match(api, /if \(finalization && authUser\.role === "foreman"\) return forbidden\(\)/);
 
-  assert.match(app, /data\.reportEmployees\.map\(\(employee\) => \[employee\.id, employee\]\)/);
-  assert.match(app, /scope=carryover&beforeDate=\$\{workDate\}/);
-  assert.match(app, /submitOwnReport: \{ siteId, workDate \}/);
-  assert.match(app, /finalizeReport: \{ siteId, workDate \}/);
-  assert.match(app, /employeeUsage=\{data\?\.employeeUsage \?\? \[\]\}/);
-  assert.match(app, /Сдали прорабы:/);
-  assert.match(grid, /headerName: "Ответственный"/);
-  assert.match(grid, /Сегодня учтено \{used\} ч\. · доступно/);
 });
 
 test("both report grids label the responsible person without a role qualifier", async () => {

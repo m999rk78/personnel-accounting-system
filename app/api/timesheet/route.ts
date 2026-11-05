@@ -4,6 +4,7 @@ import { withAuditTrail } from "../../auditLog";
 import { assertSameOrigin, getAuthUser } from "../../auth";
 import { hasPermission } from "../../permissionModel";
 import { orderPersonnelTimesheetReferenceEmployees } from "../../personnelTimesheetReference.server";
+import { isPersonnelTimesheetCode, isPersonnelTimesheetHours } from "../../personnelTimesheetValues";
 
 type TimesheetEmployee = {
   id: number;
@@ -31,7 +32,6 @@ type TimesheetMark = {
   updatedBy: string;
 };
 
-const TIMESHEET_CODES = new Set(["В", "ДО", "МО", "ПЕ", "УВ", "ПР"]);
 let schemaPromise: Promise<void> | null = null;
 
 function positiveInteger(value: unknown) {
@@ -227,11 +227,11 @@ async function handlePOST(request: Request): Promise<Response> {
       }
 
       const numericHours = /^\d+$/.test(rawValue) ? Number(rawValue) : null;
-      if (numericHours !== null && (!Number.isInteger(numericHours) || numericHours < 1 || numericHours > 10)) {
+      if (numericHours !== null && !isPersonnelTimesheetHours(numericHours)) {
         return errorResponse("Количество часов должно быть целым числом от 1 до 10.", 400);
       }
       const code = numericHours === null ? rawValue : null;
-      if (code && !TIMESHEET_CODES.has(code)) return errorResponse("Неизвестный табельный код.", 400);
+      if (code && !isPersonnelTimesheetCode(code)) return errorResponse("Неизвестный табельный код.", 400);
       const note = typeof payload.note === "string" ? payload.note.trim().slice(0, 300) : "";
 
       await transaction.prepare(`INSERT INTO timesheet_marks (site_id, employee_id, work_date, hours, code, note, created_by)

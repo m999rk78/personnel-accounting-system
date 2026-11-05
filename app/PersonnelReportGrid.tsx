@@ -277,17 +277,19 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
   }, [activeEditor, canEdit, closeEditor, openEditor]);
 
   const columns = useMemo<ColDef<TableRow>[]>(() => {
-    const column = (field: string, headerName: string, minWidth: number, flex = 1): ColDef<TableRow> => ({ colId: field, headerName, minWidth, flex, valueGetter: valueGetter(field), cellRenderer: renderCell, headerComponentParams: { innerHeaderComponent: FilterHeader } });
+    // Editors recreate these definitions. Only initialize sizing so AG Grid can
+    // retain manual widths instead of re-enabling flex after every cell edit.
+    const column = (field: string, headerName: string, minWidth: number, flex = 1): ColDef<TableRow> => ({ colId: field, headerName, minWidth, initialFlex: flex, valueGetter: valueGetter(field), cellRenderer: renderCell, headerComponentParams: { innerHeaderComponent: FilterHeader } });
     return [
       { colId: "reportDateGroup", headerName: "Дата отчёта", valueGetter: ({ data }) => data?.workDate ?? "", rowGroup: Boolean(props.groupByDate), hide: true, lockVisible: true, suppressColumnsToolPanel: true, sortable: false, filter: false },
-      { ...column("workDate", "Дата", 125), pinned: "left", width: 125, maxWidth: 145, suppressSizeToFit: true, filterParams: { ...personnelFilterParams, kind: "date", rowSortOptions: personnelReportImportSortOptions }, initialSort: "desc", initialSortIndex: 0, comparator: (a: string, b: string) => dateKey(a).localeCompare(dateKey(b)) },
+      { ...column("workDate", "Дата", 125), pinned: "left", initialWidth: 125, maxWidth: 145, suppressSizeToFit: true, filterParams: { ...personnelFilterParams, kind: "date", rowSortOptions: personnelReportImportSortOptions }, initialSort: "desc", initialSortIndex: 0, comparator: (a: string, b: string) => dateKey(a).localeCompare(dateKey(b)) },
       { colId: "__importOrder", headerName: "Порядок импорта", hide: true, lockVisible: true, suppressColumnsToolPanel: true, filter: false, sortable: true, valueGetter: ({ data }) => data?.insertionRank ?? Number.MAX_SAFE_INTEGER },
       ...(["createdAt", "updatedAt"] as const).map((field): ColDef<TableRow> => ({
         colId: field, headerName: field === "createdAt" ? "Добавлено" : "Изменено", hide: true, lockVisible: true,
         suppressColumnsToolPanel: true, filter: false, sortable: true, valueGetter: valueGetter(field),
         comparator: activityComparator,
       })),
-      { ...column("employeeName", "ФИО", 220, 2), pinned: "left", width: 250, maxWidth: 320 },
+      { ...column("employeeName", "ФИО", 220, 2), pinned: "left", initialWidth: 250, maxWidth: 320 },
       column("status", "Статус", 165),
       column("responsibleUserName", "Ответственный", 190),
       column("employmentType", "Тип", 100, .6),

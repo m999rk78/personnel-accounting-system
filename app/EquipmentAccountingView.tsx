@@ -21,11 +21,17 @@ import { equipmentTimesheetDayPresets, equipmentTimesheetFilterValue, matchesEqu
 import { TimesheetCellPopover } from "./TimesheetCellPopover";
 import { TimesheetMonthPicker as EquipmentMonthPicker } from "./TimesheetMonthPicker";
 import { resetTimesheetHeaderScroll, syncTimesheetHeaderScroll } from "./timesheetHeaderScroll";
-import { useTimesheetClipboard, type TimesheetClipboardChange } from "./useTimesheetClipboard";
+import { useTimesheetClipboard, type TimesheetClipboardChange, type TimesheetClipboardSaveContext } from "./useTimesheetClipboard";
+import { PERSONNEL_TIMESHEET_CODES as EQUIPMENT_TIMESHEET_CODES } from "./personnelTimesheetValues";
+import { useTimesheetBatchSave } from "./useTimesheetBatchSave";
+import { TimesheetSaveStatus } from "./TimesheetSaveStatus";
+import type { TimesheetSavedResult } from "./timesheetBatchSave";
 import { equipmentUnavailableReason, isEquipmentUnavailable } from "./equipmentAvailability";
 import { buildEquipmentCarryoverDrafts } from "./equipmentCarryover";
 import { useConfirmationDialog } from "./useConfirmationDialog";
 import { requestTimesheetMonthChange } from "./timesheetNavigation";
+import "./timesheetEmptyRows.css";
+import { useNativeEmptyColumns } from "./useNativeEmptyColumns";
 
 type Option = { id: number; name: string; mainWorkTypeId?: number | null };
 type EquipmentUnit = GridEquipmentUnit;
@@ -39,6 +45,15 @@ type EquipmentTimesheetMark = {
   downtimeHours: number;
   note: string;
   updatedBy: string;
+};
+type EquipmentTimesheetSavedCell = {
+  equipmentId: number;
+  workDate: string;
+  mark?: EquipmentTimesheetMark;
+  change: TimesheetClipboardChange;
+  undoValue: string;
+  undoNote: string;
+  context?: TimesheetClipboardSaveContext;
 };
 type EquipmentTimesheetEditor = {
   equipmentId: number;
@@ -111,14 +126,6 @@ export type EquipmentSection = "daily" | "month" | "registry" | "project";
 
 const MONTH_FORMATTER = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric", timeZone: "UTC" });
 const WEEKDAY_FORMATTER = new Intl.DateTimeFormat("ru-RU", { weekday: "short", timeZone: "UTC" });
-const EQUIPMENT_TIMESHEET_CODES = [
-  { value: "В", label: "Выходной" },
-  { value: "ДО", label: "Дополнительный отпуск" },
-  { value: "МО", label: "Межвахтовый отдых" },
-  { value: "ПЕ", label: "ПЕ" },
-  { value: "УВ", label: "УВ" },
-  { value: "ПР", label: "Прогул" },
-];
 const EQUIPMENT_HOUR_OPTIONS = Array.from({ length: 21 }, (_, hours) => ({ value: String(hours), label: `${hours} ч.` }));
 const EQUIPMENT_MARK_OPTIONS = [
   ...Array.from({ length: 20 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} ч. работы`, group: "productive" as const })),
@@ -428,8 +435,10 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   const [timesheetEditorError, setTimesheetEditorError] = useState("");
   const [timesheetInfoOpen, setTimesheetInfoOpen] = useState(false);
   const [importing, setImporting] = useState(false);
-  const dirty = Boolean(unitDrafts.length || unitFullRowEditIds.length || projectUnitDrafts.length || section === "daily" && entryDrafts.length || timesheetInlineEditor || timesheetEditor);
-  const navigationBusy = saving || importing || savingTimesheetMark;
+  const batchSave = useTimesheetBatchSave<EquipmentTimesheetSavedCell>({ scopeKey: `${siteId}:${section}:${month}`, onSaved: applySavedEquipmentTimesheetCells });
+  const savingBulkTimesheetMarks = batchSave.busy;
+  const dirty = Boolean(unitDrafts.length || unitFullRowEditIds.length || projectUnitDrafts.length || section === "daily" && entryDrafts.length || timesheetInlineEditor || timesheetEditor || batchSave.hasFailures);
+  const navigationBusy = saving || importing || savingTimesheetMark || savingBulkTimesheetMarks;
   useLayoutEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false); }, [dirty, onDirtyChange]);
   useLayoutEffect(() => { onBusyChange?.(navigationBusy); return () => onBusyChange?.(false); }, [navigationBusy, onBusyChange]);
   const [headerActionsTarget, setHeaderActionsTarget] = useState<HTMLElement | null>(null);
@@ -579,9 +588,9 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     await requestTimesheetMonthChange({
       currentMonth: month,
       nextMonth,
-      busy: saving || importing || savingTimesheetMark,
-      hasPendingEditor: Boolean(timesheetInlineEditor || timesheetEditor),
-      confirmDiscard: () => confirmMonthChange({ title: "Сменить месяц без сохранения?", description: "В ячейке табеля есть несохранённые изменения. При смене месяца они будут отменены.", confirmLabel: "Сменить без сохранения" }),
+      busy: navigationBusy,
+      hasPendingEditor: Boolean(timesheetInlineEditor || timesheetEditor || batchSave.hasFailures),
+      confirmDiscard: () => confirmMonthChange({ title: "Сменить месяц без сохранения?", description: "В табеле есть несохранённые изменения. При смене месяца они будут отменены, включая ячейки с ошибкой сохранения.", confirmLabel: "Сменить без сохранения" }),
       commit: (confirmedMonth) => {
         setMonth(confirmedMonth);
         onMonthChange?.(confirmedMonth);
@@ -1008,7 +1017,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
 
   const registryUnits = payload?.units ?? [];
   const monthSummary = useMemo(() => monthRows.reduce((summary, row) => ({ productive: summary.productive + row.productive, downtime: summary.downtime + row.downtime, total: summary.total + row.total }), { productive: 0, downtime: 0, total: 0 }), [monthRows]);
-  const monthRowMoves = useNativeRowMoves(rowOrder, monthFilters.isActive, Boolean(timesheetEditor || timesheetInlineEditor || loading || section !== "month"), { key: `${siteId}:${month}`, ids: monthRows.map(row => row.unit.id) });
+  const monthRowMoves = useNativeRowMoves(rowOrder, monthFilters.isActive, Boolean(timesheetEditor || timesheetInlineEditor || navigationBusy || loading || section !== "month"), { key: `${siteId}:${month}`, ids: monthRows.map(row => row.unit.id) });
   const monthDayTotals = useMemo(() => new Map(monthDays.map((day) => {
     const date = `${month}-${String(day).padStart(2, "0")}`;
     return [date, monthRows.reduce((total, row) => total + (row.byDate.get(date)?.productive ?? 0) + (row.byDate.get(date)?.downtime ?? 0), 0)];
@@ -1038,7 +1047,12 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     activeCell: timesheetClipboardActiveCell,
     focusCell: focusEquipmentTimesheetCell,
     contextMenu: timesheetClipboardContextMenu,
+    forgetUndo: forgetEquipmentTimesheetUndo,
+    notify: notifyEquipmentTimesheetClipboard,
   } = useTimesheetClipboard({
+    hasSelectedRows: monthRowMoves.hasSelection,
+    onClearRowSelection: monthRowMoves.clearSelection,
+    escapeBlocked: Boolean(timesheetEditor || timesheetInlineEditor || monthFilters.context.openColumnId),
     shellRef: monthViewport.shellRef,
     ensureRowVisible: monthViewport.ensureRowVisible,
     getContextActions: (rowIndex, close) => { const row = monthRows[rowIndex]; return row ? monthRowMoves.getActions(row.unit.id, close) : []; },
@@ -1070,7 +1084,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     canPaste: (rowIndex, columnIndex) => {
       const row = monthRows[rowIndex];
       const day = monthDays[columnIndex];
-      if (!payload || !row || !day) return false;
+      if (!payload || !row || !day || navigationBusy || loading) return false;
       const workDate = `${month}-${String(day).padStart(2, "0")}`;
       const existingMark = timesheetMarksByCell.has(equipmentCellKey(row.unit.id, workDate));
       return existingMark ? payload.canUpdateTimesheet || payload.canDeleteTimesheet : payload.canCreateTimesheet;
@@ -1079,9 +1093,10 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     canDelete: (rowIndex, columnIndex) => {
       const row = monthRows[rowIndex];
       const day = monthDays[columnIndex];
-      if (!payload?.canDeleteTimesheet || !row || !day) return false;
+      if (!payload?.canDeleteTimesheet || !row || !day || navigationBusy || loading) return false;
       const workDate = `${month}-${String(day).padStart(2, "0")}`;
-      return timesheetMarksByCell.has(equipmentCellKey(row.unit.id, workDate));
+      const key = equipmentCellKey(row.unit.id, workDate);
+      return timesheetMarksByCell.has(key) || batchSave.getCellState(key)?.state === "error";
     },
     onDelete: pasteEquipmentTimesheetCells,
     onActivate: (rowIndex, columnIndex) => {
@@ -1097,6 +1112,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     },
   });
 
+  useNativeEmptyColumns(timesheetClipboardShellRef, section === "month" && Boolean(payload));
   useEffect(() => {
     const workspace = timesheetClipboardShellRef.current?.closest<HTMLElement>(".timesheet-workspace-page") ?? null;
     resetTimesheetHeaderScroll(workspace);
@@ -1104,6 +1120,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }, [timesheetClipboardShellRef]);
 
   async function openTimesheetEditor(equipmentId: number, editorWorkDate: string, anchor: HTMLElement) {
+    if (savingBulkTimesheetMarks || loading) return;
     const existingMark = timesheetMarksByCell.has(equipmentCellKey(equipmentId, editorWorkDate));
     if (!payload || (existingMark ? !payload.canUpdateTimesheet && !payload.canDeleteTimesheet : !payload.canCreateTimesheet)) return;
     if (timesheetEditor?.equipmentId === equipmentId && timesheetEditor.workDate === editorWorkDate) {
@@ -1130,6 +1147,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }
 
   async function openTimesheetInlineEditor(equipmentId: number, editorWorkDate: string, rowIndex: number, columnIndex: number, typedValue?: string) {
+    if (savingBulkTimesheetMarks || loading) return;
     const existingMark = timesheetMarksByCell.has(equipmentCellKey(equipmentId, editorWorkDate));
     if (!payload || (existingMark ? !payload.canUpdateTimesheet : !payload.canCreateTimesheet)) return;
     if (savingTimesheetMark && !timesheetInlineSaveInFlight.current) return;
@@ -1170,8 +1188,9 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
 
   async function persistEquipmentTimesheetMark(target: { equipmentId: number; workDate: string }, value: { clear: boolean; productiveHours: number; downtimeHours: number; note: string }) {
     if (!payload) throw new Error("Табель техники ещё не загружен.");
+    if (savingBulkTimesheetMarks) throw new Error("Дождитесь завершения сохранения ячеек.");
     const existingMark = timesheetMarksByCell.has(equipmentCellKey(target.equipmentId, target.workDate));
-    if (value.clear && !existingMark) return;
+    if (value.clear && !existingMark && batchSave.getCellState(equipmentCellKey(target.equipmentId, target.workDate))?.state !== "error") return;
     if (value.clear && !payload.canDeleteTimesheet) throw new Error("Недостаточно прав для удаления отметки табеля техники.");
     if (!value.clear && existingMark && !payload.canUpdateTimesheet) throw new Error("Недостаточно прав для изменения отметки табеля техники.");
     if (!value.clear && !existingMark && !payload.canCreateTimesheet) throw new Error("Недостаточно прав для добавления отметки табеля техники.");
@@ -1193,6 +1212,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
           ...(result.mark ? [result.mark] : []),
         ],
       } : current);
+      batchSave.clearCell(equipmentCellKey(target.equipmentId, target.workDate));
       if (undoRowIndex >= 0 && undoColumnIndex >= 0) rememberEquipmentTimesheetUndo([{ rowIndex: undoRowIndex, columnIndex: undoColumnIndex, value: previousMark ? formatEquipmentHours(previousMark.productiveHours, previousMark.downtimeHours) : "", note: previousMark?.note ?? "" }]);
     } finally {
       setSavingTimesheetMark(false);
@@ -1255,42 +1275,72 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     return promise;
   }
 
-  async function pasteEquipmentTimesheetCells(changes: TimesheetClipboardChange[]) {
+  function applySavedEquipmentTimesheetCells(saved: TimesheetSavedResult<EquipmentTimesheetSavedCell>[], retry: boolean) {
+    const changedKeys = new Set(saved.map(({ job }) => job.key));
+    setPayload(current => current && current.siteId === siteId && current.month === month ? {
+      ...current,
+      marks: [
+        ...current.marks.filter(mark => !changedKeys.has(equipmentCellKey(mark.equipmentId, mark.workDate))),
+        ...saved.flatMap(({ value }) => value.mark ? [value.mark] : []),
+      ],
+    } : current);
+    if (!retry) return;
+    for (const { value } of saved) {
+      const rowIndex = monthRows.findIndex(row => row.unit.id === value.equipmentId);
+      const columnIndex = monthDays.indexOf(Number(value.workDate.slice(8, 10)));
+      if (value.context?.operation === "undo") {
+        forgetEquipmentTimesheetUndo(value.context.historyId, [value.change]);
+      } else if (rowIndex >= 0 && columnIndex >= 0) {
+        rememberEquipmentTimesheetUndo([{ rowIndex, columnIndex, value: value.undoValue, note: value.undoNote }], value.context?.historyId);
+      }
+    }
+  }
+
+  async function pasteEquipmentTimesheetCells(changes: TimesheetClipboardChange[], context?: TimesheetClipboardSaveContext) {
     if (!payload?.canEditTimesheet) throw new Error("Недостаточно прав для изменения табеля техники");
+    if (navigationBusy || loading) throw new Error("Дождитесь завершения сохранения и загрузки табеля.");
+    if (payload.siteId !== siteId || payload.month !== month) throw new Error("Табель обновляется. Дождитесь загрузки выбранного месяца.");
+    const targetSiteId = payload.siteId;
     const prepared = changes.flatMap((change) => {
       const row = monthRows[change.rowIndex];
       const day = monthDays[change.columnIndex];
       const workDate = day ? `${month}-${String(day).padStart(2, "0")}` : "";
       if (!row || !workDate) throw new Error("Выбранный диапазон содержит недоступные ячейки");
-      const value = parseEquipmentClipboardHours(change.value);
-      const existingMark = timesheetMarksByCell.has(equipmentCellKey(row.unit.id, workDate));
-      if (value.clear && !existingMark) return [];
-      if (value.clear && !payload.canDeleteTimesheet) throw new Error("Недостаточно прав для удаления отметок табеля техники.");
-      if (!value.clear && existingMark && !payload.canUpdateTimesheet) throw new Error("Недостаточно прав для изменения отметок табеля техники.");
-      if (!value.clear && !existingMark && !payload.canCreateTimesheet) throw new Error("Недостаточно прав для добавления отметок табеля техники.");
-      return [{ equipmentId: row.unit.id, workDate, note: change.note ?? "", ...value }];
+      const key = equipmentCellKey(row.unit.id, workDate);
+      const previousMark = timesheetMarksByCell.get(key);
+      if (!change.value.trim() && !previousMark && batchSave.getCellState(key)?.state !== "error") return [];
+      return [{ key, equipmentId: row.unit.id, workDate, label: `${unitTitle(row.unit)}, ${fullDate(workDate)}`,
+        value: change.value, note: change.note ?? "", change,
+        undoValue: previousMark ? formatEquipmentHours(previousMark.productiveHours, previousMark.downtimeHours) : "", undoNote: previousMark?.note ?? "" }];
     });
-    if (!prepared.length) return 0;
+    if (!prepared.length) return { savedChanges: [], failedChanges: [] };
+    const changesByKey = new Map(prepared.map(item => [item.key, item.change]));
 
-    const results = await Promise.all(prepared.map(async (item) => {
-      const result = await post({
-        action: "save-timesheet-mark",
-        equipmentId: item.equipmentId,
-        workDate: item.workDate,
-        ...(item.clear ? { clear: true } : { productiveHours: item.productiveHours, downtimeHours: item.downtimeHours, note: item.note }),
-      });
-      return { ...item, mark: result.mark };
-    }));
-
-    const changedKeys = new Set(prepared.map((item) => equipmentCellKey(item.equipmentId, item.workDate)));
-    setPayload((current) => current ? {
-      ...current,
-      marks: [
-        ...current.marks.filter((mark) => !changedKeys.has(equipmentCellKey(mark.equipmentId, mark.workDate))),
-        ...results.flatMap((result) => result.mark ? [result.mark] : []),
-      ],
-    } : current);
-    return results.length;
+    const outcome = await batchSave.run(prepared.map(item => ({
+      key: item.key,
+      label: item.label,
+      value: item.value || "Вернуть значение из отчёта",
+      save: async () => {
+        const value = parseEquipmentClipboardHours(item.value);
+        const existed = timesheetMarksByCell.has(item.key);
+        if (value.clear && !payload.canDeleteTimesheet) throw new Error("Недостаточно прав для удаления отметок табеля техники.");
+        if (!value.clear && existed && !payload.canUpdateTimesheet) throw new Error("Недостаточно прав для изменения отметок табеля техники.");
+        if (!value.clear && !existed && !payload.canCreateTimesheet) throw new Error("Недостаточно прав для добавления отметок табеля техники.");
+        const result = await post({
+          siteId: targetSiteId,
+          action: "save-timesheet-mark",
+          equipmentId: item.equipmentId,
+          workDate: item.workDate,
+          ...(value.clear ? { clear: true } : { productiveHours: value.productiveHours, downtimeHours: value.downtimeHours, note: item.note }),
+        });
+        return { equipmentId: item.equipmentId, workDate: item.workDate, mark: result.mark,
+          change: item.change, undoValue: item.undoValue, undoNote: item.undoNote, context };
+      },
+    })));
+    return {
+      savedChanges: outcome.saved.map(({ value }) => value.change),
+      failedChanges: outcome.failed.flatMap(({ job }) => { const change = changesByKey.get(job.key); return change ? [change] : []; }),
+    };
   }
 
   function openDailyExportPreview() {
@@ -1532,6 +1582,10 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         <span className="equipment-total"><small>Всего</small><strong>{monthSummary.total} ч.</strong></span>
       </div>
       {monthRowMoves.ui}
+      <TimesheetSaveStatus status={batchSave.status} busy={savingBulkTimesheetMarks}
+        retryDisabled={savingTimesheetMark || loading || Boolean(timesheetEditor || timesheetInlineEditor)}
+        onRetry={() => { void batchSave.retry().catch(failure => notifyEquipmentTimesheetClipboard(failure instanceof Error ? failure.message : "Не удалось повторить сохранение.")); }}
+        onDismiss={batchSave.dismiss} />
       {/* The spreadsheet shell must receive focus so native copy and paste events reach it. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
       <div ref={timesheetClipboardShellRef} className={["timesheet-grid-shell", "equipment-timesheet-shell", "timesheet-clipboard-shell", timesheetClipboardActiveCell ? "timesheet-selection-active" : ""].filter(Boolean).join(" ")} role="application" tabIndex={0} aria-label="Табель техники. Стрелки перемещают выбранную ячейку, Enter или F2 открывают редактирование." {...timesheetClipboardShellHandlers} onScroll={(event) => syncTimesheetHeaderScroll(event.currentTarget)}>{timesheetClipboardContextMenu}{timesheetClipboardStatus && <div className="timesheet-clipboard-status" role="status">{timesheetClipboardStatus}</div>}<table className="timesheet-table equipment-month-table" aria-rowcount={monthRows.length + 3}><thead><tr><th className="timesheet-sticky equipment-number-column" rowSpan={2}>{monthRowMoves.headerCheckbox}</th><th className="timesheet-sticky equipment-machine-column" rowSpan={2}><TimesheetFilterableHeading columnId="equipment" label="Техника">Техника</TimesheetFilterableHeading></th><th className="timesheet-sticky equipment-organization-column" rowSpan={2}><TimesheetFilterableHeading columnId="organization" label="Организация">Организация</TimesheetFilterableHeading></th><th colSpan={monthDays.length}>Дни месяца</th><th className="timesheet-total-column equipment-work-total" rowSpan={2}><TimesheetFilterableHeading columnId="productive" label="Работа">Работа</TimesheetFilterableHeading></th><th className="timesheet-total-column equipment-idle-total" rowSpan={2}><TimesheetFilterableHeading columnId="downtime" label="Простой">Простой</TimesheetFilterableHeading></th><th className="timesheet-total-column equipment-all-total" rowSpan={2}><TimesheetFilterableHeading columnId="total" label="Всего">Всего</TimesheetFilterableHeading></th></tr><tr>{monthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; const dateObject = new Date(`${date}T00:00:00Z`); const weekend = [0, 6].includes(dateObject.getUTCDay()); const weekday = WEEKDAY_FORMATTER.format(dateObject).replace(".", ""); return <th key={day} className={[weekend ? "weekend" : "", date === today ? "today" : "", date > today ? "future" : ""].filter(Boolean).join(" ")}><TimesheetFilterableHeading columnId={date} compact label={`${day} ${weekday}`}><span>{day}</span><small>{weekday}</small></TimesheetFilterableHeading></th>; })}</tr></thead>
@@ -1548,8 +1602,11 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
           const hasValue = Boolean(value && (value.productive || value.downtime || value.mark));
           const isInlineEditing = timesheetInlineEditor?.equipmentId === row.unit.id && timesheetInlineEditor.workDate === date && (value?.mark ? payload?.canUpdateTimesheet : payload?.canCreateTimesheet);
           const isActiveCell = timesheetClipboardActiveCell?.rowIndex === index && timesheetClipboardActiveCell.columnIndex === day - 1;
+          const saveState = batchSave.getCellState(equipmentCellKey(row.unit.id, date));
           return <td
             key={day}
+            data-save-state={saveState?.state}
+            aria-invalid={saveState?.state === "error" || undefined}
             className={[
               value?.downtime ? "has-downtime" : value?.productive ? "filled" : "",
               value?.mark ? "manual" : "",
@@ -1559,8 +1616,10 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
               date === today ? "today" : "",
               date > today ? "future" : "",
               timesheetClipboardCellClass(index, day - 1),
+              saveState ? `timesheet-cell-save-${saveState.state}` : "",
             ].filter(Boolean).join(" ")}
-            title={isInlineEditing && timesheetInlineEditor.error ? timesheetInlineEditor.error : title}
+            title={[isInlineEditing && timesheetInlineEditor.error ? timesheetInlineEditor.error : title,
+              saveState?.state === "error" ? `Не удалось сохранить «${saveState.value}»: ${saveState.error}` : saveState?.state === "saved" ? "Изменение сохранено" : saveState ? "Сохраняем изменение…" : ""].filter(Boolean).join("\n")}
             {...timesheetClipboardCellHandlers(index, day - 1)}
             onDoubleClick={(event) => {
               if (event.target instanceof Element && event.target.closest("button, input")) return;
@@ -1610,7 +1669,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
                 openTimesheetEditor(row.unit.id, date, event.currentTarget);
               }}
             ><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4 6 8l3.5-4Z" /></svg></button>}
-          </>}</td>;
+          </>}{saveState && !isInlineEditing && <span className="timesheet-cell-save-indicator" aria-hidden="true">{saveState.state === "error" ? "!" : saveState.state === "saved" ? "✓" : "·"}</span>}</td>;
         })}<td className="timesheet-total-column equipment-work-total">{row.productive || "—"}</td><td className="timesheet-total-column equipment-idle-total has-difference">{row.downtime || "—"}</td><td className="timesheet-total-column equipment-all-total">{row.total || "—"}</td></tr>; }) : <tr><td colSpan={monthDays.length + 6}><div className="equipment-table-empty"><strong>В этом месяце данных нет</strong><span>Записи появятся после заполнения ежедневных отчётов техники.</span></div></td></tr>}{monthViewport.bottom > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={monthDays.length + 6} style={{ height: monthViewport.bottom }} /></tr>}{monthRows.length > 0 && <tr className="timesheet-fill-row" aria-hidden="true"><td colSpan={monthDays.length + 6} /></tr>}</tbody>
         {monthRows.length > 0 && <tfoot><tr><th className="timesheet-sticky timesheet-summary-label" colSpan={3}>Итого по дням</th>{monthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; return <td key={date}>{monthDayTotals.get(date) || ""}</td>; })}<th className="timesheet-total-column equipment-work-total">{monthSummary.productive}</th><th className="timesheet-total-column equipment-idle-total has-difference">{monthSummary.downtime}</th><th className="timesheet-total-column equipment-all-total">{monthSummary.total}</th></tr></tfoot>}
       </table></div>

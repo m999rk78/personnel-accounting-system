@@ -1,3 +1,4 @@
+import { readWorkspaceImplementation } from "./fixtures/read-implementation.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -54,7 +55,7 @@ test("marks protected route families and serves direct workspace links", async (
   assert.equal(workspaceDocumentTitle("users"), "Ресурсный отчёт | Пользователи и права");
   assert.equal(workspaceDocumentTitle("accessRights"), "Ресурсный отчёт | Пользователи и права");
 
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
   const catchAll = await readFile(new URL("../app/[...route]/page.tsx", import.meta.url), "utf8");
   assert.match(app, /window\.history\.pushState/);
   assert.match(app, /window\.history\.replaceState/);

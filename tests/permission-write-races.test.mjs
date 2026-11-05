@@ -14,7 +14,7 @@ const boundary = await import(boundaryUrl);
 async function loadRoute(name) {
   let code = ts.transpileModule(await readFile(new URL(`../app/api/${name}/route.ts`, import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
   for (const path of ["../../../db/client", "../../auth", "../../auditLog", "../../compressJsonResponse", "../../equipmentImportServer"]) code = code.replaceAll(JSON.stringify(path), JSON.stringify(boundaryUrl));
-  for (const name of ["roles", "permissionModel", "projectScopedData", "equipmentAvailability", "equipmentImport", "equipmentTimesheetUnits", "equipmentReportWorkflow", "personnelTimesheetReference.server"]) code = code.replaceAll(JSON.stringify(`../../${name}`), JSON.stringify(new URL(`../app/${name}.ts`, import.meta.url).href));
+  for (const name of ["roles", "permissionModel", "projectScopedData", "equipmentAvailability", "equipmentImport", "equipmentTimesheetUnits", "equipmentReportWorkflow", "personnelTimesheetReference.server", "personnelTimesheetValues"]) code = code.replaceAll(JSON.stringify(`../../${name}`), JSON.stringify(new URL(`../app/${name}.ts`, import.meta.url).href));
   return import(moduleUrl(code));
 }
 process.env.NODE_ENV = "production";

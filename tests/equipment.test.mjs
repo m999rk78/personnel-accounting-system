@@ -1,3 +1,4 @@
+import { readWorkspaceImplementation } from "./fixtures/read-implementation.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -132,7 +133,7 @@ test("exports the equipment timesheet as a formatted monthly workbook", async ()
 test("builds equipment accounting from a shared registry and daily entries", async () => {
   const api = await readFile(new URL("../app/api/equipment/route.ts", import.meta.url), "utf8");
   const view = await readFile(new URL("../app/EquipmentAccountingView.tsx", import.meta.url), "utf8");
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
   const parser = await readFile(new URL("../app/placementXlsx.ts", import.meta.url), "utf8");
   const migration = await readFile(new URL("../drizzle-postgres/0009_equipment_accounting.sql", import.meta.url), "utf8");
   const assignmentMigration = await readFile(new URL("../drizzle-postgres/0010_equipment_project_assignments.sql", import.meta.url), "utf8");

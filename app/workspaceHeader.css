@@ -1,0 +1,100 @@
+/* Shared workspace header. Report/date portals and timesheet scroll sizing stay intact. */
+.page-heading.workspace-page-heading {
+  align-items:center;
+  gap:12px 20px;
+}
+.page-heading.workspace-page-heading:not(.timesheet-page-heading) { min-height:52px; }
+.page-heading.workspace-page-heading.settings-page-heading {
+  min-height:76px;
+  padding-bottom:10px;
+}
+.page-heading.workspace-page-heading > .page-heading-title {
+  flex:0 1 auto;
+  align-self:center;
+  align-items:flex-start;
+  flex-direction:column;
+  gap:5px;
+  min-width:0;
+  min-height:0;
+  padding:0;
+}
+.page-heading.workspace-page-heading h1 { white-space:normal; overflow-wrap:anywhere; }
+.page-heading.workspace-page-heading .page-heading-back {
+  display:inline-flex;
+  align-items:center;
+  flex:0 0 auto;
+  gap:6px;
+  width:auto;
+  height:20px;
+  padding:0;
+  border:0;
+  border-radius:4px;
+  background:transparent;
+  color:#71717a;
+  font-size:11px;
+  font-weight:500;
+  line-height:20px;
+  transform:none;
+}
+.page-heading.workspace-page-heading .page-heading-back svg { width:14px; height:14px; }
+.page-heading.workspace-page-heading .page-heading-back:hover:not(:disabled) { background:transparent; color:#27272a; }
+.page-heading.workspace-page-heading .page-heading-back:focus-visible { outline:2px solid #d39a2e; outline-offset:4px; }
+.workspace-page-heading > .settings-heading-actions { gap:10px; align-items:center; }
+.employees-page-heading .bitrix-check-button {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  height:38px;
+  padding:0 14px;
+  border:1px solid #9bc3ac;
+  border-radius:8px;
+  background:#fff;
+  color:#22633d;
+  font-size:11px;
+  font-weight:650;
+  white-space:nowrap;
+}
+.employees-page-heading .bitrix-check-button:hover:not(:disabled) { border-color:#73a78a; background:#f6fbf8; }
+.employees-page-heading .bitrix-check-button:focus-visible { outline:2px solid #d39a2e; outline-offset:3px; }
+.employees-bitrix-icon { width:17px; height:17px; flex:none; }
+.employees-page-heading .bitrix-check-button[aria-busy="true"] .employees-bitrix-icon { animation:employee-bitrix-refresh 1.2s linear infinite; }
+.page-heading.workspace-page-heading .excel-menu .excel-menu-trigger {
+  justify-content:center;
+  gap:12px;
+  min-width:87px;
+  height:38px;
+  padding:0 14px;
+  border:1px solid #18181b;
+  border-radius:8px;
+  background:#18181b;
+  color:#fff;
+  font-size:11px;
+  font-weight:650;
+}
+.page-heading.workspace-page-heading .excel-menu .excel-menu-trigger:hover,
+.page-heading.workspace-page-heading .excel-menu .excel-menu-trigger[aria-expanded="true"] { border-color:#303035; background:#303035; color:#fff; }
+.page-heading.workspace-page-heading .excel-menu .excel-menu-trigger:focus-visible { outline:2px solid #d39a2e; outline-offset:3px; }
+@keyframes employee-bitrix-refresh { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) {
+  .employees-page-heading .bitrix-check-button[aria-busy="true"] .employees-bitrix-icon { animation:none; }
+}
+@media (max-width:760px) {
+  .page-heading.workspace-page-heading { flex-direction:column; align-items:stretch; gap:12px; }
+  .page-heading.workspace-page-heading.settings-page-heading { padding-bottom:12px; }
+  .page-heading.workspace-page-heading > .page-heading-title { align-self:flex-start; max-width:100%; }
+  .workspace-page-heading > .settings-heading-actions { width:100%; flex:0 1 auto; justify-content:flex-end; margin-left:0; }
+  .workspace-page-heading > .users-rights-navigation { align-self:flex-start; max-width:100%; }
+  .workspace-page-heading > .report-heading-portal,
+  .workspace-page-heading > .report-heading-controls,
+  .workspace-page-heading > .timesheet-heading-portal { width:100%; }
+}
+@media (max-width:680px) {
+  .sidebar-collapsed .page-heading.workspace-page-heading { padding-left:0; }
+  .sidebar-collapsed .workspace-page-heading > .page-heading-title { padding-left:40px; }
+}
+@media (max-width:380px) {
+  .workspace-page-heading > .settings-heading-actions { gap:8px; }
+  .employees-page-heading .bitrix-check-button { padding-inline:10px; font-size:10px; }
+  .page-heading.workspace-page-heading .excel-menu .excel-menu-trigger { min-width:76px; padding-inline:12px; }
+}

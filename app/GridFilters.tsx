@@ -19,6 +19,8 @@ import { SelectionRowDragRenderer } from "./SelectionRowDragRenderer";
 import { gridRowSelection } from "./gridRowSelection";
 import { findSpreadsheetDataRowIndex, isStructuralSpreadsheetRow, spreadsheetPointRowIndex, spreadsheetRangeHasStructuralRows } from "./gridSpreadsheetRows";
 import { createImportOrderRank, IMPORT_ORDER_COLUMN, importOrderColumnState, importOrderScopes, shouldApplyImportOrder } from "./importOrderSorting";
+import { useEmptyGridRows } from "./useEmptyGridRows";
+import { useTableEscapeSelection } from "./useTableEscapeSelection";
 
 type FilterRow = { kind: "entry" | "edit" | "draft" };
 type FilterProps = CustomFilterDisplayProps<FilterRow, unknown, PersonnelFilterModel> & {
@@ -99,6 +101,11 @@ function PersonnelFilter(props: FilterProps) {
       valid: next.conditions.every((condition) => isConditionValid(condition, kind)) });
   };
   const setValues = (selection: Set<string>) => update({ values: [...selection] });
+  const changeSearch = (value: string) => {
+    setSearch(value);
+    const needle = normalizeFilterText(value);
+    update({ values: needle ? values.filter(({ value }) => normalizeFilterText(value || "(Пустые)").includes(needle)).map(({ value }) => value) : props.model?.values ?? null });
+  };
   const updateCondition = (index: number, patch: Partial<FilterCondition>) => update({
     conditions: model.conditions.map((condition, current) => current === index ? { ...condition, ...patch } : condition),
   });
@@ -158,7 +165,7 @@ function PersonnelFilter(props: FilterProps) {
       </section>
       <section className="grid-filter-choices" aria-label="Выбор значений">
         <div className="grid-filter-section-heading"><strong>Показать значения</strong><span>Выбрано {selectedCount} из {values.length}</span></div>
-        <label className="grid-filter-search"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg><input ref={searchInput} aria-label="Поиск значений" placeholder={kind === "date" ? "Найти дату…" : "Найти в списке…"} value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+        <label className="grid-filter-search"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg><input ref={searchInput} aria-label="Поиск значений" placeholder={kind === "date" ? "Найти дату…" : "Найти в списке…"} value={search} onChange={(event) => changeSearch(event.target.value)} /></label>
         <div className="grid-filter-selection"><ValueCheckbox checked={matching.length > 0 && checkedCount === matching.length} mixed={checkedCount > 0 && checkedCount < matching.length} onChange={(checked) => {
           const next = new Set(selected);
           matching.forEach(({ value }) => { if (checked) next.add(value); else next.delete(value); });
@@ -410,6 +417,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
   const [spreadsheetStatus, setSpreadsheetStatus] = useState("");
   const [contextMenu, setContextMenu] = useState<(SpreadsheetContextPayload<TData> & { x: number; y: number; error: string }) | null>(null);
   const body = useRef<HTMLDivElement>(null);
+  useEmptyGridRows(body, api, props.rowHeight ?? 54);
   const selectionRef = useRef(selection);
   const lastSelectionRef = useRef(selection);
   const previousFocusRequestKey = useRef(spreadsheetFocusRequestKey);
@@ -510,6 +518,24 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     setSpreadsheetStatus("");
     setContextMenu(null);
   }, []);
+  useTableEscapeSelection({
+    hasSelection: () => Boolean(selectionRef.current || api && !api.isDestroyed() && (api.getSelectedNodes().length || api.getFocusedCell() || api.isModuleRegistered("CellSelectionModule") && api.getCellRanges()?.length)),
+    isEditing: () => Boolean(api && !api.isDestroyed() && api.getEditingCells().length),
+    clearSelection: () => {
+      clearSelection();
+      lastSelectionRef.current = null;
+      if (!api || api.isDestroyed()) return;
+      api.deselectAll();
+      // AG Grid delivers selection callbacks asynchronously. Publish the cleared
+      // state now so a queued controlled-selection frame cannot select it again.
+      if (props.rowSelection) props.onSelectionChanged?.({
+        type: "selectionChanged", api, context: props.context, source: "api",
+        selectedNodes: [], serverSideState: null,
+      });
+      if (api.isModuleRegistered("CellSelectionModule")) api.clearCellSelection();
+      api.clearFocusedCell();
+    },
+  });
   const moveSelection = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!api || isInteractiveTarget(event.nativeEvent) || event.altKey) return false;
     if ((event.ctrlKey || event.metaKey) && (!onSpreadsheetBatch || !event.key.startsWith("Arrow"))) return false;
@@ -787,6 +813,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     return () => document.removeEventListener("keydown", undoOutsideGrid);
   }, [undoSpreadsheetChange, spreadsheetHistory]);
   const handleSpreadsheetKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") return; // The shared capture handler clears every selection together.
     if (isInteractiveTarget(event.nativeEvent)) return;
     if (onSpreadsheetBatch) {
       const modifier = event.ctrlKey || event.metaKey;
@@ -811,7 +838,6 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     }
     const undoShortcut = (event.ctrlKey || event.metaKey) && !event.shiftKey && (event.code === "KeyZ" || event.key.toLocaleLowerCase("en-US") === "z");
     if (undoShortcut) { event.preventDefault(); undoSpreadsheetChange(); return; }
-    if (event.key === "Escape") { event.preventDefault(); onSpreadsheetCancelEdit?.(); clearSelection(); return; }
     if (moveSelection(event)) return;
     if (event.key === "Enter" || event.key === "F2") editSelectedCell(event);
   };
@@ -826,7 +852,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       </div>
       <button className="grid-filter-clear" type="button" onClick={() => { api?.setFilterModel(null); if (showSortSummary) api?.applyColumnState({ state: [], defaultState: { sort: null, sortIndex: null } }); }}>{showSortSummary ? "Сбросить всё" : "Сбросить фильтры"}</button>
     </div>}
-    <div className="localized-grid-body" ref={body} role="grid" tabIndex={0} onContextMenu={openContextMenu} onPointerDownCapture={(event) => {
+    <div className="localized-grid-body ag-grid-empty-rows" ref={body} role="grid" tabIndex={0} onContextMenu={openContextMenu} onPointerDownCapture={(event) => {
       const target = event.target;
       if (onSpreadsheetBatch && api && target instanceof Element && !isInteractiveTarget(event.nativeEvent) && event.button !== 2) {
         const cell = target.closest<HTMLElement>(".ag-cell[col-id]");

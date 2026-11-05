@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useTableEscapeSelection } from "./useTableEscapeSelection";
 import { CustomSelect } from "./CustomSelect";
 import { ProjectAccessPicker } from "./ProjectAccessPicker";
 import { type ProjectAccess, type UserRole } from "./roles";
@@ -134,6 +135,7 @@ export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onEd
   const [query, setQuery] = useState("");
   const [detailUser, setDetailUser] = useState<AccessUser | null>(null);
   const editorOpen = drafts.length > 0;
+  useTableEscapeSelection({ hasSelection: () => selectedIds.length > 0, clearSelection: () => onSelectionChange([]), isEditing: () => editorOpen || Boolean(detailUser) || saving });
   const mayCreate = canCreate ?? !readOnly;
   const mayUpdate = canUpdate ?? !readOnly;
   const mayDelete = canDelete ?? !readOnly;

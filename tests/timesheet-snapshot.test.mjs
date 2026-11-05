@@ -20,6 +20,7 @@ for (const [specifier, target] of Object.entries({
   "../../roles": new URL("../app/roles.ts", import.meta.url).href,
   "../../permissionModel": new URL("../app/permissionModel.ts", import.meta.url).href,
   "../../personnelTimesheetReference.server": new URL("../app/personnelTimesheetReference.server.ts", import.meta.url).href,
+  "../../personnelTimesheetValues": new URL("../app/personnelTimesheetValues.ts", import.meta.url).href,
 })) source = source.replaceAll(JSON.stringify(specifier), JSON.stringify(target));
 const { GET } = await import(moduleUrl(source));
 const actor = { id: 3, fullName: "Тестовый проверяющий", role: "engineer", assignedSiteId: null,

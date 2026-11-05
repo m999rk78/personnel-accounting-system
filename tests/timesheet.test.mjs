@@ -1,3 +1,4 @@
+import { readWorkspaceImplementation, readDataImplementation } from "./fixtures/read-implementation.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -143,7 +144,7 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   const filterController = await readFile(new URL("../app/useTimesheetFilters.tsx", import.meta.url), "utf8");
   const nativeFilters = await readFile(new URL("../app/GridEnterpriseFilters.tsx", import.meta.url), "utf8");
   const xlsx = await readFile(new URL("../app/placementXlsx.ts", import.meta.url), "utf8");
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const app = await readWorkspaceImplementation();
   const roles = await readFile(new URL("../app/roles.ts", import.meta.url), "utf8");
   const migration = await readFile(new URL("../drizzle-postgres/0007_timesheet_marks.sql", import.meta.url), "utf8");
   const cleanupMigration = await readFile(new URL("../drizzle-postgres/0008_position_catalog_cleanup.sql", import.meta.url), "utf8");
@@ -167,7 +168,7 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(api, /GROUP BY pe\.employee_id, pe\.work_date/);
   assert.match(api, /pe\.deleted_at IS NULL/);
   assert.match(api, /CREATE TABLE IF NOT EXISTS timesheet_marks/);
-  assert.match(api, /TIMESHEET_CODES/);
+  assert.match(api, /isPersonnelTimesheetCode/);
   assert.match(api, /assertSameOrigin\(request\)/);
   assert.match(api, /!canAccessProject\(authUser, requestedSiteId\)/);
   assert.match(api, /ON CONFLICT \(site_id, employee_id, work_date\) DO UPDATE/);
@@ -243,7 +244,7 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(view, /saveInlineEditor\(movement\[event\.key\], event\.currentTarget\.value\)/);
   assert.match(view, /if \(returnFocus\) inlineGridFocusPending\.current = true/);
   assert.match(view, /if \(inlineEditor \|\| !inlineGridFocusPending\.current\) return/);
-  assert.match(view, /TIMESHEET_MARK_OPTIONS/);
+  assert.match(view, /PERSONNEL_TIMESHEET_OPTIONS/);
   assert.match(view, /timesheet-cell-dropdown/);
   assert.match(view, /personnel-timesheet-cell-dropdown/);
   assert.match(view, /editor\?\.employeeId === employeeId && editor\.workDate === workDate/);
@@ -346,12 +347,10 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(roles, /role === "engineer" \|\| role === "viewer" \|\| role === "superadmin"/);
 });
 
-test("allows future personnel planning and warns the daily report about timesheet conflicts", async () => {
+test("allows future personnel planning and retains timesheet queries for compatible report clients", async () => {
   const timesheetApi = await readFile(new URL("../app/api/timesheet/route.ts", import.meta.url), "utf8");
-  const dataApi = await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8");
+  const dataApi = await readDataImplementation();
   const timesheetView = await readFile(new URL("../app/TimesheetView.tsx", import.meta.url), "utf8");
-  const app = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
-  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
 
   assert.doesNotMatch(timesheetApi, /Будущие дни пока нельзя заполнять/);
   assert.doesNotMatch(timesheetView, /workDate > today\) return/);
@@ -360,8 +359,4 @@ test("allows future personnel planning and warns the daily report about timeshee
 
   assert.match(dataApi, /function reportTimesheetMarksStatement\(siteId: number, workDate: string\)/);
   assert.match(dataApi, /timesheetMarks: timesheetMarks\.results/);
-  assert.match(app, /timesheetMarks=\{data\?\.timesheetMarks \?\? \[\]\}/);
-  assert.match(grid, /timesheet-conflict-row/);
-  assert.match(grid, /Несовпадение с табелем/);
-  assert.match(grid, /Табель: \$\{mark\.hours\} ч\. · отчёт: \$\{reportHours\} ч\./);
 });

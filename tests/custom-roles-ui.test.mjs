@@ -1,3 +1,4 @@
+import { readWorkspaceImplementation } from "./fixtures/read-implementation.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -11,7 +12,8 @@ const confirmationUrl = dataUrl("export function useConfirmationDialog(){return 
 const fileUrl = name => new URL(`../app/${name}.ts`, import.meta.url).href;
 async function compile(name, replacements = {}) {
   let code = ts.transpileModule(await readFile(new URL(`../app/${name}.tsx`, import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX } }).outputText;
-  for (const [specifier, replacement] of Object.entries({ react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"), "./permissionModel": fileUrl("permissionModel"), "./customRoles.css": dataUrl(""), "./usersRights.css": dataUrl(""), "./useConfirmationDialog": confirmationUrl, ...replacements })) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(replacement));
+  // Selection keyboard handling is tested separately; this harness exercises roles.
+  for (const [specifier, replacement] of Object.entries({ react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"), "./permissionModel": fileUrl("permissionModel"), "./customRoles.css": dataUrl(""), "./usersRights.css": dataUrl(""), "./useTableEscapeSelection": dataUrl("export function useTableEscapeSelection(){}"), "./useConfirmationDialog": confirmationUrl, ...replacements })) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(replacement));
   return dataUrl(code);
 }
 const matrixUrl = await compile("PermissionMatrix");
@@ -78,7 +80,7 @@ test("unified settings expose only permitted tabs and keep roles out of the user
 });
 
 test("delegated rights managers retain user permission editing without system user access", async () => {
-  const source = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+  const source = await readWorkspaceImplementation();
   const ast = ts.createSourceFile("PersonnelApp.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let route;
   const visit = node => {
@@ -90,9 +92,9 @@ test("delegated rights managers retain user permission editing without system us
   const compiled = ts.transpileModule(`function render(){return (${route.getText(ast)});}`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } }).outputText;
   const AccessRightsView = () => null, RolesSettingsView = () => null;
   const onDirtyChange = () => {}, onBusyChange = () => {}, navigated = [];
-  const render = (usersAllowed, rightsAllowed) => new Function("React", "view", "may", "AccessRightsView", "RolesSettingsView", "onAccessRightsDirty", "onChildNavigationBusy", "navigateTo", "adminDataLoaded", `${compiled}\nreturn render();`)(
+  const render = (usersAllowed, rightsAllowed) => new Function("React", "view", "may", "AccessRightsView", "RolesSettingsView", "onAccessRightsDirty", "onChildNavigationBusy", "navigateTo", "invalidateCatalogs", `${compiled}\nreturn render();`)(
     { createElement }, "accessRights", resource => resource === "system_users" ? usersAllowed : rightsAllowed,
-    AccessRightsView, RolesSettingsView, onDirtyChange, onBusyChange, view => navigated.push(view), { current: {} },
+    AccessRightsView, RolesSettingsView, onDirtyChange, onBusyChange, view => navigated.push(view), () => {},
   );
   const fallback = find(render(false, true), node => node.type === AccessRightsView);
   assert.equal(fallback.props.onDirtyChange, onDirtyChange, "Unsaved individual rights still guard navigation");

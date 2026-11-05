@@ -35,6 +35,15 @@ http:
         scheme: https
         permanent: true
     personnel-maintenance-errors:
+      chain:
+        middlewares:
+          - personnel-maintenance-drop-marker
+          - personnel-maintenance-errors-handler
+    personnel-maintenance-drop-marker:
+      headers:
+        customRequestHeaders:
+          X-Personnel-Maintenance-Request: ""
+    personnel-maintenance-errors-handler:
       errors:
         status:
           - "502-504"
@@ -42,7 +51,11 @@ http:
           "502-504": 503
         service: personnel-maintenance-fallback
         query: /maintenance?request={url}
-        errorRequestHeaders: []
+        # Coolify normalizes an empty YAML list into {}. A nonempty whitelist
+        # survives that round trip; the preceding middleware removes its sole
+        # permitted header, so no original request headers reach the error page.
+        errorRequestHeaders:
+          - X-Personnel-Maintenance-Request
   services:
     personnel-maintenance-fallback:
       loadBalancer:

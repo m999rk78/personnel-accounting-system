@@ -104,7 +104,7 @@ test("ordinary draft refreshes and unavailable native grid instances do not eras
   assert.deepEqual(ui.clears, []);
 });
 
-function nativeParams(kind) {
+function nativeParams(kind, options = {}) {
   const source = ["setCellHeight", "dateComparator", "enterpriseFilterParams"].map(name => declaration(enterpriseFilters, name)).join("\n");
   const configure = bind(source, "enterpriseFilterParams", {
     sortingChild: {}, compareGridValues, filterDateKey, normalizeFilterText,
@@ -115,7 +115,7 @@ function nativeParams(kind) {
   return configure({
     api: { forEachNode: callback => nodes.forEach(callback), getCellValue: ({ rowNode }) => rowNode.value },
     column: { getColId: () => "value" }, colDef: {},
-  }, { kind });
+  }, { kind, ...options });
 }
 
 test("native checklists re-read mutable draft values on opening without broadening an explicit selection", () => {
@@ -151,6 +151,21 @@ test("native checklist search selects matching values with Excel semantics when 
     assert.equal(filter.filterParams.excelMode, "windows", "AG Grid's plain mini-search only narrows the list; Excel mode makes applying the search select its results");
     assert.equal(filter.filterParams.textFormatter("ПЁТР"), "петр");
   }
+});
+
+test("timesheet state search uses the same selection semantics and keeps state predicates separate from values", () => {
+  const states = {
+    values: [{ value: "manual", label: "Ручная правка" }, { value: "mismatch", label: "Расхождение" }],
+    getValue: row => [row.manual && "manual", row.mismatch && "mismatch"].filter(Boolean),
+  };
+  const params = nativeParams("number", { stateFilter: states });
+  const state = params.filters.find(item => item.title === "Состояние ячейки");
+  assert.equal(state.filterParams.excelMode, "windows");
+  assert.deepEqual(state.filterParams.values, ["manual", "mismatch"]);
+  assert.equal(state.filterParams.valueFormatter({ value: "mismatch" }), "Расхождение");
+  assert.deepEqual(state.filterValueGetter({ data: { manual: true, mismatch: false } }), ["manual"]);
+  assert.deepEqual(state.filterValueGetter({ data: { manual: true, mismatch: true } }), ["manual", "mismatch"]);
+  assert.deepEqual(params.buttons, ["clear", "cancel", "apply"], "Both checklists commit together through the parent Apply");
 });
 
 test("imported personnel names remain filterable after catalog matching and preservation of unknown Excel text", () => {

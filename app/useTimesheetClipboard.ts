@@ -1,8 +1,9 @@
 "use client";
 
-import { createElement, useCallback, useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent, type RefObject } from "react";
+import { createElement, useCallback, useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type MouseEvent, type RefObject } from "react";
 import { TableContextMenu, type TableContextMenuAction } from "./TableContextMenu";
 import { useWorkspaceAccess } from "./TableAccessContext";
+import { useTableEscapeSelection } from "./useTableEscapeSelection";
 
 export type TimesheetClipboardChange = {
   rowIndex: number;
@@ -11,8 +12,33 @@ export type TimesheetClipboardChange = {
   note?: string;
 };
 
+export type TimesheetClipboardSaveResult = {
+  savedChanges: TimesheetClipboardChange[];
+  failedChanges: TimesheetClipboardChange[];
+};
+
+export type TimesheetClipboardSaveContext = { operation: "paste" | "delete" | "undo"; historyId: string };
+
+function matchingClipboardChanges(changes: TimesheetClipboardChange[], matching: TimesheetClipboardChange[]) {
+  const keys = new Set(matching.map(change => `${change.rowIndex}:${change.columnIndex}`));
+  return changes.filter(change => keys.has(`${change.rowIndex}:${change.columnIndex}`));
+}
+
+function clipboardSaveResult(result: number | TimesheetClipboardSaveResult, changes: TimesheetClipboardChange[]) {
+  if (typeof result === "number") return { savedChanges: result > 0 ? changes : [], failedChanges: [], count: result };
+  const savedChanges = matchingClipboardChanges(changes, result.savedChanges);
+  const savedKeys = new Set(savedChanges.map(change => `${change.rowIndex}:${change.columnIndex}`));
+  const failedChanges = matchingClipboardChanges(changes, result.failedChanges).filter(change => !savedKeys.has(`${change.rowIndex}:${change.columnIndex}`));
+  return { savedChanges, failedChanges, count: savedChanges.length };
+}
+
+function partialClipboardStatus(saved: number, failed: number) {
+  return `Сохранено ячеек: ${saved} из ${saved + failed}. Не сохранено: ${failed}.`;
+}
+
 type ClipboardPoint = { rowIndex: number; columnIndex: number };
 type ClipboardSelection = { start: ClipboardPoint; end: ClipboardPoint };
+type ClipboardUndoEntry = { id: string; changes: TimesheetClipboardChange[] };
 
 function isTimesheetInputTarget(target: EventTarget | null) {
   return target instanceof Element && Boolean(target.closest("input, textarea, select, [contenteditable='true'], [role='textbox'], [role='combobox']"));
@@ -50,6 +76,9 @@ function scrollCellIntoVisibleArea(shell: HTMLDivElement, point: ClipboardPoint)
 }
 
 type TimesheetClipboardOptions = {
+  hasSelectedRows?: boolean;
+  onClearRowSelection?: () => void;
+  escapeBlocked?: boolean;
   getContextActions?: (rowIndex: number, close: () => void) => TableContextMenuAction[];
   shellRef?: RefObject<HTMLDivElement | null>;
   ensureRowVisible?: (rowIndex: number) => void;
@@ -58,11 +87,11 @@ type TimesheetClipboardOptions = {
   resetKey: string;
   getValue: (rowIndex: number, columnIndex: number) => string;
   canPaste: (rowIndex: number, columnIndex: number) => boolean;
-  onPaste: (changes: TimesheetClipboardChange[]) => Promise<number>;
+  onPaste: (changes: TimesheetClipboardChange[], context?: TimesheetClipboardSaveContext) => Promise<number | TimesheetClipboardSaveResult>;
   getUndoValue?: (rowIndex: number, columnIndex: number) => string;
   getUndoNote?: (rowIndex: number, columnIndex: number) => string;
   canDelete?: (rowIndex: number, columnIndex: number) => boolean;
-  onDelete?: (changes: TimesheetClipboardChange[]) => Promise<number>;
+  onDelete?: (changes: TimesheetClipboardChange[], context?: TimesheetClipboardSaveContext) => Promise<number | TimesheetClipboardSaveResult>;
   onActivate?: (rowIndex: number, columnIndex: number, anchor: HTMLElement) => void;
   onType?: (rowIndex: number, columnIndex: number, anchor: HTMLElement, value: string) => void;
 };
@@ -77,7 +106,7 @@ function selectionBounds(selection: ClipboardSelection | null) {
   };
 }
 
-export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShellRef, ensureRowVisible, rowCount, columnCount, resetKey, getValue, canPaste, onPaste, getUndoValue = getValue, getUndoNote, canDelete, onDelete, onActivate, onType }: TimesheetClipboardOptions) {
+export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelection, escapeBlocked = false, getContextActions, shellRef: suppliedShellRef, ensureRowVisible, rowCount, columnCount, resetKey, getValue, canPaste, onPaste, getUndoValue = getValue, getUndoNote, canDelete, onDelete, onActivate, onType }: TimesheetClipboardOptions) {
   const access = useWorkspaceAccess();
   const defaultShellRef = useRef<HTMLDivElement>(null);
   const shellRef = suppliedShellRef ?? defaultShellRef;
@@ -86,12 +115,33 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; rowIndex: number; columnIndex: number; error: string } | null>(null);
   const selectionRef = useRef(selection);
   const dragging = useRef(false);
-  const undoStack = useRef<TimesheetClipboardChange[][]>([]);
+  const undoStack = useRef<ClipboardUndoEntry[]>([]);
   const undoing = useRef(false);
+  const mutation = useRef<symbol | null>(null);
+  const scopeVersion = useRef(0);
+  const historySequence = useRef(0);
 
-  const rememberUndo = useCallback((changes: TimesheetClipboardChange[]) => {
+  const createHistoryId = useCallback(() => `${scopeVersion.current}:${++historySequence.current}`, []);
+
+  const rememberUndo = useCallback((changes: TimesheetClipboardChange[], historyId?: string) => {
     if (!changes.length) return;
-    undoStack.current = [...undoStack.current.slice(-49), changes.map((change) => ({ ...change }))];
+    const id = historyId ?? createHistoryId();
+    const previous = undoStack.current.find(entry => entry.id === id);
+    if (previous) {
+      const existingKeys = new Set(previous.changes.map(change => `${change.rowIndex}:${change.columnIndex}`));
+      previous.changes.push(...changes.filter(change => !existingKeys.has(`${change.rowIndex}:${change.columnIndex}`)).map(change => ({ ...change })));
+      return;
+    }
+    undoStack.current = [...undoStack.current.slice(-49), { id, changes: changes.map(change => ({ ...change })) }];
+  }, [createHistoryId]);
+
+  const forgetUndo = useCallback((historyId: string, changes: TimesheetClipboardChange[]) => {
+    const keys = new Set(changes.map(change => `${change.rowIndex}:${change.columnIndex}`));
+    undoStack.current = undoStack.current.flatMap(entry => {
+      if (entry.id !== historyId) return [entry];
+      const remaining = entry.changes.filter(change => !keys.has(`${change.rowIndex}:${change.columnIndex}`));
+      return remaining.length ? [{ id: entry.id, changes: remaining }] : [];
+    });
   }, []);
 
   const notify = useCallback((message: string) => setStatus(message), []);
@@ -110,6 +160,15 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
     setStatus("");
     setContextMenu(null);
   }, []);
+
+  useTableEscapeSelection({
+    hasSelection: () => Boolean(selectionRef.current || hasSelectedRows),
+    clearSelection: () => {
+      clearSelection();
+      onClearRowSelection?.();
+    },
+    isEditing: () => Boolean(escapeBlocked || contextMenu || !shellRef.current),
+  });
 
   useEffect(() => {
     selectionRef.current = selection;
@@ -132,10 +191,17 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
     return () => document.removeEventListener("pointerdown", clearOutside);
   }, [clearSelection, shellRef]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    scopeVersion.current += 1;
     undoStack.current = [];
+    mutation.current = null;
+    undoing.current = false;
     const frame = requestAnimationFrame(clearSelection);
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      scopeVersion.current += 1;
+      mutation.current = null;
+      cancelAnimationFrame(frame);
+    };
   }, [clearSelection, resetKey]);
 
   useEffect(() => {
@@ -208,6 +274,7 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
   }, [selectedText]);
 
   const pasteText = useCallback(async (text: string) => {
+    if (mutation.current) return 0;
     const bounds = selectionBounds(selectionRef.current);
     if (!bounds) return 0;
     const lines = text.replace(/\r/g, "").split("\n");
@@ -243,16 +310,23 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
     }
     setStatus("Вставляем данные…");
     const undoChanges = previousValues(changes);
+    const token = Symbol("paste");
+    const version = scopeVersion.current;
+    const historyId = createHistoryId();
+    mutation.current = token;
     try {
-      const changed = await onPaste(changes);
-      if (changed > 0) rememberUndo(undoChanges);
-      setStatus(`Вставлено ячеек: ${changed}`);
-      return changed;
+      const result = clipboardSaveResult(await onPaste(changes, { operation: "paste", historyId }), changes);
+      if (scopeVersion.current !== version) return 0;
+      if (result.count > 0) rememberUndo(matchingClipboardChanges(undoChanges, result.savedChanges), historyId);
+      setStatus(result.failedChanges.length ? partialClipboardStatus(result.count, result.failedChanges.length) : `Вставлено ячеек: ${result.count}`);
+      return result.count;
     } catch (pasteError) {
-      setStatus(pasteError instanceof Error ? pasteError.message : "Не удалось вставить данные");
+      if (scopeVersion.current === version) setStatus(pasteError instanceof Error ? pasteError.message : "Не удалось вставить данные");
       return 0;
+    } finally {
+      if (mutation.current === token) mutation.current = null;
     }
-  }, [canPaste, columnCount, onPaste, previousValues, rememberUndo, rowCount]);
+  }, [canPaste, columnCount, createHistoryId, onPaste, previousValues, rememberUndo, rowCount]);
 
   const onClipboardPaste = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
     if (isTimesheetInputTarget(event.target)) return;
@@ -262,6 +336,7 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
   }, [pasteText]);
 
   const deleteSelection = useCallback(async () => {
+    if (mutation.current) return 0;
     if (!canDelete || !onDelete) return 0;
     const bounds = selectionBounds(selectionRef.current);
     if (!bounds) return 0;
@@ -279,16 +354,23 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
     }
     setStatus("Удаляем ручные значения…");
     const undoChanges = previousValues(changes);
+    const token = Symbol("delete");
+    const version = scopeVersion.current;
+    const historyId = createHistoryId();
+    mutation.current = token;
     try {
-      const changed = await onDelete(changes);
-      if (changed > 0) rememberUndo(undoChanges);
-      setStatus(`Удалено ручных значений: ${changed}`);
-      return changed;
+      const result = clipboardSaveResult(await onDelete(changes, { operation: "delete", historyId }), changes);
+      if (scopeVersion.current !== version) return 0;
+      if (result.count > 0) rememberUndo(matchingClipboardChanges(undoChanges, result.savedChanges), historyId);
+      setStatus(result.failedChanges.length ? partialClipboardStatus(result.count, result.failedChanges.length) : `Удалено ручных значений: ${result.count}`);
+      return result.count;
     } catch (deleteError) {
-      setStatus(deleteError instanceof Error ? deleteError.message : "Не удалось удалить ручные значения");
+      if (scopeVersion.current === version) setStatus(deleteError instanceof Error ? deleteError.message : "Не удалось удалить ручные значения");
       return 0;
+    } finally {
+      if (mutation.current === token) mutation.current = null;
     }
-  }, [canDelete, columnCount, onDelete, previousValues, rememberUndo, rowCount]);
+  }, [canDelete, columnCount, createHistoryId, onDelete, previousValues, rememberUndo, rowCount]);
 
   const openContextMenu = useCallback((rowIndex: number, columnIndex: number, event: MouseEvent<HTMLTableCellElement>) => {
     event.preventDefault();
@@ -307,22 +389,32 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
   }, [shellRef]);
 
   const undoLastChange = useCallback(async () => {
-    if (undoing.current) return;
-    const changes = undoStack.current.pop();
-    if (!changes?.length) {
+    if (undoing.current || mutation.current) return;
+    const entry = undoStack.current.pop();
+    if (!entry?.changes.length) {
       setStatus("Нет изменений для отмены");
       return;
     }
+    const changes = entry.changes;
     undoing.current = true;
+    const token = Symbol("undo");
+    const version = scopeVersion.current;
+    mutation.current = token;
     setStatus("Отменяем последнее изменение…");
     try {
-      const changed = await onPaste(changes);
-      setStatus(`Отменено изменений: ${changed}`);
+      const result = clipboardSaveResult(await onPaste(changes, { operation: "undo", historyId: entry.id }), changes);
+      if (scopeVersion.current !== version) return;
+      if (result.failedChanges.length) undoStack.current.push({ id: entry.id, changes: result.failedChanges });
+      setStatus(result.failedChanges.length ? `Отменено изменений: ${result.count}. Не удалось отменить: ${result.failedChanges.length}.` : `Отменено изменений: ${result.count}`);
     } catch (undoError) {
-      undoStack.current.push(changes);
+      if (scopeVersion.current !== version) return;
+      undoStack.current.push(entry);
       setStatus(undoError instanceof Error ? undoError.message : "Не удалось отменить изменение");
     } finally {
-      undoing.current = false;
+      if (mutation.current === token) {
+        mutation.current = null;
+        undoing.current = false;
+      }
     }
   }, [onPaste]);
 
@@ -342,7 +434,6 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
   const onKeyDown = useCallback(async (event: KeyboardEvent<HTMLDivElement>) => {
     if (isTimesheetInputTarget(event.target)) return;
     if (event.key === "Escape") {
-      clearSelection();
       return;
     }
     const undoShortcut = (event.ctrlKey || event.metaKey) && !event.shiftKey && (event.code === "KeyZ" || event.key.toLocaleLowerCase("en-US") === "z");
@@ -384,7 +475,7 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
     if (event.key !== "Delete" && event.key !== "Backspace") return;
     event.preventDefault();
     await deleteSelection();
-  }, [clearSelection, deleteSelection, focusSelection, onActivate, onType, shellRef, undoLastChange]);
+  }, [deleteSelection, focusSelection, onActivate, onType, shellRef, undoLastChange]);
 
   const cellClass = useCallback((rowIndex: number, columnIndex: number) => {
     const bounds = selectionBounds(selection);
@@ -431,6 +522,7 @@ export function useTimesheetClipboard({ getContextActions, shellRef: suppliedShe
       ],
     }) : null,
     rememberUndo,
+    forgetUndo,
     notify,
   };
 }

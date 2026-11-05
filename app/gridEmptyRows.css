@@ -1,0 +1,19 @@
+/* Decorative blank rows only: no records, checkboxes or spreadsheet targets. */
+.ag-grid-empty-rows .ag-grid-scrolling-rows {
+  --empty-grid-line-color:var(--ag-border-color, #dedede);
+  background-image:repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--empty-grid-row-height, 54px) - 1px),
+    var(--empty-grid-line-color) calc(var(--empty-grid-row-height, 54px) - 1px),
+    var(--empty-grid-line-color) var(--empty-grid-row-height, 54px)
+  );
+  background-position:0 var(--empty-grid-row-offset, 0px);
+}
+.ag-empty-grid-columns {
+  position:absolute;
+  z-index:1;
+  pointer-events:none;
+  user-select:none;
+}
+.ag-empty-grid-columns[hidden] { display:none; }

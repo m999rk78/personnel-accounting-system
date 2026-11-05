@@ -1,10 +1,10 @@
+import { readWorkspaceImplementation } from "./fixtures/read-implementation.mjs";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { workspaceUrl } from "../app/appRoutes.ts";
 
-const source = await readFile(new URL("../app/PersonnelApp.tsx", import.meta.url), "utf8");
+const source = await readWorkspaceImplementation();
 const ast = ts.createSourceFile("PersonnelApp.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const nodes = [];
 const collect = node => { nodes.push(node); ts.forEachChild(node, collect); };
@@ -17,7 +17,7 @@ function declaration(name) {
 function bind(name, environment = {}, callback = false) {
   const node = declaration(name);
   const text = callback ? `const ${name} = ${node.initializer.arguments[0].getText(ast)};` : ts.isVariableDeclaration(node) ? `const ${node.getText(ast)};` : node.getText(ast);
-  const compiled = ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
+  const compiled = ts.transpileModule(text.replace(/^export\s+/, ""), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
   return new Function(...Object.keys(environment), `${compiled}\nreturn ${name};`)(...Object.values(environment));
 }
 const decisions = bind("workspaceNavigationDiscards");

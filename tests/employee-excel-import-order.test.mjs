@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import ts from "typescript";
+import { compileModuleGraph } from "./fixtures/compile-module-graph.mjs";
 import { rolePermissionTemplate } from "../app/permissionModel.ts";
 import { noCustomRolesUrl, noPermissionChangesUrl } from "./fixtures/custom-role-imports.mjs";
 
@@ -15,7 +14,6 @@ const boundaryUrl = moduleUrl(`export let actor; export let database;
 const boundary = await import(boundaryUrl);
 const noop = names => moduleUrl(names.map(name => `export async function ${name}(){return {};}`).join("\n"));
 const file = name => new URL(`../app/${name}.ts`, import.meta.url).href;
-let code = ts.transpileModule(await readFile(new URL("../app/api/data/route.ts", import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
 const replacements = {
   "../../../db/client": boundaryUrl, "../../auth": boundaryUrl,
   "../../auditLog": moduleUrl("export const withAuditTrail=(request,handler)=>handler(request);"),
@@ -27,11 +25,10 @@ const replacements = {
   "../../bitrix24Sync": noop(["compareBitrixEmployees", "fetchBitrixEmployeeSnapshot", "normalizeBitrixText", "selectBitrixEmployeesForImport", "suggestBitrixEmployeeLinks"]),
   ...Object.fromEntries(["roles", "permissionModel", "projectScopedData", "readOptionalBatch", "settingsReadPolicy", "bitrix24Cooldown", "bitrixReviewSelection", "excelDirectoryImports", "personnelImportOrderServer"].map(name => [`../../${name}`, file(name)])),
 };
-for (const [specifier, target] of Object.entries(replacements)) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(target));
 // This suite exercises the actual route and its transaction with an in-memory DB.
 // Schema initialization and every external service are outside this boundary.
 globalThis.personnelDatabaseInitializationPromise = Promise.resolve();
-const { POST } = await import(moduleUrl(code));
+const { POST } = await import(await compileModuleGraph(new URL("../app/api/data/route.ts", import.meta.url), replacements));
 
 function memoryDatabase({ failOrderKey, failEmployeeId } = {}) {
   let state = {

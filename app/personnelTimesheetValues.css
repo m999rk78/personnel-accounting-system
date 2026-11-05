@@ -1,0 +1,11 @@
+.personnel-timesheet-mark-options .custom-select-option {
+  height:auto;
+  min-height:32px;
+  white-space:normal;
+  line-height:1.4;
+}
+.personnel-timesheet-mark-options .custom-select-option > span {
+  white-space:normal;
+  overflow-wrap:anywhere;
+  text-align:left;
+}

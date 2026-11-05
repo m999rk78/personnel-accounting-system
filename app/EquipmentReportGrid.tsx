@@ -258,15 +258,17 @@ export function EquipmentReportGrid(props: EquipmentReportGridProps) {
   }, [activeEditor, canEdit, closeEditor, openEditor]);
 
   const columns = useMemo<ColDef<TableRow>[]>(() => {
-    const column = (field: string, headerName: string, minWidth: number, flex = 1): ColDef<TableRow> => ({ colId: field, headerName, minWidth, flex, valueGetter: valueGetter(field), cellRenderer: renderCell, headerComponentParams: { innerHeaderComponent: FilterHeader } });
+    // Editors recreate these definitions. Only initialize sizing so AG Grid can
+    // retain manual widths instead of re-enabling flex after every cell edit.
+    const column = (field: string, headerName: string, minWidth: number, flex = 1): ColDef<TableRow> => ({ colId: field, headerName, minWidth, initialFlex: flex, valueGetter: valueGetter(field), cellRenderer: renderCell, headerComponentParams: { innerHeaderComponent: FilterHeader } });
     return [
-      { ...column("workDate", "Дата", 125), pinned: "left", width: 125, maxWidth: 145, suppressSizeToFit: true, filterParams: { ...personnelFilterParams, kind: "date", rowSortOptions: personnelReportSortOptions }, initialSort: "desc", initialSortIndex: 0, comparator: (a: string, b: string) => dateKey(a).localeCompare(dateKey(b)) },
+      { ...column("workDate", "Дата", 125), pinned: "left", initialWidth: 125, maxWidth: 145, suppressSizeToFit: true, filterParams: { ...personnelFilterParams, kind: "date", rowSortOptions: personnelReportSortOptions }, initialSort: "desc", initialSortIndex: 0, comparator: (a: string, b: string) => dateKey(a).localeCompare(dateKey(b)) },
       ...(["createdAt", "updatedAt"] as const).map((field): ColDef<TableRow> => ({
         colId: field, headerName: field === "createdAt" ? "Добавлено" : "Изменено", hide: true, lockVisible: true,
         suppressColumnsToolPanel: true, filter: false, sortable: true, valueGetter: valueGetter(field),
         comparator: activityComparator,
       })),
-      { ...column("equipment", "Техника", 250, 2), pinned: "left", width: 280, maxWidth: 380 },
+      { ...column("equipment", "Техника", 250, 2), pinned: "left", initialWidth: 280, maxWidth: 380 },
       column("status", "Статус", 165),
       column("responsibleUserName", "Ответственный", 190),
       column("organization", "Организация", 160),
