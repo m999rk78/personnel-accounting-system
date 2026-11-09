@@ -28,11 +28,12 @@ for (const variant of variants) {
 
 function harness(variant, value = "8", mode = "success") {
   const editor = { session: 4, employeeId: 1, equipmentId: 1, workDate: "2026-11-01", rowIndex: 0, columnIndex: 0, value, error: "", selectAll: false };
-  const state = { editor, writes: 0, focus: 0, moves: 0, waiting: [] };
+  const state = { editor, writes: 0, focus: 0, moves: 0, waiting: [], persisted: [], moveTargets: [] };
   const session = { current: editor.session }, cancel = { current: false }, inFlight = { current: null };
   const update = next => { state.editor = typeof next === "function" ? next(state.editor) : next; };
-  const persist = async () => {
+  const persist = async (...args) => {
     state.writes++;
+    state.persisted.push(args);
     if (mode === "pending") await new Promise((resolve, reject) => state.waiting.push({ resolve, reject }));
     if (mode === "failure") throw new Error("Synthetic API failure");
     return true;
@@ -41,6 +42,7 @@ function harness(variant, value = "8", mode = "success") {
     inlineSession: session, timesheetInlineSession: session,
     inlineCancelPending: cancel, timesheetInlineCancelPending: cancel,
     inlineSaveInFlight: inFlight, timesheetInlineSaveInFlight: inFlight,
+    clipboardViewScope: { current: "1:2026-11:1:days=1|2" },
   };
   const scope = {
     ...refs,
@@ -51,9 +53,10 @@ function harness(variant, value = "8", mode = "success") {
     marksByCell: new Map(), timesheetMarksByCell: new Map(), entriesByCell: new Map(),
     cellKey: (id, date) => `${id}:${date}`, equipmentCellKey: (id, date) => `${id}:${date}`,
     persistMark: persist, persistEquipmentTimesheetMark: persist,
-    inlineGridFocusPending: { current: false },
+    inlineGridFocusPending: { current: false }, timesheetInlineGridFocusPending: { current: false },
     restoreEquipmentTimesheetFocus: () => { state.focus++; },
     focusClipboardCell: () => { state.moves++; }, notifyTimesheetClipboard() {},
+    focusEquipmentTimesheetCell: (...coordinates) => { state.moves++; state.moveTargets.push(coordinates); }, notifyEquipmentTimesheetClipboard() {},
     savingMark: false, savingTimesheetMark: false,
     savingBulkMarks: false, savingBulkTimesheetMarks: false, loading: false,
     payload: { canCreate: true, canUpdate: true, canCreateTimesheet: true, canUpdateTimesheet: true },
@@ -136,8 +139,9 @@ for (const variant of variants) {
   });
 }
 
-test("personnel: invalid arrow-key movement keeps the editor instead of discarding it", async () => {
-  const env = harness(variants[1], "99");
+for (const variant of variants) {
+test(`${variant.name}: invalid arrow-key movement keeps the editor instead of discarding it`, async () => {
+  const env = harness(variant, "99");
   env.dispatch("keydown", "ArrowRight");
   await env.settled();
   assert.equal(env.state.editor.value, "99");
@@ -145,3 +149,42 @@ test("personnel: invalid arrow-key movement keeps the editor instead of discardi
   assert.equal(env.state.moves, 0);
   assert.equal(env.state.writes, 0);
 });
+
+test(`${variant.name}: completing an edit after day filters change does not move selection into a different date`, async () => {
+  const env = harness(variant, "8", "pending");
+  env.dispatch("keydown", "ArrowRight");
+  assert.equal(env.state.writes, 1);
+  env.refs.clipboardViewScope.current = "1:2026-11:1:days=6";
+  env.state.waiting[0].resolve();
+  await env.settled();
+  assert.equal(env.state.editor, null);
+  assert.equal(env.state.moves, 0);
+});
+
+test(`${variant.name}: arrow navigation waits for acknowledgement and writes once when blur follows`, async () => {
+  const env = harness(variant, "8", "pending");
+  env.dispatch("keydown", "ArrowDown");
+  env.dispatch("blur");
+  assert.equal(env.state.writes, 1);
+  assert.equal(env.state.moves, 0);
+  env.state.waiting[0].resolve(); await env.settled();
+  assert.equal(env.state.editor, null);
+  assert.equal(env.state.moves, 1);
+});
+}
+
+for (const [value, productiveHours, downtimeHours] of [["0", 0, 0], ["П 2", 0, 2], ["8/2", 8, 2]]) {
+  test(`equipment: arrow completion preserves productive/downtime semantics for ${value}`, async () => {
+    const env = harness(variants[0], value);
+    env.dispatch("keydown", "ArrowRight"); await env.settled();
+    assert.equal(env.state.moves, 1);
+    assert.deepEqual(env.state.persisted[0][1], { clear: false, productiveHours, downtimeHours, note: "" });
+  });
+}
+
+for (const [key, target] of [["ArrowLeft", [0, -1]], ["ArrowRight", [0, 1]], ["ArrowUp", [-1, 0]], ["ArrowDown", [1, 0]]]) {
+  test(`equipment: ${key} uses the edited visible row and date coordinates`, async () => {
+    const env = harness(variants[0]); env.dispatch("keydown", key); await env.settled();
+    assert.deepEqual(env.state.moveTargets, [target]);
+  });
+}

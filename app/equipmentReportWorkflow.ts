@@ -41,10 +41,13 @@ export function assertEquipmentReportSiteAccess(user: Actor, siteId: number) {
   }
 }
 
-export function assertEquipmentReportOwner(user: Actor, report: Pick<ReportIdentity, "siteId" | "ownerUserId">) {
+export function assertEquipmentReportOwner(user: Actor, report: Pick<ReportIdentity, "siteId" | "ownerUserId" | "status">) {
   assertEquipmentReportSiteAccess(user, report.siteId);
   if (user.role === "foreman" && report.ownerUserId !== user.id) {
     throw new EquipmentReportError("Прораб может изменять только свою часть отчёта.", 403, "REPORT_FORBIDDEN");
+  }
+  if (report.ownerUserId !== user.id && (report.status === "draft" || report.status === "rejected")) {
+    throw new EquipmentReportError("Черновик доступен только его автору.", 403, "REPORT_FORBIDDEN");
   }
 }
 

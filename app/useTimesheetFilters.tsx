@@ -6,7 +6,7 @@ import type { ColDef, GridApi, IFilterParams, PostProcessPopupParams } from "ag-
 import { gridTheme } from "./gridTheme";
 import { gridLocaleRu } from "./gridLocaleRu";
 import { compareGridValues } from "./gridFilterModel";
-import { enterpriseFilterParams } from "./GridEnterpriseFilters";
+import { enterpriseFilterParams, type EnterpriseFilterOptions } from "./GridEnterpriseFilters";
 import type { TimesheetFiltersContextValue } from "./TimesheetColumnFilter";
 import { IMPORT_ORDER_COLUMN, importOrderColumnState, shouldApplyImportOrder } from "./importOrderSorting";
 
@@ -22,10 +22,10 @@ type Snapshot = { keys: string[] | null; filters: string[]; sorts: { id: string;
 const EMPTY: Snapshot = { keys: null, filters: [], sorts: [] };
 
 /** One native AG row model supplies filters/sorts to the existing spreadsheet cells. */
-export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, importOrder }: { rows: readonly T[]; columns: readonly TimesheetFilterColumn<T>[]; getRowId: (row: T) => string; resetKey: string; importOrder?: { rank: (row: T) => number; activation: number; ready: boolean; defaultSort: boolean } }) {
+export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, importOrder, presentation = "full", includeConditions = true }: { rows: readonly T[]; columns: readonly TimesheetFilterColumn<T>[]; getRowId: (row: T) => string; resetKey: string; importOrder?: { rank: (row: T) => number; activation: number; ready: boolean; defaultSort: boolean }; presentation?: EnterpriseFilterOptions["presentation"]; includeConditions?: boolean }) {
   const apiRef = useRef<GridApi<T> | null>(null);
   const [api, setApi] = useState<GridApi<T> | null>(null);
-  const anchor = useRef<{ columnId: string; trigger: HTMLButtonElement } | null>(null);
+  const anchor = useRef<{ columnId: string; trigger: HTMLElement } | null>(null);
   const popup = useRef<HTMLElement | null>(null);
   const [native, setNative] = useState(false);
   const [snapshot, setSnapshot] = useState<Snapshot>(EMPTY);
@@ -48,6 +48,8 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
     comparator: compareGridValues,
     filter: native ? "agMultiColumnFilter" : column.kind === "number" ? "agNumberColumnFilter" : column.kind === "date" ? "agDateColumnFilter" : "agTextColumnFilter",
     filterParams: native ? (params: IFilterParams) => enterpriseFilterParams(params, {
+      presentation,
+      includeConditions,
       kind: column.kind ?? "text",
       valueFormatter: ({ value }) => column.valueFormatter?.(value) ?? (value == null || value === "" ? "(Пустые)" : String(value)),
       ...(column.presets?.length ? { stateFilter: {
@@ -59,7 +61,7 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
     colId: IMPORT_ORDER_COLUMN, headerName: "Порядок импорта", hide: true, lockVisible: true, suppressColumnsToolPanel: true,
     sortable: true, filter: false, valueGetter: (params: { data?: T }) => params.data ? importRank(params.data) : null,
     comparator: (left: number, right: number) => left - right,
-  }] : [])], [columns, native, importRank]);
+  }] : [])], [columns, native, importRank, presentation, includeConditions]);
   const previousImportActivation = useRef(0);
   const defaultImportApplied = useRef<GridApi<T> | null>(null);
   const importActivation = importOrder?.activation ?? 0;
@@ -81,11 +83,11 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
     anchor.current = null; popup.current = null;
     setOpenColumnId(null); publish(api);
   }, [publish]);
-  const open = useCallback((columnId: string, trigger: HTMLButtonElement) => {
+  const open = useCallback((columnId: string, trigger: HTMLElement, wasOpen?: boolean) => {
     const api = apiRef.current;
     if (!api || api.isDestroyed()) return;
-    if (anchor.current?.columnId === columnId && popup.current?.isConnected) { api.hideColumnFilter(); setOpenColumnId(null); return; }
-    api.hideColumnFilter(); anchor.current = { columnId, trigger };
+    if (wasOpen ?? (anchor.current?.columnId === columnId && popup.current?.isConnected)) { api.hideColumnFilter(); setOpenColumnId(null); return; }
+    api.hideColumnFilter(); anchor.current = { columnId, trigger }; popup.current = null;
     api.showColumnFilter(columnId);
   }, []);
   const updatePopupPosition = useCallback(() => {
@@ -93,16 +95,24 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
     const ePopup = popup.current;
     if (!target || !ePopup) return;
     const rect = target.trigger.getBoundingClientRect();
-    const width = Math.max(0, Math.min(400, window.innerWidth - 24));
+    const width = Math.max(0, Math.min(presentation === "checklist" ? 334 : presentation === "compact" ? 286 : 400, window.innerWidth - 24));
     if (ePopup.style.position !== "fixed") ePopup.style.position = "fixed";
     if (ePopup.style.width !== `${width}px`) ePopup.style.width = `${width}px`;
+    const below = Math.max(0, window.innerHeight - rect.bottom - 18);
+    const above = Math.max(0, rect.top - 18);
+    // Keep the trigger accessible, including when the selected-day bar moves
+    // the header lower. Clamping a tall popup to the viewport would cover it.
+    const preferredHeight = Math.min(presentation === "checklist" ? 540 : presentation === "compact" ? 430 : 700, window.innerHeight - 24);
+    const placeBelow = below >= preferredHeight || below >= above;
+    const maxHeight = `${Math.floor(Math.min(preferredHeight, placeBelow ? below : above))}px`;
+    if (ePopup.style.maxHeight !== maxHeight) ePopup.style.maxHeight = maxHeight;
     const height = ePopup.getBoundingClientRect().height;
     const left = `${Math.round(Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)))}px`;
-    const top = `${Math.round(Math.max(12, Math.min(rect.bottom + 6, window.innerHeight - height - 12)))}px`;
+    const top = `${Math.round(Math.max(12, placeBelow ? rect.bottom + 6 : rect.top - height - 6))}px`;
     if (ePopup.style.left !== left) ePopup.style.left = left;
     if (ePopup.style.top !== top) ePopup.style.top = top;
     if (ePopup.style.zIndex !== "1200") ePopup.style.zIndex = "1200";
-  }, []);
+  }, [presentation]);
   const positionPopup = useCallback(({ ePopup }: PostProcessPopupParams<T>) => {
     const target = anchor.current;
     if (!target || !ePopup.classList.contains("ag-filter-menu")) return;
@@ -148,20 +158,52 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
       window.removeEventListener("resize", schedule);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [openColumnId, updatePopupPosition]);
+  }, [openColumnId, updatePopupPosition, snapshot.filters]);
   const byId = useMemo(() => new Map(rows.map(row => [getRowId(row), row])), [rows, getRowId]);
+  const dayColumnIds = useMemo(() => new Set(columns.flatMap(column => /^\d{4}-\d{2}-\d{2}$/.test(column.colId) ? [column.colId] : [])), [columns]);
+  const dayFilterIds = useMemo(() => snapshot.filters.filter(id => dayColumnIds.has(id)), [snapshot.filters, dayColumnIds]);
+  const clearDayFilters = useCallback(async () => {
+    const api = apiRef.current;
+    if (!api || api.isDestroyed()) return;
+    api.hideColumnFilter();
+    for (const id of Object.keys(api.getFilterModel()).filter(id => dayColumnIds.has(id))) {
+      if (api.isDestroyed()) return;
+      await api.setColumnFilterModel(id, null);
+    }
+    if (!api.isDestroyed()) { api.onFilterChanged(); publish(api); }
+  }, [dayColumnIds, publish]);
   const visibleRows = snapshot.keys === null ? [...rows] : snapshot.keys.flatMap(key => { const row = byId.get(key); return row ? [row] : []; });
   const context = useMemo<TimesheetFiltersContextValue>(() => ({
-    open, openColumnId, activeColumns: new Set(snapshot.filters),
+    open, openColumnId, presentation, activeColumns: new Set(snapshot.filters),
     sorts: new Map(snapshot.sorts.map(sort => [sort.id, { direction: sort.direction, priority: sort.priority }])),
-  }), [open, openColumnId, snapshot.filters, snapshot.sorts]);
+  }), [open, openColumnId, presentation, snapshot.filters, snapshot.sorts]);
+  const columnActions = useMemo(() => ({
+    canSort: (columnId: string) => Boolean(api && columns.some(column => column.colId === columnId)),
+    getSort: (columnId: string) => snapshot.sorts.find(sort => sort.id === columnId)?.direction ?? null,
+    sort: (columnId: string, direction: "asc" | "desc" | null) => {
+      const grid = apiRef.current;
+      if (!grid || grid.isDestroyed() || !grid.getColumn(columnId)?.isSortable()) return;
+      grid.hideColumnFilter();
+      grid.applyColumnState({ state: [{ colId: columnId, sort: direction, sortIndex: direction ? 0 : null }],
+        ...(direction ? { defaultState: { sort: null, sortIndex: null } } : {}) });
+      publish(grid);
+    },
+    openFilter: (columnId: string, trigger: HTMLElement) => open(columnId, trigger, false),
+  }), [api, columns, snapshot.sorts, open, publish]);
   const controller = <div className="timesheet-filter-engine" aria-hidden="true"><AgGridReact<T> key={resetKey}
     theme={gridTheme} localeText={gridLocaleRu} rowData={rows as T[]} columnDefs={definitions} getRowId={({ data }) => getRowId(data)}
     headerHeight={0} rowHeight={1} rowBuffer={0} suppressCellFocus suppressHeaderFocus suppressColumnVirtualisation
     enableFilterHandlers animateRows={false} popupParent={typeof document === "undefined" ? undefined : document.body} postProcessPopup={positionPopup}
     onGridReady={({ api }) => { apiRef.current = api; setApi(api); setNative(api.isModuleRegistered("MultiFilterModule") && api.isModuleRegistered("SetFilterModule")); setSnapshot(EMPTY); setOpenColumnId(null); publish(api); }}
     onModelUpdated={({ api }) => publish(api)} onFilterChanged={({ api }) => publish(api)} onSortChanged={({ api }) => publish(api)}
-    onColumnMenuVisibleChanged={({ visible, column }) => { if (!visible && column?.getColId() === anchor.current?.columnId) { setOpenColumnId(null); anchor.current?.trigger.focus({ preventScroll: true }); popup.current = null; } }}
+    onColumnMenuVisibleChanged={({ visible, column, key }) => {
+      if (key !== "columnFilter" || column?.getColId() !== anchor.current?.columnId) return;
+      if (!visible && !popup.current?.isConnected) {
+        setOpenColumnId(null);
+        if (document.activeElement === document.body) anchor.current?.trigger.focus({ preventScroll: true });
+        popup.current = null;
+      }
+    }}
     onGridPreDestroyed={() => { popup.current = null; anchor.current = null; apiRef.current = null; }}/></div>;
-  return { rows: visibleRows, context, controller, activeCount: snapshot.filters.length + snapshot.sorts.length, isActive: snapshot.filters.length > 0 || snapshot.sorts.length > 0, reset };
+  return { rows: visibleRows, context, controller, columnActions, dayFilterIds, clearDayFilters, activeCount: snapshot.filters.length + snapshot.sorts.length, isActive: snapshot.filters.length > 0 || snapshot.sorts.length > 0, reset };
 }

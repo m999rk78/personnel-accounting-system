@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { AllEnterpriseModule } from "ag-grid-enterprise";
 import { AgGridProvider } from "ag-grid-react";
 import { PersonnelReportWorkspace } from "../../app/PersonnelReportWorkspace";
+import { TableOrderProvider } from "../../app/TableRowMoves";
 import { ExcelExportPreviewPage } from "../../app/ExcelExportPreview";
 import type { GridEmployee, GridOption } from "../../app/AgDataGrids";
 import "../../app/globals.css";
@@ -16,7 +17,7 @@ type FixtureCatalog = {
   mainWorkTypes: GridOption[];
   subworkTypes: GridOption[];
   masters: GridOption[];
-  scenario: "default" | "workflow" | "conflicts";
+  scenario: "default" | "workflow" | "conflicts" | "tabs" | "autosave" | "preferences" | "defaults";
   runtimeCatalog: boolean;
 };
 const permissions = { create: true, update: true, delete: true };
@@ -25,6 +26,7 @@ const actors = {
   foreman2: { id: 11, fullName: "Борис Другая Бригада", role: "foreman" as const },
   superadmin: { id: 30, fullName: "Администратор Проверки", role: "superadmin" as const },
   engineer: { id: 20, fullName: "Ирина Проверяющая", role: "engineer" as const },
+  viewer: { id: 40, fullName: "Наблюдатель Проверки", role: "viewer" as const },
 };
 
 type FixtureStatus = {
@@ -79,6 +81,7 @@ function PersonnelReportSmoke() {
   const [role, setRole] = useState<keyof typeof actors>("foreman");
   const [session, setSession] = useState(0);
   const [dirty, setDirty] = useState(false);
+  const [projectId, setProjectId] = useState(1);
   const [catalog, setCatalog] = useState<FixtureCatalog | null>(null);
   const [catalogError, setCatalogError] = useState("");
   useEffect(() => {
@@ -90,7 +93,7 @@ function PersonnelReportSmoke() {
     }).catch((cause) => { if (!controller.signal.aborted) setCatalogError(cause instanceof Error ? cause.message : "Ошибка тестового каталога"); });
     return () => controller.abort();
   }, []);
-  return <main style={{ height: "100vh", minHeight: 650, padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+  return <main style={{ minHeight: "100vh", padding: "16px 16px 0", display: "flex", flexDirection: "column", gap: 10 }}>
     <nav style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
       <strong>Изолированный стенд — рабочая база не подключена</strong>
       <label>Роль в проверке{" "}<select aria-label="Роль в проверке" value={role} onChange={(event) => {
@@ -103,6 +106,7 @@ function PersonnelReportSmoke() {
         <option value="foreman2">Прораб — Борис Другая Бригада</option>
         <option value="superadmin">Супер-админ — Администратор Проверки</option>
         <option value="engineer">Инженер — Ирина Проверяющая</option>
+        <option value="viewer">Наблюдатель — Наблюдатель Проверки</option>
       </select></label>
       <span aria-live="polite">{dirty ? "Есть несохранённые изменения" : "Изменения сохранены"}</span>
       <label>Сценарий{" "}<select aria-label="Сценарий" value={catalog?.scenario ?? "default"} disabled={!catalog || catalog.runtimeCatalog} onChange={async (event) => {
@@ -113,8 +117,9 @@ function PersonnelReportSmoke() {
         setDirty(false);
         setSession(value => value + 1);
       }}>
-        <option value="default">Обычный</option><option value="workflow">Несколько дат и бригад</option><option value="conflicts">Конфликты часов: 2 сотрудника / 2 даты</option>
+        <option value="default">Обычный</option><option value="workflow">Несколько дат и бригад</option><option value="conflicts">Конфликты часов: 2 сотрудника / 2 даты</option><option value="tabs">Личные черновики и статусы</option><option value="autosave">Автосохранение десяти сотрудников</option><option value="preferences">Порядок и ширина колонок</option><option value="defaults">Ширина по содержимому</option>
       </select></label>
+      {catalog?.scenario === "preferences" && <label>Проект{" "}<select aria-label="Проект в проверке" value={projectId} onChange={event => setProjectId(Number(event.target.value))}><option value={1}>Учебный проект</option><option value={2}>Другой проект</option></select></label>}
       <button type="button" onClick={async () => {
         await fetch("/__smoke/reset", { method: "POST" });
         setDirty(false);
@@ -123,11 +128,11 @@ function PersonnelReportSmoke() {
     </nav>
     <FixtureBalances />
     {catalogError && <p role="alert">{catalogError}</p>}
-    <div className="timesheet-workspace-page" style={{ flex: 1, minHeight: 0 }}>
-      {catalog ? <PersonnelReportWorkspace key={`${role}-${session}`} siteId={catalog.site.id} siteName={catalog.site.name} today={today}
+    <div className="page-content personnel-report-page table-workspace-page personnel-report-page-scroll" style={{ minHeight: 0 }}>
+      {catalog ? <TableOrderProvider key={`${role}-${projectId}-${session}`} scope="personnel-report-rows" siteId={catalog.scenario === "preferences" ? projectId : catalog.site.id}><PersonnelReportWorkspace siteId={catalog.scenario === "preferences" ? projectId : catalog.site.id} siteName={catalog.site.name} today={today}
         currentUser={actors[role]} permissions={permissions} employees={catalog.employees}
         shifts={catalog.shifts} zones={catalog.zones} mainWorkTypes={catalog.mainWorkTypes} subworkTypes={catalog.subworkTypes} masters={catalog.masters}
-        loading={false} onDirtyChange={setDirty} /> : !catalogError && <p>Загрузка тестового каталога…</p>}
+        loading={false} onDirtyChange={setDirty} /></TableOrderProvider> : !catalogError && <p>Загрузка тестового каталога…</p>}
     </div>
   </main>;
 }

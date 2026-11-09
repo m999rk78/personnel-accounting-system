@@ -4,17 +4,19 @@ import { useEffect, useRef, useState } from "react";
 import { createCellTextEditSession } from "./cellTextEditing";
 
 /** Keep keystrokes local: updating grid rows while typing can remount the input. */
-export function GridTextEditor({ value, onChange, onBlur, onEnter, focusOnMount = true, selectOnMount = true, placeholder = "ФИО сотрудника" }: {
+export function GridTextEditor({ value, originalValue = value, onChange, onBlur, onEnter, onPendingValue, focusOnMount = true, selectOnMount = true, placeholder = "ФИО сотрудника" }: {
   value: string;
+  originalValue?: string;
   onChange: (value: string) => void;
   onBlur?: () => void;
   onEnter?: () => void;
+  onPendingValue?: (value: string | null) => void;
   focusOnMount?: boolean;
   selectOnMount?: boolean;
   placeholder?: string;
 }) {
   const input = useRef<HTMLInputElement>(null);
-  const [session] = useState(() => createCellTextEditSession(value));
+  const [session] = useState(() => createCellTextEditSession(value, originalValue));
   useEffect(() => {
     if (focusOnMount) { input.current?.focus(); if (selectOnMount) input.current?.select(); else input.current?.setSelectionRange(value.length, value.length); }
   }, [focusOnMount, selectOnMount, value]);
@@ -23,7 +25,8 @@ export function GridTextEditor({ value, onChange, onBlur, onEnter, focusOnMount 
     if (next !== undefined) onChange(next);
   };
   return <input ref={input} className="ag-inline-control" defaultValue={value} placeholder={placeholder} aria-label={placeholder}
-    onBlur={() => { commit(); onBlur?.(); }}
+    onInput={event => onPendingValue?.(event.currentTarget.value)}
+    onBlur={() => { commit(); onPendingValue?.(null); onBlur?.(); }}
     onKeyDown={(event) => {
       // Text selection, cursor movement and native undo belong to the input.
       event.stopPropagation();
@@ -31,8 +34,8 @@ export function GridTextEditor({ value, onChange, onBlur, onEnter, focusOnMount 
       if (event.key !== "Enter" && event.key !== "Escape") return;
       event.preventDefault();
       const grid = input.current?.closest<HTMLElement>(".localized-grid-body");
-      if (event.key === "Escape") { session.cancel(); onBlur?.(); }
-      else { commit(); (onEnter ?? onBlur)?.(); }
+      if (event.key === "Escape") { session.cancel(); onPendingValue?.(null); onBlur?.(); }
+      else { commit(); onPendingValue?.(null); (onEnter ?? onBlur)?.(); }
       grid?.focus({ preventScroll: true });
     }} />;
 }

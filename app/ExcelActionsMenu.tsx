@@ -10,7 +10,7 @@ export type ExcelMenuAction = {
   disabled?: boolean;
 };
 
-export function ExcelActionsMenu({ actions, label = "Excel" }: { actions: ExcelMenuAction[]; label?: string }) {
+export function ExcelActionsMenu({ actions, label = "Excel", ariaLabel = "Действия с Excel" }: { actions: ExcelMenuAction[]; label?: string; ariaLabel?: string }) {
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<ChoiceMenuPosition | null>(null);
   const [portalHost, setPortalHost] = useState<Element | null>(null);
@@ -107,7 +107,7 @@ export function ExcelActionsMenu({ actions, label = "Excel" }: { actions: ExcelM
       <span>{label}</span>
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m6 8 4 4 4-4" /></svg>
     </button>
-    {open && position && portalHost && createPortal(<div ref={menu} id={menuId} className="excel-menu-popover" role="menu" aria-label="Действия с Excel" tabIndex={-1} onKeyDown={navigate} style={{ top: position.top, bottom: position.bottom, left: position.left, width: position.width, maxHeight: position.maxHeight }}>
+    {open && position && portalHost && createPortal(<div ref={menu} id={menuId} className="excel-menu-popover" role="menu" aria-label={ariaLabel} tabIndex={-1} onKeyDown={navigate} style={{ top: position.top, bottom: position.bottom, left: position.left, width: position.width, maxHeight: position.maxHeight }}>
       {actions.map((action) => <button type="button" role="menuitem" key={action.label} disabled={action.disabled} onClick={() => { close(true); void action.onSelect(); }}>{action.label}</button>)}
     </div>, portalHost)}
   </div>;

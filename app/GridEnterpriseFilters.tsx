@@ -7,10 +7,15 @@ import { CustomSelect } from "./CustomSelect";
 import { useGridFilterPopup } from "./useGridFilterPopup";
 import { compareGridValues, filterDateKey, normalizeFilterText, type PersonnelFilterModel } from "./gridFilterModel";
 import { IMPORT_ORDER_COLUMN, importOrderSortOption } from "./importOrderSorting";
+import { dateTreeSetFilterParams } from "./DateTreeSetFilter";
+import { ChecklistFilterHeader, checklistValuesChild } from "./ChecklistSetFilter";
+import "./compactGridFilters.css";
 
 type Sort = { columnId: string; sort: "asc" | "desc" | null };
 type SortOption = Sort & { label: string };
 export type EnterpriseFilterOptions = {
+  presentation?: "full" | "compact" | "checklist";
+  includeConditions?: boolean;
   kind?: PersonnelFilterModel["kind"];
   rowSortOptions?: readonly SortOption[];
   valueFormatter?: ISetFilterParams["valueFormatter"];
@@ -29,7 +34,7 @@ const readSorts = (api: GridApi): SortLevel[] => api.getColumnState()
 
 /** A UI-only child of Multi Filter. The actual filtering is done by AG Grid. */
 function EnterpriseFilterSorting(props: SortProps) {
-  const { root: popupRef, attach: attachPopup } = useGridFilterPopup<HTMLDivElement>();
+  const { root: popupRef, attach: attachPopup } = useGridFilterPopup<HTMLDivElement>(props);
   const { api, column, colDef } = props;
   const pending = useRef<SortLevel[] | null>(null);
   const [levels, setLevels] = useState<SortLevel[]>(() => readSorts(api));
@@ -67,6 +72,9 @@ function EnterpriseFilterSorting(props: SortProps) {
     api.addEventListener("filterChanged", applySort);
     return () => { if (!api.isDestroyed()) api.removeEventListener("filterChanged", applySort); };
   }, [api, column]);
+  // Keep this non-filtering child in slot zero so an existing Multi Filter
+  // model still addresses values/conditions at the same indices in both views.
+  if (props.presentation === "compact") return <span ref={popupRef} className="grid-compact-filter-anchor" aria-hidden="true" />;
   const moveLevel = (index: number, offset: number) => {
     const next = [...levels];
     const target = index + offset;
@@ -100,6 +108,7 @@ function EnterpriseFilterSorting(props: SortProps) {
   </div>;
 }
 const sortingChild: ColumnFilter = { component: EnterpriseFilterSorting, doesFilterPass: () => true };
+const checklistHeaderChild: ColumnFilter = { component: ChecklistFilterHeader, doesFilterPass: () => true };
 
 function dateComparator(filter: Date, value: unknown) {
   const key = filterDateKey(value);
@@ -109,13 +118,13 @@ function dateComparator(filter: Date, value: unknown) {
 
 // AG Set Filter virtualises equal-height items. Measure a safe height for the
 // longest label so wrapped values remain readable, including on narrow screens.
-function setCellHeight(api: GridApi, columnId: string) {
+function setCellHeight(api: GridApi, columnId: string, compact = false) {
   const context = document.createElement("canvas").getContext("2d");
   if (!context) return 110;
   // Slightly larger than our 13–14px grid font, with space for the checkbox,
   // padding and scrollbar. Account for word breaks and unbroken identifiers.
-  context.font = "15px Inter, Arial, sans-serif";
-  const width = Math.max(120, Math.min(400, window.innerWidth - 24) - 108);
+  context.font = `${compact ? 13 : 15}px Inter, Arial, sans-serif`;
+  const width = Math.max(120, Math.min(compact ? 286 : 400, window.innerWidth - 24) - (compact ? 80 : 108));
   const space = context.measureText(" ").width;
   const labels = new Set<string>();
   api.forEachNode(node => labels.add(String(api.getCellValue({ rowNode: node, colKey: columnId, useFormatter: true }) ?? "")));
@@ -135,40 +144,47 @@ function setCellHeight(api: GridApi, columnId: string) {
     }
     longest = Math.max(longest, lines);
   }
-  return Math.max(34, longest * 19 + 14);
+  return compact ? Math.max(26, longest * 16 + 4) : Math.max(34, longest * 19 + 14);
 }
 
 export function enterpriseFilterParams(params: IFilterParams, options: EnterpriseFilterOptions): IMultiFilterParams & { buttons: string[]; closeOnApply: boolean } {
   const kind = options.kind ?? "text";
+  const checklist = options.presentation === "checklist";
+  const compact = options.presentation === "compact" || checklist;
   const conditions = kind === "date" ? "agDateColumnFilter" : kind === "number" ? "agNumberColumnFilter" : "agTextColumnFilter";
   const formatter = options.valueFormatter ?? (!params.colDef.filterValueGetter && typeof params.colDef.valueFormatter === "function" ? params.colDef.valueFormatter : undefined);
-  const setParams: ISetFilterParams = {
-    // Select search results as in Excel; the Multi Filter still owns Apply/Cancel.
-    excelMode: "windows",
+  const setParams: ISetFilterParams & { kind?: PersonnelFilterModel["kind"] } = {
+    ...(checklist ? { kind } : {}),
+    // The compact view applies search results immediately; the full view keeps
+    // its existing Excel-style Apply/Cancel boundary.
+    ...(compact ? { applyMiniFilterWhileTyping: true } : { excelMode: "windows" as const }),
     refreshValuesOnOpen: true, suppressClearModelOnRefreshValues: true,
-    showTooltips: true, cellHeight: setCellHeight(params.api, params.column.getColId()),
+    showTooltips: true, cellHeight: kind === "date" ? 36 : checklist ? 34 : setCellHeight(params.api, params.column.getColId(), compact),
     textFormatter: normalizeFilterText,
     comparator: kind === "date" ? (a, b) => filterDateKey(b).localeCompare(filterDateKey(a)) : compareGridValues,
     valueFormatter: formatter ?? (({ value }) => value === null || value === undefined || value === "" ? "(Пустые)" : String(value)),
   };
   const stateFilter = options.stateFilter;
   const stateDefinition: IMultiFilterDef[] = stateFilter ? [{
-    filter: "agSetColumnFilter", title: "Состояние ячейки", display: "accordion",
+    filter: checklist ? checklistValuesChild : "agSetColumnFilter", title: "Состояние ячейки", display: checklist ? "inline" : compact ? "subMenu" : "accordion",
     filterValueGetter: params => stateFilter.getValue(params.data),
     filterParams: {
-      excelMode: "windows",
-      values: stateFilter.values.map(item => item.value), suppressSorting: true, showTooltips: true, cellHeight: 34,
+      ...(checklist ? { ...setParams, kind: "text" as const, isStateChecklist: true } : {}),
+      ...(compact ? { applyMiniFilterWhileTyping: true } : { excelMode: "windows" as const }),
+      values: stateFilter.values.map(item => item.value), suppressSorting: true, showTooltips: true, cellHeight: compact ? 28 : 34,
       textFormatter: normalizeFilterText,
       valueFormatter: ({ value }: { value: unknown }) => stateFilter.values.find(item => item.value === value)?.label ?? String(value ?? ""),
-    } satisfies ISetFilterParams,
+    } satisfies ISetFilterParams & { kind?: PersonnelFilterModel["kind"]; isStateChecklist?: boolean },
   }] : [];
   return {
-    buttons: ["clear", "cancel", "apply"], closeOnApply: true,
+    buttons: compact ? [] : ["clear", "cancel", "apply"], closeOnApply: !compact,
     filters: [
-      { filter: sortingChild, filterParams: { kind, rowSortOptions: options.rowSortOptions } },
-      { filter: "agSetColumnFilter", filterParams: setParams },
+      { filter: checklist ? checklistHeaderChild : sortingChild, filterParams: { kind, rowSortOptions: options.rowSortOptions, presentation: options.presentation } },
+      { filter: checklist ? checklistValuesChild : "agSetColumnFilter", filterParams: kind === "date" && !checklist
+        // Child params also account for this column's sibling date conditions.
+        ? (child: IFilterParams) => ({ ...setParams, ...dateTreeSetFilterParams(child) }) : setParams },
       ...stateDefinition,
-      { filter: conditions, title: kind === "date" ? "Период и условия" : "Дополнительные условия", display: "accordion", filterParams: {
+      ...(checklist || options.includeConditions === false ? [] : [{ filter: conditions, title: compact ? kind === "date" ? "Фильтр по дате" : kind === "number" ? "Числовой фильтр" : "Текстовый фильтр" : kind === "date" ? "Период и условия" : "Дополнительные условия", display: compact ? "subMenu" : "accordion", filterParams: {
         maxNumConditions: 4, numAlwaysVisibleConditions: 1,
         ...(kind === "date" ? { browserDatePicker: true, comparator: dateComparator, isValidDate: (value: unknown) => Boolean(filterDateKey(value)), inRangeInclusive: true, defaultOption: "inRange" } : {}),
         ...(kind === "number" ? { allowedCharPattern: "\\d\\-\\+\\.,\\s", numberParser: (text: string | null) => {
@@ -182,7 +198,7 @@ export function enterpriseFilterParams(params: IFilterParams, options: Enterpris
           { displayKey: "notStartsWith", displayName: "Не начинается с", predicate: ([needle]: string[], value: unknown) => !normalizeFilterText(value).startsWith(normalizeFilterText(needle)) },
           { displayKey: "notEndsWith", displayName: "Не заканчивается на", predicate: ([needle]: string[], value: unknown) => !normalizeFilterText(value).endsWith(normalizeFilterText(needle)) },
         ] } : {}),
-      } },
+      } } satisfies IMultiFilterDef]),
     ],
   };
 }

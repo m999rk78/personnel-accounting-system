@@ -12,7 +12,7 @@
 .grid-filter-chips button > span:first-child { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 .grid-filter-clear { padding:5px 0; border:0; background:transparent; color:#714600; font-size:12px; text-decoration:underline; text-underline-offset:3px; }
 /* Custom headers already have one button which also shows the active state. */
-.localized-grid .ag-header-cell:has(.ag-column-filter) .ag-filter-icon { display:none!important; }
+.ag-grid-shell .ag-header-cell:has(.ag-column-filter) .ag-filter-icon { display:none!important; }
 /* Let the viewport constrain the popup; keep its heading and actions visible. */
 .ag-filter-menu:has(.personnel-filter) { position:fixed; display:flex; flex-direction:column; width:auto; max-width:calc(100vw - 24px); max-height:calc(100dvh - 24px); overflow:hidden; border:1px solid #dcdfe4; border-radius:12px; background:#fff; box-shadow:0 12px 40px #1f293726,0 2px 6px #1f293714; }
 .ag-filter-menu:has(.personnel-filter) > .ag-filter,

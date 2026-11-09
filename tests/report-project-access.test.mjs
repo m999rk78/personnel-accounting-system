@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { rolePermissionTemplate } from "../app/permissionModel.ts";
+import { compileModuleGraph } from "./fixtures/compile-module-graph.mjs";
 
 async function moduleSource(path, replacements) {
   let source = ts.transpileModule(await readFile(new URL(path, import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
@@ -30,12 +31,7 @@ function database(seed, queries) {
 
 for (const domain of ["personnel", "equipment"]) {
   const title = domain[0].toUpperCase() + domain.slice(1);
-  const storePromise = moduleSource(`../app/${domain}ReportStore.ts`, {
-    "./personnelImportOrderServer": new URL("../app/personnelImportOrderServer.ts", import.meta.url).href,
-    [`./${domain}ReportWorkflow`]: new URL(`../app/${domain}ReportWorkflow.ts`, import.meta.url).href,
-    "./equipmentExcel": new URL("../app/equipmentExcel.ts", import.meta.url).href,
-    "./equipmentAvailability": new URL("../app/equipmentAvailability.ts", import.meta.url).href,
-  }).then(url => import(url));
+  const storePromise = compileModuleGraph(`app/${domain}ReportStore.ts`).then(url => import(url));
   const engineer = { id: 10, role: "engineer", assignedSiteId: 1, projectAccess: { mode: "selected", siteIds: [1] }, permissions: rolePermissionTemplate("superadmin") };
   const header = siteId => ({ id: 12, siteId, workDate: "2026-10-30", ownerUserId: 30, ownerName: "Другой прораб", revision: 2, status: "submitted", rows: [] });
   const forbidden = error => error.status === 403 && error.code === "REPORT_FORBIDDEN";
@@ -74,9 +70,29 @@ for (const domain of ["personnel", "equipment"]) {
       assert.deepEqual(result.reports.map(report => report.ownerUserId), [30, 31]);
       assert.equal(result.canReview, true);
       const reportQuery = queries.find(query => query.sql.includes("JOIN app_users owner"));
-      assert.deepEqual(reportQuery.values, [siteId]);
-      assert.doesNotMatch(reportQuery.sql, /report\.owner_user_id = \?/);
+      assert.deepEqual(reportQuery.values, [siteId, actor.id]);
+      assert.match(reportQuery.sql, /report\.status IN \('approved', 'submitted'\) OR report\.owner_user_id = \?/);
     }
+  });
+
+  test(`${domain} private drafts and returned reports remain visible only to their author`, async () => {
+    const store = await storePromise;
+    const seed = [
+      { ...header(1), id: 21, status: "draft" },
+      { ...header(1), id: 22, status: "rejected" },
+      { ...header(1), id: 23, status: "submitted" },
+      { ...header(1), id: 24, status: "approved" },
+      { ...header(1), id: 25, status: "draft", ownerUserId: engineer.id },
+      { ...header(1), id: 26, status: "rejected", ownerUserId: engineer.id },
+    ];
+    const queries = [];
+    // Return every header to exercise the defensive visibility filter, not just SQL.
+    const result = await store[`list${title}Reports`](database(seed, queries), engineer, 1, null, null);
+    assert.deepEqual(result.reports.map(report => report.id), [23, 24, 25, 26]);
+    const reportQuery = queries.find(query => query.sql.includes("JOIN app_users owner"));
+    assert.deepEqual(reportQuery.values, [1, engineer.id]);
+    assert.match(reportQuery.sql, /report\.status IN \('approved', 'submitted'\) OR report\.owner_user_id = \?/);
+    assert.ok(queries.every(query => /^SELECT\b/.test(query.sql.trim())));
   });
 }
 

@@ -1,0 +1,30 @@
+.employee-spreadsheet-frame {
+  border-radius: 8px 8px 0 0;
+  box-shadow: none;
+  min-height: 240px;
+}
+.employee-spreadsheet-frame .ag-row .ag-cell {
+  display: flex;
+  align-items: center;
+}
+.employee-spreadsheet-frame .ag-cell-wrapper,
+.employee-spreadsheet-frame .ag-cell-value {
+  min-width: 0;
+  width: 100%;
+}
+.employee-spreadsheet-frame .editable-row .ag-cell {
+  background: #fffcf2;
+}
+.employee-spreadsheet-frame .bitrix-grid-check {
+  min-width: 0;
+  width: 100%;
+}
+.employee-spreadsheet-frame .bitrix-grid-details {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.employee-section > .inline-message {
+  white-space: pre-line;
+  flex-shrink: 0;
+}

@@ -10,10 +10,12 @@ import { normalizePermissionSet, rolePermissionTemplate } from "../app/permissio
 const dataUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const confirmationUrl = dataUrl("export function useConfirmationDialog(){return {confirm:options=>Promise.resolve(globalThis.customRoleUiConfirm?.(options) ?? false),dialog:null};}");
 const fileUrl = name => new URL(`../app/${name}.ts`, import.meta.url).href;
+const userFiltersUrl = dataUrl(`export function useTimesheetFilters(options){globalThis.customRoleUiFilterOptions=options;const ids=globalThis.customRoleUiFilterIds;return {rows:ids?options.rows.filter(row=>ids.includes(row.id)):options.rows,context:{},controller:null,isActive:Boolean(ids),activeCount:ids?1:0,reset(){delete globalThis.customRoleUiFilterIds;}};}`);
+const userFilterHeadingsUrl = dataUrl("export function TimesheetFiltersProvider({children}){return children;}export function TimesheetFilterableHeading({children}){return children;}");
 async function compile(name, replacements = {}) {
   let code = ts.transpileModule(await readFile(new URL(`../app/${name}.tsx`, import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   // Selection keyboard handling is tested separately; this harness exercises roles.
-  for (const [specifier, replacement] of Object.entries({ react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"), "./permissionModel": fileUrl("permissionModel"), "./customRoles.css": dataUrl(""), "./usersRights.css": dataUrl(""), "./useTableEscapeSelection": dataUrl("export function useTableEscapeSelection(){}"), "./useConfirmationDialog": confirmationUrl, ...replacements })) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(replacement));
+  for (const [specifier, replacement] of Object.entries({ react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"), "./permissionModel": fileUrl("permissionModel"), "./customRoles.css": dataUrl(""), "./usersRights.css": dataUrl(""), "./useTableEscapeSelection": dataUrl("export function useTableEscapeSelection(){}"), "./useTimesheetFilters": userFiltersUrl, "./TimesheetColumnFilter": userFilterHeadingsUrl, "./useConfirmationDialog": confirmationUrl, ...replacements })) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(replacement));
   return dataUrl(code);
 }
 const matrixUrl = await compile("PermissionMatrix");
@@ -77,6 +79,39 @@ test("unified settings expose only permitted tabs and keep roles out of the user
   assert.equal(details.props.onEdit, undefined);
   assert.equal(details.props.onEditRole, undefined);
   assert.equal(details.props.onOpenPermissions, undefined);
+});
+
+test("user column filters retain hidden selections and select only currently displayed users", async context => {
+  context.after(() => { delete globalThis.customRoleUiFilterIds; delete globalThis.customRoleUiFilterOptions; });
+  const harness = await componentHarness("UserAccessCards");
+  const users = [
+    { id: 1, fullName: "Иван Активный", email: "ivan@invalid.test", role: "engineer", assignedSiteId: null, status: "active" },
+    { id: 2, fullName: "Пётр Приглашённый", email: "petr@invalid.test", role: "viewer", customRoleName: "Контролёр", assignedSiteId: null, status: "invited" },
+  ];
+  const selections = [];
+  globalThis.customRoleUiFilterIds = [1];
+  const props = { layout: "list", rows: users, drafts: [], sites: [], selectedIds: [2, 99], canDelete: true, onEdit() {}, onSelectionChange: ids => selections.push(ids), onPatchDraft() {}, onCancelEditing() {}, onSave() {}, saving: false };
+  let tree = harness.render(props);
+  assert.equal(globalThis.customRoleUiFilterOptions.presentation, "checklist");
+  assert.deepEqual(globalThis.customRoleUiFilterOptions.columns.map(column => [column.colId, column.headerName]), [["fullName", "ФИО"], ["roleStatus", "Роль и статус"]]);
+  assert.equal(globalThis.customRoleUiFilterOptions.columns[1].getValue(users[1]), "Контролёр · Приглашён");
+  assert.match(textOf(tree), /Найдено 1 из 2/);
+  assert.equal(allNodes(tree).some(node => node.props["aria-label"] === `Открыть пользователя ${users[1].fullName}`), false);
+  const selectAll = current => find(current, node => node.props["aria-label"] === "Выбрать всех пользователей");
+  selectAll(tree).props.onChange();
+  assert.deepEqual(selections.at(-1), [2, 99, 1], "Selecting filtered rows must not remove users selected before applying the filter");
+  tree = harness.render({ ...props, selectedIds: selections.at(-1) });
+  assert.equal(selectAll(tree).props.checked, true);
+  selectAll(tree).props.onChange();
+  assert.deepEqual(selections.at(-1), [2, 99], "Clearing the filtered selection must not clear hidden rows");
+  const cards = harness.render({ ...props, layout: "cards" });
+  assert.equal(textOf(cards).includes(users[1].fullName), true, "The optional cards layout retains its existing search-only behavior");
+  assert.equal(allNodes(cards).some(node => node.props.className === "users-list-filter-reset"), false);
+  tree = harness.render(props);
+  find(tree, node => node.props.className === "users-list-filter-reset").props.onClick();
+  tree = harness.render(props);
+  assert.equal(textOf(tree).includes("Найдено"), false);
+  assert.equal(allNodes(tree).some(node => node.props["aria-label"] === `Открыть пользователя ${users[1].fullName}`), true);
 });
 
 test("delegated rights managers retain user permission editing without system user access", async () => {

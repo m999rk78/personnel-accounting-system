@@ -6,6 +6,7 @@ import { createEquipmentTimesheetXlsx } from "../app/placementXlsx.ts";
 import { equipmentUnavailableReason, isEquipmentUnavailable } from "../app/equipmentAvailability.ts";
 import { buildEquipmentCarryoverDrafts } from "../app/equipmentCarryover.ts";
 import { buildEquipmentTimesheetRange, selectEquipmentTimesheetRange } from "../app/timesheetExportRange.ts";
+import { timesheetSizingColumns } from "../app/timesheetColumnSizing.ts";
 
 test("loads and combines equipment timesheet dates from different months", () => {
   const unit = { id: 3, organization: "РХИ", equipmentType: "Кран", brand: "SANY", model: "", registrationNumber: "001" };
@@ -139,6 +140,8 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   const assignmentMigration = await readFile(new URL("../drizzle-postgres/0010_equipment_project_assignments.sql", import.meta.url), "utf8");
   const timesheetMigration = await readFile(new URL("../drizzle-postgres/0011_equipment_timesheet_marks.sql", import.meta.url), "utf8");
   const grids = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const catalogGrids = await readFile(new URL("../app/EquipmentDirectoryGrids.tsx", import.meta.url), "utf8");
+  const catalogFooter = await readFile(new URL("../app/AdminGridFooter.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   const timesheetFilters = await readFile(new URL("../app/equipmentTimesheetFilters.ts", import.meta.url), "utf8");
 
@@ -187,21 +190,35 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(view, /Убрать из проекта/);
   assert.match(view, /sites={payload\?\.sites \?\? \[\]}/);
   assert.match(view, /assignedSiteName/);
-  assert.match(view, /Редактируется:/);
+  assert.match(view, /pendingCount=\{unitDrafts\.length\}/);
   assert.match(view, /Удалить технику/);
   assert.match(view, /function EquipmentDeleteConfirmation/);
   assert.match(view, /deleteConfirmationTarget === "daily"[\s\S]*deleteConfirmationTarget === "registry"[\s\S]*deleteConfirmationTarget === "project"/);
   assert.match(view, /Удалить выбранную технику\?/);
   assert.match(view, /Убрать выбранную технику из проекта\?/);
   assert.doesNotMatch(view, /window\.confirm|\bconfirm\s*\(/);
-  assert.match(view, /Сохранить изменения/);
+  assert.match(catalogFooter, /Сохранить изменения/);
+  assert.match(view, /onSave=\{\(\) => void saveUnits\(\)\}/);
   assert.match(view, /normalize\(entry\.subworkTypeName\)\.includes\("простой"\)/);
   assert.match(view, /equipment-timesheet-summary timesheet-top-summary/);
-  assert.match(view, /onScroll=\{\(event\) => syncTimesheetHeaderScroll\(event\.currentTarget\)\}/);
+  assert.match(view, /<NativeTimesheetPageScroll viewportRef=\{timesheetClipboardShellRef\} rowCount=\{monthRows\.length\}/);
+  assert.doesNotMatch(view, /syncTimesheetHeaderScroll|resetTimesheetHeaderScroll/);
   assert.match(view, /section === "month" \? "timesheet-page"/);
   assert.match(view, /<ExcelActionsMenu actions=\{\[\s*\{ label: "Экспорт в Excel", onSelect: openTimesheetExportPreview, disabled: loading \|\| monthRows\.length === 0 \}/);
   assert.match(view, /className="equipment-total"><small>Всего<\/small><strong>\{monthSummary\.total\} ч\.<\/strong>/);
-  assert.match(view, /timesheet-fill-row[\s\S]*colSpan=\{monthDays\.length \+ 6\}/);
+  // Empty/filler rows must follow the same visible tracks as the real table,
+  // not the unfiltered calendar length (selected days can be non-contiguous).
+  assert.match(view, /const monthColumnResize = useTimesheetColumnResize\(timesheetClipboardShellRef, \{\s*kind: "equipment", dayCount: monthDays\.length, dayNumbers: visibleMonthDays/);
+  assert.match(view, /timesheet-fill-row[^\n]*colSpan=\{monthColumnResize\.columnCount\}/);
+  for (const dayCount of [28, 29, 30, 31]) {
+    const columns = timesheetSizingColumns("equipment", dayCount);
+    assert.equal(columns.length, dayCount + 6, "Full-month filler spans three identity columns, all days and three totals");
+  }
+  for (const visibleDays of [[6, 8], [30], []]) {
+    const columns = timesheetSizingColumns("equipment", 30, true, visibleDays);
+    assert.deepEqual(columns.map(column => column.id), ["number", "equipment", "organization", ...visibleDays.map(day => `day-${day}`), "productive", "downtime", "total"]);
+    assert.equal(columns.length, visibleDays.length + 6, "Filtered filler cannot create columns for hidden dates");
+  }
   assert.match(view, /TimesheetFilterableHeading/);
   assert.match(view, /label="Техника"/);
   assert.match(view, /label="Организация"/);
@@ -277,17 +294,20 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.doesNotMatch(view, /Назначить на проект/);
   assert.doesNotMatch(view, /equipment-assignment-grid/);
   assert.match(grids, /export function EquipmentDailyAgGrid/);
-  assert.match(grids, /export function EquipmentRegistryAgGrid/);
-  assert.match(grids, /export function ProjectEquipmentAgGrid/);
-  assert.match(grids, /В проекте пока нет техники/);
-  assert.match(grids, /headerName: "Проект"/);
-  assert.match(grids, /projectSiteId/);
+  assert.match(grids, /export \{ EquipmentRegistryAgGrid, ProjectEquipmentAgGrid \} from "\.\/EquipmentDirectoryGrids"/);
+  assert.match(catalogGrids, /export function EquipmentRegistryAgGrid/);
+  assert.match(catalogGrids, /export function ProjectEquipmentAgGrid/);
+  assert.match(catalogGrids, /CatalogSpreadsheetGrid<GridEquipmentUnit, ProjectEquipmentDraft>/);
+  assert.match(catalogGrids, /canUpdate=\{false\}/);
+  assert.match(catalogGrids, /headerName: "Проект"/);
+  assert.match(catalogGrids, /projectSiteId/);
   assert.match(grids, /selectAll: "filtered"/);
   assert.match(grids, /onFilterChanged/);
   assert.match(grids, /function EquipmentCombobox/);
-  assert.equal((grids.match(/useState<ChoiceMenuPosition \| null>\(null\)/g) ?? []).length, 2);
-  assert.equal((grids.match(/open && position && typeof document !== "undefined" && createPortal/g) ?? []).length, 2);
-  assert.doesNotMatch(grids, /useState\(\{ top: 0, left: 0, width: (?:360|420) \}\)/);
+  const equipmentCombobox = grids.slice(grids.indexOf("function EquipmentCombobox"), grids.indexOf("export function EquipmentDailyAgGrid"));
+  assert.match(equipmentCombobox, /useState<ChoiceMenuPosition \| null>\(null\)/);
+  assert.match(equipmentCombobox, /open && position && typeof document !== "undefined" && createPortal/);
+  assert.doesNotMatch(equipmentCombobox, /useState\(\{ top: 0, left: 0, width: (?:360|420) \}\)/);
   assert.match(grids, /Недоступна по табелю/);
   assert.match(grids, /equipment-plan-blocked/);
   assert.match(grids, /Начните вводить название техники/);
@@ -367,7 +387,8 @@ test("separates the daily equipment report into foreman contributions", async ()
   assert.match(view, /payload\.currentUserRole !== "foreman" \|\| !payload\.canCreateDaily\) return/);
   assert.match(view, /workDate !== today \|\| payload\?\.workDate !== workDate[\s\S]*scope=carryover/);
   assert.match(view, /equipmentCarryoverMode = section === "daily" && workDate === today[\s\S]*payload\.currentUserRole === "foreman" && payload\.canCreateDaily/);
-  assert.match(view, /unitDrafts\.length === 0 && selectedUnitIds\.length === 0 && <div className="employee-footer-base">/);
-  assert.match(view, /projectUnitDrafts\.length === 0 && selectedProjectUnitIds\.length === 0 && <div className="employee-footer-base">/);
+  assert.match(view, /compact allowMultiple addLabel="Добавить технику"/);
+  assert.match(view, /compact allowMultiple addLabel="Добавить технику в проект"/);
+  assert.match(view, /onRemoveSelectedDrafts=\{\(\) => \{ const count = removeSelectedDrafts\(\)/);
   assert.match(grids, /headerName: "Ответственный"/);
 });

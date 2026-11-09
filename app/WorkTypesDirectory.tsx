@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { GridApi } from "ag-grid-community";
 import { useWorkspaceTableOrder } from "./TableRowMoves";
@@ -10,11 +10,11 @@ import { downloadExcelFile, excelFileName } from "./excelFiles";
 import { WORK_TYPES_EXCEL_HEADERS, WORK_TYPES_EXCEL_SHEET, WORK_TYPES_EXCEL_WIDTHS, workTypesExcelValues, workTypesTemplateRows } from "./workTypesExcel";
 import type { WorkTypeOption } from "./workTypeHierarchy";
 import { draftHistoryReducer, type DraftHistory, type DraftHistoryAction } from "./personnelSpreadsheet";
-import { workTypeDraft, workTypesArchiveSelection, workTypesDraftErrors, workTypesSavePayload, workTypesWorkspace, type WorkTypeDraft, type WorkTypeEdits, type WorkTypeRow } from "./workTypesWorkspace";
+import { removeNewWorkTypeDrafts, workTypeDraft, workTypesArchiveSelection, workTypesDraftErrors, workTypesSavePayload, workTypesWorkspace, type WorkTypeDraft, type WorkTypeEdits, type WorkTypeRow } from "./workTypesWorkspace";
 import "./workTypesDirectory.css";
 
 type Props = {
-  siteId: number; projectName: string; mainWorkTypes: WorkTypeOption[]; subworkTypes: WorkTypeOption[];
+  siteId: number; currentUserId?: number; projectName: string; mainWorkTypes: WorkTypeOption[]; subworkTypes: WorkTypeOption[];
   canCreate: boolean; canUpdate: boolean; canDelete: boolean; loading?: boolean; onRefresh: () => Promise<void>; onBack: () => void;
   onDirtyChange?: (dirty: boolean) => void;
   headerActionsTargetId?: string;
@@ -57,7 +57,7 @@ export function WorkTypesDirectory(props: Props) {
   const [history, dispatch] = useReducer((state: DraftHistory<WorkTypeEdits>, action: DraftHistoryAction<WorkTypeEdits>) => draftHistoryReducer(state, action), { present: {}, past: [], future: [] });
   const edits = history.present;
   const editsRef = useRef(edits);
-  useEffect(() => { editsRef.current = edits; }, [edits]);
+  useLayoutEffect(() => { editsRef.current = edits; }, [edits]);
   const [selectionVersion, setSelectionVersion] = useState(0);
   const [query, setQuery] = useState("");
   const [headerActionsTarget, setHeaderActionsTarget] = useState<HTMLElement | null>(null);
@@ -116,7 +116,6 @@ export function WorkTypesDirectory(props: Props) {
       setError(message); return;
     }
     change(current => ({ ...current, [row.key]: { ...current[row.key] ?? workTypeDraft(row), ...changes } }));
-    setSelectionVersion(value => value + 1);
   };
   const add = (directoryKind: WorkTypeDraft["directoryKind"], parentKey?: string) => {
     if (locked || !props.canCreate) return;
@@ -124,7 +123,19 @@ export function WorkTypesDirectory(props: Props) {
     for (const grid of grids.current) if (!grid.isDestroyed()) grid.setFilterModel(null);
     const key = `new-${directoryKind}-${crypto.randomUUID()}`;
     change(current => ({ ...current, [key]: { key, directoryKind, name: "", ...(directoryKind === "child" ? { parentKey } : {}) } }));
-    setQuery(""); setSelectionVersion(value => value + 1);
+    setQuery("");
+  };
+  const removeNewRows = (rows: WorkTypeRow[]) => {
+    if (locked || !props.canCreate) return;
+    const keys = rows.filter(row => !row.unassigned && row.id === undefined).map(row => row.key);
+    if (!keys.length) return;
+    stopEditors();
+    try {
+      const result = removeNewWorkTypeDrafts(editsRef.current, keys);
+      if (!result.removedKeys.length) return;
+      change(() => result.edits);
+      setNotice(`Убрано новых строк: ${count(result.removedKeys.length)}. Отменить — Ctrl+Z.`);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось убрать новые строки."); }
   };
   async function request(payload: unknown) {
     const response = await fetch("/api/work-types", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
@@ -223,7 +234,7 @@ export function WorkTypesDirectory(props: Props) {
     <input ref={fileInput} hidden type="file" accept=".xlsx" onChange={event => { const file = event.target.files?.[0]; if (file) void importExcel(file); }}/>
     {error && !archive && <div role="alert" className="message error inline-message"><strong>Проверьте данные</strong><span>{error}</span></div>}
     {notice && <div role="status" className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
-    <WorkTypesTable masters={workspace.masters} details={workspace.details} drafts={edits} errors={errors} query={query} loading={props.loading} disabled={locked} canCreate={props.canCreate} canUpdate={props.canUpdate} canDelete={props.canDelete} selectionVersion={selectionVersion} onEdit={editRows} onPatch={patch} onAdd={add} onArchive={askArchive} onSave={() => void save()} onCancel={() => { stopEditors(true); reset(); setError(""); }} registerGrid={registerGrid}
+    <WorkTypesTable masters={workspace.masters} details={workspace.details} drafts={edits} errors={errors} query={query} loading={props.loading} disabled={locked} canCreate={props.canCreate} canUpdate={props.canUpdate} canDelete={props.canDelete} preferenceScope={{ userId: props.currentUserId ?? 0, siteId: props.siteId }} selectionVersion={selectionVersion} onEdit={editRows} onPatch={patch} onAdd={add} onRemoveNew={removeNewRows} onArchive={askArchive} onSave={() => void save()} onCancel={() => { stopEditors(true); reset(); setError(""); }} registerGrid={registerGrid}
       onEditingChange={(grid, active) => { if (active) activeEditors.current.add(grid); else activeEditors.current.delete(grid); setEditing(activeEditors.current.size > 0); }}
       onBatchStart={() => { batchError.current = ""; batch.current = editsRef.current; }} onBatchEnd={() => { const next = batch.current; batch.current = null; if (batchError.current) { setError(batchError.current); batchError.current = ""; return; } if (next && next !== editsRef.current) change(() => next); }}
       history={{ canUndo: !locked && history.past.length > 0, canRedo: !locked && history.future.length > 0, undo: () => { if (!locked) { stopEditors(true); dispatch({ type: "undo" }); } }, redo: () => { if (!locked) { stopEditors(true); dispatch({ type: "redo" }); } } }}/>

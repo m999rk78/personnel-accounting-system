@@ -8,9 +8,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { collectPersonnelReportHourIssues, inspectPersonnelReportRows, personnelReportRowChanged, validPersonnelReportDate } from "../app/personnelReportWorkflow.ts";
+import { parsePersonnelReportDraftSnapshot } from "../app/personnelReportDraftBuffer.ts";
+import { groupPersonnelReportDates, isPersonnelReportOrderId, isUnsavedPersonnelReportOrderId, movePersonnelReportRows, remapPersonnelReportOrder } from "../app/personnelReportRowOrder.ts";
+import { reconcileRowOrder } from "../app/tableRowOrder.ts";
 
 const TODAY = "2026-10-28";
 const YESTERDAY = "2026-10-27";
+const scenarios = ["default", "workflow", "conflicts", "tabs", "autosave", "preferences", "defaults"];
 let catalogPath;
 let portArgument;
 let scenario = "default";
@@ -22,7 +26,7 @@ for (let index = 0; index < cliArguments.length; index++) {
     if (!catalogPath || catalogPath.startsWith("--")) throw new Error("После --catalog-json укажите путь к локальному JSON-каталогу.");
   } else if (argument === "--scenario") {
     scenario = cliArguments[++index];
-    if (!["default", "workflow", "conflicts"].includes(scenario)) throw new Error("Неизвестный сценарий стенда.");
+    if (!scenarios.includes(scenario)) throw new Error("Неизвестный сценарий стенда.");
   } else if (argument === "--port") {
     portArgument = cliArguments[++index];
     if (!portArgument) throw new Error("После --port укажите номер порта.");
@@ -40,14 +44,20 @@ const site = runtimeCatalog?.site ?? { id: 1, name: "Учебный проект
 const people = runtimeCatalog?.employees?.map((employee) => ({ source: "manual", siteId: site.id, siteName: site.name, ...employee })) ?? [
   { id: 1, fullName: "Иван Тестовый", employmentType: "ОПР", department: "Тестовый участок", position: "Монтажник", source: "manual", siteId: 1, siteName: "Учебный проект" },
   { id: 2, fullName: "Пётр Примеров", employmentType: "ОПР", department: "Тестовый участок", position: "Сварщик", source: "manual", siteId: 1, siteName: "Учебный проект" },
-  { id: 3, fullName: "Анна Демонстрационная", employmentType: "ИТР", department: "Тестовый участок", position: "Мастер", source: "manual", siteId: 1, siteName: "Учебный проект" },
+  { id: 3, fullName: "Анна Демонстрационная", employmentType: scenario === "preferences" ? "ОПР" : "ИТР", department: "Тестовый участок", position: "Мастер", source: "manual", siteId: 1, siteName: "Учебный проект" },
+  ...(scenario === "autosave" ? Array.from({ length: 8 }, (_, index) => ({ id: index + 4, fullName: `Сотрудник Проверочный ${index + 4}`, employmentType: "ОПР", department: "Тестовый участок", position: "Монтажник", source: "manual", siteId: 1, siteName: "Учебный проект" })) : []),
+  ...(scenario === "defaults" ? Array.from({ length: 30 }, (_, index) => ({ id: index + 4,
+    fullName: index === 29 ? "Абдурахманов Магомед Магомедрасулович" : `Сотрудник ${String(index + 4).padStart(2, "0")}`,
+    employmentType: "ОПР", department: index === 29 ? "Управление промышленного строительства" : "МУТТ",
+    position: index === 29 ? "Ведущий специалист по монтажу технологических трубопроводов" : "Монтажник",
+    source: "manual", siteId: 1, siteName: "Учебный проект" })) : []),
 ];
 const directories = {
   shiftId: runtimeCatalog?.shifts ?? [{ id: 1, name: "Дневная" }, { id: 2, name: "Ночная" }],
-  zoneId: runtimeCatalog?.zones ?? [{ id: 1, name: "Зона А" }, { id: 2, name: "Зона Б" }],
-  mainWorkTypeId: runtimeCatalog?.mainWorkTypes ?? [{ id: 1, name: "Монтаж" }, { id: 2, name: "Подготовка" }],
-  subworkTypeId: runtimeCatalog?.subworkTypes ?? [{ id: 1, name: "Установка конструкций", mainWorkTypeId: 1 }, { id: 2, name: "Подготовка площадки", mainWorkTypeId: 2 }],
-  masterId: runtimeCatalog?.masters ?? [{ id: 1, name: "Анна Демонстрационная" }],
+  zoneId: runtimeCatalog?.zones ?? [{ id: 1, name: "Зона А" }, { id: 2, name: scenario === "defaults" ? "Монтажная зона технологических трубопроводов" : "Зона Б" }],
+  mainWorkTypeId: runtimeCatalog?.mainWorkTypes ?? [{ id: 1, name: "Монтаж" }, { id: 2, name: scenario === "defaults" ? "Монтаж наружных технологических трубопроводов высокого давления" : "Подготовка" }],
+  subworkTypeId: runtimeCatalog?.subworkTypes ?? [{ id: 1, name: "Установка конструкций", mainWorkTypeId: 1 }, { id: 2, name: scenario === "defaults" ? "Сборка и установка трубопроводных узлов на проектные опоры" : "Подготовка площадки", mainWorkTypeId: 2 }],
+  masterId: runtimeCatalog?.masters ?? [{ id: 1, name: "Анна Демонстрационная" }, ...(scenario === "defaults" ? [{ id: 2, name: "Александр Константинович Демонстрационный" }] : [])],
 };
 const actors = {
   foreman: { id: 10, fullName: "Алексей Тестовый", role: "foreman" },
@@ -57,6 +67,8 @@ const actors = {
 };
 const reports = new Map();
 const entries = new Map();
+const draftBuffers = new Map();
+const tableOrders = new Map();
 const requestCounts = { validation: 0, save: 0, submit: 0, mutations: 0 };
 let nextReportId;
 let nextRowId;
@@ -105,11 +117,13 @@ function publishEntries(report) {
 function resetFixture() {
   reports.clear();
   entries.clear();
+  draftBuffers.clear();
+  tableOrders.clear();
   for (const key of Object.keys(requestCounts)) requestCounts[key] = 0;
   nextReportId = 102;
   nextRowId = 2000;
   nextEntryId = 3000;
-  if (runtimeCatalog) return;
+  if (runtimeCatalog || scenario === "autosave") return;
   const historical = {
     id: 101, siteId: site.id, workDate: YESTERDAY,
     ownerUserId: 10, ownerName: actors.foreman.fullName, status: "approved", revision: 3,
@@ -123,7 +137,7 @@ function resetFixture() {
   }, historical));
   publishEntries(historical);
   reports.set(historical.id, historical);
-  if (scenario === "workflow" || scenario === "conflicts") {
+  if (["workflow", "conflicts", "tabs", "preferences", "defaults"].includes(scenario)) {
     reports.clear(); entries.clear();
     const add = (date, owner, status, members) => {
       const report = { ...historical, id: nextReportId++, workDate: date, ownerUserId: owner.id, ownerName: owner.fullName,
@@ -132,7 +146,28 @@ function resetFixture() {
       if (status === "approved") publishEntries(report);
       reports.set(report.id, report);
     };
-    if (scenario === "conflicts") {
+    if (scenario === "defaults") {
+      add(TODAY, actors.foreman, "draft", people.filter(person => person.employmentType === "ОПР").map(person => [person.id, 8]));
+      const report = [...reports.values()][0], previous = report.rows.at(-1);
+      report.rows[report.rows.length - 1] = enrichRow({ employeeId: previous.employeeId, hours: 8, shiftId: 1, zoneId: 2,
+        mainWorkTypeId: 2, subworkTypeId: 2, masterId: 2, note: "Перемещение и подготовка строительных материалов на площадке" }, report, previous, report.rows.length - 1);
+    } else if (scenario === "preferences") {
+      for (const owner of [actors.foreman, actors.foreman2]) {
+        add(TODAY, owner, "draft", [[1, 3], [2, 4], [3, 5]]);
+        add(YESTERDAY, owner, "draft", [[2, 2], [1, 3], [3, 4]]);
+        add("2026-10-26", owner, "approved", [[1, 2], [2, 3], [3, 4]]);
+      }
+    } else if (scenario === "tabs") {
+      // Each foreman has a distinct yesterday's crew and historical personal
+      // drafts, so status isolation cannot pass by accidentally matching names.
+      for (const [owner, employeeId] of [[actors.foreman, 1], [actors.foreman2, 2]]) {
+        add(YESTERDAY, owner, "approved", [[employeeId, 4]]);
+        add("2026-10-26", owner, "submitted", [[employeeId, 3]]);
+        add("2026-10-25", owner, "draft", [[employeeId, 2]]);
+        add("2026-10-24", owner, "rejected", [[employeeId, 1]]);
+      }
+      add("2026-10-25", actors.engineer, "draft", [[3, 2]]);
+    } else if (scenario === "conflicts") {
       for (const date of [TODAY, YESTERDAY]) add(date, actors.foreman, "draft", [[1, 4], [2, 3]]);
       add(TODAY, actors.foreman2, "approved", [[1, 8], [2, 9]]);
       add(YESTERDAY, actors.foreman2, "approved", [[1, 9], [2, 8]]);
@@ -158,6 +193,9 @@ function checkRevision(report, revision) {
 function checkOwner(report, actor) {
   if (actor.role === "foreman" && report.ownerUserId !== actor.id) {
     throw new FixtureError("Прораб может изменять только свою часть отчёта.", 403, "REPORT_FORBIDDEN");
+  }
+  if (["draft", "rejected"].includes(report.status) && report.ownerUserId !== actor.id) {
+    throw new FixtureError("Черновик доступен только его автору.", 403, "REPORT_FORBIDDEN");
   }
 }
 
@@ -386,9 +424,22 @@ function json(response, payload, status = 200) {
   response.end(JSON.stringify(payload));
 }
 
+function visibleOrderIds(actor, siteId) {
+  const ids = [
+    ...[...reports.values()].filter(report => report.siteId === siteId && report.status !== "approved" &&
+      (["draft", "rejected"].includes(report.status) ? report.ownerUserId === actor.id : actor.role !== "foreman" || report.ownerUserId === actor.id))
+      .flatMap(report => report.rows.map(row => `${report.workDate}/report-${report.id}-${row.id}`)),
+    ...[...entries.values()].filter(entry => entry.siteId === siteId && (actor.role !== "foreman" || entry.responsibleUserId === actor.id))
+      .map(entry => `${entry.workDate}/${entry.orderRowId ? `report-${entry.orderReportId}-${entry.orderRowId}` : `approved-${entry.id}`}`),
+  ];
+  groupPersonnelReportDates(ids, id => id.slice(0, 10));
+  return ids;
+}
+
 resetFixture();
 const config = {
   configFile: false,
+  envDir: false,
   root: fileURLToPath(new URL("../tests/fixtures", import.meta.url)),
   publicDir: false,
   build: {
@@ -405,7 +456,7 @@ const config = {
           request.url = `/personnel-report-smoke.html${url.search}`;
           return next();
         }
-        if (!["/api/personnel-report", "/api/timesheet", "/__smoke/catalog", "/__smoke/status", "/__smoke/reset"].includes(url.pathname)) return next();
+        if (!["/api/personnel-report", "/api/personnel-report-draft", "/api/table-order", "/api/timesheet", "/__smoke/catalog", "/__smoke/status", "/__smoke/reset"].includes(url.pathname)) return next();
         try {
           if (url.pathname === "/__smoke/catalog") {
             return json(response, {
@@ -419,7 +470,7 @@ const config = {
             for await (const chunk of request) raw += chunk;
             const body = raw ? JSON.parse(raw) : {};
             if (body.scenario !== undefined) {
-              if (!["default", "workflow", "conflicts"].includes(body.scenario) || runtimeCatalog) throw new FixtureError("Сценарий не поддерживается в этом режиме стенда.");
+              if (!scenarios.includes(body.scenario) || runtimeCatalog) throw new FixtureError("Сценарий не поддерживается в этом режиме стенда.");
               scenario = body.scenario;
             }
             resetFixture();
@@ -428,7 +479,7 @@ const config = {
           if (url.pathname === "/__smoke/status") {
             return json(response, {
               today: TODAY, yesterday: YESTERDAY,
-              reports: [...reports.values()].map(({ id, status, revision, workDate, rows }) => ({ id, status, revision, workDate, rowCount: rows.length })),
+              reports: [...reports.values()].map(({ id, status, revision, workDate, ownerUserId, rows }) => ({ id, status, revision, workDate, ownerUserId, rowCount: rows.length })),
               todayHours: timesheetEntries().filter((entry) => entry.workDate === TODAY).reduce((total, entry) => total + entry.hours, 0),
               yesterdayHours: timesheetEntries().filter((entry) => entry.workDate === YESTERDAY).reduce((total, entry) => total + entry.hours, 0),
               approvedEntryCount: entries.size,
@@ -446,6 +497,50 @@ const config = {
             });
           }
           const actor = requestActor(request);
+          if (url.pathname === "/api/table-order") {
+            let body;
+            if (request.method === "POST") {
+              let raw = ""; for await (const chunk of request) raw += chunk;
+              body = JSON.parse(raw);
+            } else if (request.method !== "GET") throw new FixtureError("Метод не поддерживается.", 405);
+            const scope = body?.scope ?? url.searchParams.get("scope");
+            const siteId = Number(body?.siteId ?? url.searchParams.get("siteId"));
+            if (scope !== "personnel-report-rows" || !Number.isSafeInteger(siteId) || siteId < 1) throw new FixtureError("Некорректный порядок строк.");
+            const key = `${actor.id}:${siteId}`, saved = tableOrders.get(key);
+            const canonical = visibleOrderIds(actor, siteId);
+            let ids = reconcileRowOrder([...canonical, ...(saved ?? []).filter(isUnsavedPersonnelReportOrderId)], saved ?? []);
+            if (body) {
+              if (body.action === "remap") ids = remapPersonnelReportOrder(saved ?? [], body.aliases, new Set(canonical));
+              else {
+                const displayed = body.displayedIds ?? [];
+                if (![...(body.movingIds ?? []), ...displayed, ...(body.targetId ? [body.targetId] : [])].every(isPersonnelReportOrderId)) throw new FixtureError("Некорректная строка переноса.");
+                ids = reconcileRowOrder([...canonical, ...ids.filter(isUnsavedPersonnelReportOrderId), ...displayed.filter(isUnsavedPersonnelReportOrderId), ...body.movingIds.filter(isUnsavedPersonnelReportOrderId)], ids);
+                ids = movePersonnelReportRows(ids, body);
+              }
+              tableOrders.set(key, ids);
+            }
+            groupPersonnelReportDates(ids, id => id.slice(0, 10));
+            return json(response, { ids, canWrite: true, hasSavedOrder: tableOrders.has(key), importIds: [], hasImportOrder: false });
+          }
+          if (url.pathname === "/api/personnel-report-draft") {
+            if (request.method === "GET") {
+              const siteId = Number(url.searchParams.get("siteId"));
+              if (!Number.isSafeInteger(siteId) || siteId < 1) throw new FixtureError("Укажите проект.");
+              return json(response, draftBuffers.get(`${actor.id}:${siteId}`) ?? { revision: 0, snapshot: null });
+            }
+            if (request.method !== "PUT") throw new FixtureError("Метод не поддерживается.", 405);
+            let raw = "";
+            for await (const chunk of request) raw += chunk;
+            const body = JSON.parse(raw);
+            if (!Number.isSafeInteger(body.siteId) || body.siteId < 1 || !Number.isSafeInteger(body.revision) || body.revision < 0) throw new FixtureError("Некорректная версия черновика.");
+            const snapshot = parsePersonnelReportDraftSnapshot(body.snapshot, actor.id, body.siteId);
+            const key = `${actor.id}:${body.siteId}`;
+            const current = draftBuffers.get(key) ?? { revision: 0, snapshot: null };
+            if (body.revision !== current.revision) return json(response, { error: "Черновик уже изменён в другой вкладке.", code: "DRAFT_BUFFER_CONFLICT", details: current }, 409);
+            const nextBuffer = { revision: current.revision + 1, snapshot };
+            draftBuffers.set(key, nextBuffer);
+            return json(response, nextBuffer);
+          }
           if (request.method === "POST") {
             let raw = "";
             for await (const chunk of request) raw += chunk;
@@ -464,9 +559,12 @@ const config = {
           if (request.method !== "GET") throw new FixtureError("Метод не поддерживается.", 405);
           const from = url.searchParams.get("from");
           const to = url.searchParams.get("to");
-          const inRange = (row) => (!from || row.workDate >= from) && (!to || row.workDate <= to);
+          const reportSiteId = Number(url.searchParams.get("siteId") ?? site.id);
+          const inRange = (row) => row.siteId === reportSiteId && (!from || row.workDate >= from) && (!to || row.workDate <= to);
           return json(response, {
-            reports: [...reports.values()].filter(inRange).filter((report) => actor.role !== "foreman" || report.ownerUserId === actor.id).sort((a, b) => b.workDate.localeCompare(a.workDate)),
+            reports: [...reports.values()].filter(inRange).filter((report) =>
+              ["draft", "rejected"].includes(report.status) ? report.ownerUserId === actor.id : actor.role !== "foreman" || report.ownerUserId === actor.id
+            ).sort((a, b) => b.workDate.localeCompare(a.workDate)),
             entries: [...entries.values()].filter(inRange).filter((entry) => actor.role !== "foreman" || entry.responsibleUserId === actor.id).sort((a, b) => b.workDate.localeCompare(a.workDate)),
             canReview: ["engineer", "superadmin"].includes(actor.role), from, to,
           });

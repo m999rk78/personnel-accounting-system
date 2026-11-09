@@ -105,7 +105,7 @@ test("incomplete own draft can change its date without publishing or requiring c
 
 test("a duplicate destination draft is rejected before any mutation", async () => {
   const db = fixture({ status: "draft", duplicate: true }), before = db.state();
-  await assert.rejects(move(db), error => error.code === "REPORT_EXISTS" && error.status === 409);
+  await assert.rejects(move(db, {}, actor("foreman", 9)), error => error.code === "REPORT_EXISTS" && error.status === 409);
   assert.deepEqual(db.state(), before); assert.equal(db.writes.length, 0);
 });
 

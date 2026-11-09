@@ -1,0 +1,119 @@
+.table-edit-footer.employee-spreadsheet-footer {
+  min-height: var(--table-panel-min-height, 48px);
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 7px 12px;
+  background: var(--table-panel-background, #fafafa);
+}
+
+.employee-spreadsheet-footer > .employee-spreadsheet-footer-summary {
+  display: flex;
+  flex: 1 1 180px;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  color: #71717a;
+  font-size: 10.5px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.employee-spreadsheet-footer-summary > span { white-space: nowrap; }
+
+.employee-spreadsheet-footer-summary strong { color: #3f3f46; }
+
+.table-edit-footer.employee-spreadsheet-footer > .employee-spreadsheet-footer-actions {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.table-edit-footer.admin-grid-footer .employee-spreadsheet-footer-button,
+.table-edit-footer.admin-grid-footer .employee-action-button,
+.table-edit-footer.admin-grid-footer .footer-action-button,
+.table-edit-footer.admin-grid-footer .save-button,
+.table-edit-footer.admin-grid-footer .save-edits-button,
+.table-edit-footer.admin-grid-footer .delete-rows-button,
+.employee-spreadsheet-footer .excel-menu-trigger {
+  min-height: 32px;
+  height: auto;
+  padding: 6px 10px;
+  border: 1px solid #d4d4d8;
+  border-radius: 6px;
+  background: #fff;
+  color: #3f3f46;
+  box-shadow: none;
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.admin-grid-footer .employee-spreadsheet-footer-button:hover:not(:disabled),
+.admin-grid-footer .employee-action-button:hover:not(:disabled),
+.admin-grid-footer .footer-action-button:hover:not(:disabled),
+.admin-grid-footer .save-button:hover:not(:disabled),
+.admin-grid-footer .save-edits-button:hover:not(:disabled),
+.employee-spreadsheet-footer .excel-menu-trigger:hover,
+.employee-spreadsheet-footer .excel-menu-trigger[aria-expanded="true"] {
+  border-color: #a1a1aa;
+  background: #f7f7f8;
+}
+
+.admin-grid-footer button:focus-visible,
+.employee-spreadsheet-footer .excel-menu-trigger:focus-visible {
+  outline: 2px solid #d39a2e;
+  outline-offset: 2px;
+}
+
+.admin-grid-footer button:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+.table-edit-footer.admin-grid-footer .employee-action-danger,
+.table-edit-footer.admin-grid-footer .delete-rows-button { color: #b42318; border-color: #efc5c1; }
+.table-edit-footer.admin-grid-footer .employee-action-danger:hover:not(:disabled),
+.table-edit-footer.admin-grid-footer .delete-rows-button:hover:not(:disabled) { border-color: #e7a49c; background: #fff5f3; }
+
+.admin-grid-footer .selection-actions,
+.admin-grid-footer .employee-selection-actions,
+.admin-grid-footer .employee-footer-add-actions { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 6px; }
+
+.table-edit-footer.admin-grid-footer.uniform-footer-actions { min-height: var(--table-panel-min-height, 48px); padding: 0; }
+.table-edit-footer.admin-grid-footer.uniform-footer-actions > .employee-footer-base:last-child {
+  min-height: var(--table-panel-min-height, 48px);
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 7px 12px;
+}
+.table-edit-footer.admin-grid-footer .employee-footer-base > .employee-total-count { order: -1; margin-right: auto; margin-left: 0; font-size: 10.5px; }
+.table-edit-footer.admin-grid-footer.uniform-footer-actions > .employee-selection-bar,
+.table-edit-footer.admin-grid-footer.uniform-footer-actions > .employee-editing-bar { min-height: var(--table-panel-min-height, 48px); flex-wrap: wrap; gap: 8px 16px; padding: 7px 12px; }
+.admin-grid-footer .employee-selection-summary,
+.admin-grid-footer .employee-editing-summary { min-height: 24px; font-size: 11px; }
+.admin-grid-footer .employee-selection-summary > span:first-child,
+.admin-grid-footer .employee-editing-summary > span:first-child { width: 20px; height: 20px; font-size: 11px; }
+.admin-grid-footer .employee-selection-summary strong,
+.admin-grid-footer .employee-editing-summary strong { min-width: 24px; height: 24px; font-size: 11px; }
+
+@media (max-width: 680px) {
+  .table-edit-footer.employee-spreadsheet-footer { gap: 6px; padding: 7px 10px; }
+  .employee-spreadsheet-footer > .employee-spreadsheet-footer-summary { flex-basis: 100%; }
+  .table-edit-footer.employee-spreadsheet-footer > .employee-spreadsheet-footer-actions { flex-basis: 100%; justify-content: flex-start; margin-left: 0; }
+  .table-edit-footer.admin-grid-footer.uniform-footer-actions > .employee-footer-base:last-child,
+  .table-edit-footer.admin-grid-footer.uniform-footer-actions > .employee-selection-bar,
+  .table-edit-footer.admin-grid-footer.uniform-footer-actions > .employee-editing-bar { gap: 6px; padding: 7px 10px; }
+  .admin-grid-footer .employee-footer-base > .employee-total-count { flex-basis: 100%; }
+  .admin-grid-footer .employee-selection-actions { justify-content: flex-start; }
+}

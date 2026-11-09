@@ -1,0 +1,17 @@
+.date-filter-tree { min-width:0; color:#526078; }
+.date-filter-tree .grid-filter-values { max-height:264px; border-color:#e1e7ef; border-radius:7px; }
+.date-filter-tree-row { display:flex; align-items:center; box-sizing:border-box; min-height:35px; padding-right:10px; border-bottom:1px solid #edf1f6; }
+.date-filter-tree-row:hover { background:#fffcf4; }
+.date-filter-tree-expand,.date-filter-tree-spacer { display:flex; align-items:center; justify-content:center; flex:0 0 20px; width:20px; height:28px; }
+.date-filter-tree .date-filter-tree-expand { margin:0 4px 0 -4px; padding:0; border:0; border-radius:4px; background:transparent; color:#64748b; cursor:pointer; }
+.date-filter-tree .date-filter-tree-expand:hover { background:#fff1cc; color:#855000; }
+.date-filter-tree .date-filter-tree-expand svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+.date-filter-tree-choice { display:flex; flex:1 1 auto; align-items:center; gap:10px; min-width:0; min-height:34px; margin:0; font-weight:400; cursor:pointer; }
+.date-filter-tree .date-filter-tree-choice input[type=checkbox] { position:relative; box-sizing:border-box; flex:0 0 16px; appearance:none; width:16px; height:16px; margin:0; border:1px solid #c7d2e1; border-radius:4px; background:#fff; cursor:pointer; }
+.date-filter-tree-choice input[type=checkbox]:checked,.date-filter-tree-choice input[type=checkbox]:indeterminate { border-color:#e4a017; background:#f0a500; }
+.date-filter-tree-choice input[type=checkbox]:checked::after { position:absolute; top:2px; left:5px; width:4px; height:8px; border:solid #fff; border-width:0 2px 2px 0; content:""; transform:rotate(45deg); }
+.date-filter-tree-choice input[type=checkbox]:indeterminate::after { position:absolute; top:6px; left:3px; width:8px; height:2px; background:#fff; content:""; }
+.date-filter-tree-label { overflow:hidden; min-width:0; color:#526078; text-overflow:ellipsis; white-space:nowrap; font-size:12px; line-height:18px; }
+.date-filter-tree-count { flex:0 0 auto; min-width:22px; margin-left:auto; padding:1px 7px; border-radius:10px; background:#f0f4f9; color:#566d8b; font-size:11px; line-height:16px; text-align:center; font-variant-numeric:tabular-nums; }
+.date-filter-tree input:focus-visible,.date-filter-tree button:focus-visible { outline:2px solid #c38a18; outline-offset:2px; }
+@media (forced-colors:active) { .date-filter-tree .date-filter-tree-choice input[type=checkbox] { appearance:auto; } .date-filter-tree-choice input[type=checkbox]::after { display:none; } }

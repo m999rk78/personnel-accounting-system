@@ -119,6 +119,7 @@ test("a saved row drop selects its moved block, but cannot restore selection cle
       selectionRevision: { current: 0 },
       context: { ids: [1, 2, 3] },
       blocked: false,
+      stopDragScroll() {},
       nativeRowDropIds,
       order: { move: operation => { requests.push(operation); return saving; } },
       setSelection: update => { selection = typeof update === "function" ? update(selection) : update; },

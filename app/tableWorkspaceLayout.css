@@ -1,0 +1,116 @@
+:root {
+  --table-frame-radius: 10px;
+  --table-frame-border: #d4d4d8;
+  --table-panel-background: #fafafa;
+  --table-panel-min-height: 48px;
+  --table-page-gutter: 20px;
+}
+
+/* Give the working area more room without changing row or text sizes. */
+.app-shell .page-content,
+.page-content.table-workspace-page,
+.page-content.timesheet-workspace-page {
+  padding-inline: var(--table-page-gutter);
+}
+
+/* A single outer frame owns the border; AG Grid's inner wrapper stays square. */
+.ag-grid-shell:is(.ag-admin-grid, .ag-placement-grid),
+.employee-performance-frame:has(.ag-grid-shell) {
+  border: 1px solid var(--table-frame-border);
+  border-radius: var(--table-frame-radius);
+  box-shadow: none;
+}
+.ag-grid-shell .ag-root-wrapper { border: 0; border-radius: 0; }
+.employee-performance-frame .ag-grid-shell { border: 0; border-radius: 0; }
+
+.ag-grid-shell:has(+ :is(.table-edit-footer, .personnel-history-footer)),
+.personnel-history-table .personnel-history-grid:has(+ .personnel-history-footer),
+.employee-performance-frame:has(+ .table-edit-footer),
+:is(.work-types-master, .work-types-detail-content):has(> .table-edit-footer) > .ag-grid-shell {
+  border-bottom: 0;
+  border-radius: var(--table-frame-radius) var(--table-frame-radius) 0 0;
+}
+
+.table-edit-footer.employee-table-footer,
+.personnel-history-table .personnel-history-footer {
+  border: 1px solid var(--table-frame-border);
+  border-radius: 0 0 var(--table-frame-radius) var(--table-frame-radius);
+  background: var(--table-panel-background);
+  box-shadow: none;
+}
+
+/* Equipment catalogs return a grid and footer as adjacent siblings. */
+.equipment-page:has(> .ag-grid-shell + .table-edit-footer),
+.table-workspace-page .equipment-page:has(> .ag-grid-shell + .table-edit-footer) { row-gap: 0; }
+.equipment-page:has(> .ag-grid-shell + .table-edit-footer) > :is(.equipment-message, .equipment-empty-hint) { margin-bottom: 8px; }
+
+.personnel-history-table .personnel-history-footer {
+  min-height: var(--table-panel-min-height);
+  padding: 7px 12px;
+  gap: 6px 16px;
+}
+.personnel-history-table .personnel-history-footer-actions {
+  margin-left: auto;
+  justify-content: flex-end;
+}
+.personnel-history-table .personnel-history-footer-actions button {
+  height: 32px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 18px;
+}
+.personnel-history-table .personnel-history-summary { gap: 2px 12px; line-height: 15px; }
+
+/* Native timesheets keep their totals inside the same fully rounded card. */
+.timesheet-page > .timesheet-grid-shell {
+  border-color: var(--table-frame-border);
+  border-radius: var(--table-frame-radius);
+  box-shadow: none;
+}
+.timesheet-grid-shell .timesheet-table tfoot :is(th, td) {
+  height: 42px;
+  border-top: 1px solid var(--table-frame-border);
+  background: var(--table-panel-background);
+  font-weight: 650;
+}
+
+/* The users list uses native rows but the same joined frame and action rhythm. */
+.users-rights-workspace .user-access-shell.users-list-shell {
+  border-color: var(--table-frame-border);
+  border-radius: var(--table-frame-radius);
+}
+.users-rights-workspace .user-access-section:has(> .uniform-footer-actions) > .users-list-shell {
+  border-color: var(--table-frame-border);
+  border-bottom: 0;
+  border-radius: var(--table-frame-radius) var(--table-frame-radius) 0 0;
+}
+.users-rights-workspace .user-access-section > .table-edit-footer.uniform-footer-actions {
+  min-height: var(--table-panel-min-height);
+  padding: 7px 12px;
+  border: 1px solid var(--table-frame-border);
+  border-radius: 0 0 var(--table-frame-radius) var(--table-frame-radius);
+  background: var(--table-panel-background);
+}
+.users-rights-workspace .user-access-section > .table-edit-footer.uniform-footer-actions > .employee-footer-base:last-child {
+  min-height: 32px;
+  padding: 0;
+}
+.users-rights-workspace .user-access-section .employee-footer-base > .employee-total-count { order: -1; }
+.users-rights-workspace .user-access-section > .table-edit-footer button {
+  min-height: 32px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+}
+
+@media (max-width: 900px) {
+  :root { --table-page-gutter: 14px; }
+}
+@media (max-width: 680px) {
+  :root { --table-page-gutter: 10px; }
+  .personnel-history-table .personnel-history-footer { padding: 7px 10px; }
+  .personnel-history-table .personnel-history-footer-actions { width: 100%; justify-content: flex-start; }
+  .personnel-history-table .personnel-history-summary { flex-basis: 100%; }
+}

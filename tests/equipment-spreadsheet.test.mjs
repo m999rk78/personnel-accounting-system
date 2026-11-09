@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { equipmentCellErrors, equipmentSpreadsheetName, equipmentUnavailableFor, pasteEquipmentCells, timestampEquipmentDraft } from "../app/equipmentSpreadsheet.ts";
+import { equipmentCellErrors, equipmentImportedUnitOrder, equipmentSpreadsheetName, equipmentUnavailableFor, pasteEquipmentCells, timestampEquipmentDraft } from "../app/equipmentSpreadsheet.ts";
 import { equipmentExcelName } from "../app/equipmentExcel.ts";
 
 const unit = { id: 1, organization: "Подрядчик", equipmentType: "Кран", brand: "Ивановец", model: "КС-45717", registrationNumber: "А123АА", note: "" };
@@ -11,6 +11,21 @@ const catalogs = {
 };
 const blank = { key: "one", equipmentId: "", shiftId: "", zoneId: "", mainWorkTypeId: "", subworkTypeId: "", hours: "", note: "" };
 const complete = { ...blank, equipmentId: "1", shiftId: "1", zoneId: "2", mainWorkTypeId: "3", subworkTypeId: "5", hours: "8" };
+
+test("saving one imported equipment date retains workbook order and later resolved identities from other dates", () => {
+  const batches = [{ id: "workbook", rows: [{ key: "day-one", equipmentId: "2" }, { key: "day-two", equipmentId: "" }, { key: "again", equipmentId: "2" }, { key: "last", equipmentId: "3" }] }];
+  const dayOne = [{ ...complete, key: "day-one", equipmentId: "2", importBatchId: "workbook" }];
+  const dayTwo = { ...complete, key: "day-two", equipmentId: "1", importBatchId: "workbook" };
+  assert.deepEqual(equipmentImportedUnitOrder(dayOne, batches, [...dayOne, dayTwo]), [2, 1, 3]);
+  assert.equal(equipmentImportedUnitOrder([{ ...complete }], batches), undefined);
+  assert.equal(batches[0].rows[1].equipmentId, "", "Reading import order never mutates the source workbook snapshot");
+});
+
+test("equipment import order uses only the latest relevant workbook and ignores unresolved or invalid identities", () => {
+  const batches = [{ id: "old", rows: [{ key: "old-row", equipmentId: "9" }] }, { id: "latest", rows: [{ key: "new-row", equipmentId: "7" }, { key: "missing", equipmentId: "" }, { key: "invalid", equipmentId: "bad" }, { key: "zero", equipmentId: "0" }] }, { id: "unrelated", rows: [{ key: "else", equipmentId: "99" }] }];
+  const drafts = [{ ...complete, key: "old-row", equipmentId: "9", importBatchId: "old" }, { ...complete, key: "new-row", equipmentId: "7", importBatchId: "latest" }];
+  assert.deepEqual(equipmentImportedUnitOrder(drafts, batches), [7]);
+});
 
 test("equipment paste accepts the full exported identity, but never guesses ambiguous display names", () => {
   const duplicateTitle = { ...unit, id: 2, organization: "Другая организация" };

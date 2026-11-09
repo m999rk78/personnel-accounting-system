@@ -132,6 +132,11 @@ function actionDescription(path: string, method: string, payload: Record<string,
   if (action === "inspect-bitrix24") return null;
 
   if (path === "/api/personnel-report") {
+    if (action === "delete-approved-rows") {
+      const rows = Array.isArray(payload.rows) ? payload.rows : [];
+      const entryId = rows.length === 1 && rows[0] && typeof rows[0] === "object" ? positiveInteger((rows[0] as Record<string, unknown>).entryId) : null;
+      return { category: "reports" as const, actionKey: "personnel_report.delete-approved-rows", entityType: "placement_entry", entityId: entryId ? String(entryId) : "", summary: `Удалил подтверждённые строки отчёта персонала: ${rows.length}` };
+    }
     const descriptions: Record<string, string> = {
       save: "Сохранил изменения отчёта персонала",
       "save-approved-entry": "Исправил подтверждённую запись отчёта персонала и обновил табель",
@@ -273,6 +278,15 @@ async function previousState(path: string, method: string, payload: Record<strin
     return { parents: parents.results, children: children.results };
   }
   if (path === "/api/personnel-report") {
+    if (payload.action === "delete-approved-rows") {
+      const ids = Array.isArray(payload.rows) ? payload.rows.slice(0, 5000).map(row => positiveInteger(row && typeof row === "object" ? (row as Record<string, unknown>).entryId : null)).filter((id): id is number => id !== null) : [];
+      if (!ids.length) return null;
+      const rows = await db.prepare(`SELECT to_jsonb(entry) AS entry, to_jsonb(source) AS sourceRow, to_jsonb(report) AS report
+        FROM placement_entries entry LEFT JOIN personnel_report_rows source ON source.approved_entry_id = entry.id
+        LEFT JOIN personnel_reports report ON report.id = source.report_id
+        WHERE entry.id = ANY(?) ORDER BY entry.id`).bind([...new Set(ids)]).all();
+      return rows.results;
+    }
     if (payload.action === "save-approved-entry" || payload.action === "change-entry-date") {
       const entryId = positiveInteger(payload.entryId);
       return entryId ? db.prepare(`SELECT id, site_id AS siteId, work_date AS workDate, employee_id AS employeeId,

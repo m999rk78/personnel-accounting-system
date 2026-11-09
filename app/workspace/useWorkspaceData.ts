@@ -11,6 +11,7 @@ export function useWorkspaceData({ siteId, workDate, view, effectivePermissions,
   siteId: number; workDate: string; view: View; effectivePermissions: PermissionSet; viewAllowed: (candidate: View) => boolean;
 }) {
   const [data, setData] = useState<DataSet | null>(null);
+  const [settingsContext, setSettingsContext] = useState<{ siteId: number; view: View; permissions: PermissionSet } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const loadedSiteId = useRef<number | null>(null);
@@ -33,6 +34,7 @@ export function useWorkspaceData({ siteId, workDate, view, effectivePermissions,
       if (signal.aborted) return;
       if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить данные.");
       setData(payload);
+      setSettingsContext({ siteId, view, permissions: effectivePermissions });
       loadedSiteId.current = siteId;
       adminDataLoaded.current = view;
       workspaceDataLoaded.current = false;
@@ -40,7 +42,7 @@ export function useWorkspaceData({ siteId, workDate, view, effectivePermissions,
       if (signal.aborted) return;
       setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить данные.");
     } finally { if (!signal.aborted) setLoading(false); }
-  }, [dataRequest, siteId, workDate, view]);
+  }, [dataRequest, siteId, workDate, view, effectivePermissions]);
 
   const loadWorkspace = useCallback(async () => {
     const signal = dataRequest.start();
@@ -54,6 +56,7 @@ export function useWorkspaceData({ siteId, workDate, view, effectivePermissions,
       if (signal.aborted) return;
       if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить рабочее пространство.");
       setData({ ...emptyDataSet(payload.sites), ...payload });
+      setSettingsContext(null);
       loadedSiteId.current = siteId;
       adminDataLoaded.current = null;
       workspaceDataLoaded.current = true;
@@ -75,6 +78,7 @@ export function useWorkspaceData({ siteId, workDate, view, effectivePermissions,
       if (signal.aborted) return;
       if (!response.ok) throw new Error(payload.error ?? "Не удалось загрузить список проектов.");
       setData(emptyDataSet(payload.sites));
+      setSettingsContext(null);
       loadedSiteId.current = siteId;
       adminDataLoaded.current = null;
       workspaceDataLoaded.current = false;
@@ -104,10 +108,14 @@ export function useWorkspaceData({ siteId, workDate, view, effectivePermissions,
     return () => { window.clearTimeout(task); dataRequest.cancel(); };
   }, [effectivePermissions, dataRequest, siteId, workDate, view, viewAllowed, loadData, loadNavigation, loadWorkspace]);
 
-  const invalidateCatalogs = useCallback(() => { adminDataLoaded.current = null; }, []);
+  const invalidateCatalogs = useCallback(() => { adminDataLoaded.current = null; setSettingsContext(null); }, []);
   return {
     data,
     loading,
+    // loading is raised by an effect. Block the first render of a new project,
+    // section or permission revision while data still belongs to the old one.
+    settingsReady: (view === "employees" || view === "positions" || view === "users" || view === "projects" || view === "projectEmployees" || view === "directories")
+      && settingsContext?.siteId === siteId && settingsContext.view === view && settingsContext.permissions === effectivePermissions,
     error,
     setError,
     loadData,

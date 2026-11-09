@@ -26,8 +26,8 @@ const aliases = { employee_name_snapshot: "employeeName", employment_type_snapsh
 const property = name => aliases[name] ?? name.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
 
 /** Execute the real store against a SQL boundary containing only synthetic history. */
-function fixture({ archived = false, legacy = false, status = "approved" } = {}) {
-  let header = { id: 17, siteId: 7, workDate: original.workDate, ownerUserId: 9, ownerName: "Прораб", status, revision: 1 };
+function fixture({ archived = false, legacy = false, status = "approved", ownerUserId = 9 } = {}) {
+  let header = { id: 17, siteId: 7, workDate: original.workDate, ownerUserId, ownerName: "Прораб", status, revision: 1 };
   let row = structuredClone(original);
   let entry = { ...structuredClone(original), id: 500, revision: 1, responsibleUserId: 9 };
   const writes = [];
@@ -104,7 +104,7 @@ for (const changes of [{ employeeId: 999 }, { zoneId: 999 }, { masterId: 999 }, 
 });
 
 test("unapproved rows still require current active employees and project references", async () => {
-  const db = fixture({ archived: true, status: "draft" });
+  const db = fixture({ archived: true, status: "draft", ownerUserId: actor.id });
   await assert.rejects(save(db), error => error.details?.issues.some(issue => issue.code === "INVALID_EMPLOYEE"));
   assert.equal(db.writes.length, 0);
 });

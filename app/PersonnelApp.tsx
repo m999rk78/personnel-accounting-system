@@ -60,11 +60,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const mayUseGlobalImports = !hasRestrictedProjectAccess(currentUser);
   const mayUpdateEmployees = may("employees", "update");
   const mayDeleteEmployees = may("employees", "delete");
-  const mayEditGlobalEmployees = anyAction("employees");
   const mayCreatePositions = may("positions", "create");
   const mayUpdatePositions = may("positions", "update");
   const mayDeletePositions = may("positions", "delete");
-  const mayManagePositions = anyAction("positions");
   const mayCreateProjects = may("projects", "create");
   const mayUpdateProjects = may("projects", "update");
   const mayDeleteProjects = may("projects", "delete");
@@ -76,11 +74,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const mayCreateProjectEmployees = may("project_employees", "create");
   const mayUpdateProjectEmployees = may("project_employees", "update");
   const mayDeleteProjectEmployees = may("project_employees", "delete");
-  const mayManageProjectEmployees = anyAction("project_employees");
   const mayCreateProjectDirectories = may("project_directories", "create");
   const mayUpdateProjectDirectories = may("project_directories", "update");
   const mayDeleteProjectDirectories = may("project_directories", "delete");
-  const mayManageProjectDirectories = anyAction("project_directories");
   const mayAccessGeneralSettings = GENERAL_SETTINGS_RESOURCES.some((resource) => may(resource));
   const mayAccessProjectSettings = PROJECT_SETTINGS_RESOURCES.some((resource) => may(resource));
   const mayInspectBitrix24 = canInspectBitrix24(role) && !hasRestrictedProjectAccess(currentUser) && may("employees");
@@ -109,7 +105,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const siteId = canAccessProject(currentUser, selectedSiteId) ? selectedSiteId : projectIds?.[0] ?? (projectIds === null ? selectedSiteId : 0);
   const [workDate, setWorkDate] = useState(initialLocation.date);
   const [selectedMonth, setSelectedMonth] = useState(initialLocation.month);
-  const { data, loading, error, setError, loadData, invalidateCatalogs } = useWorkspaceData({ siteId, workDate, view, effectivePermissions, viewAllowed });
+  const { data, loading, settingsReady, error, setError, loadData, invalidateCatalogs } = useWorkspaceData({ siteId, workDate, view, effectivePermissions, viewAllowed });
   const [personnelReportDirty, setPersonnelReportDirty] = useState(false);
   const personnelReportDirtyRef = useRef(false);
   const [equipmentReportDirty, setEquipmentReportDirty] = useState(false);
@@ -130,6 +126,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   useEffect(() => { workTypesDirtyRef.current = workTypesDirty; }, [workTypesDirty]);
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
+  const settingsBusy = loading || saving || importing || !settingsReady;
   const [notice, setNotice] = useState("");
   const [profileOpen, setProfileOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
@@ -522,6 +519,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     }
   }
   async function saveEmployees() {
+    if (settingsBusy) return;
     if (!employeeDrafts.length) return;
     if (employeeDrafts.some((draft) => draft.id ? !mayUpdateEmployees : !mayCreateEmployees)) {
       setError(employeeDrafts.some((draft) => Boolean(draft.id)) ? "Недостаточно прав для редактирования сотрудников." : "Недостаточно прав для добавления сотрудников.");
@@ -621,6 +619,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setNotice("");
   }
   async function savePositions() {
+    if (settingsBusy) return;
     if (!positionDrafts.length) return;
     if (positionDrafts.some((draft) => draft.id ? !mayUpdatePositions : !mayCreatePositions)) {
       setError(positionDrafts.some((draft) => Boolean(draft.id)) ? "Недостаточно прав для редактирования должностей." : "Недостаточно прав для добавления должностей.");
@@ -674,6 +673,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setError("");
   }
   async function assignProjectEmployees() {
+    if (settingsBusy) return;
     if (!mayCreateProjectEmployees || !projectEmployeeDrafts.length) return;
     setSaving(true); setError(""); setNotice("");
     try {
@@ -726,7 +726,6 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }
   function changeDirectorySelection(ids: number[]) {
     setDirectoryPendingDeletes(ids);
-    setDirectoryDrafts((current) => current.filter((draft) => !draft.id || !ids.includes(draft.id)));
     setError("");
     setNotice("");
   }
@@ -754,11 +753,12 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }
   function addDirectoryItem() {
     if (!mayCreateProjectDirectories) return;
-    if (!activeDirectoryGroup || directoryDrafts.some((draft) => Boolean(draft.id))) return;
-    setDirectoryDrafts((current) => [...current, { key: newKey(), entity: activeDirectoryGroup.entity, name: "" }]);
+    if (!activeDirectoryGroup) return;
+    setDirectoryDrafts((current) => [{ key: newKey(), entity: activeDirectoryGroup.entity, name: "" }, ...current]);
     setNotice("");
   }
   async function saveDirectoryItems() {
+    if (settingsBusy) return;
     if (!activeDirectoryGroup || !directoryDrafts.length) return;
     if (directoryDrafts.some((draft) => draft.id ? !mayUpdateProjectDirectories : !mayCreateProjectDirectories)) {
       setError(directoryDrafts.some((draft) => Boolean(draft.id)) ? "Недостаточно прав для редактирования справочника." : "Недостаточно прав для добавления значений справочника.");
@@ -914,7 +914,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     || view === "projectEmployees"
     || view === "directories";
   const pageContentClassName = view === "placement" || view === "equipment"
-    ? "page-content personnel-report-page table-workspace-page"
+    ? "page-content personnel-report-page table-workspace-page personnel-report-page-scroll"
     : view === "timesheet" || view === "equipmentTimesheet"
       ? "page-content timesheet-workspace-page"
       : view === "users" || view === "accessRights" ? "page-content users-rights-workspace"
@@ -934,36 +934,36 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         {(view === "users" || view === "accessRights") && <UsersRightsNavigation showBack={false} active={view === "users" ? "users" : "roles"} canViewUsers={may("system_users")} canViewRoles={may("access_rights")} onSelect={tab => { void navigateTo(tab === "users" ? "users" : "accessRights"); }} onBack={() => { void navigateTo("settings"); }} />}
         {view === "employees" && (
           <div className="toolbar-actions settings-heading-actions employees-heading-actions">{mayInspectBitrix24 && <span className="cooldown-button-wrapper" title={inspectBitrix24Title}><button type="button" className="bitrix-check-button" onClick={() => void inspectBitrix24Connection()} disabled={syncingBitrix24 || linkingBitrix24 || importing || inspectBitrix24Remaining > 0} aria-busy={syncingBitrix24}><svg className="employees-bitrix-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3a7 7 0 0 0 11.5-1"/></svg><span>{syncingBitrix24 ? "Проверяем…" : "Проверить с Битрикс24"}</span></button></span>}<ExcelActionsMenu actions={[
-            { label: "Экспорт в Excel", onSelect: exportEmployees },
+            { label: "Экспорт в Excel", onSelect: exportEmployees, disabled: settingsBusy },
             ...(mayUseGlobalImports && (mayCreateEmployees || mayUpdateEmployees) ? [
-              { label: importing ? "Импортируем…" : "Импорт из Excel", onSelect: () => employeeFileInput.current?.click(), disabled: importing || syncingBitrix24 || linkingBitrix24 },
-              { label: "Скачать шаблон", onSelect: () => downloadSettingsTemplate("employees"), disabled: loading },
+              { label: importing ? "Импортируем…" : "Импорт из Excel", onSelect: () => employeeFileInput.current?.click(), disabled: settingsBusy || syncingBitrix24 || linkingBitrix24 },
+              { label: "Скачать шаблон", onSelect: () => downloadSettingsTemplate("employees"), disabled: settingsBusy },
             ] : []),
-          ]} />{mayUseGlobalImports && (mayCreateEmployees || mayUpdateEmployees) && <><input ref={employeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importEmployees(file); }} /></>}</div>
+          ]} />{mayUseGlobalImports && (mayCreateEmployees || mayUpdateEmployees) && <><input ref={employeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file && !settingsBusy) void importEmployees(file); }} /></>}</div>
         )}
         {view === "projectEmployees" && (<div className="toolbar-actions settings-heading-actions"><ExcelActionsMenu actions={[
-          { label: "Экспорт в Excel", onSelect: exportProjectEmployees },
+          { label: "Экспорт в Excel", onSelect: exportProjectEmployees, disabled: settingsBusy },
           ...(mayCreateProjectEmployees ? [
-            { label: importing ? "Импортируем…" : "Импорт из Excel", onSelect: () => projectEmployeeFileInput.current?.click(), disabled: importing },
-            { label: "Скачать шаблон", onSelect: downloadProjectEmployeeTemplate },
+            { label: importing ? "Импортируем…" : "Импорт из Excel", onSelect: () => projectEmployeeFileInput.current?.click(), disabled: settingsBusy },
+            { label: "Скачать шаблон", onSelect: downloadProjectEmployeeTemplate, disabled: settingsBusy },
           ] : []),
-        ]} />{mayCreateProjectEmployees && <><input ref={projectEmployeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProjectEmployees(file); }} /></>}</div>)}
+        ]} />{mayCreateProjectEmployees && <><input ref={projectEmployeeFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file && !settingsBusy) void importProjectEmployees(file); }} /></>}</div>)}
         {view === "positions" && (<div className="toolbar-actions settings-heading-actions"><ExcelActionsMenu actions={[
-          { label: "Экспорт в Excel", onSelect: exportPositions },
+          { label: "Экспорт в Excel", onSelect: exportPositions, disabled: settingsBusy },
           ...(mayCreatePositions ? [
-            { label: importing ? "Импортируем…" : "Импорт из Excel", onSelect: () => positionFileInput.current?.click(), disabled: importing },
-            { label: "Скачать шаблон", onSelect: () => downloadSettingsTemplate("positions"), disabled: loading },
+            { label: importing ? "Импортируем…" : "Импорт из Excel", onSelect: () => positionFileInput.current?.click(), disabled: settingsBusy },
+            { label: "Скачать шаблон", onSelect: () => downloadSettingsTemplate("positions"), disabled: settingsBusy },
           ] : []),
-        ]} />{mayCreatePositions && <><input ref={positionFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importPositions(file); }} /></>}</div>)}
+        ]} />{mayCreatePositions && <><input ref={positionFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file && !settingsBusy) void importPositions(file); }} /></>}</div>)}
         {view === "projects" && (<div className="toolbar-actions settings-heading-actions"><ExcelActionsMenu actions={[{ label: "Экспорт в Excel", onSelect: exportProjects, disabled: !visibleSites.length }]} /></div>)}
         {view === "users" && (<div className="toolbar-actions settings-heading-actions"><ExcelActionsMenu actions={[{ label: "Экспорт в Excel", onSelect: exportUsers, disabled: !visibleUsers.length }]} /></div>)}
         {view === "directories" && activeDirectoryGroup && !workTypesDirectoryPage && (<div className="toolbar-actions settings-heading-actions"><ExcelActionsMenu actions={[
-          { label: "Экспорт в Excel", onSelect: exportProjectDirectory },
+          { label: "Экспорт в Excel", onSelect: exportProjectDirectory, disabled: settingsBusy },
           ...(mayCreateProjectDirectories ? [
-            { label: importing ? "Импортируем…" : "Импорт из Excel", onSelect: () => projectDirectoryFileInput.current?.click(), disabled: importing },
-            { label: "Скачать шаблон", onSelect: downloadProjectDirectoryTemplate },
+            { label: importing ? "Импортируем…" : "Импорт из Excel", onSelect: () => projectDirectoryFileInput.current?.click(), disabled: settingsBusy },
+            { label: "Скачать шаблон", onSelect: downloadProjectDirectoryTemplate, disabled: settingsBusy },
           ] : []),
-        ]} />{mayCreateProjectDirectories && <><input ref={projectDirectoryFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importProjectDirectory(file); }} /></>}</div>)}
+        ]} />{mayCreateProjectDirectories && <><input ref={projectDirectoryFileInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file && !settingsBusy) void importProjectDirectory(file); }} /></>}</div>)}
         {view === "equipmentRegistry" && <div className="settings-heading-actions" id="equipment-registry-actions" />}
         {view === "projectEquipment" && <div className="settings-heading-actions" id="project-equipment-actions" />}
         {workTypesDirectoryPage && <div className="settings-heading-actions settings-heading-tools" id="work-types-heading-actions" />}
@@ -985,12 +985,12 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
 
       {mayViewWorkersTimesheet && view === "timesheet" && <TimesheetView key={`personnel-timesheet-${siteId}-${selectedMonth}`} siteId={siteId} initialMonth={selectedMonth} today={initialToday} onMonthChange={changeTimesheetMonth} onDirtyChange={onNativeTimesheetDirty} onBusyChange={onChildNavigationBusy} />}
       {mayViewEquipmentReport && view === "equipment" && <Suspense fallback={<p role="status">Загружаем отчёты техники…</p>}><EquipmentReportPage key={`equipment-report-${siteId}-${currentUser.id}`} siteId={siteId} siteName={activeSite?.name ?? "Проект"} today={initialToday} currentUser={currentUser} permissions={{ create: may("equipment_report", "create"), update: may("equipment_report", "update"), delete: may("equipment_report", "delete") }} onDirtyChange={setEquipmentReportDirty} /></Suspense>}
-      {mayViewEquipmentTimesheet && view === "equipmentTimesheet" && <EquipmentAccountingView key={`equipment-timesheet-${siteId}-${selectedMonth}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="month" onMonthChange={changeTimesheetMonth} onDirtyChange={onEquipmentSettingsDirty} onBusyChange={onChildNavigationBusy} />}
+      {mayViewEquipmentTimesheet && view === "equipmentTimesheet" && <EquipmentAccountingView key={`equipment-timesheet-${siteId}-${selectedMonth}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserId={currentUser.id} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="month" onMonthChange={changeTimesheetMonth} onDirtyChange={onEquipmentSettingsDirty} onBusyChange={onChildNavigationBusy} />}
 
 
 
-      {view === "equipmentRegistry" && may("equipment_registry") && <section className="users-settings admin-section equipment-settings-section"><EquipmentAccountingView key={`equipment-registry-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="registry" onDirtyChange={onEquipmentSettingsDirty} onBusyChange={onChildNavigationBusy} /></section>}
-      {view === "projectEquipment" && may("project_equipment") && <section className="users-settings admin-section equipment-settings-section"><EquipmentAccountingView key={`project-equipment-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="project" onDirtyChange={onEquipmentSettingsDirty} onBusyChange={onChildNavigationBusy} /></section>}
+      {view === "equipmentRegistry" && may("equipment_registry") && <section className="users-settings admin-section equipment-settings-section"><EquipmentAccountingView key={`equipment-registry-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserId={currentUser.id} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="registry" onDirtyChange={onEquipmentSettingsDirty} onBusyChange={onChildNavigationBusy} /></section>}
+      {view === "projectEquipment" && may("project_equipment") && <section className="users-settings admin-section equipment-settings-section"><EquipmentAccountingView key={`project-equipment-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserId={currentUser.id} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="project" onDirtyChange={onEquipmentSettingsDirty} onBusyChange={onChildNavigationBusy} /></section>}
 
       {view === "settings" && mayAccessGeneralSettings && <section className="settings-home general-settings-home"><p className="settings-scope-description">Общие данные используются во всей системе и не зависят от выбранного проекта.</p><div className="settings-list">{generalSettingsCards.filter((card) => may(card.resource)).map((card) => <button type="button" className="settings-list-item" key={card.title} onClick={() => { if (card.focus) void navigateTo("directories", card.focus); else if (card.view) void navigateTo(card.view); }}><span className="settings-card-icon">{card.icon}</span><span className="settings-row-copy"><strong>{card.title}</strong><span>{card.description}</span></span><span className="settings-list-arrow" aria-hidden="true">›</span></button>)}</div></section>}
 
@@ -1001,8 +1001,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       </section>}
       {view === "projectEmployees" && may("project_employees") && <section className="users-settings admin-section reference-section">
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
-        <ProjectEmployeeAgGrid onVisibleIdsChange={ids => referenceExportOrder.current.set(`projectEmployees:${siteId}`, ids)} rows={visibleProjectEmployees} allEmployees={data?.employees ?? []} drafts={projectEmployeeDrafts} pendingDeletes={projectEmployeePendingDeletes} readOnly={!mayCreateProjectEmployees} selectionDisabled={!mayDeleteProjectEmployees} onPatchDraft={patchProjectEmployeeDraft} onSelectionChange={(ids) => { setProjectEmployeePendingDeletes(ids); setError(""); setNotice(""); }} />
-        {mayManageProjectEmployees && <AdminGridFooter addLabel="Добавить сотрудника в проект" countLabel="Всего в проекте" count={visibleProjectEmployees.length} deletingCount={projectEmployeePendingDeletes.length} deletingLabel="Убрать из проекта" uniformActions editorOpen={Boolean(projectEmployeeDrafts.length)} pendingCount={projectEmployeeDrafts.length} saving={saving} allowMultiple canCreate={mayCreateProjectEmployees} canUpdate={mayUpdateProjectEmployees} canDelete={mayDeleteProjectEmployees} onAdd={() => { setProjectEmployeeDrafts((current) => [...current, { key: newKey(), employeeId: "", employeeQuery: "" }]); setNotice(""); }} onDelete={() => setProjectEmployeeDeleteConfirmationOpen(true)} onClearSelection={() => { setProjectEmployeePendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={() => { setProjectEmployeeDrafts([]); setError(""); setNotice(""); }} onSave={() => void assignProjectEmployees()} />}
+        <ProjectEmployeeAgGrid onVisibleIdsChange={ids => referenceExportOrder.current.set(`projectEmployees:${siteId}`, ids)} rows={visibleProjectEmployees} allEmployees={data?.employees ?? []} drafts={projectEmployeeDrafts} pendingDeletes={projectEmployeePendingDeletes} readOnly={!mayCreateProjectEmployees} selectionDisabled={!mayDeleteProjectEmployees} onPatchDraft={patchProjectEmployeeDraft} canCreate={mayCreateProjectEmployees} loading={settingsBusy} preferenceScope={{ userId: currentUser.id, siteId }} onReplaceDrafts={(drafts) => { setProjectEmployeeDrafts(drafts); setError(""); setNotice(""); }} onValidationError={(message) => { setError(message); setNotice(""); }} renderFooter={(selection) => <AdminGridFooter compact selectedDraftCount={selection.selectedDraftCount} onRemoveSelectedDrafts={() => { const removed = selection.removeSelectedDrafts(); if (removed) { setError(""); setNotice(`Убрано новых строк: ${removed}. Отменить — Ctrl+Z.`); } }} addLabel="Добавить сотрудника в проект" countLabel="Всего в проекте" count={visibleProjectEmployees.length} deletingCount={projectEmployeePendingDeletes.length} deletingLabel="Убрать из проекта" uniformActions editorOpen={Boolean(projectEmployeeDrafts.length)} pendingCount={projectEmployeeDrafts.length} saving={settingsBusy} allowMultiple canCreate={mayCreateProjectEmployees} canUpdate={mayUpdateProjectEmployees} canDelete={mayDeleteProjectEmployees} onAdd={() => { setProjectEmployeeDrafts((current) => [{ key: newKey(), employeeId: "", employeeQuery: "" }, ...current]); setNotice(""); }} onDelete={() => setProjectEmployeeDeleteConfirmationOpen(true)} onClearSelection={() => { selection.clearSelection(); setProjectEmployeePendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={() => { setProjectEmployeeDrafts([]); setError(""); setNotice(""); }} onSave={() => void assignProjectEmployees()} />} onSelectionChange={(ids) => { setProjectEmployeePendingDeletes(ids); setError(""); setNotice(""); }} />
+
       </section>}
       {mayDeleteProjectEmployees && projectEmployeeDeleteConfirmationOpen && <AdminDeleteConfirmation title="Убрать выбранных сотрудников из проекта?" text={`Сотрудники (${projectEmployeePendingDeletes.length}) исчезнут только из проекта «${activeSite?.name ?? ""}». Их общие карточки и история отчётов сохранятся.`} saving={saving} onCancel={() => setProjectEmployeeDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingProjectEmployees()} />}
       {view === "employees" && may("employees") && <section className="users-settings admin-section employee-section">
@@ -1011,6 +1011,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         <EmployeeAgGrid
           rows={visibleEmployees}
           drafts={employeeDrafts}
+          positionCatalog={data?.positionCatalog ?? []}
+          preferenceScope={{ userId: currentUser.id }}
+          canCreate={mayCreateEmployees}
+          loading={settingsBusy || processingBitrixEmployee}
           employmentTypes={data?.employmentTypes ?? []}
           departments={data?.departments ?? []}
           positions={data?.positions ?? []}
@@ -1020,23 +1024,23 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
           fullRowEditIds={employeeFullRowEditIds}
           readOnly={!mayUpdateEmployees}
           selectionDisabled={!mayUpdateEmployees && !mayDeleteEmployees}
-          onEdit={(employee, changes = {}) => { setEmployeePendingDeletes([]); setEmployeeDrafts((current) => {
+          onEdit={(employee, changes = {}) => { setEmployeeDrafts((current) => {
             if (!mayUpdateEmployees) return current;
-            if (current.some((draft) => !draft.id)) return current;
             const existing = current.find((draft) => draft.id === employee.id);
             if (existing) return current.map((draft) => draft.id === employee.id ? { ...draft, ...changes } : draft);
             return [...current, { key: `employee-${employee.id}`, id: employee.id, fullName: employee.fullName, employmentType: employee.employmentType, department: employee.department, position: employee.position, projectSiteId: employee.siteId ? String(employee.siteId) : "", ...changes }];
           }); setNotice(""); }}
-          onSelectionChange={(ids) => { setEmployeePendingDeletes(ids); setEmployeeDrafts((current) => current.filter((draft) => !draft.id || !ids.includes(draft.id))); setEmployeeFullRowEditIds((current) => current.filter((id) => !ids.includes(id))); setNotice(""); }}
+          onSelectionChange={(ids) => { setEmployeePendingDeletes(ids); setNotice(""); }}
           onPatchDraft={patchEmployeeDraft}
+          onReplaceDrafts={(drafts) => { setEmployeeDrafts(drafts); setError(""); setNotice(""); }}
           onVisibleIdsChange={(ids) => setEmployeeVisibleIds((current) => current?.length === ids.length && current.every((id, index) => id === ids[index]) ? current : ids)}
           onValidationError={(message) => { setError(message); setNotice(""); }}
           onReorder={reorderEmployees}
-        />
-        {mayEditGlobalEmployees && <AdminGridFooter addLabel="Добавить сотрудника" countLabel="Всего сотрудников" count={visibleEmployees.length} deletingCount={employeePendingDeletes.length} deletingLabel="Удалить сотрудников" editSelectionLabel="Редактировать" bulkEditSelectionLabel="Массовое редактирование" uniformActions editorOpen={Boolean(employeeDrafts.length)} editingExisting={employeeDrafts.some((draft) => Boolean(draft.id))} pendingCount={employeeDrafts.length} saving={saving || processingBitrixEmployee} allowMultiple canCreate={mayCreateEmployees} canUpdate={mayUpdateEmployees} canDelete={mayDeleteEmployees} selectionActions={mayInspectBitrix24 && mayUpdateEmployees ? [
+          renderFooter={(draftSelection) => <AdminGridFooter compact selectedDraftCount={draftSelection.selectedDraftCount} onRemoveSelectedDrafts={() => { const removed = draftSelection.removeSelectedDrafts(); if (removed) { setError(""); setNotice(`Убрано новых строк: ${removed}. Отменить — Ctrl+Z.`); } }} addLabel="Добавить сотрудника" countLabel="Всего сотрудников" count={visibleEmployees.length} deletingCount={employeePendingDeletes.length} deletingLabel="Удалить сотрудников" editSelectionLabel="Редактировать" bulkEditSelectionLabel="Массовое редактирование" uniformActions editorOpen={Boolean(employeeDrafts.length)} editingExisting={employeeDrafts.some((draft) => Boolean(draft.id))} pendingCount={employeeDrafts.length} saving={settingsBusy || processingBitrixEmployee} allowMultiple canCreate={mayCreateEmployees} canUpdate={mayUpdateEmployees} canDelete={mayDeleteEmployees} selectionActions={mayInspectBitrix24 && mayUpdateEmployees ? [
           { key: "bitrix-update", label: `Актуализировать с Битрикс24 (${selectedBitrixUpdatableEmployees.length})`, className: "bitrix-selection-update-button", disabled: !mayUpdateEmployees || selectedBitrixUpdatableEmployees.length === 0, title: selectedBitrixUpdatableEmployees.length ? "Каждый выбранный сотрудник будет обновлён по своей связанной карточке Битрикс24." : "Среди выбранных строк нет неподтверждённых расхождений, которые можно актуализировать.", onClick: () => void updateSelectedEmployeesFromBitrix() },
           { key: "bitrix-acknowledge", label: `Подтвердить предупреждение (${selectedBitrixWarningEmployees.length})`, className: "bitrix-selection-acknowledge-button", disabled: !mayUpdateEmployees || selectedBitrixWarningEmployees.length === 0, title: selectedBitrixWarningEmployees.length ? "Отметить выбранные расхождения как допустимые и снять выделение." : "Среди выбранных строк нет активных предупреждений.", onClick: () => void acknowledgeSelectedBitrixWarnings() },
-        ] : []} onAdd={() => { setEmployeeDrafts((current) => current.some((draft) => draft.id) ? current : [...current, { key: newKey(), fullName: "", employmentType: "", department: "", position: "", projectSiteId: hasRestrictedProjectAccess(currentUser) ? String(siteId) : "" }]); setNotice(""); }} onDelete={() => setEmployeeDeleteConfirmationOpen(true)} onEditSelection={editSelectedEmployeeRows} onBulkEditSelection={openEmployeeBulkEdit} onClearSelection={() => { setEmployeePendingDeletes([]); setEmployeeBulkEditOpen(false); setEmployeeBulkEditError(""); setNotice(""); }} onCancelEditing={cancelEmployeeEditing} onSave={() => void saveEmployees()} />}
+        ] : []} onAdd={() => { setEmployeeDrafts((current) => [{ key: newKey(), fullName: "", employmentType: "", department: "", position: "", projectSiteId: hasRestrictedProjectAccess(currentUser) ? String(siteId) : "" }, ...current]); setNotice(""); }} onDelete={() => setEmployeeDeleteConfirmationOpen(true)} onEditSelection={editSelectedEmployeeRows} onBulkEditSelection={openEmployeeBulkEdit} onClearSelection={() => { draftSelection.clearSelection(); setEmployeePendingDeletes([]); setEmployeeBulkEditOpen(false); setEmployeeBulkEditError(""); setNotice(""); }} onCancelEditing={cancelEmployeeEditing} onSave={() => void saveEmployees()} />}
+        />
       </section>}
 
       <BitrixReviewDialogs review={bitrixReview} data={data} visibleSites={visibleSites} mayInspectBitrix24={mayInspectBitrix24} mayCreateEmployees={mayCreateEmployees} mayUpdateEmployees={mayUpdateEmployees} mayDeleteEmployees={mayDeleteEmployees} error={error} />
@@ -1061,8 +1065,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       {mayDeleteEmployees && employeeDeleteConfirmationOpen && <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) setEmployeeDeleteConfirmationOpen(false); }}><section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="employee-delete-confirmation-title"><h2 id="employee-delete-confirmation-title">Удалить выбранных сотрудников?</h2><p>Вы точно хотите удалить сотрудников ({employeePendingDeletes.length})? Они исчезнут из активного справочника и проектов, но история ранее созданных отчётов сохранится.</p><div><button type="button" className="secondary-button" onClick={() => setEmployeeDeleteConfirmationOpen(false)} disabled={saving}>Отмена</button><button type="button" className="delete-rows-button" onClick={() => void deletePendingEmployees()} disabled={saving}>{saving ? "Удаляем…" : "Удалить"}</button></div></section></div>}
       {view === "positions" && may("positions") && <section className="users-settings admin-section reference-section">
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
-        <PositionAgGrid rows={visiblePositions} drafts={positionDrafts} employmentTypes={data?.employmentTypes ?? []} departments={data?.departments ?? []} pendingDeletes={positionPendingDeletes} fullRowEditIds={positionFullRowEditIds} readOnly={!mayUpdatePositions} selectionDisabled={!mayUpdatePositions && !mayDeletePositions} onEdit={editPositionRow} onSelectionChange={(ids) => { setPositionPendingDeletes(ids); setPositionDrafts((current) => current.filter((draft) => !draft.id || !ids.includes(draft.id))); setPositionFullRowEditIds((current) => current.filter((id) => !ids.includes(id))); setNotice(""); }} onPatchDraft={patchPositionDraft} onVisibleIdsChange={(ids) => setPositionVisibleIds((current) => current?.length === ids.length && current.every((id, index) => id === ids[index]) ? current : ids)} />
-        {mayManagePositions && <AdminGridFooter addLabel="Добавить должность" countLabel="Всего должностей" count={visiblePositions.length} deletingCount={positionPendingDeletes.length} deletingLabel="Удалить должности" editSelectionLabel="Редактировать" uniformActions editorOpen={Boolean(positionDrafts.length)} editingExisting={positionDrafts.some((draft) => Boolean(draft.id))} pendingCount={positionDrafts.length} saving={saving} allowMultiple canCreate={mayCreatePositions} canUpdate={mayUpdatePositions} canDelete={mayDeletePositions} onAdd={() => { setPositionDrafts((current) => current.some((draft) => draft.id) ? current : [...current, { key: newKey(), employmentType: "", department: "", position: "" }]); setNotice(""); }} onDelete={() => setPositionDeleteConfirmationOpen(true)} onEditSelection={editSelectedPositionRows} onClearSelection={() => { setPositionPendingDeletes([]); setNotice(""); }} onCancelEditing={cancelPositionEditing} onSave={() => void savePositions()} />}
+        <PositionAgGrid rows={visiblePositions} drafts={positionDrafts} employmentTypes={data?.employmentTypes ?? []} departments={data?.departments ?? []} pendingDeletes={positionPendingDeletes} fullRowEditIds={positionFullRowEditIds} readOnly={!mayUpdatePositions} selectionDisabled={!mayUpdatePositions && !mayDeletePositions} onEdit={editPositionRow} onSelectionChange={(ids) => { setPositionPendingDeletes(ids); setNotice(""); }} onPatchDraft={patchPositionDraft} canCreate={mayCreatePositions} loading={settingsBusy} preferenceScope={{ userId: currentUser.id }} onReplaceDrafts={(drafts) => { setPositionDrafts(drafts); setError(""); setNotice(""); }} onValidationError={(message) => { setError(message); setNotice(""); }} renderFooter={(selection) => <AdminGridFooter compact selectedDraftCount={selection.selectedDraftCount} onRemoveSelectedDrafts={() => { const removed = selection.removeSelectedDrafts(); if (removed) { setError(""); setNotice(`Убрано новых строк: ${removed}. Отменить — Ctrl+Z.`); } }} addLabel="Добавить должность" countLabel="Всего должностей" count={visiblePositions.length} deletingCount={positionPendingDeletes.length} deletingLabel="Удалить должности" editSelectionLabel="Редактировать" uniformActions editorOpen={Boolean(positionDrafts.length)} editingExisting={positionDrafts.some((draft) => Boolean(draft.id))} pendingCount={positionDrafts.length} saving={settingsBusy} allowMultiple canCreate={mayCreatePositions} canUpdate={mayUpdatePositions} canDelete={mayDeletePositions} onAdd={() => { setPositionDrafts((current) => [{ key: newKey(), employmentType: "", department: "", position: "" }, ...current]); setNotice(""); }} onDelete={() => setPositionDeleteConfirmationOpen(true)} onEditSelection={editSelectedPositionRows} onClearSelection={() => { selection.clearSelection(); setPositionPendingDeletes([]); setNotice(""); }} onCancelEditing={cancelPositionEditing} onSave={() => void savePositions()} />} onVisibleIdsChange={(ids) => setPositionVisibleIds((current) => current?.length === ids.length && current.every((id, index) => id === ids[index]) ? current : ids)} />
+
       </section>}
       {mayDeletePositions && positionDeleteConfirmationOpen && <AdminDeleteConfirmation title="Удалить выбранные должности?" text={`Вы точно хотите удалить должности (${positionPendingDeletes.length})? Используемые сотрудниками должности удалить нельзя.`} saving={saving} onCancel={() => setPositionDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingPositions()} />}
 
@@ -1081,11 +1085,11 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       </section>}
       {view === "users" && userPermissionsId !== null && may("access_rights") && <WorkspaceAccessProvider access={workspaceTableAccess(effectivePermissions, "accessRights")}><UserPermissionsDialog key={userPermissionsId} userId={userPermissionsId} onClose={() => setUserPermissionsId(null)} onDirtyChange={onAccessRightsDirty} onBusyChange={onChildNavigationBusy} /></WorkspaceAccessProvider>}
       {mayDeleteSystemUsers && userDeleteConfirmationOpen && <AdminDeleteConfirmation title="Удалить выбранных пользователей?" text={`Вы точно хотите удалить пользователей (${userPendingDeletes.length})? Это действие нельзя отменить.`} saving={saving} onCancel={() => setUserDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingUsers()} />}
-      {view === "directories" && may("project_directories") && (directoryFocus === "mainWorkType" || directoryFocus === "subworkType") && <WorkTypesDirectory headerActionsTargetId="work-types-heading-actions" key={siteId} loading={loading} siteId={siteId} projectName={activeSite?.name ?? "Проект"} mainWorkTypes={data?.mainWorkTypes ?? []} subworkTypes={data?.subworkTypes ?? []} canCreate={mayCreateProjectDirectories} canUpdate={mayUpdateProjectDirectories} canDelete={mayDeleteProjectDirectories} onRefresh={loadData} onDirtyChange={setWorkTypesDirty} onBack={() => navigateTo("projectSettings")} />}
+      {view === "directories" && may("project_directories") && (directoryFocus === "mainWorkType" || directoryFocus === "subworkType") && <WorkTypesDirectory currentUserId={currentUser.id} headerActionsTargetId="work-types-heading-actions" key={siteId} loading={settingsBusy} siteId={siteId} projectName={activeSite?.name ?? "Проект"} mainWorkTypes={data?.mainWorkTypes ?? []} subworkTypes={data?.subworkTypes ?? []} canCreate={mayCreateProjectDirectories} canUpdate={mayUpdateProjectDirectories} canDelete={mayDeleteProjectDirectories} onRefresh={loadData} onDirtyChange={setWorkTypesDirty} onBack={() => navigateTo("projectSettings")} />}
       {view === "directories" && may("project_directories") && activeDirectoryGroup && directoryFocus !== "mainWorkType" && directoryFocus !== "subworkType" && <section className="users-settings admin-section reference-section">
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
-        <DirectoryAgGrid onVisibleIdsChange={ids => referenceExportOrder.current.set(`directory:${siteId}:${directoryFocus}`, ids)} title={focusedDirectoryTitle} rows={visibleDirectoryItems} drafts={directoryDrafts} employees={data?.placementEmployees ?? []} selectEmployee={activeDirectoryGroup.entity === "master"} pendingDeletes={directoryPendingDeletes} readOnly={!mayUpdateProjectDirectories} selectionDisabled={!mayUpdateProjectDirectories && !mayDeleteProjectDirectories} onEdit={editDirectoryItem} onSelectionChange={changeDirectorySelection} onPatchDraft={patchDirectoryDraft} />
-        {mayManageProjectDirectories && <AdminGridFooter addLabel={`Добавить: ${focusedDirectoryTitle.toLocaleLowerCase("ru-RU")}`} countLabel="Всего" count={visibleDirectoryItems.length} deletingCount={directoryPendingDeletes.length} deletingLabel="Удалить" editSelectionLabel="Редактировать" uniformActions editorOpen={Boolean(directoryDrafts.length)} editingExisting={directoryDrafts.some((draft) => Boolean(draft.id))} pendingCount={directoryDrafts.length} saving={saving} allowMultiple canCreate={mayCreateProjectDirectories} canUpdate={mayUpdateProjectDirectories} canDelete={mayDeleteProjectDirectories} onAdd={addDirectoryItem} onDelete={() => setDirectoryDeleteConfirmationOpen(true)} onEditSelection={editSelectedDirectoryItems} onClearSelection={() => { setDirectoryPendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={cancelDirectoryEditing} onSave={() => void saveDirectoryItems()} />}
+        <DirectoryAgGrid onVisibleIdsChange={ids => referenceExportOrder.current.set(`directory:${siteId}:${directoryFocus}`, ids)} title={focusedDirectoryTitle} rows={visibleDirectoryItems} drafts={directoryDrafts} employees={data?.placementEmployees ?? []} selectEmployee={activeDirectoryGroup.entity === "master"} pendingDeletes={directoryPendingDeletes} readOnly={!mayUpdateProjectDirectories} selectionDisabled={!mayUpdateProjectDirectories && !mayDeleteProjectDirectories} onEdit={editDirectoryItem} onSelectionChange={changeDirectorySelection} onPatchDraft={patchDirectoryDraft} canCreate={mayCreateProjectDirectories} loading={settingsBusy} scopeKey={`directory:${activeDirectoryGroup.entity}`} directoryEntity={activeDirectoryGroup.entity} preferenceScope={{ userId: currentUser.id, siteId }} onReplaceDrafts={(drafts) => { setDirectoryDrafts(drafts.map((draft) => ({ ...draft, entity: activeDirectoryGroup.entity }))); setError(""); setNotice(""); }} onValidationError={(message) => { setError(message); setNotice(""); }} renderFooter={(selection) => <AdminGridFooter compact selectedDraftCount={selection.selectedDraftCount} onRemoveSelectedDrafts={() => { const removed = selection.removeSelectedDrafts(); if (removed) { setError(""); setNotice(`Убрано новых строк: ${removed}. Отменить — Ctrl+Z.`); } }} addLabel={`Добавить: ${focusedDirectoryTitle.toLocaleLowerCase("ru-RU")}`} countLabel="Всего" count={visibleDirectoryItems.length} deletingCount={directoryPendingDeletes.length} deletingLabel="Удалить" editSelectionLabel="Редактировать" uniformActions editorOpen={Boolean(directoryDrafts.length)} editingExisting={directoryDrafts.some((draft) => Boolean(draft.id))} pendingCount={directoryDrafts.length} saving={settingsBusy} allowMultiple canCreate={mayCreateProjectDirectories} canUpdate={mayUpdateProjectDirectories} canDelete={mayDeleteProjectDirectories} onAdd={addDirectoryItem} onDelete={() => setDirectoryDeleteConfirmationOpen(true)} onEditSelection={editSelectedDirectoryItems} onClearSelection={() => { selection.clearSelection(); setDirectoryPendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={cancelDirectoryEditing} onSave={() => void saveDirectoryItems()} />} />
+
       </section>}
       {mayDeleteProjectDirectories && directoryDeleteConfirmationOpen && activeDirectoryGroup && <AdminDeleteConfirmation title="Удалить выбранные значения?" text={`Вы точно хотите удалить значения (${directoryPendingDeletes.length}) из справочника «${focusedDirectoryTitle}» проекта «${activeSite?.name ?? ""}»?`} saving={saving} onCancel={() => setDirectoryDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingDirectoryItems(activeDirectoryGroup.entity)} />}
       </div> : <div className="page-content"><h1>{missingAssignedProject ? "Нет доступа к проектам" : "Нет доступных разделов"}</h1><p>{missingAssignedProject ? "Обратитесь к супер-администратору, чтобы открыть доступ к нужным проектам." : "Обратитесь к администратору для настройки доступа."}</p></div>}

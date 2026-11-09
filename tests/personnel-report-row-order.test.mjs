@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { groupPersonnelReportDates, isPersonnelReportOrderId, movePersonnelReportRows, personnelReportOrderId, remapPersonnelReportOrder } from "../app/personnelReportRowOrder.ts";
+import { groupPersonnelReportDates, isPersonnelReportOrderId, movePersonnelReportRows, orderPersonnelReportCrewRows, personnelReportOrderId, remapPersonnelReportOrder } from "../app/personnelReportRowOrder.ts";
+import { buildPersonnelReportCrew } from "../app/personnelReportCarryOver.ts";
 import { orderRowsByIds } from "../app/tableRowOrder.ts";
 
 const rows = [
@@ -50,4 +51,30 @@ test("a moved draft keeps its place after saving and after approval changes its 
   assert.throws(() => remapPersonnelReportOrder([blank], { [blank]: ids[3] }, new Set(ids)), /сопоставить/);
   assert.throws(() => remapPersonnelReportOrder([blank], { [blank]: persisted }, new Set(ids)), /сопоставить/);
   assert.equal(personnelReportOrderId({ rowKey: "approved-50", orderKey: "report-1-14", workDate: "2026-10-28" }), persisted);
+});
+
+test("tomorrow's crew starts in yesterday's saved record order, preserving separate jobs and legacy rows", () => {
+  const source = [
+    { id: 11, reportId: 1, workDate: "2026-11-05", employeeId: 1, hours: 3, note: "Первая работа" },
+    { id: 12, reportId: 1, workDate: "2026-11-05", employeeId: 2, hours: 8, note: "Другой сотрудник" },
+    { id: 13, reportId: 1, workDate: "2026-11-05", employeeId: 1, hours: 5, note: "Вторая работа" },
+    { id: 14, reportId: 0, workDate: "2026-11-05", employeeId: 3, hours: 6, note: "Старая подтверждённая запись" },
+  ];
+  const before = structuredClone(source);
+  const ordered = orderPersonnelReportCrewRows(source, ["2026-11-05/report-1-13", "2026-11-05/approved-14", "2026-11-05/report-1-11", "2026-11-05/report-1-12"]);
+  assert.deepEqual(ordered.map(row => row.id), [13, 14, 11, 12]);
+  let key = 0;
+  const catalogs = { employees: [1, 2, 3].map(id => ({ id, fullName: `Сотрудник ${id}` })), shifts: [], zones: [], mainWorkTypes: [], subworkTypes: [], masters: [] };
+  const { drafts } = buildPersonnelReportCrew(ordered, catalogs, () => `fresh-${++key}`, "2026-11-06T08:00:00Z");
+  assert.deepEqual(drafts.map(row => [row.employeeId, row.hours, row.note]), [["1", "5", "Вторая работа"], ["3", "6", "Старая подтверждённая запись"], ["1", "3", "Первая работа"], ["2", "8", "Другой сотрудник"]]);
+  assert.deepEqual(drafts.map(row => row.key), ["fresh-1", "fresh-2", "fresh-3", "fresh-4"]);
+  assert.ok(drafts.every(row => row.reportRowId === undefined));
+  assert.deepEqual(source, before);
+});
+
+test("crew ordering ignores unrelated dates and other foremen, and appends unseen records in their original order", () => {
+  const source = [{ id: 11, reportId: 1, workDate: "2026-11-05" }, { id: 12, reportId: 1, workDate: "2026-11-05" }, { id: 13, reportId: 1, workDate: "2026-11-05" }];
+  const order = ["2026-11-04/report-1-11", "2026-11-05/report-2-12", "2026-11-05/report-1-13"];
+  assert.deepEqual(orderPersonnelReportCrewRows(source, order), [source[2], source[0], source[1]]);
+  assert.deepEqual(orderPersonnelReportCrewRows(source, []), source);
 });

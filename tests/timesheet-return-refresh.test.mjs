@@ -152,14 +152,17 @@ test("bulk marks hold the refresh guard until all requests settle, including par
   assert.equal(state.batch.getSnapshot().status.failed, 0);
 });
 
-function writeHarness() {
+function writeHarness({ visibleDays = [1, 2] } = {}) {
   const sourcePayload = { canEdit: true, canCreate: true, canDelete: true, canUpdate: true, siteId: 2, month: "2026-11", marks: [] };
   let current = structuredClone(sourcePayload);
   const requests = [], undo = []; let flushes = 0;
   const activeScope = { current: "2:2026-11" }, activeScopeVersion = { current: 0 };
+  const clipboardViewScope = { current: `2:2026-11:7:days=${visibleDays.join("|")}` };
   const markWrites = { current: 0 }, markRevision = { current: 0 };
-  const bindings = { payload: sourcePayload, activeScope, activeScopeVersion, markWrites, markRevision,
-    visibleEmployees: [{ id: 7, fullName: "Учебный сотрудник" }], days: [1, 2], month: "2026-11", siteId: 2,
+  const bindings = { payload: sourcePayload, activeScope, activeScopeVersion, clipboardViewScope, markWrites, markRevision,
+    // Display coordinates use filtered days, not the full month's date list.
+    visibleEmployees: [{ id: 7, fullName: "Учебный сотрудник" }],
+    days: Array.from({ length: 30 }, (_, index) => index + 1), visibleDays: [...visibleDays], month: "2026-11", siteId: 2,
     savingBulkMarks: false, navigationBusy: false, loading: false, createTimesheetBatchSave,
     dateForDay: (month, day) => `${month}-${String(day).padStart(2, "0")}`, dateLabel: date => date,
     isPersonnelTimesheetValue, marksByCell: new Map(), cellKey: (id, date) => `${id}:${date}`,
@@ -175,9 +178,11 @@ function writeHarness() {
       // The actual hook deactivates its old controller when scopeKey changes.
       batch.deactivate();
       activeScope.current = `${siteId}:${month}`; activeScopeVersion.current++;
+      clipboardViewScope.current = `${siteId}:${month}:7:days=${visibleDays.join("|")}`;
       current = { ...structuredClone(sourcePayload), siteId, month, marks: [{ employeeId: 7, workDate: `${month}-01`, hours: 3 }] };
       return structuredClone(current);
     },
+    changeView() { clipboardViewScope.current += ":changed"; },
     respond(index) { const body = requests[index].body; requests[index].resolve({ status: 200, ok: true, json: async () => ({ mark: { employeeId: body.employeeId, workDate: body.workDate, hours: Number(body.value) } }) }); },
   };
 }
@@ -209,4 +214,50 @@ test("an individual write in the current scope still updates the mark and record
   const state = writeHarness(); const write = state.single({ employeeId: 7, workDate: "2026-11-01" }, "8"); state.respond(0);
   assert.equal(await write, true); assert.equal(state.result().marks[0].hours, 8);
   assert.deepEqual(state.undo, [[{ rowIndex: 0, columnIndex: 0, value: "", note: "" }]]);
+});
+
+test("individual mark undo uses the filtered display column rather than the day of the month", async () => {
+  const state = writeHarness({ visibleDays: [2, 10] });
+  const write = state.single({ employeeId: 7, workDate: "2026-11-10" }, "8");
+  state.respond(0);
+  assert.equal(await write, true);
+  assert.equal(state.result().marks[0].workDate, "2026-11-10");
+  assert.deepEqual(state.undo, [[{ rowIndex: 0, columnIndex: 1, value: "", note: "" }]]);
+});
+
+test("bulk paste and retries retain filtered day identities and visible undo coordinates", async () => {
+  const state = writeHarness({ visibleDays: [2, 10] });
+  const change = { rowIndex: 0, columnIndex: 1, value: "6" };
+  const write = state.bulk([change]);
+  assert.equal(state.requests[0].body.workDate, "2026-11-10");
+  state.requests[0].resolve({ status: 409, ok: false, json: async () => ({ error: "Конфликт" }) });
+  assert.deepEqual(await write, { savedChanges: [], failedChanges: [change] });
+  const retry = state.batch.retry();
+  assert.equal(state.requests[1].body.workDate, "2026-11-10");
+  state.respond(1); await retry;
+  assert.equal(state.result().marks[0].workDate, "2026-11-10");
+  assert.deepEqual(state.undo, [[{ rowIndex: 0, columnIndex: 1, value: "", note: "" }]]);
+});
+
+test("changing the displayed columns during an individual save preserves data but skips stale undo coordinates", async () => {
+  const state = writeHarness();
+  const write = state.single({ employeeId: 7, workDate: "2026-11-01" }, "8");
+  state.changeView(); state.respond(0);
+  assert.equal(await write, true);
+  assert.equal(state.result().marks[0].hours, 8);
+  assert.deepEqual(state.undo, []);
+});
+
+test("retry after a display change still saves the original cell without creating undo in a different view", async () => {
+  const state = writeHarness();
+  const change = { rowIndex: 0, columnIndex: 1, value: "6" };
+  const write = state.bulk([change]);
+  state.requests[0].resolve({ status: 409, ok: false, json: async () => ({ error: "Конфликт" }) });
+  assert.deepEqual(await write, { savedChanges: [], failedChanges: [change] });
+  state.changeView();
+  const retry = state.batch.retry();
+  assert.equal(state.requests[1].body.workDate, "2026-11-02");
+  state.respond(1); await retry;
+  assert.equal(state.result().marks[0].hours, 6);
+  assert.deepEqual(state.undo, []);
 });

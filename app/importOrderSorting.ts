@@ -1,6 +1,6 @@
 export const IMPORT_ORDER_COLUMN = "__importOrder";
 export const importOrderSortOption = { label: "Порядок импорта", columnId: IMPORT_ORDER_COLUMN, sort: "asc" } as const;
-export const importOrderScopes = new Set(["employees", "project-personnel"]);
+export const importOrderScopes = new Set(["employees", "project-personnel", "project-equipment"]);
 
 /** Rank file identities independently of the saved manual row order. New rows keep source order at the end. */
 export function createImportOrderRank<T>(source: readonly T[], importIds: readonly number[], getId: (row: T) => number | string | undefined) {

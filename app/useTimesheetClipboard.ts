@@ -184,6 +184,7 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     const clearOutside = (event: PointerEvent) => {
       const target = event.target;
       if (target instanceof Element && target.closest(".timesheet-cell-popover, .custom-select-menu, .table-context-menu")) return;
+      if (target instanceof Element && target.closest("[data-table-page-horizontal]") && target.closest(".table-page-scroll-stage") === shellRef.current?.closest(".table-page-scroll-stage")) return;
       if (!selectionRef.current || !(target instanceof Node) || shellRef.current?.contains(target)) return;
       clearSelection();
     };
@@ -373,7 +374,11 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
   }, [canDelete, columnCount, createHistoryId, onDelete, previousValues, rememberUndo, rowCount]);
 
   const openContextMenu = useCallback((rowIndex: number, columnIndex: number, event: MouseEvent<HTMLTableCellElement>) => {
+    const cell = event.currentTarget;
+    const shell = shellRef.current;
+    if (!shell?.contains(cell) || cell.closest(".timesheet-grid-shell") !== shell || cell.tagName !== "TD") return;
     event.preventDefault();
+    event.stopPropagation();
     const point = { rowIndex, columnIndex };
     const next = { start: point, end: point };
     selectionRef.current = next;

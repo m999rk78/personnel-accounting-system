@@ -60,6 +60,20 @@ test("custom permissions remain effective even for the engineer role", () => {
   assert.throws(() => assertCanSavePersonnelReport(cannotCreate), code("REPORT_FORBIDDEN"));
 });
 
+test("drafts and returned reports belong only to their author, including engineer and superadmin accounts", () => {
+  for (const role of ["foreman", "engineer", "superadmin"]) {
+    const user = { ...engineer, role, permissions: rolePermissionTemplate("superadmin") };
+    for (const status of ["draft", "rejected"]) {
+      const own = { ...report, ownerUserId: user.id, status };
+      assert.doesNotThrow(() => assertCanSavePersonnelReport(user, own));
+      assert.equal(nextPersonnelReportStatus(user, own, "submit"), "submitted");
+      const foreign = { ...own, ownerUserId: 99 };
+      assert.throws(() => assertCanSavePersonnelReport(user, foreign), code("REPORT_FORBIDDEN"));
+      assert.throws(() => nextPersonnelReportStatus(user, foreign, "submit"), code("REPORT_FORBIDDEN"));
+    }
+  }
+});
+
 test("revisions are mandatory and prevent stale or repeated approval", () => {
   assert.doesNotThrow(() => assertPersonnelReportRevision(3, 3));
   for (const expected of [undefined, null, 0, 2, "3", NaN]) assert.throws(() => assertPersonnelReportRevision(3, expected), code("STALE_REPORT"));

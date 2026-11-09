@@ -89,6 +89,7 @@ export type EquipmentReportSaveRequest = {
   reportId?: number;
   revision?: number;
   rows: EquipmentReportDraftRow[];
+  importEquipmentOrder?: number[];
 };
 
 export type EquipmentReportDateRequest = {

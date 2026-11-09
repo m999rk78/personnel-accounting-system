@@ -1,0 +1,29 @@
+.personnel-timesheet-day-focus {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin: 0 0 8px;
+  padding: 9px 12px;
+  border: 1px solid #eddfc1;
+  border-radius: 7px;
+  background: #fffbf2;
+  color: #6b501f;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.personnel-timesheet-day-focus-info { min-width: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 10px; }
+.personnel-timesheet-day-focus-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+.personnel-timesheet-day-focus strong { color: #694611; font-weight: 650; }
+.personnel-timesheet-day-focus span { overflow-wrap: anywhere; }
+.personnel-timesheet-day-focus small { color: #7a715f; font-size: 11px; }
+.personnel-timesheet-day-focus-actions > :is(button, select) { flex: 0 0 auto; width: auto; min-height: 32px; padding: 6px 10px; border: 1px solid #dccba8; border-radius: 5px; background: #fff; color: #6b501f; font-family: inherit; font-size: 12px; font-weight: 550; line-height: 1.5; }
+.personnel-timesheet-day-focus-actions > select { max-width: 180px; cursor: pointer; }
+.personnel-timesheet-day-focus-actions > select:disabled { opacity: .55; cursor: default; }
+.personnel-timesheet-day-focus-actions > :is(button, select):hover:not(:disabled) { border-color: #b88932; background: #fff6df; }
+.personnel-timesheet-day-focus-actions > :is(button, select):focus-visible { outline: 2px solid #b88932; outline-offset: 2px; }
+@media (max-width: 600px) {
+  .personnel-timesheet-day-focus { align-items: flex-start; flex-wrap: wrap; }
+  .personnel-timesheet-day-focus-info { display: grid; gap: 2px; }
+}

@@ -15,11 +15,11 @@ async function reportColumns(name) {
   visit(file);
   assert.ok(factory, `${name}: real column factory exists`);
   const code = ts.transpileModule(`const factory = ${factory.getText(file)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const environment = { valueGetter: () => () => "", renderCell() {}, FilterHeader() {}, activityComparator() {}, personnelFilterParams: {}, personnelReportImportSortOptions: [], personnelReportSortOptions: [], props: { groupByDate: false } };
+  const environment = { valueGetter: () => () => "", renderCell() {}, FilterHeader() {}, SpreadsheetFilterHeader() {}, activityComparator() {}, personnelFilterParams: {}, personnelReportImportSortOptions: [], personnelReportSortOptions: [], props: { groupByDate: false } };
   return new Function(...Object.keys(environment), `${code}; return factory();`)(...Object.values(environment));
 }
 
-for (const [name, primary, initialWidth] of [["PersonnelReportGrid", "employeeName", 250], ["EquipmentReportGrid", "equipment", 280]]) {
+for (const [name, primary, initialWidth] of [["PersonnelReportGrid", "employeeName", 280], ["EquipmentReportGrid", "equipment", 280]]) {
   test(`${name} only initializes widths and flex; editor redraws must preserve manual sizes`, async () => {
     const definitions = await reportColumns(name);
     for (const column of definitions.filter(column => column.initialFlex !== undefined)) {
@@ -36,5 +36,12 @@ for (const [name, primary, initialWidth] of [["PersonnelReportGrid", "employeeNa
     const identity = definitions.find(column => column.colId === primary);
     assert.equal(identity.initialWidth, initialWidth); assert.equal(identity.width, undefined);
     assert.equal(identity.pinned, "left");
+    assert.equal(identity.maxWidth, undefined, "long names can be manually expanded beyond the initial sizing plan");
+    const hours = definitions.find(column => column.colId === "hours");
+    assert.ok(hours.initialWidth < 100); assert.equal(hours.initialFlex, undefined);
+    const imported = definitions.find(column => column.colId === "__importOrder");
+    assert.equal(imported.hide, true); assert.equal(imported.sortable, true);
+    assert.equal(imported.valueGetter({ data: { insertionRank: 7 } }), 7);
+    assert.equal(imported.valueGetter({}), Number.MAX_SAFE_INTEGER);
   });
 }

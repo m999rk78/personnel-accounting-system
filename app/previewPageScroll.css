@@ -1,0 +1,6 @@
+/* Export previews use the same page scroll host as editable tables. */
+.excel-preview-page:has(.table-page-scroll-stage) { padding-bottom:12px; }
+.excel-preview-page:has(.table-page-scroll-stage) > .excel-preview-dialog { height:auto; min-height:0; overflow:visible; }
+.excel-preview-dialog > .table-page-scroll-stage { width:100%; }
+.excel-preview-dialog .table-page-scroll-frame > .excel-preview-table-wrap { min-height:0; max-height:none; }
+.excel-preview-dialog .table-page-scroll-footer > .excel-preview-footer { width:100%; }

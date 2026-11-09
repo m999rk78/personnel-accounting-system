@@ -88,12 +88,12 @@ function EquipmentReportSmoke() {
       setCatalog(current => current && scenario ? { ...current, scenario } : current); setDirty(false); setSession(value => value + 1); setError("");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Ошибка сброса"); }
   };
-  return <main style={{ height: "100vh", minHeight: 650, padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+  return <main className="page-content personnel-report-page table-workspace-page personnel-report-page-scroll" style={{ minHeight: "100vh", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
     <nav style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, fontSize: 12 }}>
       <strong>Изолированный стенд техники — рабочая база не подключена</strong>
       <label>Роль в проверке{" "}<select aria-label="Роль в проверке" value={role} onChange={event => {
         const next = event.target.value as keyof typeof actors; document.cookie = `equipment_smoke_role=${next}; path=/; SameSite=Lax`; setDirty(false); setRole(next);
-      }}><option value="foreman">Прораб — Алексей Тестовый</option><option value="foreman2">Прораб — Борис Другая Бригада</option><option value="engineer">Инженер — Ирина Проверяющая</option><option value="superadmin">Супер-админ — Администратор Проверки</option><option value="viewer">Просмотр — только подтверждённые</option><option value="viewer_pending">Просмотр — включая черновики и проверку</option></select></label>
+      }}><option value="foreman">Прораб — Алексей Тестовый</option><option value="foreman2">Прораб — Борис Другая Бригада</option><option value="engineer">Инженер — Ирина Проверяющая</option><option value="superadmin">Супер-админ — Администратор Проверки</option><option value="viewer">Просмотр — только подтверждённые</option><option value="viewer_pending">Просмотр — включая отчёты на проверке</option></select></label>
       <label>Сценарий{" "}<select aria-label="Сценарий" value={catalog?.scenario ?? "workflow"} disabled={!catalog} onChange={event => void reset(event.target.value as Scenario)}>
         <option value="workflow">Несколько дат и бригад</option><option value="default">История и перенос техники</option><option value="conflicts">Лимит 20 ч и недоступная техника</option>
       </select></label>

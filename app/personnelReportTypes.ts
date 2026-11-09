@@ -109,6 +109,17 @@ export type PersonnelReportEntrySaveRequest = {
   row: PersonnelReportDraftRow;
 };
 
+export type PersonnelReportDeleteApprovedRequest = {
+  action: "delete-approved-rows";
+  siteId: number;
+  rows: Array<{
+    entryId: number;
+    revision: number;
+    reportId?: number;
+    reportRevision?: number;
+  }>;
+};
+
 export type PersonnelReportDateRequest = {
   action: "change-date";
   reportId: number;
@@ -156,4 +167,4 @@ export type PersonnelReportValidationRequest = {
 
 export type PersonnelReportValidationResult = { issues: PersonnelReportValidationIssue[] };
 
-export type PersonnelReportRequest = PersonnelReportSaveRequest | PersonnelReportTransitionRequest | PersonnelReportEntrySaveRequest | PersonnelReportValidationRequest | PersonnelReportDateRequest | PersonnelReportEntryDateRequest;
+export type PersonnelReportRequest = PersonnelReportSaveRequest | PersonnelReportTransitionRequest | PersonnelReportEntrySaveRequest | PersonnelReportValidationRequest | PersonnelReportDateRequest | PersonnelReportEntryDateRequest | PersonnelReportDeleteApprovedRequest;

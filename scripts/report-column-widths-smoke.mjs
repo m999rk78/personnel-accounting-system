@@ -60,6 +60,9 @@ try {
     await assertWidths(expected, `${kind}: work editor opened`);
     await page.getByRole("option", { name: "Подготовка площадки и перемещение строительных материалов", exact: true }).click();
     await assertWidths(expected, `${kind}: main work changed`);
+    // Content-based defaults deliberately keep long labels readable rather than
+    // squeezing all report columns into one viewport. Reach the numeric column.
+    await page.locator(".ag-grid-viewport").evaluate(element => { element.scrollLeft = element.scrollWidth - element.clientWidth; });
     await cell("hours").getByRole("button", { name: "Открыть список: Часы", exact: true }).click();
     await page.getByRole("option", { name: "9", exact: true }).click();
     await assertWidths(expected, `${kind}: hours changed`);

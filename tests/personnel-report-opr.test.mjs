@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { readGridImplementation } from "./fixtures/read-implementation.mjs";
 
 const root = new URL("../", import.meta.url);
 
@@ -35,12 +36,13 @@ test("keeps daily personnel reports limited to OPR employees", async () => {
 });
 
 test("keeps project assignment history instead of rewriting past assignments", async () => {
-  const [create, update, sync, app, dialogs, grid] = await Promise.all([
+  const [create, update, sync, app, dialogs, grid, gridEntry] = await Promise.all([
     source("app/server/data/createData.ts"),
     source("app/server/data/updateData.ts"),
     source("app/server/data/bitrixSync.ts"),
     source("app/PersonnelApp.tsx"),
     source("app/workspace/BitrixReviewDialogs.tsx"),
+    readGridImplementation(),
     source("app/AgDataGrids.tsx"),
   ]);
 
@@ -51,5 +53,6 @@ test("keeps project assignment history instead of rewriting past assignments", a
   assert.match(sync, /employee\.availabilityStatus !== "on_site" \|\| !employee\.siteIds\.length[\s\S]*active = 0, end_date = COALESCE/);
   assert.match(app, /projectSiteId: draft\.projectSiteId \? Number\(draft\.projectSiteId\) : null/);
   assert.match(dialogs, /label: "Без объекта"/);
+  assert.match(gridEntry, /export \{ EmployeeAgGrid \} from "\.\/EmployeeDirectoryGrid"/);
   assert.match(grid, /row\.employee\?\.siteName \?\? "Без объекта"/);
 });

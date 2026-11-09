@@ -56,6 +56,16 @@ test("reading an import order filters hidden, inactive and foreign employees bef
   assert.deepEqual(state.locks, []);
 });
 
+test("equipment import baselines are isolated by project and from personnel and manual orders", async () => {
+  const state = fixture({ "project-equipment:7": [1, 2], "import-order:project-personnel:7": [1, 2] });
+  await rememberPersonnelImportOrder(state.db, "project-equipment", 7, [3, 1]);
+  await rememberPersonnelImportOrder(state.db, "project-equipment", 8, [1, 3]);
+  assert.deepEqual(state.records.get("project-equipment:7"), [1, 2]);
+  assert.deepEqual(state.records.get("import-order:project-personnel:7"), [1, 2]);
+  assert.deepEqual(await readPersonnelImportOrder(state.db, "project-equipment", 7, [1, 2, 3]), { importIds: [3, 1, 2], hasImportOrder: true });
+  assert.deepEqual(await readPersonnelImportOrder(state.db, "project-equipment", 8, [1, 2, 3]), { importIds: [1, 3, 2], hasImportOrder: true });
+});
+
 test("invalid employee IDs and missing project identities fail before any write; an empty import is a no-op", async () => {
   const state = fixture();
   for (const id of [0, -1, 1.5, NaN, "1", 2 ** 40]) await assert.rejects(rememberPersonnelImportOrder(state.db, "employees", null, [id]), /Некорректный порядок/);

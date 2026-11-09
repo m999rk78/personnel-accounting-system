@@ -19,6 +19,7 @@ try {
   page.on("pageerror", error => failures.push(error.message));
   await page.goto(process.argv[3] ?? "http://127.0.0.1:3104/personnel-report-smoke.html");
   // The current workflow automatically carries yesterday's two-person crew into a draft.
+  await page.getByRole("group", { name: "Показать отчёты" }).getByRole("button", { name: /^Черновик/ }).click();
   await page.locator('.ag-row.editable-row [col-id="employeeName"]').first().waitFor();
   const body = page.locator(".localized-grid-body");
   const editable = page.locator('.ag-row.editable-row [col-id="employeeName"]');
@@ -37,6 +38,7 @@ try {
   assert.equal(await page.locator(".personnel-cell-invalid").count(), 0);
   await page.keyboard.press("Control+Shift+z");
   await page.waitForFunction(() => document.querySelectorAll('.ag-row.editable-row [col-id="employeeName"]').length === 2);
+  await page.waitForFunction(() => document.querySelectorAll(".personnel-cell-invalid").length >= 2);
   assert.ok(await page.locator(".personnel-cell-invalid").count() >= 2);
   await page.locator('.ag-row.editable-row [col-id="employeeName"]').filter({ hasText: "Иван Тестовый" }).first().click();
   await page.waitForFunction(() => document.querySelector('.ag-cell.ag-excel-selected[col-id="employeeName"]'));
@@ -82,10 +84,12 @@ try {
   await page.waitForFunction(() => [...document.querySelectorAll('.ag-row.editable-row [col-id="note"]')].some(element => element.textContent.includes("Не заполнено")));
   await peterNote.click(); await paste(cutText);
   assert.match(await peterNote.innerText(), /Примечание/);
+  await page.getByRole("group", { name: "Показать отчёты" }).getByRole("button", { name: /^Подтвержд/ }).click();
   const approvedZone = page.locator('.ag-row:not(.editable-row) [col-id="zone"]').first();
   await approvedZone.click(); await paste("ПОВРЕДИТЬ НЕЛЬЗЯ");
   assert.match(await page.getByRole("alert").innerText(), /Подтверждённые отчёты доступны только для копирования|Начните вставку с ячейки отчёта, который вам разрешено редактировать/);
   assert.match(await approvedZone.innerText(), /Зона А/);
+  await page.getByRole("group", { name: "Показать отчёты" }).getByRole("button", { name: /^Черновик/ }).click();
   await page.getByRole("button", { name: /^Сохранить (черновик|изменения)/ }).click();
   await page.getByText("Изменения сохранены. Статусы отчётов сохранены; часы попадут в табель после подтверждения.", { exact: true }).waitFor();
   assert.deepEqual(failures, []);

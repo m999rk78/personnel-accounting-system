@@ -10,16 +10,17 @@
 .work-types-heading-actions .work-types-toolbar-actions { flex: 0 0 auto; flex-wrap: nowrap; white-space: nowrap; }
 .work-types-master { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
 .work-types-master-grid.ag-grid-shell { flex: 1; height: auto; min-height: 300px; }
-.work-types-master-name { font-weight: 550; white-space: normal; overflow-wrap: anywhere; line-height: 1.5; }
-.work-types-master-grid .ag-group-value { min-width: 0; white-space: normal; }
+.work-types-master-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 550; white-space: nowrap; line-height: 1.5; }
+.work-types-master-grid .ag-group-value { min-width: 0; white-space: nowrap; }
 .work-types-master-grid .ag-group-expanded, .work-types-master-grid .ag-group-contracted { cursor: pointer; }
 .work-types-master-grid .ag-cell-wrapper, .work-types-detail-grid .ag-cell-wrapper { align-items: center; }
 .work-types-master-grid .ag-cell .ag-cell-wrapper, .work-types-detail-grid .ag-cell .ag-cell-wrapper { width: 100%; min-width: 0; }
-.work-types-master-grid .ag-cell-value > .ag-cell-wrapper { display: flex; align-items: center; white-space: normal; overflow: visible; gap: 8px; }
+.work-types-master-grid .ag-cell-value > .ag-cell-wrapper { display: flex; align-items: center; white-space: nowrap; overflow: hidden; gap: 8px; }
 .work-types-master-grid .ag-group-expanded, .work-types-master-grid .ag-group-contracted { flex: 0 0 16px; width: 16px; margin: 0; }
 .work-types-master-grid .ag-group-checkbox.ag-invisible, .work-types-master-grid .ag-group-child-count:empty { display: none; }
 .work-types-master-grid .ag-group-value { flex: 1; }
-.work-types-master-grid .ag-cell-wrap-text, .work-types-detail-grid .ag-cell-wrap-text { line-height: 1.5; padding-top: 12px; padding-bottom: 12px; }
+.work-types-directory .ag-cell { display: flex; align-items: center; }
+.work-types-directory .editable-row .ag-cell { background: #fffcf2; }
 .work-types-count { display: inline-flex; min-width: 28px; justify-content: center; padding: 3px 8px; border-radius: 5px; color: #52525b; background: #f4f4f5; font-size: 12px; line-height: 1.5; }
 .work-types-count-cell { display: flex; align-items: center; }
 .work-types-unassigned .work-types-master-name { color: #8a5b0b; }
@@ -28,12 +29,12 @@
 .work-types-detail-heading > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #71717a; font-size: 11px; }
 .work-types-detail-content { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
 .work-types-detail-grid.ag-grid-shell { flex: 1; height: auto; min-height: 180px; border-radius: 8px 8px 0 0; }
-.work-types-detail-grid .ag-cell-inline-editing { padding: 6px 8px !important; }
-.work-types-detail-grid .ag-cell-inline-editing .ag-cell-edit-wrapper { width: 100%; height: 100%; align-items: center; }
-.work-types-detail-grid .ag-cell-inline-editing .ag-cell-editor { width: 100%; height: 38px; }
-.work-types-detail-grid .ag-cell-inline-editing .ag-input-wrapper { height: 100%; }
-.work-types-detail-grid .ag-cell-inline-editing input { height: 100%; padding: 0 10px; font-size: 13px; }
-.work-types-detail-content .table-edit-footer { flex: 0 0 auto; padding: 0; border: 1px solid #dedede; border-top: 0; border-radius: 0 0 8px 8px; background: #fff; }
+.work-types-directory .ag-cell-inline-editing { padding: 5px 8px !important; }
+.work-types-directory .ag-cell-inline-editing .ag-cell-edit-wrapper { width: 100%; height: 100%; align-items: center; }
+.work-types-directory .ag-cell-inline-editing .ag-cell-editor { width: 100%; height: 32px; }
+.work-types-directory .ag-cell-inline-editing .ag-input-wrapper { height: 100%; }
+.work-types-directory .ag-cell-inline-editing input { height: 100%; padding: 0 9px; font-size: 12px; }
+.work-types-detail-content .table-edit-footer { flex: 0 0 auto; }
 .work-types-detail-content .employee-editing-bar, .work-types-detail-content .employee-selection-bar, .work-types-detail-content .employee-selection-actions { flex-wrap: wrap; }
 .work-types-detail-content .employee-editing-summary, .work-types-detail-content .employee-selection-summary { margin-right: auto; }
 .work-types-detail-content .employee-footer-base { width: 100%; }

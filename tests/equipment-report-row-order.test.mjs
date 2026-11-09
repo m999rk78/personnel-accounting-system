@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { equipmentReportOrderId, equipmentReportOrderScope, groupEquipmentReportDates, isEquipmentReportOrderId, isUnsavedEquipmentReportOrderId, moveEquipmentReportRows, remapEquipmentReportOrder } from "../app/equipmentReportRowOrder.ts";
+import { equipmentReportOrderId, equipmentReportOrderScope, groupEquipmentReportDates, isEquipmentReportOrderId, isUnsavedEquipmentReportOrderId, moveEquipmentReportRows, remapEquipmentReportOrder, orderEquipmentReportCrewRows } from "../app/equipmentReportRowOrder.ts";
 
 const rows = [
   { rowKey: "report-1-1", workDate: "2026-10-30", equipmentId: 2, hours: 4 },
@@ -9,6 +9,17 @@ const rows = [
   { rowKey: "approved-10", workDate: "2026-10-29", equipmentId: 2, hours: 8 },
 ];
 const ids = rows.map(equipmentReportOrderId);
+
+test("carry-over task order follows the personal report row order and preserves separate jobs", () => {
+  const crew = [
+    { id: 1, reportId: 20, workDate: "2026-11-08", equipmentId: 2, hours: 3 },
+    { id: 2, reportId: 20, workDate: "2026-11-08", equipmentId: 2, hours: 5 },
+    { id: 3, reportId: 0, workDate: "2026-11-08", equipmentId: 4, hours: 8 },
+  ];
+  const before = structuredClone(crew);
+  assert.deepEqual(orderEquipmentReportCrewRows(crew, ["2026-11-08/approved-3", "2026-11-08/report-20-2"]), [crew[2], crew[1], crew[0]]);
+  assert.deepEqual(crew, before);
+});
 
 test("equipment jobs use separate record identities and moves never alter their contents", () => {
   const before = structuredClone(rows);

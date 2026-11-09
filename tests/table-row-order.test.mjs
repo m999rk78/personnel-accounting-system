@@ -153,7 +153,15 @@ test("equipment report ordering uses record IDs, keeps published origins and iso
   assert.match(sql, /origin\.approved_entry_id = entry\.id/);
   assert.match(sql, /report\.owner_user_id = \?/);
   assert.match(sql, /entry\.responsible_user_id = \?/);
-  await canonicalRowIds("equipment-report-rows", 9, executor, { id: 8, role: "engineer", assignedSiteId: 9 });
-  assert.deepEqual(bound, [9, 9]);
-  assert.doesNotMatch(sql, /owner_user_id = \?|responsible_user_id = \?/);
+  assert.deepEqual(await canonicalRowIds("equipment-report-rows", 9, executor, { id: 8, role: "engineer", assignedSiteId: 9 }), ["2026-10-30/report-8-10", "2026-10-29/approved-44"]);
+  assert.deepEqual(bound, [9, 8, 9]);
+  const [pendingSql, publishedSql] = sql.split("UNION ALL");
+  assert.match(pendingSql, /WHERE report\.site_id = \? AND report\.status <> 'approved'/);
+  assert.match(pendingSql, /AND \(report\.status = 'submitted' OR report\.owner_user_id = \?\)/);
+  assert.doesNotMatch(pendingSql, /AND FALSE/, "An engineer can still order submitted reports from another author");
+  assert.match(publishedSql, /WHERE entry\.site_id = \? AND entry\.deleted_at IS NULL/);
+  assert.doesNotMatch(publishedSql, /report\.owner_user_id|entry\.responsible_user_id/, "Author-only drafts must not hide published entries from the project engineer");
+  assert.match(publishedSql, /COALESCE\(origin\.row_order, 0\) AS rank/);
+  assert.match(publishedSql, /records ORDER BY day DESC, created DESC, rank, id DESC/);
+  assert.equal((sql.match(/\?/g) ?? []).length, bound.length, "Each project and author predicate has a matching bound value");
 });

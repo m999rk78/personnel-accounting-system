@@ -52,7 +52,10 @@ export function VirtualChoiceList({ items, renderItem, emptyText }: {
     const elements = Array.from(rows.current?.children ?? []) as HTMLElement[];
     const measure = () => {
       const element = root.current;
-      const atBottom = element && element.scrollTop + element.clientHeight >= element.scrollHeight - 1;
+      // Filters can mount before AG attaches the popup. A detached 0×0 list is
+      // not a user who scrolled to the end: keep newly opened trees at the top.
+      const atBottom = element?.isConnected && element.clientHeight > 0 && element.scrollTop > 0
+        && element.scrollTop + element.clientHeight >= element.scrollHeight - 1;
       const sizes = elements.map((element) => [element.dataset.value!, element.getBoundingClientRect().height] as const);
       setMeasurements((current) => {
         if (!sizes.some(([key, height]) => height > 0 && current.get(key) !== height)) return current;

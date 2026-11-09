@@ -95,15 +95,17 @@ export async function canonicalRowIds(scope: string, siteId: number | null, exec
   if (scope === equipmentReportOrderScope) {
     const own = user?.role === "foreman";
     const pending = !user || canViewPendingReportsFor(user);
-    const parameters = [siteId, ...(own ? [user.id] : []), siteId, ...(own ? [user.id] : [])];
+    const privateDrafts = user && !own && pending;
+    const parameters = [siteId, ...(user && (own || privateDrafts) ? [user.id] : []), siteId, ...(own ? [user.id] : [])];
     const rows = await executor.prepare(`SELECT id FROM (
       SELECT to_char(report.work_date::date, 'YYYY-MM-DD') || '/report-' || report.id || '-' || row.id AS id,
         report.work_date::date AS day, row.created_at AS created, row.row_order AS rank
       FROM equipment_report_rows row JOIN equipment_reports report ON report.id = row.report_id
-      WHERE report.site_id = ? AND report.status <> 'approved' ${pending ? "" : "AND FALSE"} ${own ? "AND report.owner_user_id = ?" : ""}
+      WHERE report.site_id = ? AND report.status <> 'approved' ${pending ? "" : "AND FALSE"}
+        ${own ? "AND report.owner_user_id = ?" : privateDrafts ? "AND (report.status = 'submitted' OR report.owner_user_id = ?)" : ""}
       UNION ALL
       SELECT to_char(entry.work_date::date, 'YYYY-MM-DD') || '/' || CASE WHEN origin.id IS NOT NULL THEN 'report-' || origin.report_id || '-' || origin.id ELSE 'approved-' || entry.id END AS id,
-        entry.work_date::date AS day, entry.created_at AS created, 0 AS rank
+        entry.work_date::date AS day, entry.created_at AS created, COALESCE(origin.row_order, 0) AS rank
       FROM equipment_entries entry LEFT JOIN equipment_report_rows origin ON origin.approved_entry_id = entry.id WHERE entry.site_id = ? AND entry.deleted_at IS NULL ${own ? "AND entry.responsible_user_id = ?" : ""}
     ) records ORDER BY day DESC, created DESC, rank, id DESC`).bind(...parameters).all<{ id: string }>();
     return rows.results.map(row => row.id);
@@ -111,12 +113,14 @@ export async function canonicalRowIds(scope: string, siteId: number | null, exec
   if (scope === personnelReportOrderScope) {
     const own = user?.role === "foreman";
     const pending = !user || canViewPendingReportsFor(user);
-    const parameters = [siteId, ...(own ? [user.id] : []), siteId, ...(own ? [user.id] : [])];
+    const privateDrafts = user && !own && pending;
+    const parameters = [siteId, ...(user && (own || privateDrafts) ? [user.id] : []), siteId, ...(own ? [user.id] : [])];
     const rows = await executor.prepare(`SELECT id FROM (
       SELECT to_char(report.work_date::date, 'YYYY-MM-DD') || '/report-' || report.id || '-' || row.id AS id,
         report.work_date::date AS day, row.created_at AS created, row.row_order AS rank
       FROM personnel_report_rows row JOIN personnel_reports report ON report.id = row.report_id
-      WHERE report.site_id = ? AND report.status <> 'approved' ${pending ? "" : "AND FALSE"} ${own ? "AND report.owner_user_id = ?" : ""}
+      WHERE report.site_id = ? AND report.status <> 'approved' ${pending ? "" : "AND FALSE"}
+        ${own ? "AND report.owner_user_id = ?" : privateDrafts ? "AND (report.status = 'submitted' OR report.owner_user_id = ?)" : ""}
       UNION ALL
       SELECT to_char(entry.work_date::date, 'YYYY-MM-DD') || '/' || CASE WHEN origin.id IS NOT NULL THEN 'report-' || origin.report_id || '-' || origin.id ELSE 'approved-' || entry.id END AS id,
         entry.work_date::date AS day, entry.created_at AS created, COALESCE(origin.row_order, 0) AS rank

@@ -34,3 +34,7 @@ async function readImplementation(entry, moduleDirectory) {
 
 export const readDataImplementation = () => readImplementation(new URL("../../app/api/data/route.ts", import.meta.url), new URL("../../app/server/data/", import.meta.url));
 export const readWorkspaceImplementation = () => readImplementation(new URL("../../app/PersonnelApp.tsx", import.meta.url), new URL("../../app/workspace/", import.meta.url));
+export const readGridImplementation = async () => (await Promise.all([
+  "AgDataGrids.tsx", "EmployeeDirectoryGrid.tsx", "ReferenceDirectoryGrids.tsx",
+  "EquipmentDirectoryGrids.tsx", "CatalogSpreadsheetGrid.tsx", "equipmentDirectorySpreadsheet.ts",
+].map(file => readFile(new URL(`../../app/${file}`, import.meta.url), "utf8")))).join("\n");

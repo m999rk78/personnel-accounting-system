@@ -1,0 +1,11 @@
+/* AG owns menu positioning, submenus, keyboard focus and capability checks. */
+.ag-popup:has(.ag-column-menu) { z-index:1300; }
+.ag-column-menu { min-width:min(286px,calc(100vw - 16px)); max-width:calc(100vw - 16px); overflow:hidden; border:1px solid #dce1e8; border-radius:11px; background:#fff; box-shadow:0 12px 36px #18212f24,0 2px 7px #18212f10; }
+.ag-column-menu .ag-menu-list { padding:4px 0; }
+.ag-column-menu .ag-menu-option { height:36px; color:#435069; font-size:12px; }
+.ag-column-menu .ag-menu-option-text { max-width:min(250px,calc(100vw - 80px)); padding-block:8px; line-height:18px; white-space:normal; overflow-wrap:anywhere; }
+.ag-column-menu .ag-menu-option-icon { padding-inline:14px 10px; }
+.ag-column-menu .ag-menu-option-icon svg { display:block; }
+.ag-column-menu .ag-menu-option-active { background:#fff7e4; }
+.ag-column-menu .ag-menu-option-disabled { color:#9ca3af; }
+.table-context-menu[aria-label="Действия со столбцом"] { z-index:1300; border-color:#dce1e8; }

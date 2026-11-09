@@ -1,9 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { defaultPersonnelReportSubmissions, selectPersonnelReportSubmissions, personnelReportReviewIssue } from "../app/personnelReportActions.ts";
+import { defaultPersonnelReportSubmissions, selectPersonnelReportSubmissions, personnelReportReviewIssue, personnelReportMatchesView } from "../app/personnelReportActions.ts";
 import { buildPersonnelReportCrew, personnelReportCrewSource, personnelReportYesterday } from "../app/personnelReportCarryOver.ts";
 
 const item = (key, date, owner = 10, status = "draft", rowCount = 4) => ({ key, workDate: date, ownerUserId: owner, status, rowCount });
+
+test("report tabs separate confirmed and submitted records from each user's own draft dates", () => {
+  const items = [
+    item("own-draft", "2026-11-06"), item("own-returned", "2026-11-05", 10, "rejected"),
+    item("other-draft", "2026-11-06", 11), item("other-returned", "2026-11-04", 11, "rejected"),
+    item("own-submitted", "2026-11-04", 10, "submitted"), item("other-submitted", "2026-11-05", 11, "submitted"),
+    item("own-approved", "2026-11-03", 10, "approved"), item("other-approved", "2026-11-03", 11, "approved"),
+  ];
+  const keys = (view, userId) => items.filter(report => personnelReportMatchesView(report, view, userId)).map(report => report.key);
+  assert.deepEqual(keys("approved", 10), ["own-approved", "other-approved"]);
+  assert.deepEqual(keys("submitted", 10), ["own-submitted", "other-submitted"]);
+  assert.deepEqual(keys("draft", 10), ["own-draft", "own-returned"]);
+  assert.deepEqual(keys("draft", 11), ["other-draft", "other-returned"]);
+  assert.deepEqual(keys("draft", 12), []);
+  assert.equal(personnelReportMatchesView({ status: "draft", ownerUserId: null }, "draft", 10), false);
+});
+
 test("sending defaults to all of a foreman's nonempty draft dates, without another foreman's records", () => {
   const items = [item("1", "2026-10-28"), item("2", "2026-10-27"), item("3", "2026-10-26", 10, "rejected"), item("4", "2026-10-28", 11), item("5", "2026-10-28", 10, "submitted"), item("6", "2026-10-27", 10, "approved"), item("7", "2026-10-28", 10, "draft", 0)];
   const keys = defaultPersonnelReportSubmissions(items, 10);

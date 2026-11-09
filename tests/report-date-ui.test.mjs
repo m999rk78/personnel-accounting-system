@@ -74,14 +74,16 @@ async function appendHarness(kind, settings = {}) {
   visit(file); assert.ok(declaration, "Expected actual workspace append callback");
   const code = ts.transpileModule(`const ${declaration.getText(file)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   let state = settings.edits ?? {}, error = "", remembered = [];
+  let view = "approved", focused = "previous", selected = ["old-row"], visible = ["old-row"];
   const bindings = { today: "2026-11-02", permissions: { create: true }, locked: false, fetching: false, props: { loading: false }, isReportWorkDate,
     personnelReportImportTarget, equipmentReportImportTarget, personnelReportNewKey, equipmentReportNewKey, reports: [], sessions: {}, siteId: 7, currentUser: { id: 9 }, keyOf: report => String(report.id),
     canEdit: () => true, toDraft: row => ({ ...row, key: `saved-${row.id}` }), ...settings,
     edits: state, rememberSessions(keys) { remembered.push(...keys); }, setEdits(update) { state = typeof update === "function" ? update(state) : update; },
-    setError(value) { error = value; }, setNotice() {},
+    setError(value) { error = value; }, setNotice() {}, setWorkflowView(value) { view = value; },
+    setFocusedReportKey(value) { focused = value; }, setSelected(value) { selected = value; }, setVisible(value) { visible = value; },
   };
   const append = new Function(...Object.keys(bindings), `${code}; return appendOnDate;`)(...Object.values(bindings));
-  return { append, result: () => ({ state, error, remembered }) };
+  return { append, result: () => ({ state, error, remembered, view, focused, selected, visible }) };
 }
 
 for (const kind of ["Personnel", "Equipment"]) {
@@ -89,6 +91,12 @@ for (const kind of ["Personnel", "Equipment"]) {
     const row = { key: "new-row" };
     const selected = await appendHarness(kind); selected.append([row], "2026-10-30");
     assert.deepEqual(selected.result().state, { "new:2026-10-30": [row] });
+    if (kind === "Personnel") {
+      assert.equal(selected.result().view, "draft");
+      assert.equal(selected.result().focused, null);
+      assert.deepEqual(selected.result().selected, []);
+      assert.equal(selected.result().visible, null);
+    }
     const defaults = await appendHarness(kind); defaults.append([row]);
     assert.deepEqual(defaults.result().state, { "new:2026-11-02": [row] });
     const own = { id: 17, siteId: 7, ownerUserId: 9, status: "draft", workDate: "2026-10-30", rows: [{ id: 101 }] };

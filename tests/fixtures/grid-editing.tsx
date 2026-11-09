@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AllCommunityModule } from "ag-grid-community";
+import { AllEnterpriseModule } from "ag-grid-enterprise";
 import { AgGridProvider } from "ag-grid-react";
 import { DirectoryAgGrid, EquipmentRegistryAgGrid, EmployeeAgGrid, PositionAgGrid, type GridDirectoryDraft, type GridEquipmentRegistryDraft, type GridEmployeeDraft, type GridPositionDraft } from "../../app/AgDataGrids";
 import "../../app/globals.css";
@@ -63,4 +64,5 @@ function ReferenceFixture({ section }: { section: string }) {
   </>;
 }
 
-createRoot(document.getElementById("root")!).render(<AgGridProvider modules={[AllCommunityModule]}><EditingSmoke /></AgGridProvider>);
+const enterprise = new URLSearchParams(location.search).has("enterprise");
+createRoot(document.getElementById("root")!).render(<AgGridProvider modules={[enterprise ? AllEnterpriseModule : AllCommunityModule]}><EditingSmoke /></AgGridProvider>);

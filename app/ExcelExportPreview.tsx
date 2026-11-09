@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { TablePageScroll, type TablePageScrollSource } from "./TablePageScroll";
+import "./previewPageScroll.css";
 import { createEquipmentPlacementXlsx, createEquipmentTimesheetXlsx, createPersonnelTimesheetXlsx, createPlacementXlsx, createTableXlsx, type EquipmentPlacementExportRow } from "./placementXlsx";
 import { takeExcelExportPreview, type ExcelExportPreviewPayload } from "./excelExportPreviewStore";
 import { downloadExcelFile, excelFileName } from "./excelFiles";
@@ -91,6 +93,17 @@ export function ExcelExportPreviewPage() {
   const [rangeError, setRangeError] = useState("");
   const [baseTimesheetPayload, setBaseTimesheetPayload] = useState<ExcelExportPreviewPayload | null>(null);
   const periodPicker = useRef<HTMLDivElement>(null);
+  const tableViewport = useRef<HTMLDivElement>(null);
+  const pageScrollSource = useMemo<TablePageScrollSource>(() => ({
+    getViewport: () => tableViewport.current,
+    getContentHeight: () => {
+      const viewport = tableViewport.current;
+      if (!viewport) return 0;
+      const table = viewport.querySelector("table");
+      const padding = window.getComputedStyle(viewport);
+      return (table?.getBoundingClientRect().height ?? 0) + (parseFloat(padding.paddingTop) || 0) + (parseFloat(padding.paddingBottom) || 0);
+    },
+  }), []);
 
   useEffect(() => {
     let active = true;
@@ -351,6 +364,11 @@ export function ExcelExportPreviewPage() {
     setRangeError("");
   }
 
+  const footer = <footer className="excel-preview-footer">
+    <div>{downloadError ? <span className="excel-preview-error" role="alert">{downloadError}</span> : downloaded ? <span className="excel-preview-success" role="status">Файл скачан. Эту вкладку можно закрыть.</span> : <span>Проверьте данные. Файл не скачается, пока вы не подтвердите экспорт.</span>}</div>
+    <div><button type="button" className="secondary-button" onClick={() => window.close()}>Закрыть вкладку</button><button type="button" className="excel-preview-download" onClick={downloadFile} disabled={payload.rows.length === 0}>Скачать Excel</button></div>
+  </footer>;
+
   return <main className="excel-preview-page">
     <section className="excel-preview-dialog" aria-labelledby="excel-preview-title" aria-describedby="excel-preview-description">
       <header className="excel-preview-header">
@@ -408,7 +426,8 @@ export function ExcelExportPreviewPage() {
         <div><span>Столбцов</span><strong>{payload.headers.length}</strong></div>
       </div>
 
-      <div className={placementTemplate || timesheetTemplate ? "excel-preview-table-wrap excel-template-preview-wrap" : "excel-preview-table-wrap"}>
+      <TablePageScroll gridRoot={tableViewport} source={pageScrollSource} footer={footer} geometryKey={`${payload.workbook.kind}:${payload.fileName}:${payload.rows.length}`} label="Горизонтальная прокрутка предпросмотра Excel">
+      <div ref={tableViewport} className={placementTemplate || timesheetTemplate ? "excel-preview-table-wrap excel-template-preview-wrap" : "excel-preview-table-wrap"}>
         {placementTemplate ? <table className={`excel-template-preview-table ${personnelPlacement ? "personnel" : "equipment"}`}>
           <colgroup>{(personnelPlacement ? [82, 292, 98, 178, 388, 350, 286, 270, 82, 510] : [78, 440, 98, 178, 388, 346, 286, 82]).map((width, index) => <col key={index} style={{ width }} />)}</colgroup>
           <thead>
@@ -474,11 +493,7 @@ export function ExcelExportPreviewPage() {
           })}</tr>)}</tbody>
         </table>}
       </div>
-
-      <footer className="excel-preview-footer">
-        <div>{downloadError ? <span className="excel-preview-error" role="alert">{downloadError}</span> : downloaded ? <span className="excel-preview-success" role="status">Файл скачан. Эту вкладку можно закрыть.</span> : <span>Проверьте данные. Файл не скачается, пока вы не подтвердите экспорт.</span>}</div>
-        <div><button type="button" className="secondary-button" onClick={() => window.close()}>Закрыть вкладку</button><button type="button" className="excel-preview-download" onClick={downloadFile} disabled={payload.rows.length === 0}>Скачать Excel</button></div>
-      </footer>
+      </TablePageScroll>
     </section>
   </main>;
 }

@@ -6,6 +6,12 @@
   min-width: 0;
   min-height: 0;
 }
+.personnel-report-autosave { display:inline-flex; align-items:center; gap:6px; color:#6b7280; font-size:11px; }
+.personnel-report-autosave::before { content:""; flex-shrink:0; width:5px; height:5px; border-radius:50%; background:currentColor; }
+.personnel-report-autosave.status-saved { color:#287448; }
+.personnel-report-autosave.status-error,.personnel-report-autosave.status-conflict { color:#9a5d10; }
+.personnel-report-autosave-warning { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 16px; padding:10px 12px; border:1px solid #ecd7a6; border-radius:8px; background:#fffaf0; color:#795313; font-size:12px; }
+.personnel-report-autosave-warning .secondary-button { min-height:30px; padding:5px 9px; font-size:11px; }
 
 .personnel-report-header-actions {
   display: flex;
@@ -136,6 +142,21 @@
 .personnel-report-dialog-note,
 .personnel-report-empty { margin: 12px 0 0; color: #71717a; font-size: 13px; line-height: 1.5; }
 .personnel-report-dialog-error { margin: 12px 0; color: #b42318; font-size: 13px; line-height: 1.5; }
+.personnel-history-footer-actions .personnel-report-delete-button { color: #b42318; border-color: #efc5c1; }
+.personnel-history-footer-actions .personnel-report-delete-button:hover:not(:disabled) { background: #fff5f3; border-color: #e7a49c; }
+.personnel-report-delete-modal { width: min(640px, calc(100vw - 32px)); }
+.personnel-report-delete-description { margin: 0 0 16px; color: #52525b; font-size: 13px; line-height: 1.6; }
+.personnel-report-delete-list { max-height: min(320px, 40dvh); margin: 0; padding: 0; overflow: auto; list-style: none; border: 1px solid #e4e4e7; border-radius: 8px; }
+.personnel-report-delete-list li { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; }
+.personnel-report-delete-list li + li { border-top: 1px solid #ededf0; }
+.personnel-report-delete-list li > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.personnel-report-delete-list strong { font-size: 13px; }
+.personnel-report-delete-list span, .personnel-report-delete-list small { color: #71717a; font-size: 12px; line-height: 1.4; }
+.personnel-report-delete-list b { flex-shrink: 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.personnel-report-dialog .toolbar-actions .personnel-report-delete-confirm { border: 1px solid #b42318; border-radius: 6px; background: #b42318; color: #fff; font-weight: 600; cursor: pointer; }
+.personnel-report-dialog .toolbar-actions .personnel-report-delete-confirm:hover:not(:disabled) { background: #912018; }
+.personnel-report-delete-confirm:disabled { opacity: .5; cursor: wait; }
+.personnel-report-delete-confirm:focus-visible { outline: 2px solid #b42318; outline-offset: 3px; }
 .personnel-report-review-modal { width: min(560px, calc(100vw - 40px)); }
 .personnel-report-review-modal > p { font-size: 13px; line-height: 1.5; }
 .personnel-report-review-modal label { display: flex; flex-direction: column; gap: 6px; margin: 16px 0; font-size: 13px; }

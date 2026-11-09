@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 import { moveRowBlock } from "../app/tableRowOrder.ts";
 import { rolePermissionTemplate } from "../app/permissionModel.ts";
 import { isPersonnelTimesheetValue } from "../app/personnelTimesheetValues.ts";
+import { parsePersonnelReportDraftSnapshot } from "../app/personnelReportDraftBuffer.ts";
+import { parseEquipmentReportDraftSnapshot } from "../app/equipmentReportDraftBuffer.ts";
 
 let port = 3142;
 let buildOnly = false;
@@ -41,6 +43,7 @@ const timesheetUnits = [{ id: 1, equipmentType: "Экскаватор", brand: "
 const personnelMarks = new Map();
 const equipmentMarks = new Map();
 const orders = new Map();
+const draftBuffers = new Map();
 const mutations = [];
 const blockedRequests = [];
 let delayMs = 0;
@@ -49,6 +52,10 @@ const availableIds = (scope, siteId) => scope === "directory-work-types"
   ? ["parent-1", "parent-2", "parent-3", "child-11", "child-12", "child-13", "child-14", "child-15"]
   : Array.from({ length: 6 }, (_, index) => (siteId - 1) * 100 + index + 1);
 const reportPaths = new Set(["/api/personnel-report", "/api/equipment-report"]);
+const draftParsers = new Map([
+  ["/api/personnel-report-draft", parsePersonnelReportDraftSnapshot],
+  ["/api/equipment-report-draft", parseEquipmentReportDraftSnapshot],
+]);
 function json(response, payload, status = 200) {
   response.statusCode = status;
   response.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -65,7 +72,7 @@ async function readBody(request) {
 }
 function block(request, response, path) {
   blockedRequests.push({ method: request.method, path });
-  return json(response, { error: `Запрос ${request.method} ${path} заблокирован изолированным UI-стендом.` }, 403);
+  return json(response, { error: `Запрос ${request.method} ${path} заблокирован изолированным UI-стендом.`, code: "ISOLATED_UI_REQUEST_BLOCKED" }, 403);
 }
 const config = {
   configFile: false, envDir: false, publicDir: false,
@@ -90,17 +97,38 @@ const config = {
           request.url = `/confirmation-dialogs.html${url.search}`;
           return next();
         }
-        if (url.pathname === "/__system/status") return json(response, { orders: Object.fromEntries(orders), mutations, blockedRequests, delayMs });
+        if (url.pathname === "/__system/status") return json(response, { orders: Object.fromEntries(orders), draftBuffers: [...draftBuffers].map(([key, value]) => ({ key, revision: value.revision, hasSnapshot: value.snapshot !== null })), mutations, blockedRequests, delayMs });
         if (!url.pathname.startsWith("/api/") && !url.pathname.startsWith("/__smoke/")) return next();
         try {
           if (url.pathname === "/__smoke/status") return json(response, { orders: Object.fromEntries(orders), mutations, delayMs });
           if (url.pathname === "/__smoke/reset" && request.method === "POST") {
-            orders.clear(); mutations.length = 0;
+            orders.clear(); draftBuffers.clear(); mutations.length = 0;
             return json(response, { reset: true });
           }
           if (url.pathname === "/__smoke/policy" && request.method === "POST") {
             const body = await readBody(request); delayMs = body.slow ? 1500 : 0;
             return json(response, { delayMs });
+          }
+          const parseDraft = draftParsers.get(url.pathname);
+          if (parseDraft) {
+            if (request.method !== "GET" && request.method !== "PUT") return block(request, response, url.pathname);
+            const body = request.method === "PUT" ? await readBody(request) : null;
+            if (request.method === "PUT" && (!body || typeof body !== "object" || Array.isArray(body))) throw new Error("Некорректные данные тестового черновика.");
+            const siteId = body ? body.siteId : Number(url.searchParams.get("siteId"));
+            if (!sites.some(site => site.id === siteId)
+              || body && url.searchParams.has("siteId") && Number(url.searchParams.get("siteId")) !== siteId) return block(request, response, url.pathname);
+            const key = `${url.pathname}:${actor.id}:${siteId}`;
+            const current = draftBuffers.get(key) ?? { revision: 0, snapshot: null };
+            if (!body) return json(response, current);
+            if (!Number.isSafeInteger(body.revision) || body.revision < 0) throw new Error("Некорректная версия тестового черновика.");
+            const snapshot = parseDraft(body.snapshot, actor.id, siteId);
+            if (body.revision !== current.revision) return json(response, {
+              error: "Тестовый черновик уже изменён в другой вкладке.", code: "DRAFT_BUFFER_CONFLICT", details: current,
+            }, 409);
+            const nextDraft = { revision: current.revision + 1, snapshot: structuredClone(snapshot) };
+            draftBuffers.set(key, nextDraft);
+            mutations.push({ path: url.pathname, userId: actor.id, siteId, revision: nextDraft.revision, hasSnapshot: snapshot !== null });
+            return json(response, nextDraft);
           }
           const referer = new URL(request.headers.referer ?? "/", "http://127.0.0.1");
           const checkboxFixture = referer.pathname === "/checkbox-row-drag.html";
@@ -162,7 +190,7 @@ const config = {
           if (url.pathname === "/api/access-rights") return json(response, { users: rightsUsers, sites, canManage: true, currentUserId: 99 });
           if (url.pathname === "/api/roles") return json(response, { roles: [], canManage: true });
           return block(request, response, url.pathname);
-        } catch (error) { return json(response, { error: error.message }, 400); }
+        } catch (error) { return json(response, { error: error.message, code: error.code ?? "INVALID_SYNTHETIC_REQUEST" }, 400); }
       });
     },
   }],

@@ -1,0 +1,38 @@
+/* Opt-in presentation; the full filter and its sorting controls remain intact. */
+.ag-filter-menu:has(.grid-compact-filter-anchor) {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  width: min(286px, calc(100vw - 24px));
+  min-width: 0;
+  max-height: min(430px, calc(100dvh - 24px));
+  overflow: hidden;
+  border: 1px solid #dedee2;
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: 0 8px 24px #18181b24, 0 2px 6px #18181b0d;
+  --ag-input-height: 32px;
+  --ag-widget-container-horizontal-padding: 12px;
+  --ag-widget-container-vertical-padding: 10px;
+}
+.ag-filter-menu:has(.grid-compact-filter-anchor) > .ag-filter { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.ag-multi-filter:has(.grid-compact-filter-anchor) { display: flex; flex-direction: column; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.ag-multi-filter:has(.grid-compact-filter-anchor) > :is(.ag-filter-wrapper,.ag-react-container):has(.grid-compact-filter-anchor),
+.ag-multi-filter:has(.grid-compact-filter-anchor) > .ag-filter-separator,
+.ag-filter-wrapper:has(> .ag-multi-filter .grid-compact-filter-anchor) > .ag-filter-apply-panel { display: none; }
+/* Preserve model indices while putting the native conditions submenu first. */
+.ag-multi-filter:has(.grid-compact-filter-anchor) > .ag-multi-filter-menu-item { order: -1; flex: 0 0 auto; border-bottom: 1px solid #ececef; }
+.ag-multi-filter:has(.grid-compact-filter-anchor) .ag-compact-menu-option { min-height: 38px; }
+.ag-multi-filter:has(.grid-compact-filter-anchor) .ag-set-filter { padding: 10px 12px 12px; }
+.ag-multi-filter:has(.grid-compact-filter-anchor) .ag-set-filter-body-wrapper { padding: 0; }
+.ag-multi-filter:has(.grid-compact-filter-anchor) .ag-mini-filter { margin: 0 0 8px; }
+.ag-multi-filter:has(.grid-compact-filter-anchor) .ag-set-filter-list { height: min(280px, calc(100dvh - 160px)); min-height: 0; max-height: 280px; overflow: hidden; }
+.ag-multi-filter:has(.grid-compact-filter-anchor) .ag-filter-virtual-list-viewport { max-height: 280px; }
+.ag-multi-filter:has(.grid-compact-filter-anchor) .ag-set-filter-item { align-items: center; }
+.ag-multi-filter:has(.grid-compact-filter-anchor) .ag-set-filter-item .ag-label,
+.ag-multi-filter:has(.grid-compact-filter-anchor) .ag-set-filter-item .ag-checkbox-label { overflow: visible; white-space: normal; overflow-wrap: anywhere; line-height: 16px; }
+@media (max-height: 520px) {
+  .ag-multi-filter:has(.grid-compact-filter-anchor) .ag-set-filter-list,
+  .ag-multi-filter:has(.grid-compact-filter-anchor) .ag-filter-virtual-list-viewport { height: 170px; max-height: 170px; }
+}

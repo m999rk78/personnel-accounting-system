@@ -134,11 +134,11 @@ test("keeps approved OPR hours after a date transfer and a later change of emplo
   assert.equal(newMonth.entries[0].hours, 8);
 });
 
-test("builds the monthly timesheet from saved daily reports", async () => {
+test("builds the monthly timesheet from saved daily reports with document scrolling", async () => {
   const api = await readFile(new URL("../app/api/timesheet/route.ts", import.meta.url), "utf8");
   const view = await readFile(new URL("../app/TimesheetView.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-  const headerScroll = await readFile(new URL("../app/timesheetHeaderScroll.ts", import.meta.url), "utf8");
+  const pageStyles = await readFile(new URL("../app/tablePageScroll.css", import.meta.url), "utf8");
   const clipboard = await readFile(new URL("../app/useTimesheetClipboard.ts", import.meta.url), "utf8");
   const columnFilter = await readFile(new URL("../app/TimesheetColumnFilter.tsx", import.meta.url), "utf8");
   const filterController = await readFile(new URL("../app/useTimesheetFilters.tsx", import.meta.url), "utf8");
@@ -199,14 +199,13 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(view, /Табель учёта рабочего времени/);
   assert.match(view, /import \{ TimesheetMonthPicker \}/);
   assert.match(view, /personnel-timesheet-summary timesheet-top-summary/);
-  assert.match(view, /onScroll=\{\(event\) => syncTimesheetHeaderScroll\(event\.currentTarget\)\}/);
-  assert.match(headerScroll, /HEADER_SCROLL_START = 48/);
-  assert.match(headerScroll, /HEADER_COLLAPSE_DISTANCE = 104/);
-  assert.match(headerScroll, /\(scrollContainer\.scrollTop - HEADER_SCROLL_START\) \/ HEADER_COLLAPSE_DISTANCE/);
-  assert.match(styles, /height:var\(--timesheet-heading-height,52px\)/);
-  assert.match(styles, /height:var\(--timesheet-summary-height,42px\)/);
+  assert.match(view, /<NativeTimesheetPageScroll viewportRef=\{clipboardShellRef\} rowCount=\{visibleEmployees\.length\}/);
+  assert.doesNotMatch(view, /syncTimesheetHeaderScroll|resetTimesheetHeaderScroll/);
+  assert.match(pageStyles, /\.table-page-scroll-frame[^}]*position:sticky/);
+  assert.match(pageStyles, /\[data-table-page-viewport\][^}]*overflow-y:hidden/);
   assert.match(view, /Итого по дням/);
-  assert.match(view, /timesheet-fill-row[\s\S]*colSpan=\{days\.length \+ 8\}/);
+  assert.match(view, /timesheet-fill-row[\s\S]*colSpan=\{columnResize\.columnCount\}/);
+  assert.match(view, /timesheet-summary-label[\s\S]*colSpan=\{columnResize\.stickyCount\}/);
   assert.match(styles, /timesheet-grid-shell-reconciled \.timesheet-table[^{]*\{ height:100%/);
   assert.match(styles, /timesheet-table tbody \.timesheet-fill-row \{ height:100%/);
   assert.match(view, /Вернуть значение из отчёта/);
@@ -224,7 +223,7 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(view, /resetKey: `\$\{siteId\}:\$\{month\}`/);
   assert.match(view, /timesheet-header-filter-reset/);
   assert.match(view, /const mismatch = isMismatch\(employee, entry, mark\)/);
-  assert.match(view, /const expectedManualMark = isExpectedManualMark\(employee, mark\)/);
+  assert.match(view, /const expectedManualMark = isExpectedManualMark\(employee, entry, mark\)/);
   assert.match(view, /expectedManualMark \? "manual-expected" : ""/);
   assert.match(view, /mismatch \? "mismatch" : ""/);
   assert.doesNotMatch(view, /Сверка с ежедневными отчётами/);
@@ -304,7 +303,7 @@ test("builds the monthly timesheet from saved daily reports", async () => {
   assert.match(columnFilter, /timesheet-header-filter/);
   assert.match(columnFilter, /TimesheetFiltersContext/);
   assert.match(columnFilter, /Фильтр и сортировка/);
-  assert.match(columnFilter, /filters\?\.open\(columnId, event\.currentTarget\)/);
+  assert.match(columnFilter, /filters\?\.open\(columnId, event\.currentTarget, wasOpen\)/);
   assert.match(columnFilter, /timesheet-sort-indicator/);
   assert.doesNotMatch(columnFilter, /timesheet-filter-popover|createPortal/);
   assert.doesNotMatch(columnFilter, /<select/);

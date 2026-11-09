@@ -12,8 +12,28 @@
 }
 .ag-empty-grid-columns {
   position:absolute;
+  left:0;
+  display:flex;
+  width:100%;
   z-index:1;
   pointer-events:none;
   user-select:none;
 }
 .ag-empty-grid-columns[hidden] { display:none; }
+.ag-empty-grid-region {
+  flex:0 0 auto;
+  height:100%;
+  background-color:var(--ag-data-background-color, #fff);
+  background-image:var(--empty-grid-column-background, none), repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--empty-grid-row-height, 54px) - 1px),
+    var(--empty-grid-line-color, #dedede) calc(var(--empty-grid-row-height, 54px) - 1px),
+    var(--empty-grid-line-color, #dedede) var(--empty-grid-row-height, 54px)
+  );
+}
+.ag-empty-grid-region[hidden] { display:none; }
+.ag-empty-grid-region-left { position:sticky; left:var(--ag-internal-pinned-left-sticky-offset, 0px); z-index:2; }
+.ag-empty-grid-region-right { position:sticky; right:var(--ag-internal-pinned-right-sticky-offset, 0px); order:1; z-index:2; }
+/* Match AG's flexible gap before the right pinned columns. */
+.ag-empty-grid-columns::after { content:""; flex:1 0 0; }

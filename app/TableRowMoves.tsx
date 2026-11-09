@@ -8,6 +8,7 @@ import { useWorkspaceAccess } from "./TableAccessContext";
 import { personnelReportOrderScope } from "./personnelReportRowOrder";
 import { equipmentReportOrderScope } from "./equipmentReportRowOrder";
 import { nativeRowDragIds, nativeRowDropIds, nativeSelectedRowIds, toggleNativeRowSelection, type NativeRowSelection } from "./nativeRowSelection";
+import { startRowDragAutoScroll } from "./rowDragAutoScroll";
 
 const EMPTY_ORDER: RowOrderId[] = [];
 const EMPTY_IMPORT_ORDER: number[] = [];
@@ -173,6 +174,8 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
   const [selection, setSelection] = useState<NativeRowSelection>({ key: "", ids: [] });
   const selected = nativeSelectedRowIds(selection, key, context.ids);
   const dragged = useRef<NativeRowSelection>({ key: "", ids: [] });
+  const dragScroll = useRef<ReturnType<typeof startRowDragAutoScroll>>(null);
+  const stopDragScroll = useCallback(() => { dragScroll.current?.stop(); dragScroll.current = null; }, []);
   const trailingClick = useRef<{ key: string; id: number } | null>(null);
   const selectionRevision = useRef(0);
   const [menuState, setMenu] = useState<{ key: string; id: number; x: number; y: number } | null>(null);
@@ -187,8 +190,10 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
   const menu = menuState?.key === key && context.ids.includes(menuState.id) ? menuState : null;
   const moves = useRowMoveActions(order, disabled || editing, key);
   const blocked = disabled || editing || !order?.canWrite || order.busy || access?.select === false;
+  useEffect(() => stopDragScroll, [key, blocked, stopDragScroll]);
   const canSelect = Boolean(order?.canWrite) && access?.select !== false;
   const clearSelection = () => {
+    stopDragScroll();
     selectionRevision.current += 1;
     dragged.current = { key, ids: [] };
     trailingClick.current = null;
@@ -209,6 +214,7 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
     className: selected.includes(id) ? "table-row-move-selected" : undefined,
     onDragOver: (event: React.DragEvent) => { if (nativeRowDropIds(dragged.current, key, context.ids, id, blocked).length) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; } },
     onDrop: (event: React.DragEvent) => {
+      stopDragScroll();
       const movingIds = nativeRowDropIds(dragged.current, key, context.ids, id, blocked);
       if (!movingIds.length) return;
       event.preventDefault(); event.stopPropagation();
@@ -233,6 +239,17 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
         if (!movingIds.length) { event.preventDefault(); return; }
         dragged.current = { key, ids: movingIds }; trailingClick.current = { key, id };
         event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", movingIds.join(","));
-      }} onDragEnd={() => { dragged.current = { key, ids: [] }; }}>{number}</button> : number;
+        stopDragScroll();
+        const shell = event.currentTarget.closest<HTMLElement>(".timesheet-grid-shell");
+        if (shell) {
+          const snapshot = dragged.current;
+          let session: ReturnType<typeof startRowDragAutoScroll> = null;
+          session = startRowDragAutoScroll(shell, event, "native", () => {
+            if (dragScroll.current === session) dragScroll.current = null;
+            if (dragged.current === snapshot) dragged.current = { key, ids: [] };
+          });
+          dragScroll.current = session;
+        }
+      }} onDragEnd={() => { stopDragScroll(); dragged.current = { key, ids: [] }; }}>{number}</button> : number;
   return { rowProps, handle, clearSelection, hasSelection: selected.length > 0, headerCheckbox: "№", getActions: (id: number, close: () => void) => moves.getActions(id, selected, close), ui: <>{moves.feedback}{selected.length > 0 && <div className="table-order-feedback">Выделено строк: {selected.length}<button type="button" onClick={clearSelection}>Снять выделение</button></div>}{menu && <TableContextMenu {...menu} caption="Порядок строк" value="Сотрудники и техника проекта" onClose={closeMenu} actions={moves.getActions(menu.id, selected, closeMenu)} />}</> };
 }

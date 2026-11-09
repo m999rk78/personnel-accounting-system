@@ -36,10 +36,13 @@ export function assertPersonnelReportSiteAccess(user: Actor, siteId: number) {
   }
 }
 
-export function assertPersonnelReportOwner(user: Actor, report: Pick<ReportIdentity, "siteId" | "ownerUserId">) {
+export function assertPersonnelReportOwner(user: Actor, report: Pick<ReportIdentity, "siteId" | "ownerUserId" | "status">) {
   assertPersonnelReportSiteAccess(user, report.siteId);
   if (user.role === "foreman" && report.ownerUserId !== user.id) {
     throw new PersonnelReportError("Прораб может изменять только свою часть отчёта.", 403, "REPORT_FORBIDDEN");
+  }
+  if (report.ownerUserId !== user.id && (report.status === "draft" || report.status === "rejected")) {
+    throw new PersonnelReportError("Черновик доступен только его автору.", 403, "REPORT_FORBIDDEN");
   }
 }
 

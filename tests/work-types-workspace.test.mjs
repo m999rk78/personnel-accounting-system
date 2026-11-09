@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { workTypeDraft, workTypeNameKey, workTypesArchiveSelection, workTypesDraftErrors, workTypesSavePayload, workTypesWorkspace } from "../app/workTypesWorkspace.ts";
+import { removeNewWorkTypeDrafts, workTypeDraft, workTypeNameKey, workTypesArchiveSelection, workTypesDraftErrors, workTypesSavePayload, workTypesWorkspace } from "../app/workTypesWorkspace.ts";
+import { draftHistoryReducer } from "../app/personnelSpreadsheet.ts";
 
 const parents = [
   { id: 2, name: "Вспомогательные работы" },
@@ -111,15 +112,93 @@ test("inline edits and drafts update detail membership, counts and searchable na
   };
   const before = structuredClone(edits);
   const workspace = workTypesWorkspace(parents, children, edits);
-  assert.deepEqual(workspace.masters.map(row => [row.key, row.kind, row.childCount]), [["parent-2", "edit", 1], ["parent-1", "entry", 2], ["parent-3", "entry", 1], ["new-parent-one", "draft", 1], ["unassigned", "entry", 3]]);
+  assert.deepEqual(workspace.masters.map(row => [row.key, row.kind, row.childCount]), [["new-parent-one", "draft", 1], ["parent-2", "edit", 1], ["parent-1", "entry", 2], ["parent-3", "entry", 1], ["unassigned", "entry", 3]]);
   assert.deepEqual(workspace.details.get("parent-2").map(row => row.key), ["child-12"]);
   assert.deepEqual(workspace.details.get("parent-1").map(row => [row.key, row.kind]), [["child-11", "edit"], ["child-13", "entry"]]);
   assert.deepEqual(workspace.details.get("new-parent-one").map(row => row.key), ["new-child-one"]);
   assert.match(workspace.masters.find(row => row.key === "parent-1").searchText, /Новая уборка/);
-  assert.doesNotMatch(workspace.masters[0].searchText, /Уборка|Новая уборка/);
-  assert.equal(workspace.masters[0].searchText.startsWith("Обновлённый вид\n"), true);
+  assert.doesNotMatch(workspace.masters.find(row => row.key === "parent-2").searchText, /Уборка|Новая уборка/);
+  assert.equal(workspace.masters.find(row => row.key === "parent-2").searchText.startsWith("Обновлённый вид\n"), true);
   assert.deepEqual(edits, before, "derived counts and search text never leak into editable drafts");
   assert.deepEqual(workTypesWorkspace(parents, children, {}), source, "clearing drafts restores the source workspace");
+});
+
+test("multiple new parents and children stay above saved rows, newest first in their own scope", () => {
+  const edits = {
+    "new-parent-first": parentDraft("new-parent-first", "Первый"),
+    "new-child-first": childDraft("new-child-first", "Первый подвид", "parent-2"),
+    "new-parent-second": parentDraft("new-parent-second", "Второй"),
+    "new-child-other": childDraft("new-child-other", "Другой подвид", "parent-1"),
+    "new-child-second": childDraft("new-child-second", "Второй подвид", "parent-2"),
+  };
+  const before = structuredClone({ parents, children, edits });
+  const workspace = workTypesWorkspace(parents, children, edits);
+  assert.deepEqual(workspace.masters.map(row => row.key), ["new-parent-second", "new-parent-first", "parent-2", "parent-1", "parent-3", "unassigned"]);
+  assert.deepEqual(workspace.details.get("parent-2").map(row => row.key), ["new-child-second", "new-child-first", "child-11", "child-12"]);
+  assert.deepEqual(workspace.details.get("parent-1").map(row => row.key), ["new-child-other", "child-13"]);
+  assert.deepEqual({ parents, children, edits }, before);
+});
+
+test("removing an accidental blank row preserves the completed new rows and existing edits", () => {
+  const edits = {
+    "new-parent-filled": parentDraft("new-parent-filled", "Готовый вид"),
+    "new-child-filled": childDraft("new-child-filled", "Готовый подвид", "new-parent-filled"),
+    "parent-2": parentDraft("parent-2", "Исправленный вид", { id: 2, originalName: parents[0].name }),
+    "new-child-blank": childDraft("new-child-blank", "", "parent-2"),
+  };
+  const before = structuredClone(edits);
+  const result = removeNewWorkTypeDrafts(edits, ["new-child-blank", "parent-2", "unassigned", "missing"]);
+  assert.deepEqual(result.removedKeys, ["new-child-blank"]);
+  assert.deepEqual(Object.keys(result.edits), ["new-parent-filled", "new-child-filled", "parent-2"]);
+  for (const key of Object.keys(result.edits)) assert.strictEqual(result.edits[key], edits[key]);
+  assert.deepEqual(edits, before);
+});
+
+test("removing a new parent cascades only to its unsaved children and is one undoable change", () => {
+  const edits = {
+    "new-parent-one": parentDraft("new-parent-one", "Новый вид"),
+    "new-child-one": childDraft("new-child-one", "Его подвид", "new-parent-one"),
+    "new-child-two": childDraft("new-child-two", "Ещё подвид", "new-parent-one"),
+    "new-child-other": childDraft("new-child-other", "Другой", "parent-2"),
+    "child-11": childDraft("child-11", "Исправленная уборка", "parent-1", { id: 11, originalName: "Уборка", originalParentId: 2 }),
+  };
+  const before = structuredClone(edits);
+  const removed = removeNewWorkTypeDrafts(edits, ["new-parent-one", "new-parent-one", "child-11"]);
+  assert.deepEqual(removed.removedKeys, ["new-parent-one", "new-child-one", "new-child-two"]);
+  assert.deepEqual(Object.keys(removed.edits), ["new-child-other", "child-11"]);
+  let history = { present: edits, past: [], future: [] };
+  history = draftHistoryReducer(history, { type: "change", update: removed.edits });
+  assert.equal(history.past.length, 1);
+  history = draftHistoryReducer(history, { type: "undo" });
+  assert.deepEqual(history.present, before);
+  history = draftHistoryReducer(history, { type: "redo" });
+  assert.deepEqual(history.present, removed.edits);
+  assert.deepEqual(edits, before);
+});
+
+test("a new parent referenced by a saved child cannot be removed or partially mutate the batch", () => {
+  const edits = {
+    "new-parent-one": parentDraft("new-parent-one", "Новый вид"),
+    "new-child-blank": childDraft("new-child-blank", "", "parent-2"),
+    "child-11": childDraft("child-11", "Сохранённый подвид, новое имя", "new-parent-one", { id: 11, originalName: "Уборка", originalParentId: 2 }),
+  };
+  const before = structuredClone(edits);
+  assert.throws(() => removeNewWorkTypeDrafts(edits, ["new-parent-one", "new-child-blank", "child-11"]), /Новый вид.*сохранённые подвиды/);
+  assert.deepEqual(edits, before);
+  assert.deepEqual(workTypesDraftErrors(parents, children, edits)["child-11"], undefined);
+});
+
+test("draft removal ignores saved ids, missing keys and synthetic groups without changing references", () => {
+  const edits = {
+    "parent-1": parentDraft("parent-1", "Сохранённый", { id: 1 }),
+    "child-zero": childDraft("child-zero", "Защитить нулевой id", "parent-1", { id: 0 }),
+    "child-null": childDraft("child-null", "Защитить null id", "parent-1", { id: null }),
+  };
+  for (const keys of [[], ["parent-1", "child-zero", "child-null", "missing", "unassigned"]]) {
+    const result = removeNewWorkTypeDrafts(edits, keys);
+    assert.strictEqual(result.edits, edits);
+    assert.deepEqual(result.removedKeys, []);
+  }
 });
 
 test("draft snapshots keep exact original names and parent ids when refreshed catalogs change", () => {

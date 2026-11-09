@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { rolePermissionTemplate } from "../app/permissionModel.ts";
+import { compileModuleGraph } from "./fixtures/compile-module-graph.mjs";
 
 const fileUrl = name => new URL(`../app/${name}.ts`, import.meta.url).href;
 const dataUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
@@ -15,10 +16,14 @@ async function load(path, replacements) {
 const actor = (role = "viewer", pending = false) => ({ id: 8, role, assignedSiteId: null,
   projectAccess: { mode: "selected", siteIds: [7, 11] }, canViewPendingReports: pending,
   permissions: rolePermissionTemplate(role) });
-function readonlyDatabase(domain, siteId) {
+function readonlyDatabase(domain, siteId, includeOwnPrivateReports = false) {
   const queries = [];
   const headers = ["draft", "submitted", "approved", "rejected"].map((status, index) => ({ id: 10 + index, siteId, workDate: "2026-10-30", ownerUserId: 9,
     status, revision: 1, reviewComment: `Internal ${status}`, ownerName: "Прораб" }));
+  if (includeOwnPrivateReports) for (const [index, status] of ["draft", "rejected"].entries()) headers.push({
+    id: 20 + index, siteId, workDate: "2026-10-30", ownerUserId: actor().id,
+    status, revision: 1, reviewComment: `Own ${status}`, ownerName: "Автор",
+  });
   const rows = headers.map(header => ({ id: header.id + 100, reportId: header.id, hours: 8, note: `Row ${header.status}` }));
   const entries = [{ id: 100, siteId, workDate: "2026-10-30", hours: 8, equipmentName: "Кран", note: "Опубликованная строка" }];
   const db = { queries,
@@ -45,11 +50,7 @@ function readonlyDatabase(domain, siteId) {
 
 for (const domain of ["personnel", "equipment"]) {
   const title = domain[0].toUpperCase()+domain.slice(1);
-  const store = await load(`../app/${domain}ReportStore.ts`, {
-    [`./${domain}ReportWorkflow`]: fileUrl(`${domain}ReportWorkflow`),
-    "./equipmentExcel": fileUrl("equipmentExcel"), "./equipmentAvailability": fileUrl("equipmentAvailability"),
-    "./personnelImportOrderServer": fileUrl("personnelImportOrderServer"),
-  });
+  const store = await import(await compileModuleGraph(`app/${domain}ReportStore.ts`));
   test(`${domain}: viewers receive approved data only and pending reports require an explicit grant`, async () => {
     const db = readonlyDatabase(domain, 7);
     const result = await store[`list${title}Reports`](db, actor(), 7, null, null);
@@ -60,12 +61,23 @@ for (const domain of ["personnel", "equipment"]) {
     assert.equal(result.canReview, false);
     assert.deepEqual(db.queries.find(query=>query.sql.includes(`FROM ${domain}_report_rows draft_row`)).values, [[12]]);
     const enabled = await store[`list${title}Reports`](readonlyDatabase(domain, 11), actor("viewer", true), 11, null, null);
-    assert.deepEqual(enabled.reports.map(report=>report.status), ["draft", "submitted", "approved", "rejected"]);
+    assert.deepEqual(enabled.reports.map(report=>report.status), ["submitted", "approved"]);
     assert.equal(enabled.canReview, false);
     if (domain === "equipment") {
       const restricted = actor(); restricted.permissions.equipment_timesheet.view = false;
       assert.deepEqual((await store.listEquipmentReports(readonlyDatabase(domain,7), restricted,7,null,null)).availabilityMarks, []);
     }
+  });
+
+  test(`${domain}: a pending-report grant retains own private reports but never reveals another author's drafts`, async () => {
+    const user = actor("viewer", true), db = readonlyDatabase(domain, 7, true);
+    const result = await store[`list${title}Reports`](db, user, 7, null, null);
+    assert.deepEqual(result.reports.map(report => report.id), [11, 12, 20, 21]);
+    assert.deepEqual(result.reports.filter(report => ["draft", "rejected"].includes(report.status)).map(report => report.ownerUserId), [user.id, user.id]);
+    assert.equal(result.canReview, false);
+    const reportQuery = db.queries.find(query => query.sql.includes("JOIN app_users owner"));
+    assert.deepEqual(reportQuery.values, [7, user.id]);
+    assert.match(reportQuery.sql, /report\.status IN \('approved', 'submitted'\) OR report\.owner_user_id = \?/);
   });
 
   test(`${domain}: viewer writes are forbidden before any database operation even with forged full permissions`, async () => {

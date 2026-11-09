@@ -29,7 +29,8 @@ export function workTypesWorkspace(parents: readonly WorkTypeOption[], children:
   const childRows: WorkTypeRow[] = children.map(child => ({ key: `child-${child.id}`, directoryKind: "child", kind: "entry", id: child.id, name: child.name, originalName: child.name, originalParentId: child.mainWorkTypeId ?? null, parentKey: activeParents.has(`parent-${child.mainWorkTypeId}`) ? `parent-${child.mainWorkTypeId}` : "unassigned" }));
   const overlay = (rows: WorkTypeRow[], directoryKind: WorkTypeDraft["directoryKind"]): WorkTypeRow[] => {
     const existing = new Set(rows.map(row => row.key));
-    return [...rows.map(row => edits[row.key] ? { ...row, ...edits[row.key], kind: "edit" as const } : row), ...Object.values(edits).filter(row => row.directoryKind === directoryKind && !existing.has(row.key)).map(row => ({ ...row, kind: "draft" as const }))];
+    const added = Object.values(edits).filter(row => row.directoryKind === directoryKind && !existing.has(row.key)).reverse().map(row => ({ ...row, kind: "draft" as const }));
+    return [...added, ...rows.map(row => edits[row.key] ? { ...row, ...edits[row.key], kind: "edit" as const } : row)];
   };
   const masters = overlay(parentRows, "parent");
   const details = new Map<string, WorkTypeRow[]>();
@@ -46,6 +47,21 @@ export function workTypesWorkspace(parents: readonly WorkTypeOption[], children:
     row.searchText = [row.name, ...nested.map(child => child.name)].join("\n");
   }
   return { masters, details };
+}
+
+/** Removing a new parent also discards its new children, never saved catalog rows. */
+export function removeNewWorkTypeDrafts(edits: WorkTypeEdits, selectedKeys: readonly string[]): { edits: WorkTypeEdits; removedKeys: string[] } {
+  const selected = new Set(selectedKeys);
+  const parents = new Set(Object.values(edits).filter(row => row.id === undefined && row.directoryKind === "parent" && selected.has(row.key)).map(row => row.key));
+  const blockedParents = [...parents].filter(key => Object.values(edits).some(row => row.id !== undefined && row.directoryKind === "child" && row.parentKey === key));
+  if (blockedParents.length) {
+    const names = blockedParents.map(key => `«${edits[key].name.trim() || "Без названия"}»`).join(", ");
+    throw new Error(`Нельзя убрать новые виды работ ${names}: к ним перенесены сохранённые подвиды. Сначала назначьте этим подвидам другой вид работы.`);
+  }
+  const removedKeys = Object.values(edits).filter(row => row.id === undefined && (selected.has(row.key) || row.directoryKind === "child" && row.parentKey !== undefined && parents.has(row.parentKey))).map(row => row.key);
+  if (!removedKeys.length) return { edits, removedKeys };
+  const removed = new Set(removedKeys);
+  return { edits: Object.fromEntries(Object.entries(edits).filter(([key]) => !removed.has(key))), removedKeys };
 }
 
 export function workTypesDraftErrors(parents: readonly WorkTypeOption[], children: readonly WorkTypeOption[], edits: WorkTypeEdits) {

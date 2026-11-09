@@ -46,6 +46,11 @@
 .users-list-shell .user-access-search { width:280px; min-width:180px; max-width:50%; height:38px; flex:0 1 280px; }
 .users-list-shell .user-access-search input { height:38px; border-color:var(--ur-border); border-radius:8px; background:var(--ur-soft); font-size:12px; }
 .users-list-shell .user-access-search input:focus { border-color:#a1a1aa; background:#fff; box-shadow:0 0 0 3px #18181b08; }
+.users-list-filter-reset { display:inline-flex; flex:0 0 auto; align-items:center; gap:6px; min-height:32px; padding:5px 9px; border:1px solid var(--ur-border); border-radius:6px; background:#fff; color:var(--ur-muted); font-size:11px; cursor:pointer; }
+.users-list-filter-reset:hover { border-color:#c89532; background:#fffaf0; color:#8a5a00; }
+.users-list-filter-reset > span { min-width:16px; padding:1px 4px; border-radius:4px; background:#fff1cc; color:#8a5a00; text-align:center; font-size:10px; }
+.users-table .timesheet-filterable-heading { width:100%; justify-content:space-between; gap:8px; }
+.users-table .timesheet-header-filter { flex:0 0 auto; }
 /* Users and roles intentionally keep compact lists, without decorative blank cells. */
 .users-table-wrap { width:100%; min-height:0; max-height:calc(100dvh - 280px); overflow:auto; }
 .users-table { width:100%; border-collapse:collapse; table-layout:fixed; text-align:left; }

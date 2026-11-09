@@ -5,6 +5,11 @@ import ts from "typescript";
 import { compareGridValues, filterDateKey, matchesPersonnelFilter, normalizeFilterText } from "../app/gridFilterModel.ts";
 import { pastePersonnelCells, personnelCellErrors, personnelOptionFields } from "../app/personnelSpreadsheet.ts";
 import { personnelActivityTime } from "../app/personnelReportSorting.ts";
+import { compileModuleGraph } from "./fixtures/compile-module-graph.mjs";
+
+const { dateTreeSetFilterParams } = await import(await compileModuleGraph(new URL("../app/DateTreeSetFilter.tsx", import.meta.url), {
+  "./dateTreeSetFilter.css": "data:text/javascript,export%20default%20%7B%7D",
+}));
 
 async function sourceFile(path) {
   return ts.createSourceFile(path, await readFile(new URL(path, import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -104,19 +109,84 @@ test("ordinary draft refreshes and unavailable native grid instances do not eras
   assert.deepEqual(ui.clears, []);
 });
 
+test("filter summary rerenders preserve native filter definitions while spreadsheet permission changes update keyboard handling", () => {
+  const source = ["isInteractiveTarget", "sourceDefaultColDef", "hasSpreadsheetBatch", "enhancedDefaultColDef"]
+    .map(name => declaration(sharedGrid, name)).join("\n");
+  let memo;
+  const useMemo = (create, dependencies) => {
+    if (!memo || dependencies.length !== memo.dependencies.length || dependencies.some((value, index) => !Object.is(value, memo.dependencies[index]))) {
+      memo = { dependencies, value: create() };
+    }
+    return memo.value;
+  };
+  class DomElement {
+    constructor(tagName) { this.tagName = tagName; }
+    closest(selector) { return selector.split(",").some(part => part.trim() === this.tagName) ? this : null; }
+  }
+  const sourceDefault = { suppressKeyboardEvent: ({ event }) => event.key === "Escape" };
+  const render = onSpreadsheetBatch => bind(source, "enhancedDefaultColDef", {
+    props: { defaultColDef: sourceDefault }, onSpreadsheetBatch, compareGridValues,
+    useMemo, Element: DomElement,
+  });
+  const plainKey = { event: { target: new DomElement("div"), key: "ArrowDown" } };
+  const initial = render(() => true);
+  assert.equal(initial.suppressKeyboardEvent(plainKey), true);
+  for (let index = 0; index < 3; index++) {
+    assert.equal(render(() => true), initial, "Filtering changes totals and inline callbacks; replacing colDef would destroy AG Grid's open Multi Filter");
+  }
+  const readOnly = render(undefined);
+  assert.notEqual(readOnly, initial, "Revoking spreadsheet editing must update the keyboard guard");
+  assert.equal(readOnly.suppressKeyboardEvent(plainKey), false, "Read-only grids retain normal AG Grid navigation");
+  assert.equal(readOnly.suppressKeyboardEvent({ event: { target: new DomElement("input"), key: "ArrowDown" } }), true, "Typing inside filter inputs must still bypass AG Grid keyboard handling");
+  assert.equal(readOnly.suppressKeyboardEvent({ event: { target: new DomElement("div"), key: "Escape" } }), true, "Column-specific keyboard guards remain effective");
+  assert.equal(render(undefined), readOnly);
+  const editableAgain = render(() => true);
+  assert.notEqual(editableAgain, readOnly);
+  assert.equal(editableAgain.suppressKeyboardEvent(plainKey), true);
+});
+
 function nativeParams(kind, options = {}) {
   const source = ["setCellHeight", "dateComparator", "enterpriseFilterParams"].map(name => declaration(enterpriseFilters, name)).join("\n");
   const configure = bind(source, "enterpriseFilterParams", {
-    sortingChild: {}, compareGridValues, filterDateKey, normalizeFilterText,
+    sortingChild: {}, compareGridValues, filterDateKey, normalizeFilterText, dateTreeSetFilterParams,
     document: { createElement: () => ({ getContext: () => ({ font: "", measureText: value => ({ width: String(value).length * 8 }) }) }) },
     window: { innerWidth: 907 },
   });
   const nodes = ["Иванов", "Петров", null].map(value => ({ value }));
-  return configure({
+  const params = {
     api: { forEachNode: callback => nodes.forEach(callback), getCellValue: ({ rowNode }) => rowNode.value },
     column: { getColId: () => "value" }, colDef: {},
-  }, { kind, ...options });
+    getValue: node => node.value, doesRowPassOtherFilter: () => true,
+  };
+  const result = configure(params, { kind, ...options });
+  return { ...result, filters: result.filters.map(filter => ({ ...filter, filterParams: typeof filter.filterParams === "function" ? filter.filterParams(params) : filter.filterParams })) };
 }
+
+test("compact and full native filters keep existing selections and condition models in compatible child slots", () => {
+  for (const [kind, condition] of [
+    ["text", { filterType: "text", type: "contains", filter: "Иванов" }],
+    ["number", { filterType: "number", type: "greaterThan", filter: 4 }],
+    ["date", { filterType: "date", type: "equals", dateFrom: "2026-11-06 00:00:00" }],
+  ]) {
+    const model = { filterType: "multi", filterModels: [null, { filterType: "set", values: [kind === "date" ? "2026-11-06" : kind === "number" ? "8" : "Иванов"] }, condition] };
+    const slots = model.filterModels.map(child => child?.filterType ?? null);
+    for (const presentation of ["full", "compact"]) {
+      const configuration = nativeParams(kind, { presentation });
+      assert.equal(configuration.filters.length, slots.length);
+      const destinations = configuration.filters.map((child, index) => !slots[index] ? null : child.filter === "agSetColumnFilter" ? "set" : child.filter === "agDateColumnFilter" ? "date" : child.filter === "agNumberColumnFilter" ? "number" : child.filter === "agTextColumnFilter" ? "text" : "unsupported");
+      assert.deepEqual(destinations, slots, "Changing presentation must not reinterpret the applied Set selection or condition as a different child filter");
+    }
+  }
+});
+
+test("native date checklist uses tree presentation while preserving original date values", () => {
+  const { filterParams } = nativeParams("date").filters.find(item => item.filter === "agSetColumnFilter");
+  assert.equal(filterParams.treeList, true);
+  assert.deepEqual(filterParams.treeListPathGetter("2026-11-06"), ["2026", "11", "06"]);
+  assert.equal(filterParams.treeListFormatter("11", 1, ["2026"]), "Ноябрь 2026");
+  assert.equal(filterParams.treeListFormatter("06", 2, ["2026", "11"]), "06.11.2026");
+  assert.equal(filterParams.keyCreator, undefined, "Date hierarchy must not replace ISO model keys with presentation paths");
+});
 
 test("native checklists re-read mutable draft values on opening without broadening an explicit selection", () => {
   for (const kind of ["text", "number", "date"]) {

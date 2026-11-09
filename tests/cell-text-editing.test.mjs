@@ -26,3 +26,22 @@ test("separate cells and successive edits keep independent sessions", () => {
   assert.equal(second.commit("Другой проект"), "Другой проект");
   assert.equal(createCellTextEditSession("Другой проект").commit("Ещё один"), "Ещё один");
 });
+
+test("the first typed character replaces the original cell value and commits only once", () => {
+  const replacement = createCellTextEditSession("А", "Старое ФИО");
+  assert.equal(replacement.commit("А"), "А");
+  assert.equal(replacement.commit("А"), undefined);
+  assert.equal(createCellTextEditSession("7", "").commit("7"), "7");
+});
+
+test("a seeded first character still supports continued typing and Escape", () => {
+  assert.equal(createCellTextEditSession("Н", "Старая зона").commit("Новая зона"), "Новая зона");
+  const cancelled = createCellTextEditSession("Н", "Старая зона");
+  cancelled.cancel();
+  assert.equal(cancelled.commit("Н"), undefined);
+});
+
+test("an editor seeded by typing compares against the real original value", () => {
+  assert.equal(createCellTextEditSession("А", "А").commit("А"), undefined);
+  assert.equal(createCellTextEditSession("Н", "Старая зона").commit("Старая зона"), undefined);
+});

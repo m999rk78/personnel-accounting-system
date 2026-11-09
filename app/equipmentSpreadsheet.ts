@@ -7,6 +7,7 @@ export const equipmentEditableFields = ["equipment", "shift", "zone", "mainWork"
 export type EquipmentCellField = typeof equipmentEditableFields[number];
 export type EquipmentSpreadsheetDraft = GridEquipmentDraft & {
   reportRowId?: number;
+  importBatchId?: string;
   createdAt?: string;
   updatedAt?: string;
   lockedEquipment?: boolean;
@@ -14,6 +15,17 @@ export type EquipmentSpreadsheetDraft = GridEquipmentDraft & {
   referenceIds?: Partial<Record<"equipmentId" | "shiftId" | "zoneId" | "mainWorkTypeId" | "subworkTypeId", number | null>>;
   inputValues?: Partial<Record<EquipmentCellField, string>>;
 };
+export type EquipmentImportBatch = { id: string; rows: readonly Pick<EquipmentSpreadsheetDraft, "key" | "equipmentId">[] };
+
+/** Saving one day of a multi-day workbook retains the complete imported unit order. */
+export function equipmentImportedUnitOrder(drafts: readonly EquipmentSpreadsheetDraft[], batches: readonly EquipmentImportBatch[], allDrafts: readonly EquipmentSpreadsheetDraft[] = drafts): number[] | undefined {
+  const activeBatches = new Set(drafts.flatMap(row => row.importBatchId ? [row.importBatchId] : []));
+  const latest = batches.findLast(batch => activeBatches.has(batch.id));
+  if (!latest) return undefined;
+  const live = new Map(allDrafts.map(row => [row.key, row.equipmentId]));
+  const ids = [...new Set(latest.rows.map(row => Number(live.get(row.key) ?? row.equipmentId)).filter(id => Number.isSafeInteger(id) && id > 0))];
+  return ids.length ? ids : undefined;
+}
 export type EquipmentAvailabilityMark = { equipmentId: number; workDate: string; productiveHours: number; downtimeHours: number; note: string };
 export type EquipmentSpreadsheetCatalogs = {
   units: GridEquipmentUnit[];

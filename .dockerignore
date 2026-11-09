@@ -6,5 +6,7 @@ dist
 node_modules
 outputs
 postgres-data
+backups/
+*.local.sql
 .env*
 npm-debug.log*

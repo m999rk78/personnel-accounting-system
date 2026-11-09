@@ -15,6 +15,7 @@ import {
   nextEquipmentReportStatus, validEquipmentReportDate,
 } from "../app/equipmentReportWorkflow.ts";
 import { equipmentReportOrderScope, isEquipmentReportOrderId, moveEquipmentReportRows, remapEquipmentReportOrder } from "../app/equipmentReportRowOrder.ts";
+import { parseEquipmentReportDraftSnapshot } from "../app/equipmentReportDraftBuffer.ts";
 
 const TODAY = "2026-10-30";
 const YESTERDAY = "2026-10-29";
@@ -61,6 +62,7 @@ const actors = Object.fromEntries([
 const reports = new Map();
 const entries = new Map();
 const orders = new Map();
+const draftBuffers = new Map();
 const requestCounts = { validation: 0, save: 0, submit: 0, mutations: 0, approvedEdits: 0 };
 let availabilityMarks = [];
 let nextReportId = 101;
@@ -107,7 +109,7 @@ function addReport(date, owner, status, rows) {
   return report;
 }
 function resetFixture() {
-  reports.clear(); entries.clear(); orders.clear(); availabilityMarks = [];
+  reports.clear(); entries.clear(); orders.clear(); draftBuffers.clear(); availabilityMarks = [];
   nextReportId = 101; nextRowId = 2000; nextEntryId = 3000;
   for (const key of Object.keys(requestCounts)) requestCounts[key] = 0;
   if (scenario === "conflicts") {
@@ -309,7 +311,9 @@ function json(response, payload, status = 200) { response.statusCode = status; r
 function requestActor(request) { return actors[/(?:^|;\s*)equipment_smoke_role=([^;]+)/.exec(request.headers.cookie ?? "")?.[1]] ?? actors.foreman; }
 function visibleReports(actor) {
   const showPending = canViewPendingReportsFor(actor);
-  return [...reports.values()].filter(report => (actor.role !== "foreman" || report.ownerUserId === actor.id) && (showPending || report.status === "approved"))
+  return [...reports.values()].filter(report => (actor.role !== "foreman" || report.ownerUserId === actor.id)
+    && (!["draft", "rejected"].includes(report.status) || report.ownerUserId === actor.id)
+    && (showPending || report.status === "approved"))
     .map(report => showPending ? report : { ...report, reviewComment: "" });
 }
 function availableOrderIds(actor) {
@@ -354,7 +358,7 @@ if (selfTest) {
   const confirmed = [...reports.values()].find(report => report.status === "approved");
   confirmed.reviewComment = "Внутренний комментарий проверки";
   assert.ok(visibleReports(actors.viewer).every(report => report.status === "approved" && report.reviewComment === ""));
-  assert.ok(visibleReports(actors.viewer_pending).some(report => report.status === "draft"));
+  assert.ok(visibleReports(actors.viewer_pending).every(report => ["approved", "submitted"].includes(report.status)), "Expanded viewing never discloses another person's private drafts");
   assert.equal(visibleReports(actors.viewer_pending).find(report => report.id === confirmed.id).reviewComment, confirmed.reviewComment);
   assert.equal(canReviewEquipmentReport(actors.viewer_pending), false);
   assert.ok(!availableOrderIds(actors.viewer).some(id => id.includes(`/report-${pending.id}-`)));
@@ -390,16 +394,29 @@ const config = {
     vite.middlewares.use(async (request, response, next) => {
       const url = new URL(request.url ?? "/", "http://localhost");
       if (url.pathname === "/excel-preview") { request.url = `/equipment-report-smoke.html${url.search}`; return next(); }
-      if (!["/api/equipment-report", "/api/equipment-timesheet", "/api/table-order", "/__smoke/catalog", "/__smoke/status", "/__smoke/reset"].includes(url.pathname)) return next();
+      if (!["/api/equipment-report", "/api/equipment-report-draft", "/api/equipment-timesheet", "/api/table-order", "/__smoke/catalog", "/__smoke/status", "/__smoke/reset"].includes(url.pathname)) return next();
       try {
         let body = {};
-        if (request.method === "POST") { let raw = ""; for await (const chunk of request) { raw += chunk; if (raw.length > 2_000_000) fail("Запрос слишком большой.", 413); } try { body = raw ? JSON.parse(raw) : {}; } catch { fail("Некорректный JSON."); } }
+        if (request.method === "POST" || request.method === "PUT") { let raw = ""; for await (const chunk of request) { raw += chunk; if (raw.length > 8_000_000) fail("Запрос слишком большой.", 413); } try { body = raw ? JSON.parse(raw) : {}; } catch { fail("Некорректный JSON."); } }
         if (url.pathname === "/__smoke/catalog") return json(response, { today: TODAY, site, units, shifts: directories.shiftId, zones: directories.zoneId, mainWorkTypes: directories.mainWorkTypeId, subworkTypes: directories.subworkTypeId, scenario });
         if (url.pathname === "/__smoke/reset" && request.method === "POST") { if (body.scenario !== undefined) { if (!SCENARIOS.includes(body.scenario)) fail("Неизвестный сценарий."); scenario = body.scenario; } resetFixture(); return json(response, { reset: true, scenario }); }
         if (url.pathname === "/__smoke/status") return json(response, { today: TODAY, yesterday: YESTERDAY, scenario, requestCounts, byDate: balancesByDate(), approvedEntryCount: entries.size,
           reports: [...reports.values()].map(({ id, ownerUserId, status, revision, workDate, rows }) => ({ id, ownerUserId, status, revision, workDate, rowCount: rows.length })),
           materializedHours: [...entries.values()].reduce((sum, entry) => sum + entry.hours, 0) });
         const actor = requestActor(request);
+        if (url.pathname === "/api/equipment-report-draft") {
+          assertWritable(actor);
+          if (Number(body.siteId ?? url.searchParams.get("siteId")) !== site.id) fail("Проект не найден.", 404);
+          const key = `${actor.id}:${site.id}`;
+          const current = draftBuffers.get(key) ?? { revision: 0, snapshot: null };
+          if (request.method === "GET") return json(response, current);
+          if (request.method !== "PUT") fail("Метод не поддерживается.", 405);
+          if (body.revision !== current.revision) fail("Черновик уже изменён в другой вкладке.", 409, "DRAFT_BUFFER_CONFLICT", current);
+          const snapshot = parseEquipmentReportDraftSnapshot(body.snapshot, actor.id, site.id);
+          const next = { revision: current.revision + 1, snapshot };
+          draftBuffers.set(key, next);
+          return json(response, next);
+        }
         if (url.pathname === "/api/equipment-timesheet") { if (request.method !== "GET") fail("Табель стенда доступен только для чтения.", 405); return json(response, { siteId: site.id, month: TODAY.slice(0, 7), units, entries: timesheetEntries(), marks: availabilityMarks, canEdit: false }); }
         if (url.pathname === "/api/table-order") {
           const key = String(actor.id); let ids = orders.get(key) ?? [];

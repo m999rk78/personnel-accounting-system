@@ -60,6 +60,19 @@ test("custom permissions remain effective even for the engineer role", () => {
   assert.throws(() => assertCanSaveEquipmentReport(cannotCreate), code("REPORT_FORBIDDEN"));
 });
 
+test("unfinished equipment drafts are private to their author regardless of review rights", () => {
+  for (const role of ["engineer", "superadmin"]) {
+    const reviewer = { ...engineer, role };
+    for (const status of ["draft", "rejected"]) {
+      const foreign = { ...report, status };
+      assert.throws(() => assertCanSaveEquipmentReport(reviewer, foreign), code("REPORT_FORBIDDEN"));
+      assert.throws(() => nextEquipmentReportStatus(reviewer, foreign, "submit"), code("REPORT_FORBIDDEN"));
+      assert.doesNotThrow(() => assertCanSaveEquipmentReport(reviewer, { ...foreign, ownerUserId: reviewer.id }));
+    }
+    assert.throws(() => nextEquipmentReportStatus(reviewer, { ...report, status: "submitted" }, "reopen"), code("REPORT_FORBIDDEN"));
+  }
+});
+
 test("revisions are mandatory and prevent stale or repeated approval", () => {
   assert.doesNotThrow(() => assertEquipmentReportRevision(3, 3));
   for (const expected of [undefined, null, 0, 2, "3", NaN]) assert.throws(() => assertEquipmentReportRevision(3, expected), code("STALE_REPORT"));

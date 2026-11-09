@@ -3,6 +3,11 @@
 import { Fragment, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
+const OPEN_EVENT = "resource-report:table-context-menu";
+export function closeTableContextMenus() {
+  document.dispatchEvent(new CustomEvent(OPEN_EVENT));
+}
+
 export type TableContextMenuAction = {
   label: string;
   shortcut?: string;
@@ -13,7 +18,7 @@ export type TableContextMenuAction = {
   onSelect: () => void | Promise<void>;
 };
 
-export function TableContextMenu({ x, y, caption, value, error, actions, onClose }: {
+export function TableContextMenu({ x, y, caption, value, error, actions, onClose, ariaLabel = "Действия с ячейкой таблицы" }: {
   x: number;
   y: number;
   caption: string;
@@ -21,10 +26,14 @@ export function TableContextMenu({ x, y, caption, value, error, actions, onClose
   error?: string;
   actions: TableContextMenuAction[];
   onClose: () => void;
+  ariaLabel?: string;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const closeOther = (event: Event) => {
+      if ((event as CustomEvent).detail !== menuRef.current) onClose();
+    };
     const closeOutside = (event: PointerEvent) => {
       if (!menuRef.current?.contains(event.target as Node)) onClose();
     };
@@ -33,6 +42,8 @@ export function TableContextMenu({ x, y, caption, value, error, actions, onClose
     };
     document.addEventListener("pointerdown", closeOutside);
     document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener(OPEN_EVENT, closeOther);
+    document.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: menuRef.current }));
     window.addEventListener("resize", onClose);
     window.addEventListener("scroll", onClose, true);
     const frame = requestAnimationFrame(() => menuRef.current?.focus({ preventScroll: true }));
@@ -40,6 +51,7 @@ export function TableContextMenu({ x, y, caption, value, error, actions, onClose
       cancelAnimationFrame(frame);
       document.removeEventListener("pointerdown", closeOutside);
       document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener(OPEN_EVENT, closeOther);
       window.removeEventListener("resize", onClose);
       window.removeEventListener("scroll", onClose, true);
     };
@@ -50,7 +62,7 @@ export function TableContextMenu({ x, y, caption, value, error, actions, onClose
     ref={menuRef}
     className="table-context-menu"
     role="menu"
-    aria-label="Действия с ячейкой таблицы"
+    aria-label={ariaLabel}
     tabIndex={-1}
     style={{ left: x, top: y }}
     onPointerDown={(event) => event.stopPropagation()}

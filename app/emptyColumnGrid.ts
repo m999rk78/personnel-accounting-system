@@ -1,5 +1,16 @@
 export type EmptyColumnBounds = { left: number; right: number; pinned: "left" | "right" | null };
 
+/** Lane-local boundaries, including columns outside AG Grid's virtual window. */
+export function emptyColumnRegion(widths: readonly number[]) {
+  let width = 0;
+  const edges = widths.flatMap(value => {
+    if (!Number.isFinite(value) || value <= 0) return [];
+    width += value;
+    return [width];
+  });
+  return { width, edges };
+}
+
 /** Physical, viewport-relative edges; central columns cannot paint over pinned ones. */
 export function visibleEmptyColumnEdges(columns: EmptyColumnBounds[], width: number) {
   const leftEdge = Math.max(0, ...columns.filter(column => column.pinned === "left").map(column => column.right));

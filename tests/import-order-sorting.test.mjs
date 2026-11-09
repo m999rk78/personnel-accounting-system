@@ -38,6 +38,7 @@ test("explicit import activation clears competing column sorts but does not muta
   assert.notEqual(importOrderColumnState(), state);
   assert.equal(importOrderScopes.has("employees"), true);
   assert.equal(importOrderScopes.has("project-personnel"), true);
+  assert.equal(importOrderScopes.has("project-equipment"), true);
   for (const scope of ["equipment", "users", "personnel-report-rows", "directory-zone"]) assert.equal(importOrderScopes.has(scope), false);
 });
 

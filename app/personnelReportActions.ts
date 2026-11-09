@@ -2,6 +2,15 @@ export type PersonnelReportSubmissionItem = {
   key: string; workDate: string; ownerUserId: number; status: string; rowCount: number;
 };
 
+export type PersonnelReportView = "approved" | "submitted" | "draft";
+
+export const isPersonnelReportDraft = (status: string) => status === "draft" || status === "rejected";
+
+/** Returned reports stay in their owner's draft; each tab has one explicit scope. */
+export function personnelReportMatchesView(report: { status: string; ownerUserId?: number | null }, view: PersonnelReportView, userId: number): boolean {
+  return view === "draft" ? isPersonnelReportDraft(report.status) && report.ownerUserId === userId : report.status === view;
+}
+
 const canSubmit = (item: PersonnelReportSubmissionItem) => (item.status === "draft" || item.status === "rejected") && item.rowCount > 0;
 
 /** All of a foreman's unfinished dates are selected, including previous days. */

@@ -4,6 +4,7 @@ import test from "node:test";
 import { createElement, Fragment } from "react";
 import ts from "typescript";
 import * as filterModel from "../app/gridFilterModel.ts";
+import { matchesDateFilterSearch } from "../app/dateFilterTreeModel.ts";
 
 const source = ts.createSourceFile("GridFilters.tsx", await readFile(new URL("../app/GridFilters.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 function declaration(name) {
@@ -49,7 +50,7 @@ function filterHarness(values, initialModel = null, kind = "text") {
     useEffect() { cursor++; }, useMemo(create) { cursor++; return create(); },
     useGridFilterPopup() { return { root: useRef(null), attach() {} }; },
     useGridFilterDisplay(value) { lifecycle = value; },
-    CustomSelect() { return null; }, VirtualChoiceList, IMPORT_ORDER_COLUMN: "__import_order__",
+    CustomSelect() { return null; }, DateFilterTree() { return null; }, VirtualChoiceList, matchesDateFilterSearch, IMPORT_ORDER_COLUMN: "__import_order__",
   };
   const { PersonnelFilter, ValueCheckbox } = new Function(...Object.keys(environment), `${implementation}\nreturn { PersonnelFilter, ValueCheckbox };`)(...Object.values(environment));
   const rows = values.map(value => ({ data: { kind: "entry", value } }));
@@ -70,12 +71,16 @@ function filterHarness(values, initialModel = null, kind = "text") {
   const search = value => find(render(), node => node.type === "input" && node.props["aria-label"] === "Поиск значений").props.onChange({ target: { value } });
   const choices = () => find(render(), node => node.type === VirtualChoiceList);
   const check = (value, checked) => choices().props.renderItem(value).props.onChange(checked);
+  const checkedValues = () => choices().props.items.filter(value => choices().props.renderItem(value).props.checked);
   const checkFound = checked => find(render(), node => node.type === ValueCheckbox && textOf(node) === "Все найденные").props.onChange(checked);
+  const checkAll = checked => find(render(), node => node.type === ValueCheckbox && textOf(node) === "Все значения").props.onChange(checked);
+  const clearSelection = () => find(render(), node => node.type === "button" && textOf(node) === "Снять выбор").props.onClick();
   const apply = () => render().props.onSubmit({ preventDefault() {} });
   const cancel = () => find(render(), node => node.type === "button" && textOf(node) === "Отмена").props.onClick();
   render(); lifecycle.afterGuiAttached();
-  return { render, search, check, checkFound, apply, cancel, actions,
+  return { render, search, check, checkFound, checkAll, clearSelection, apply, cancel, actions,
     get choices() { return choices().props.items; },
+    get checkedValues() { return checkedValues(); },
     get pending() { return pending; }, get applied() { return applied; },
     get visible() { return values.filter(value => filterModel.matchesPersonnelFilter(value, applied)); },
   };
@@ -83,6 +88,47 @@ function filterHarness(values, initialModel = null, kind = "text") {
 
 const people = ["Иванов Иван", "Иванов Пётр", "Петров Павел"];
 const model = overrides => ({ filterType: "personnel", kind: "text", values: null, conditions: [], operator: "AND", ...overrides });
+
+test("an inactive filter has unchecked values and its first manual choice selects only that employee", () => {
+  const ui = filterHarness(people);
+  assert.deepEqual(ui.checkedValues, []);
+  assert.deepEqual(ui.visible, people);
+  ui.check("Иванов Пётр", true);
+  assert.deepEqual(ui.checkedValues, ["Иванов Пётр"]);
+  assert.deepEqual(ui.pending.values, ["Иванов Пётр"]);
+  assert.equal(ui.applied, null);
+  ui.apply();
+  assert.deepEqual(ui.visible, ["Иванов Пётр"]);
+});
+
+test("removing the final manual choice clears value filtering and retains conditions", () => {
+  const conditions = [{ type: "notContains", value: "Иванов Пётр" }];
+  const ui = filterHarness(people, model({ values: ["Иванов Иван"], conditions }));
+  ui.check("Иванов Иван", false);
+  assert.equal(ui.pending.values, null);
+  assert.deepEqual(ui.pending.conditions, conditions);
+  assert.deepEqual(ui.checkedValues, []);
+  ui.apply();
+  assert.deepEqual(ui.visible, ["Иванов Иван", "Петров Павел"]);
+});
+
+test("Select all retains explicit checked values and clearing the selection restores all rows", () => {
+  const ui = filterHarness(people);
+  ui.checkAll(true);
+  assert.deepEqual(ui.pending.values, people);
+  assert.deepEqual(ui.checkedValues, people);
+  ui.apply();
+  assert.deepEqual(ui.visible, people);
+  ui.clearSelection();
+  assert.equal(ui.pending, null);
+  assert.deepEqual(ui.checkedValues, []);
+  ui.apply();
+  assert.equal(ui.applied, null);
+  assert.deepEqual(ui.visible, people);
+  ui.check("Петров Павел", true);
+  ui.check("Петров Павел", false);
+  assert.equal(ui.pending, null, "Unchecking the last value must deactivate value filtering");
+});
 
 test("search, an individual checkbox and Apply retain only the chosen matching rows", () => {
   const ui = filterHarness(people);
@@ -103,7 +149,7 @@ test("All found never revives hidden values and Cancel restores the previous sel
   const ui = filterHarness(people, previous);
   ui.search("иван");
   ui.checkFound(false);
-  assert.deepEqual(ui.pending.values, []);
+  assert.equal(ui.pending.values, null);
   ui.checkFound(true);
   assert.deepEqual(ui.pending.values, ["Иванов Иван", "Иванов Пётр"]);
   assert.deepEqual(ui.pending.conditions, previous.conditions);

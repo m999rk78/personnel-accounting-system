@@ -1,0 +1,65 @@
+.ag-filter-menu:has(.grid-checklist-filter-heading) {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  width: min(334px, calc(100vw - 24px));
+  min-width: 0;
+  max-height: min(540px, calc(100dvh - 24px));
+  overflow: hidden;
+  border: 1px solid #dedee2;
+  border-radius: 8px;
+  background: #fff;
+  color: #3f3f46;
+  box-shadow: 0 8px 24px #18181b24, 0 2px 6px #18181b0d;
+}
+.ag-filter-menu:has(.grid-checklist-filter-heading) > .ag-filter,
+.ag-filter-menu:has(.grid-checklist-filter-heading) > .ag-filter > .ag-filter-wrapper,
+.ag-multi-filter:has(.grid-checklist-filter-heading) { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; overflow: hidden; }
+.ag-multi-filter:has(.grid-checklist-filter-heading) > .ag-filter-separator { display: none; }
+.ag-filter-wrapper:has(> .ag-multi-filter .grid-checklist-filter-heading) > .ag-filter-apply-panel { display: none; }
+.ag-multi-filter:has(.grid-checklist-filter-heading) > :is(.ag-filter-body-wrapper,.ag-react-container,.ag-filter-wrapper):has(.grid-checklist-values),
+.ag-multi-filter:has(.grid-checklist-filter-heading) .ag-react-container:has(> .grid-checklist-values) { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; overflow: hidden; }
+.grid-checklist-filter-heading { display: flex; flex: 0 0 auto; align-items: center; gap: 12px; min-height: 42px; margin: 0; padding: 9px 12px; font-size: 13px; line-height: 20px; }
+.grid-checklist-filter-heading strong { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 650; }
+.grid-checklist-filter-heading button { display: grid; flex: 0 0 auto; place-items: center; width: 26px; height: 26px; padding: 4px; border: 0; border-radius: 4px; color: #71717a; background: transparent; cursor: pointer; }
+.grid-checklist-filter-heading button:hover { background: #f4f4f5; color: #27272a; }
+.grid-checklist-filter-heading button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.grid-checklist-values { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; overflow: hidden; font-size: 12px; }
+.grid-checklist-search { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; height: 34px; margin: 0 10px; padding: 0 9px; border: 1px solid #dedee2; border-radius: 5px; background: #fff; }
+.grid-checklist-search:focus-within { border-color: #c89532; box-shadow: 0 0 0 2px #e7b95322; }
+.grid-checklist-search > svg { flex: 0 0 auto; width: 15px; height: 15px; fill: none; stroke: #9696a0; stroke-width: 1.4; stroke-linecap: round; }
+.grid-checklist-search input { width: 100%; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; background: transparent; color: #3f3f46; font: inherit; box-shadow: none; }
+.grid-checklist-search input::placeholder { color: #92929c; }
+.grid-checklist-actions { display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; gap: 8px; min-height: 36px; padding: 4px 10px; border-bottom: 1px solid #ececef; font-size: 11px; }
+.grid-checklist-actions button { padding: 3px 0; border: 0; background: none; color: #80704b; font: inherit; white-space: nowrap; cursor: pointer; }
+.grid-checklist-actions button:hover { color: #9b6500; text-decoration: underline; }
+.grid-checklist-option { display: flex; align-items: center; gap: 9px; width: 100%; min-width: 0; margin: 0; font: inherit; cursor: pointer; }
+.grid-checklist-option input { flex: 0 0 auto; width: 15px; height: 15px; margin: 0; padding: 0; accent-color: #b77a00; cursor: pointer; }
+.grid-checklist-label { flex: 1; min-width: 0; overflow-wrap: anywhere; white-space: normal; line-height: 17px; }
+.grid-checklist-count { flex: 0 0 auto; min-width: 23px; padding: 1px 6px; border-radius: 12px; background: #f1f2f4; color: #88848c; text-align: center; font-size: 10px; line-height: 15px; font-variant-numeric: tabular-nums; }
+.grid-checklist-row { min-height: 34px; padding: 8px 10px; border-bottom: 1px solid #f1f1f3; }
+.grid-checklist-row:hover { background: #faf8f2; }
+.grid-checklist-row.selected { background: #fffaf0; }
+.grid-checklist-values > .grid-filter-values,
+.grid-checklist-values > .date-filter-tree > .grid-filter-values { flex: 1 1 280px; height: 280px; min-height: 64px; max-height: none; margin: 0; padding: 0; overflow: auto; border: 0; border-radius: 0; overscroll-behavior: contain; scrollbar-width: thin; }
+.grid-checklist-values > .date-filter-tree { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; overflow: hidden; }
+.grid-checklist-values .date-filter-tree-row { min-height: 35px; }
+.grid-checklist-values .date-filter-tree-label { color: #52525b; }
+.grid-checklist-values .date-filter-tree-count { background: #f1f2f4; color: #88848c; font-size: 10px; line-height: 15px; }
+.grid-checklist-values > .grid-filter-values > p { margin: 0; padding: 18px 12px; color: #92929c; text-align: center; }
+.grid-checklist-states { flex: 0 0 auto; border-top: 1px solid #e7e7eb; font-size: 12px; }
+.grid-checklist-state-toggle { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 37px; padding: 8px 11px; border: 0; background: #fafafa; color: #52525b; font: inherit; text-align: left; cursor: pointer; }
+.grid-checklist-state-toggle > span { flex: 1; font-weight: 550; }
+.grid-checklist-state-toggle small { color: #92929c; font-size: 10px; }
+.grid-checklist-state-toggle svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.grid-checklist-state-options { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 5px; }
+.grid-checklist-state-options .grid-checklist-row { min-height: 33px; padding: 7px 6px; border: 0; border-radius: 4px; }
+.grid-checklist-state-options .grid-checklist-option { gap: 6px; }
+.grid-checklist-state-options .grid-checklist-count { display: none; }
+.ag-filter-menu:has(.grid-checklist-filter-heading) :focus-visible { outline: 2px solid #c89532; outline-offset: 2px; }
+.ag-filter-menu:has(.grid-checklist-filter-heading) .grid-checklist-search input:focus-visible { outline: none; }
+@media (max-width: 380px) {
+  .grid-checklist-actions { font-size: 10px; gap: 5px; }
+  .grid-checklist-option { gap: 6px; }
+}

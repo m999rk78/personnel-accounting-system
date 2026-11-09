@@ -36,10 +36,11 @@ export function pendingWorkspaceGridInput() {
   const changed = (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) && input.value !== input.defaultValue;
   if (!changed) return { settings: false, report: false, equipment: false, workTypes: false };
   const report = Boolean(input.closest(".personnel-report-workspace:not(.equipment-report-workspace)"));
+  const savedDraft = report && Boolean(input.closest('[data-draft-autosave-protected="true"]'));
   const equipment = Boolean(input.closest(".equipment-report-workspace"));
   const workTypes = Boolean(input.closest(".work-types-directory"));
   return {
-    report,
+    report: report && !savedDraft,
     equipment,
     workTypes,
     settings: !report && !equipment && !workTypes && Boolean(input.closest(".ag-grid-shell")),

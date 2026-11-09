@@ -1,7 +1,7 @@
 import type { PostgresDatabase } from "../db/client";
 import type { AuthUser } from "./auth";
 import { rememberPersonnelImportOrder } from "./personnelImportOrderServer";
-import type { PersonnelReport, PersonnelReportApprovedEntry, PersonnelReportData, PersonnelReportDateRequest, PersonnelReportEntryDateRequest, PersonnelReportEntrySaveRequest, PersonnelReportRequest, PersonnelReportRow, PersonnelReportRowValidationIssue, PersonnelReportValidationIssue, PersonnelReportValidationRequest, PersonnelReportValidationResult } from "./personnelReportTypes";
+import type { PersonnelReport, PersonnelReportApprovedEntry, PersonnelReportDeleteApprovedRequest, PersonnelReportData, PersonnelReportDateRequest, PersonnelReportEntryDateRequest, PersonnelReportEntrySaveRequest, PersonnelReportRequest, PersonnelReportRow, PersonnelReportRowValidationIssue, PersonnelReportValidationIssue, PersonnelReportValidationRequest, PersonnelReportValidationResult } from "./personnelReportTypes";
 import {
   assertCanSavePersonnelReport, assertPersonnelReportHours, assertPersonnelReportOwner,
   assertPersonnelReportRevision, assertPersonnelReportSiteAccess, canReviewPersonnelReport, canViewPendingReportsFor,
@@ -116,11 +116,17 @@ export async function listPersonnelReports(db: Executor, user: AuthUser, siteId:
   const rangeFilter = `${from ? " AND report.work_date >= ?" : ""}${to ? " AND report.work_date <= ?" : ""}`;
   const ownFilter = user.role === "foreman" ? " AND report.owner_user_id = ?" : "";
   const hidePending = !canViewPendingReportsFor(user);
-  const statusFilter = hidePending ? " AND report.status = 'approved'" : "";
-  const parameters = [siteId, ...(from ? [from] : []), ...(to ? [to] : []), ...(user.role === "foreman" ? [user.id] : [])];
+  const privateDrafts = !hidePending && user.role !== "foreman";
+  const statusFilter = hidePending ? " AND report.status = 'approved'"
+    : privateDrafts ? " AND (report.status IN ('approved', 'submitted') OR report.owner_user_id = ?)" : "";
+  const entryParameters = [siteId, ...(from ? [from] : []), ...(to ? [to] : []), ...(user.role === "foreman" ? [user.id] : [])];
   const headers = await db.prepare(`${HEADER_SELECT} WHERE report.site_id = ? ${rangeFilter} ${ownFilter} ${statusFilter}
-    ORDER BY report.work_date DESC, report.id DESC LIMIT 5001`).bind(...parameters).all<Header>();
-  const visibleHeaders = hidePending ? headers.results.filter(report => report.status === "approved") : headers.results;
+    ORDER BY report.work_date DESC, report.id DESC LIMIT 5001`).bind(...entryParameters, ...(privateDrafts ? [user.id] : [])).all<Header>();
+  const visibleHeaders = headers.results.filter(report => {
+    if (user.role === "foreman" && report.ownerUserId !== user.id) return false;
+    if (hidePending) return report.status === "approved";
+    return report.status === "approved" || report.status === "submitted" || report.ownerUserId === user.id;
+  });
   if (visibleHeaders.length > 5000) throw new PersonnelReportError("В выбранном периоде слишком много отчётов. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
   const entryFilter = `${from ? " AND entry.work_date >= ?" : ""}${to ? " AND entry.work_date <= ?" : ""}${user.role === "foreman" ? " AND entry.responsible_user_id = ?" : ""}`;
   const entries = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
@@ -143,7 +149,7 @@ export async function listPersonnelReports(db: Executor, user: AuthUser, siteId:
     WHERE entry.site_id = ? AND entry.deleted_at IS NULL
       AND UPPER(TRIM(COALESCE(NULLIF(entry.employment_type_snapshot, ''), employee.employment_type))) = 'ОПР' ${entryFilter}
     ORDER BY entry.created_at DESC, origin.row_order, entry.id DESC LIMIT 20001`)
-    .bind(...parameters).all<PersonnelReportApprovedEntry>();
+    .bind(...entryParameters).all<PersonnelReportApprovedEntry>();
   if (entries.results.length > 20000) throw new PersonnelReportError("В выбранном периоде больше 20 000 строк. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
   const rows = visibleHeaders.length ? await reportRowsStatement(db, visibleHeaders.map((report) => report.id)).all<PersonnelReportRow>() : { results: [] as PersonnelReportRow[] };
   if (rows.results.length > 20000) throw new PersonnelReportError("В выбранном периоде больше 20 000 строк черновиков. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
@@ -537,7 +543,82 @@ export async function mutatePersonnelReportEntry(database: PostgresDatabase, use
   });
 }
 
-export async function mutatePersonnelReport(database: PostgresDatabase, user: AuthUser, payload: Exclude<PersonnelReportRequest, PersonnelReportEntrySaveRequest | PersonnelReportValidationRequest | PersonnelReportDateRequest | PersonnelReportEntryDateRequest>): Promise<PersonnelReport> {
+/** Delete exactly the selected published rows, including the last row of an approved report. */
+export async function deletePersonnelReportApprovedRows(database: PostgresDatabase, user: AuthUser, payload: PersonnelReportDeleteApprovedRequest): Promise<{ deletedEntryIds: number[] }> {
+  if (!canReviewPersonnelReport(user) || !user.permissions.workers_report.delete) {
+    throw new PersonnelReportError("Удалять подтверждённые записи может только инженер с правом удаления отчётов.", 403, "REPORT_FORBIDDEN");
+  }
+  if (!positiveId(payload.siteId) || !Array.isArray(payload.rows) || !payload.rows.length || payload.rows.length > 5000) {
+    throw new PersonnelReportError("Выберите проект и от 1 до 5000 подтверждённых строк.");
+  }
+  const selected = new Map<number, PersonnelReportDeleteApprovedRequest["rows"][number]>();
+  const expectedReports = new Map<number, number>();
+  for (const row of payload.rows) {
+    if (!row || typeof row !== "object" || !positiveId(row.entryId) || !positiveId(row.revision) || selected.has(row.entryId)
+      || (row.reportId !== undefined || row.reportRevision !== undefined) && (!positiveId(row.reportId) || !positiveId(row.reportRevision))) {
+      throw new PersonnelReportError("Некорректные или повторяющиеся строки для удаления.");
+    }
+    selected.set(row.entryId, row);
+    if (row.reportId !== undefined) {
+      if (expectedReports.has(row.reportId) && expectedReports.get(row.reportId) !== row.reportRevision) {
+        throw new PersonnelReportError("Указаны разные версии одного отчёта. Обновите таблицу.", 409, "STALE_REPORT");
+      }
+      expectedReports.set(row.reportId, row.reportRevision!);
+    }
+  }
+  const entryIds = [...selected.keys()].sort((left, right) => left - right);
+  const reportIds = [...expectedReports.keys()].sort((left, right) => left - right);
+  return database.transaction(async db => {
+    await assertActiveSite(db, user, payload.siteId);
+    // Match save/date-change lock order, and acquire every report before any entry.
+    const reports = reportIds.length ? await db.prepare(`SELECT id, site_id AS siteId, work_date AS workDate, status, revision
+      FROM personnel_reports WHERE id = ANY(?) ORDER BY id FOR UPDATE`).bind(reportIds)
+      .all<Pick<PersonnelReport, "id" | "siteId" | "workDate" | "status" | "revision">>() : { results: [] };
+    if (reports.results.length !== reportIds.length) throw new PersonnelReportError("Один из отчётов уже изменён. Обновите таблицу.", 409, "STALE_REPORT");
+    const reportsById = new Map(reports.results.map(report => [report.id, report]));
+    for (const report of reports.results) {
+      if (report.siteId !== payload.siteId) throw new PersonnelReportError("Нет доступа к строкам другого проекта.", 403, "REPORT_FORBIDDEN");
+      if (report.status !== "approved") throw new PersonnelReportError("Состояние отчёта изменилось. Обновите таблицу.", 409, "STALE_REPORT");
+      assertPersonnelReportRevision(report.revision, expectedReports.get(report.id));
+    }
+    const entries = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
+      entry.employee_id AS employeeId, entry.revision, source.id AS reportRowId, source.report_id AS reportId
+      FROM placement_entries entry JOIN employees employee ON employee.id = entry.employee_id
+      LEFT JOIN personnel_report_rows source ON source.approved_entry_id = entry.id
+      WHERE entry.id = ANY(?) AND entry.deleted_at IS NULL
+        AND UPPER(TRIM(COALESCE(NULLIF(entry.employment_type_snapshot, ''), employee.employment_type))) = 'ОПР'
+      ORDER BY entry.id FOR UPDATE OF entry`).bind(entryIds)
+      .all<{ id: number; siteId: number; workDate: string; employeeId: number; revision: number; reportRowId: number | null; reportId: number | null }>();
+    if (entries.results.length !== entryIds.length) throw new PersonnelReportError("Одна из записей уже удалена или изменена. Обновите таблицу.", 409, "STALE_REPORT");
+    for (const entry of entries.results) {
+      if (entry.siteId !== payload.siteId) throw new PersonnelReportError("Нет доступа к строкам другого проекта.", 403, "REPORT_FORBIDDEN");
+      const requested = selected.get(entry.id)!;
+      assertPersonnelReportRevision(entry.revision, requested.revision);
+      if ((entry.reportId ?? undefined) !== requested.reportId) throw new PersonnelReportError("Запись относится к другому отчёту. Обновите таблицу.", 409, "STALE_REPORT");
+      if (entry.reportId && reportsById.get(entry.reportId)?.workDate !== entry.workDate) {
+        throw new PersonnelReportError("Дата записи не совпадает с датой отчёта. Обновите таблицу.", 409, "STALE_REPORT");
+      }
+    }
+    const hourKeys = [...new Set(entries.results.map(entry => `${entry.workDate}:${entry.employeeId}`))].sort();
+    for (const key of hourKeys) await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(`placement-hours:${key}`).first();
+    const deleted = await db.prepare(`UPDATE placement_entries SET deleted_at = clock_timestamp(), updated_at = clock_timestamp(),
+      updated_by_user_id = ?, revision = revision + 1 WHERE id = ANY(?) AND deleted_at IS NULL RETURNING id`)
+      .bind(user.id, entryIds).all<{ id: number }>();
+    if (deleted.results.length !== entryIds.length) throw new PersonnelReportError("Не все записи удалось удалить. Обновите таблицу.", 409, "STALE_REPORT");
+    const reportRowIds = entries.results.flatMap(entry => entry.reportRowId ? [entry.reportRowId] : []);
+    if (reportRowIds.length) {
+      const removed = await db.prepare("DELETE FROM personnel_report_rows WHERE id = ANY(?) AND approved_entry_id = ANY(?) RETURNING id")
+        .bind(reportRowIds, entryIds).all<{ id: number }>();
+      if (removed.results.length !== reportRowIds.length) throw new PersonnelReportError("Строки отчёта уже изменены. Обновите таблицу.", 409, "STALE_REPORT");
+      await db.prepare(`UPDATE personnel_reports SET revision = revision + 1, updated_by_user_id = ?, updated_at = clock_timestamp()
+        WHERE id = ANY(?) RETURNING id`).bind(user.id, reportIds).all();
+    }
+    // Keep approved headers/day markers and independent manual timesheet marks.
+    return { deletedEntryIds: entryIds };
+  });
+}
+
+export async function mutatePersonnelReport(database: PostgresDatabase, user: AuthUser, payload: Exclude<PersonnelReportRequest, PersonnelReportEntrySaveRequest | PersonnelReportValidationRequest | PersonnelReportDateRequest | PersonnelReportEntryDateRequest | PersonnelReportDeleteApprovedRequest>): Promise<PersonnelReport> {
   if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   return database.transaction(async (db) => {
     if (payload.action === "save") {

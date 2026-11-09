@@ -1,0 +1,12 @@
+.ag-catalog-grid {
+  min-height: 240px;
+  border-radius: 8px 8px 0 0;
+  box-shadow: none;
+}
+.ag-catalog-grid .ag-row .ag-cell { display: flex; align-items: center; }
+.ag-catalog-grid .ag-cell-wrapper,
+.ag-catalog-grid .ag-cell-value { min-width: 0; width: 100%; }
+.ag-catalog-grid .editable-row .ag-cell { background: #fffcf2; }
+.ag-catalog-grid .ag-cell:has(.ag-cell-editor-host) { padding: 4px 5px; overflow: visible; }
+.ag-catalog-grid .ag-cell-editor-host { width: 100%; min-width: 0; }
+.reference-section > .inline-message { white-space: pre-line; flex-shrink: 0; }

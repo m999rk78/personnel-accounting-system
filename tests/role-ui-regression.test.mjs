@@ -10,11 +10,11 @@ const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(source).t
 async function compile(path,replacements={}) {
   let source=ts.transpileModule(await readFile(new URL(path,import.meta.url),"utf8"),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext,jsx:ts.JsxEmit.ReactJSX}}).outputText;
   // Selection keyboard handling is tested separately; this harness exercises roles.
-  for(const [specifier,replacement] of Object.entries({react:import.meta.resolve("react"),"react-dom":import.meta.resolve("react-dom"),"react/jsx-runtime":import.meta.resolve("react/jsx-runtime"),"./customRoles.css":moduleUrl(""),"./usersRights.css":moduleUrl(""),"./useTableEscapeSelection":moduleUrl("export function useTableEscapeSelection(){}"),...replacements})) source=source.replaceAll(JSON.stringify(specifier),JSON.stringify(replacement));
+  for(const [specifier,replacement] of Object.entries({react:import.meta.resolve("react"),"react-dom":import.meta.resolve("react-dom"),"react/jsx-runtime":import.meta.resolve("react/jsx-runtime"),"./customRoles.css":moduleUrl(""),"./usersRights.css":moduleUrl(""),"./useTableEscapeSelection":moduleUrl("export function useTableEscapeSelection(){}"),"./useTimesheetFilters":moduleUrl("export function useTimesheetFilters({rows}){return {rows,context:{},controller:null,isActive:false,activeCount:0,reset(){}};}"),"./TimesheetColumnFilter":moduleUrl("export function TimesheetFiltersProvider({children}){return children;}export function TimesheetFilterableHeading({children}){return children;}"),...replacements})) source=source.replaceAll(JSON.stringify(specifier),JSON.stringify(replacement));
   return moduleUrl(source);
 }
 const pickerUrl=await compile("../app/ProjectAccessPicker.tsx");
-const selectUrl=await compile("../app/CustomSelect.tsx",{"./choiceMenuLayout":new URL("../app/choiceMenuLayout.ts",import.meta.url).href});
+const selectUrl=await compile("../app/CustomSelect.tsx",{"./choiceMenuLayout":new URL("../app/choiceMenuLayout.ts",import.meta.url).href,"./customSelectOptionMatch":new URL("../app/customSelectOptionMatch.ts",import.meta.url).href});
 const {UserAccessCards}=await import(await compile("../app/UserAccessCards.tsx",{
   "./ProjectAccessPicker":pickerUrl,"./CustomSelect":selectUrl,"./roles":new URL("../app/roles.ts",import.meta.url).href,"./userAccessModel":new URL("../app/userAccessModel.ts",import.meta.url).href,
 }));

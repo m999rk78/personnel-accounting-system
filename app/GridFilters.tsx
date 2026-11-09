@@ -5,11 +5,14 @@ import { AgGridReact, useGridFilterDisplay, type AgGridReactProps, type CustomFi
 import type { CellMouseDownEvent, CellMouseOverEvent, ColDef, ColGroupDef, ColumnFilter, GridApi, IFilterParams, IRowNode } from "ag-grid-community";
 import { compareGridValues, describeGridFilter, filterValueKey, isConditionValid, matchesPersonnelFilter, normalizeFilterText, numberOperations, textOperations, dateOperations, filterDateKey, type FilterCondition, type PersonnelFilterModel } from "./gridFilterModel";
 import { gridLocaleRu } from "./gridLocaleRu";
+import { tableColumnMenuItems } from "./gridColumnMenu";
 import { CustomSelect } from "./CustomSelect";
 import { VirtualChoiceList } from "./VirtualChoiceList";
+import { DateFilterTree } from "./DateFilterTree";
+import { matchesDateFilterSearch } from "./dateFilterTreeModel";
 import { enterpriseFilterParams, type EnterpriseFilterOptions } from "./GridEnterpriseFilters";
 import { useGridFilterPopup } from "./useGridFilterPopup";
-import { TableContextMenu, type TableContextMenuAction } from "./TableContextMenu";
+import { closeTableContextMenus, TableContextMenu, type TableContextMenuAction } from "./TableContextMenu";
 import { useRowMoveActions, useWorkspaceTableOrder } from "./TableRowMoves";
 import { gridRowEntityId, rowMoveIsBlocked, saveManualRowMove, type RowOrderId } from "./tableRowOrder";
 import "./gridFilters.css";
@@ -21,6 +24,7 @@ import { findSpreadsheetDataRowIndex, isStructuralSpreadsheetRow, spreadsheetPoi
 import { createImportOrderRank, IMPORT_ORDER_COLUMN, importOrderColumnState, importOrderScopes, shouldApplyImportOrder } from "./importOrderSorting";
 import { useEmptyGridRows } from "./useEmptyGridRows";
 import { useTableEscapeSelection } from "./useTableEscapeSelection";
+import { rowDragPoint, startRowDragAutoScroll } from "./rowDragAutoScroll";
 
 type FilterRow = { kind: "entry" | "edit" | "draft" };
 type FilterProps = CustomFilterDisplayProps<FilterRow, unknown, PersonnelFilterModel> & {
@@ -38,7 +42,7 @@ type SortDraft = { columnId: string; sort: "asc" | "desc" | null };
 const sortKey = (option: SortDraft) => `${option.columnId}:${option.sort ?? "none"}`;
 
 function PersonnelFilter(props: FilterProps) {
-  const { root: popupRef, attach: attachPopup } = useGridFilterPopup<HTMLFormElement>();
+  const { root: popupRef, attach: attachPopup } = useGridFilterPopup<HTMLFormElement>(props);
   const { api, column, colDef, getValue, doesRowPassOtherFilter, onStateChange, state } = props;
   const kind = props.kind ?? "text";
   const empty: PersonnelFilterModel = { filterType: "personnel", kind, values: null, conditions: [], operator: "AND" };
@@ -91,8 +95,8 @@ function PersonnelFilter(props: FilterProps) {
     // revision refreshes values when another column's filter or the row data changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, getValue, doesRowPassOtherFilter, kind, revision]);
-  const matching = values.filter(({ value }) => normalizeFilterText(value || "(Пустые)").includes(normalizeFilterText(search)));
-  const selected = new Set(model.values ?? values.map(({ value }) => value));
+  const matching = values.filter(({ value }) => kind === "date" ? matchesDateFilterSearch(value, search) : normalizeFilterText(value || "(Пустые)").includes(normalizeFilterText(search)));
+  const selected = new Set(model.values ?? []);
   const checkedCount = matching.filter(({ value }) => selected.has(value)).length;
   const selectedCount = values.filter(({ value }) => selected.has(value)).length;
   const update = (patch: Partial<PersonnelFilterModel>) => {
@@ -100,11 +104,11 @@ function PersonnelFilter(props: FilterProps) {
     onStateChange({ model: next.values === null && !next.conditions.length ? null : next,
       valid: next.conditions.every((condition) => isConditionValid(condition, kind)) });
   };
-  const setValues = (selection: Set<string>) => update({ values: [...selection] });
+  const setValues = (selection: Set<string>) => update({ values: selection.size ? [...selection] : null });
   const changeSearch = (value: string) => {
     setSearch(value);
     const needle = normalizeFilterText(value);
-    update({ values: needle ? values.filter(({ value }) => normalizeFilterText(value || "(Пустые)").includes(needle)).map(({ value }) => value) : props.model?.values ?? null });
+    update({ values: needle ? values.filter(({ value }) => kind === "date" ? matchesDateFilterSearch(value, needle) : normalizeFilterText(value || "(Пустые)").includes(needle)).map(({ value }) => value) : props.model?.values ?? null });
   };
   const updateCondition = (index: number, patch: Partial<FilterCondition>) => update({
     conditions: model.conditions.map((condition, current) => current === index ? { ...condition, ...patch } : condition),
@@ -169,9 +173,9 @@ function PersonnelFilter(props: FilterProps) {
         <div className="grid-filter-selection"><ValueCheckbox checked={matching.length > 0 && checkedCount === matching.length} mixed={checkedCount > 0 && checkedCount < matching.length} onChange={(checked) => {
           const next = new Set(selected);
           matching.forEach(({ value }) => { if (checked) next.add(value); else next.delete(value); });
-          if (checked && !search) update({ values: null }); else setValues(next);
-        }}><span>{search ? "Все найденные" : "Все значения"}</span></ValueCheckbox><button type="button" onClick={() => update({ values: search ? matchingValues : [] })}>{search ? "Только найденные" : "Снять выбор"}</button></div>
-        <VirtualChoiceList key={search} items={matchingValues} emptyText={search ? "Ничего не найдено. Попробуйте другой запрос." : "Нет значений с учётом остальных фильтров."} renderItem={(value) => <ValueCheckbox checked={selected.has(value)} onChange={(checked) => { const next = new Set(selected); if (checked) next.add(value); else next.delete(value); setValues(next); }}><span title={value || "(Пустые)"}>{value || "(Пустые)"}</span><small title="Количество строк">{counts.get(value)}</small></ValueCheckbox>} />
+          setValues(next);
+        }}><span>{search ? "Все найденные" : "Все значения"}</span></ValueCheckbox><button type="button" onClick={() => search ? update({ values: matchingValues }) : setValues(new Set())}>{search ? "Только найденные" : "Снять выбор"}</button></div>
+        {kind === "date" ? <DateFilterTree key={search} values={values} selected={selected} onChange={setValues} search={search} /> : <VirtualChoiceList key={search} items={matchingValues} emptyText={search ? "Ничего не найдено. Попробуйте другой запрос." : "Нет значений с учётом остальных фильтров."} renderItem={(value) => <ValueCheckbox checked={selected.has(value)} onChange={(checked) => { const next = new Set(selected); if (checked) next.add(value); else next.delete(value); setValues(next); }}><span title={value || "(Пустые)"}>{value || "(Пустые)"}</span><small title="Количество строк">{counts.get(value)}</small></ValueCheckbox>} />}
         {model.values?.length === 0 && <p className="grid-filter-hint">Ничего не выбрано — строки будут скрыты.</p>}
       </section>
       <details className="grid-filter-conditions" open={conditionsOpen} onToggle={event => setConditionsOpen(event.currentTarget.open)}>
@@ -251,6 +255,7 @@ type LocalizedGridProps<TData extends FilterRow> = AgGridReactProps<TData> & {
   rowOrderFixedSorts?: string[];
   rowOrderBlocked?: boolean;
   rowOrderAutoSwitchSort?: boolean;
+  preserveSavedSort?: boolean;
   onSpreadsheetBatch?: (batch: SpreadsheetBatch<TData>) => boolean;
   canWriteSpreadsheetCell?: (row: TData, columnId: string) => boolean;
   spreadsheetHistory?: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean };
@@ -289,7 +294,7 @@ function spreadsheetBounds<TData>(grid: GridApi<TData>, current: SpreadsheetSele
   };
 }
 
-export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: suppliedPaste, onSpreadsheetEdit: suppliedEdit, onSpreadsheetCancelEdit, spreadsheetFocusRequestKey = 0, spreadsheetSelectionResetKey = "", getSpreadsheetContextActions, getRowOrderId = gridRowEntityId, rowOrderFixedSorts, rowOrderBlocked = false, rowOrderAutoSwitchSort = false, onSpreadsheetBatch: suppliedBatch, canWriteSpreadsheetCell, spreadsheetHistory: suppliedHistory, enterpriseFilters = true, showSortSummary = true, spreadsheetToolbar = true, popupParent: requestedPopupParent, ...props }: LocalizedGridProps<TData>) {
+export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: suppliedPaste, onSpreadsheetEdit: suppliedEdit, onSpreadsheetCancelEdit, spreadsheetFocusRequestKey = 0, spreadsheetSelectionResetKey = "", getSpreadsheetContextActions, getRowOrderId = gridRowEntityId, rowOrderFixedSorts, rowOrderBlocked = false, rowOrderAutoSwitchSort = false, preserveSavedSort = false, onSpreadsheetBatch: suppliedBatch, canWriteSpreadsheetCell, spreadsheetHistory: suppliedHistory, enterpriseFilters = true, showSortSummary = true, spreadsheetToolbar = true, popupParent: requestedPopupParent, ...props }: LocalizedGridProps<TData>) {
   const access = useWorkspaceAccess();
   const onSpreadsheetPaste = access?.edit === false ? undefined : suppliedPaste;
   const onSpreadsheetEdit = access?.edit === false ? undefined : suppliedEdit;
@@ -353,8 +358,8 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
   const hasSavedRowOrder = rowOrder?.hasSavedOrder ?? false;
   useEffect(() => {
     // Reopening a report must not let the default hidden activity sort undo a saved manual order.
-    if (rowOrderAutoSwitchSort && hasSavedRowOrder && api && !api.isDestroyed()) api.applyColumnState({ state: api.getColumnState().filter(column => rowOrderFixedSorts?.includes(column.colId)), defaultState: { sort: null, sortIndex: null } });
-  }, [api, rowOrderAutoSwitchSort, rowOrderFixedSorts, hasSavedRowOrder]);
+    if (rowOrderAutoSwitchSort && hasSavedRowOrder && !preserveSavedSort && api && !api.isDestroyed()) api.applyColumnState({ state: api.getColumnState().filter(column => rowOrderFixedSorts?.includes(column.colId)), defaultState: { sort: null, sortIndex: null } });
+  }, [api, rowOrderAutoSwitchSort, rowOrderFixedSorts, hasSavedRowOrder, preserveSavedSort]);
   const orderedRowData = useMemo(() => rowOrder ? rowOrder.order(props.rowData ?? [], getRowOrderId) : props.rowData, [props.rowData, rowOrder, getRowOrderId]);
   const sourceColumns = props.columnDefs;
   const importedScope = importOrderScopes.has(rowOrder?.scope ?? "");
@@ -417,6 +422,9 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
   const [spreadsheetStatus, setSpreadsheetStatus] = useState("");
   const [contextMenu, setContextMenu] = useState<(SpreadsheetContextPayload<TData> & { x: number; y: number; error: string }) | null>(null);
   const body = useRef<HTMLDivElement>(null);
+  const rowDragScroll = useRef<ReturnType<typeof startRowDragAutoScroll>>(null);
+  const stopRowDragScroll = useCallback(() => { rowDragScroll.current?.stop(); rowDragScroll.current = null; }, []);
+  useEffect(() => stopRowDragScroll, [api, rowMoveDisabled, rowOrder?.busy, rowOrder?.canWrite, stopRowDragScroll]);
   useEmptyGridRows(body, api, props.rowHeight ?? 54);
   const selectionRef = useRef(selection);
   const lastSelectionRef = useRef(selection);
@@ -439,12 +447,15 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     setSummary({ count, total, filters, sorts });
   }, [setSummary]);
   const sourceDefaultColDef = props.defaultColDef;
+  const hasSpreadsheetBatch = Boolean(onSpreadsheetBatch);
   const enhancedDefaultColDef = useMemo<ColDef<TData>>(() => ({
     ...sourceDefaultColDef,
     comparator: sourceDefaultColDef?.comparator ?? compareGridValues,
     // AG Grid receives native keydown before React: leave editing keys to inputs.
-    suppressKeyboardEvent: (params) => Boolean(onSpreadsheetBatch) || isInteractiveTarget(params.event) || Boolean(sourceDefaultColDef?.suppressKeyboardEvent?.(params)),
-  }), [sourceDefaultColDef, onSpreadsheetBatch]);
+    // Summary updates may replace the batch callback. Its presence alone affects
+    // keyboard handling; rebuilding column definitions would close a live filter.
+    suppressKeyboardEvent: (params) => hasSpreadsheetBatch || isInteractiveTarget(params.event) || Boolean(sourceDefaultColDef?.suppressKeyboardEvent?.(params)),
+  }), [sourceDefaultColDef, hasSpreadsheetBatch]);
   const paintSelection = useCallback((grid: GridApi<TData>) => {
     requestAnimationFrame(() => {
       const root = body.current;
@@ -598,6 +609,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       const target = event.target;
       if (!selectionRef.current || !(target instanceof Node) || body.current?.contains(target)) return;
       if (target instanceof Element && target.closest(".custom-select-menu,.ag-employee-menu,.table-context-menu,.personnel-spreadsheet-tools")) return;
+      if (target instanceof Element && target.closest("[data-table-page-horizontal]") && target.closest(".table-page-scroll-stage") === body.current?.closest(".table-page-scroll-stage")) return;
       clearSelection();
     };
     document.addEventListener("pointerdown", clearSelectionOutsideGrid);
@@ -736,14 +748,16 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
 
   const openContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     const target = event.target;
-    if (!(target instanceof Element) || target.closest("button, input, textarea, select, [role='combobox'], .actions-cell") || !api) return;
+    if (!(target instanceof Element) || !body.current?.contains(target) || target.closest("button, input, textarea, select, [role='combobox'], .actions-cell") || !api) return;
     const cell = target.closest<HTMLElement>(".ag-cell[col-id]");
     const rowElement = cell?.closest<HTMLElement>(".ag-row[row-index]");
     const columnId = cell?.getAttribute("col-id");
     const rowIndex = Number(rowElement?.getAttribute("row-index"));
     const rowNode = Number.isInteger(rowIndex) ? api.getDisplayedRowAtIndex(rowIndex) : null;
-    if (!cell || !columnId || columnId === "actions" || columnId === "ag-Grid-SelectionColumn" || !rowNode?.data) return;
+    if (!cell || cell.closest(".ag-root") !== body.current.querySelector(".ag-root") || !columnId || columnId === "actions" || columnId === "ag-Grid-SelectionColumn" || !rowNode?.data || rowNode.group || isStructuralSpreadsheetRow(rowNode)) return;
     event.preventDefault();
+    event.stopPropagation();
+    api.hidePopupMenu();
     const point = { rowIndex, columnId, rowId: rowNode.id };
     const existing = spreadsheetBounds(api, selectionRef.current);
     const clickedColumn = existing?.columns.findIndex(column => column.getColId() === columnId) ?? -1;
@@ -881,9 +895,29 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       changeRange("clear", true);
     } : undefined} onPaste={pasteSelection} onKeyDown={onSpreadsheetBatch ? undefined : handleSpreadsheetKeyDown} onKeyDownCapture={onSpreadsheetBatch ? event => { handleSpreadsheetKeyDown(event); if (event.defaultPrevented) event.stopPropagation(); } : undefined} aria-label="Таблица. Стрелки перемещают выбранную ячейку, Shift со стрелками расширяет выделение. Двойной клик, Enter или F2 открывает редактирование. Доступны копирование, вставка и отмена через Ctrl+Z как в Excel.">
       {spreadsheetStatus && <span className="sr-only" aria-live="polite">{spreadsheetStatus}</span>}
-      <AgGridReact<TData> {...props} rowSelection={rowSelection} selectionColumnDef={selectionColumnDef} rowData={orderedRowData} columnDefs={orderedColumns} defaultColDef={enhancedDefaultColDef} popupParent={requestedPopupParent ?? popupParent} suppressContextMenu suppressMovableColumns enableFilterHandlers localeText={gridLocaleRu}
+      {/* AG's global suppression also blocks header menus. Disable only its body
+          items: cells use our scoped clipboard menu, headers keep native actions. */}
+      <AgGridReact<TData> {...props} rowSelection={rowSelection} selectionColumnDef={selectionColumnDef} rowData={orderedRowData} columnDefs={orderedColumns} defaultColDef={enhancedDefaultColDef} popupParent={requestedPopupParent ?? popupParent} suppressContextMenu={false} getContextMenuItems={() => []} columnMenu="new" getMainMenuItems={props.getMainMenuItems ?? tableColumnMenuItems} suppressMovableColumns enableFilterHandlers localeText={gridLocaleRu}
+      onColumnHeaderContextMenu={event => { closeTableContextMenus(); setContextMenu(null); props.onColumnHeaderContextMenu?.(event); }}
       rowDragManaged={false} rowDragMultiRow={selectionDrag || props.rowDragMultiRow} suppressRowDrag={rowMoveDisabled || Boolean(rowOrder?.busy)}
+      onRowDragEnter={event => {
+        const point = rowDragPoint(event.event);
+        if (body.current && point && canDragSelection() && event.node.isSelected() === true) {
+          if (rowDragScroll.current) rowDragScroll.current.update(point);
+          else {
+            let session: ReturnType<typeof startRowDragAutoScroll> = null;
+            session = startRowDragAutoScroll(body.current, point, "grid", () => { if (rowDragScroll.current === session) rowDragScroll.current = null; });
+            rowDragScroll.current = session;
+          }
+        }
+        props.onRowDragEnter?.(event);
+      }}
+      onRowDragMove={event => { const point = rowDragPoint(event.event); if (point) rowDragScroll.current?.update(point); props.onRowDragMove?.(event); }}
+      onRowDragCancel={event => { stopRowDragScroll(); props.onRowDragCancel?.(event); }}
+      onDragStopped={event => { stopRowDragScroll(); props.onDragStopped?.(event); }}
+      onDragCancelled={event => { stopRowDragScroll(); props.onDragCancelled?.(event); }}
       onRowDragEnd={(event) => {
+        stopRowDragScroll();
         if (!rowOrder?.canWrite || rowMoveDisabled || rowOrder.busy || !event.overNode?.data || !event.node.data) return;
         if (!selectionDrag || event.node.isSelected() !== true) return;
         const targetId = getRowOrderId(event.overNode.data);

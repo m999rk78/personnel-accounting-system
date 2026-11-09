@@ -2,13 +2,14 @@ import type { PostgresDatabase } from "../db/client";
 
 type Executor = Pick<PostgresDatabase, "prepare">;
 export type PersonnelImportOrderScope = "employees" | "project-personnel";
+export type TableImportOrderScope = PersonnelImportOrderScope | "project-equipment";
 
 const validId = (id: unknown): id is number => typeof id === "number" && Number.isSafeInteger(id) && id > 0 && id <= 2_147_483_647;
 
-function importOrderKey(scope: PersonnelImportOrderScope, siteId: number | null) {
+function importOrderKey(scope: TableImportOrderScope, siteId: number | null) {
   if (scope === "employees") return "import-order:employees:0";
-  if (scope !== "project-personnel" || !validId(siteId)) throw new Error("Укажите проект для порядка импорта.");
-  return `import-order:project-personnel:${siteId}`;
+  if ((scope !== "project-personnel" && scope !== "project-equipment") || !validId(siteId)) throw new Error("Укажите проект для порядка импорта.");
+  return `import-order:${scope}:${siteId}`;
 }
 
 /** Latest workbook first; retain unrelated employees in their previous order. */
@@ -18,7 +19,7 @@ export function mergePersonnelImportOrder(employeeIds: readonly number[], previo
 }
 
 /** Call inside the import/save transaction; never replace a manual-order key. */
-export async function rememberPersonnelImportOrder(db: Executor, scope: PersonnelImportOrderScope, siteId: number | null, employeeIds: readonly number[]): Promise<void> {
+export async function rememberPersonnelImportOrder(db: Executor, scope: TableImportOrderScope, siteId: number | null, employeeIds: readonly number[]): Promise<void> {
   const key = importOrderKey(scope, siteId);
   const prefix = mergePersonnelImportOrder(employeeIds, []);
   if (!prefix.length) return;
@@ -29,7 +30,7 @@ export async function rememberPersonnelImportOrder(db: Executor, scope: Personne
 }
 
 /** availableIds must come from the caller's authorised canonical roster. */
-export async function readPersonnelImportOrder(db: Executor, scope: PersonnelImportOrderScope, siteId: number | null, availableIds: readonly number[]): Promise<{ importIds: number[]; hasImportOrder: boolean }> {
+export async function readPersonnelImportOrder(db: Executor, scope: TableImportOrderScope, siteId: number | null, availableIds: readonly number[]): Promise<{ importIds: number[]; hasImportOrder: boolean }> {
   const key = importOrderKey(scope, siteId);
   const saved = await db.prepare("SELECT row_ids AS ids FROM table_row_orders WHERE id = ?").bind(key).first<{ ids: number[] }>();
   const available = [...new Set(availableIds.filter(validId))];

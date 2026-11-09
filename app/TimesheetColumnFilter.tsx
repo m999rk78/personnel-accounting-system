@@ -1,11 +1,13 @@
 "use client";
 
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useRef, type ReactNode } from "react";
+import { ColumnFilterIcon } from "./ColumnFilterIcon";
 import "./gridFilters.css";
 
 export type TimesheetFiltersContextValue = {
-  open: (columnId: string, trigger: HTMLButtonElement) => void;
+  open: (columnId: string, trigger: HTMLElement, wasOpen?: boolean) => void;
   openColumnId: string | null;
+  presentation?: "full" | "compact" | "checklist";
   activeColumns: ReadonlySet<string>;
   sorts: ReadonlyMap<string, { direction: "asc" | "desc"; priority: number }>;
 };
@@ -14,12 +16,21 @@ export const TimesheetFiltersProvider = TimesheetFiltersContext.Provider;
 
 export function TimesheetColumnFilter({ columnId, label, compact = false }: { columnId: string; label: string; compact?: boolean }) {
   const filters = useContext(TimesheetFiltersContext);
+  const openOnPointerDown = useRef<boolean | null>(null);
   const sort = filters?.sorts.get(columnId);
   const active = filters?.activeColumns.has(columnId) || Boolean(sort);
+  const title = `${filters?.presentation === "compact" || filters?.presentation === "checklist" ? "Фильтр" : "Фильтр и сортировка"}: ${label}`;
   return <button type="button" className={["timesheet-header-filter", active ? "active" : "", compact ? "compact" : ""].filter(Boolean).join(" ")}
-    title={`Фильтр и сортировка: ${label}`} aria-label={`Фильтр и сортировка: ${label}`} aria-haspopup="dialog" aria-expanded={filters?.openColumnId === columnId}
-    onClick={event => { event.stopPropagation(); filters?.open(columnId, event.currentTarget); }}>
-    <span className="timesheet-header-filter-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4" /></svg></span>
+    title={title} aria-label={title} aria-haspopup="dialog" aria-expanded={filters?.openColumnId === columnId}
+    onPointerDownCapture={() => { openOnPointerDown.current = filters?.openColumnId === columnId; }}
+    onKeyDownCapture={event => { if (event.key === "Enter" || event.key === " ") event.stopPropagation(); }}
+    onClick={event => {
+      event.stopPropagation();
+      const wasOpen = event.detail > 0 ? openOnPointerDown.current ?? filters?.openColumnId === columnId : filters?.openColumnId === columnId;
+      openOnPointerDown.current = null;
+      filters?.open(columnId, event.currentTarget, wasOpen);
+    }}>
+    <span className="timesheet-header-filter-icon" aria-hidden="true"><ColumnFilterIcon /></span>
     {sort && <span className="timesheet-sort-indicator" aria-hidden="true">{sort.direction === "asc" ? "↑" : "↓"}{sort.priority > 1 ? sort.priority : ""}</span>}
   </button>;
 }

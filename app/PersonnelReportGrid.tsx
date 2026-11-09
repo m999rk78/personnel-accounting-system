@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { themeQuartz, type ColDef, type GridApi, type IRowNode, type PostSortRowsParams } from "ag-grid-community";
-import { type CustomCellRendererProps, type CustomInnerHeaderProps } from "ag-grid-react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { type ColDef, type GridApi, type IRowNode, type PostSortRowsParams } from "ag-grid-community";
+import { type CustomCellRendererProps } from "ag-grid-react";
 import type { GridEmployee, GridEntry, GridOption } from "./AgDataGrids";
 import { personnelCellErrors, personnelEditableFields, personnelOptionFields, pastePersonnelCells, type PersonnelCellField, type PersonnelSpreadsheetDraft } from "./personnelSpreadsheet";
 import { subworkOptions } from "./workTypeHierarchy";
@@ -12,6 +12,12 @@ import { comparePersonnelActivity, personnelActivityTime, personnelReportImportS
 import { LocalizedGrid, personnelColumnFilter, personnelFilterParams, type SpreadsheetBatch } from "./GridFilters";
 import { groupPersonnelReportDates, personnelReportOrderId } from "./personnelReportRowOrder";
 import { ReportDatePicker } from "./ReportDateControls";
+import { useWorkspaceTableOrder } from "./TableRowMoves";
+import { usePersonnelReportGridPreferences } from "./usePersonnelReportGridPreferences";
+import { PERSONNEL_REPORT_COLUMN_SIZING, personnelReportColumnWidths } from "./personnelReportColumnSizing";
+import { gridTheme } from "./gridTheme";
+import { SpreadsheetFilterHeader } from "./SpreadsheetFilterHeader";
+import { AgTablePageScroll } from "./TablePageScroll";
 import "./personnelReportGrid.css";
 
 export type PersonnelReportStatus = "draft" | "submitted" | "approved" | "rejected";
@@ -35,6 +41,8 @@ export type PersonnelReportGridRow = {
 };
 export type PersonnelReportGridProps = {
   rows: PersonnelReportGridRow[];
+  sizingRows?: PersonnelReportGridRow[];
+  preferenceScope?: { userId: number; siteId: number };
   groupByDate?: boolean;
   selectionScope?: string;
   today: string;
@@ -49,6 +57,7 @@ export type PersonnelReportGridProps = {
   masters: GridOption[];
   onChangeDate?: (row: PersonnelReportGridRow, workDate: string) => Promise<void>;
   onPatchDraft: (key: string, changes: Partial<PersonnelSpreadsheetDraft>) => void;
+  onPendingDraftInput?: (rowKey: string, field: PersonnelCellField, value: string | null) => void;
   onApplyRange: (batch: { rows: { rowKey?: string; values: Record<string, string> }[]; source: SpreadsheetBatch<unknown>["source"] }) => boolean;
   history: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean };
   requireComplete?: boolean;
@@ -58,8 +67,10 @@ export type PersonnelReportGridProps = {
   onVisibleRowsChange?: (keys: string[]) => void;
   onCopyRows: (rows: PersonnelReportGridRow[]) => void;
   onRemoveDraft?: (keys: string[]) => void;
+  onRemoveApproved?: (rows: PersonnelReportGridRow[]) => void;
   onValidationError: (message: string) => void;
   footerActions?: ReactNode;
+  footerStatus?: ReactNode;
 };
 
 // All workflow states participate in filters. `kind` is only the shared grid's
@@ -72,22 +83,16 @@ const emptySummary: Summary = { rows: 0, dates: 0, employees: 0, hours: 0, appro
 const editableFields = personnelEditableFields;
 const statusLabels: Record<PersonnelReportStatus, string> = { draft: "Черновик", submitted: "На проверке", approved: "Подтверждён", rejected: "На доработке" };
 const optionFields = personnelOptionFields;
-const gridTheme = themeQuartz.withParams({ accentColor: "#f2aa00", backgroundColor: "#ffffff", borderColor: "#dedede", browserColorScheme: "light", cellHorizontalPadding: 12, fontFamily: "Inter, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif", fontSize: 13, foregroundColor: "#27272a", headerBackgroundColor: "#fafafa", headerFontSize: 13, headerFontWeight: 650, headerTextColor: "#27272a", rowBorder: { color: "#dedede", width: 1 }, rowHoverColor: "#f8fbff", selectedRowBackgroundColor: "#fff7df", spacing: 6 });
 const displayDate = (date: string) => /^\d{4}-\d{2}-\d{2}$/.test(date) ? date.split("-").reverse().join(".") : date;
 const dateKey = (date: string) => date.split(".").reverse().join("-");
 const formatHours = (hours: number) => new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(hours);
 
-function FilterHeader(props: CustomInnerHeaderProps) {
-  const [active, setActive] = useState(() => props.column.isFilterActive());
-  useEffect(() => {
-    const update = () => setActive(props.column.isFilterActive());
-    props.api.addEventListener("filterChanged", update);
-    return () => { if (!props.api.isDestroyed()) props.api.removeEventListener("filterChanged", update); };
-  }, [props.api, props.column]);
-  return <span className="ag-pinnable-header"><span>{props.displayName}</span><span className="ag-header-tools"><button type="button" className={active ? "ag-column-filter active" : "ag-column-filter"} aria-label={`Фильтр: ${props.displayName}`} title={`Фильтр: ${props.displayName}`} onClick={(event) => { event.stopPropagation(); props.api.showColumnFilter(props.column); }}><svg className="app-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4" /></svg></button></span></span>;
-}
 
-function valueFor(row: PersonnelReportGridRow, field: string, props: PersonnelReportGridProps): string | number {
+type CatalogIndex = {
+  employees: Map<number, GridEmployee>;
+  options: Record<"shifts" | "zones" | "mainWorkTypes" | "subworkTypes" | "masters", Map<number, GridOption>>;
+};
+function valueFor(row: PersonnelReportGridRow, field: string, props: PersonnelReportGridProps, index?: CatalogIndex): string | number {
   const entry = row.entry;
   const draft = row.draft;
   if (draft?.inputValues?.[field as EditableField] !== undefined) return draft.inputValues[field as EditableField]!;
@@ -101,7 +106,7 @@ function valueFor(row: PersonnelReportGridRow, field: string, props: PersonnelRe
     case "hours": return draft ? draft.hours === "" ? "" : Number.isFinite(Number(draft.hours)) ? Number(draft.hours) : draft.hours : entry?.hours ?? "";
     case "note": return draft?.note ?? entry?.note ?? "";
     case "employmentType": case "department": case "position": {
-      const employee = draft ? props.employees.find((item) => item.id === Number(draft.employeeId)) : undefined;
+      const employee = draft ? index ? index.employees.get(Number(draft.employeeId)) : props.employees.find((item) => item.id === Number(draft.employeeId)) : undefined;
       const sameEmployee = !draft || Number(draft.employeeId) === entry?.employeeId;
       if (field === "position") return sameEmployee && entry ? entry.positionSnapshot : employee?.position ?? "";
       return sameEmployee && entry ? entry[field] : employee?.[field] ?? "";
@@ -111,7 +116,7 @@ function valueFor(row: PersonnelReportGridRow, field: string, props: PersonnelRe
       const fallback = { shift: entry?.shiftName, zone: entry?.zoneName, mainWork: entry?.mainWorkTypeName, subwork: entry?.subworkTypeName, master: entry?.masterName };
       if (!draft) return fallback[field] ?? "";
       if (field === "master" && entry && Number(draft.masterId) === entry.masterId) return entry.masterName;
-      const option = props[config.options].find((option) => option.id === Number(draft[config.draft]));
+      const option = index ? index.options[config.options].get(Number(draft[config.draft])) : props[config.options].find((option) => option.id === Number(draft[config.draft]));
       return option?.name ?? (Number(draft[config.draft]) === entry?.[config.draft] ? fallback[field] : "") ?? "";
     }
     default: return "";
@@ -123,6 +128,9 @@ function isInteractive(event?: Event | null) {
 }
 
 export function PersonnelReportGrid(props: PersonnelReportGridProps) {
+  const gridId = useId();
+  const rowOrder = useWorkspaceTableOrder();
+  const preferences = usePersonnelReportGridPreferences({ userId: props.preferenceScope?.userId ?? 0, siteId: props.preferenceScope?.siteId ?? 0, enabled: Boolean(props.preferenceScope), ready: !rowOrder || rowOrder.ready || Boolean(rowOrder.error) });
   const propsRef = useRef(props);
   const rowsByKey = useMemo(() => new Map(props.rows.map((row) => [row.rowKey, row])), [props.rows]);
   const rowsRef = useRef(rowsByKey);
@@ -130,6 +138,34 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
   // effect so a newly mounted row is complete on its very first render.
   useLayoutEffect(() => { propsRef.current = props; rowsRef.current = rowsByKey; }, [props, rowsByKey]);
   const apiRef = useRef<GridApi<TableRow> | null>(null);
+  const [scrollApi, setScrollApi] = useState<GridApi<TableRow> | null>(null);
+  const sizingHost = useRef<HTMLDivElement>(null);
+  const defaultWidthsApplied = useRef(false);
+  const applyDefaultWidths = preferences.applyDefaultWidths;
+  const sizeInitialColumns = useCallback(() => {
+    const api = apiRef.current;
+    if (!api || api.isDestroyed() || propsRef.current.loading || defaultWidthsApplied.current) return;
+    const apply = () => {
+      if (api !== apiRef.current || api.isDestroyed() || propsRef.current.loading || defaultWidthsApplied.current) return;
+      const current = propsRef.current;
+      const source = current.sizingRows ?? current.rows;
+      if (!source.length) return;
+      const context = document.createElement("canvas").getContext("2d");
+      if (!context) return;
+      const family = window.getComputedStyle(sizingHost.current ?? document.body).fontFamily;
+      const options = Object.fromEntries((["shifts", "zones", "mainWorkTypes", "subworkTypes", "masters"] as const).map(field => [field, new Map(current[field].map(option => [option.id, option]))])) as CatalogIndex["options"];
+      const index: CatalogIndex = { employees: new Map(current.employees.map(employee => [employee.id, employee])), options };
+      const values = source.map(row => Object.fromEntries(Object.keys(PERSONNEL_REPORT_COLUMN_SIZING).map(field => [field, valueFor(row, field, current, index)])));
+      const widths = personnelReportColumnWidths(values, (text, bold) => {
+        context.font = `${bold ? 650 : 400} 13px ${family}`;
+        return context.measureText(text).width;
+      });
+      applyDefaultWidths(widths);
+      defaultWidthsApplied.current = true;
+    };
+    void (document.fonts?.ready ?? Promise.resolve()).then(apply);
+  }, [applyDefaultWidths]);
+  useEffect(() => { sizeInitialColumns(); }, [props.loading, props.sizingRows, props.rows, sizeInitialColumns]);
   const getRowOrderId = personnelReportOrderId;
   const [activeEditor, setActiveEditor] = useState<{ rowKey: string; field: EditableField; initialValue?: string } | null>(null);
   const [summary, setSummary] = useState(emptySummary);
@@ -192,6 +228,21 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
   }, [props.selectionScope, props.groupByDate]);
 
   useEffect(() => {
+    if (props.loading) return;
+    const frame = requestAnimationFrame(() => {
+      const api = apiRef.current;
+      if (api && !api.isDestroyed()) {
+        // Switching between two empty tabs leaves rowData unchanged. Recreate
+        // the overlay for the selected tab, and clear the manual overlay when
+        // rows arrive so it cannot remain above a populated report.
+        api.hideOverlay();
+        if (!propsRef.current.rows.length && !propsRef.current.loading) api.showNoRowsOverlay();
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [props.emptyMessage, props.loading, props.rows.length]);
+
+  useEffect(() => {
     const addedDraft = [...rowsByKey.values()].find((row) => row.editable && !previousRowKeys.current.has(row.rowKey));
     const movedRow = [...rowsByKey.values()].find(row => previousRowDates.current.has(row.rowKey) && previousRowDates.current.get(row.rowKey) !== row.workDate);
     previousRowDates.current = new Map([...rowsByKey.values()].map(row => [row.rowKey, row.workDate]));
@@ -224,6 +275,7 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
     const source = rowsRef.current.get(row.rowKey);
     if (field === "subwork" && !source?.draft?.mainWorkTypeId) return false;
     if (!source || !canEdit(source) || !editableFields.includes(field as EditableField) || field === "employeeName" && source.draft?.lockedEmployee) return false;
+    if (initialValue !== undefined) propsRef.current.onPendingDraftInput?.(row.rowKey, field as EditableField, initialValue);
     setActiveEditor({ rowKey: row.rowKey, field: field as EditableField, initialValue });
     return true;
   }, [canEdit]);
@@ -268,8 +320,9 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
     if (field === "subwork" && !draft.mainWorkTypeId) return <span className="work-type-prerequisite" title="Сначала выберите вид работы">Сначала выберите вид работы</span>;
     if (activeEditor?.rowKey !== row.rowKey || activeEditor.field !== field) return <span className="ag-editable-cell-display" title={issue ? `${value || "Пустая ячейка"}. ${issue}` : String(value)} aria-invalid={Boolean(issue)}><span>{issue && <span className="personnel-cell-error-icon" aria-label={issue}>!</span>}{value === "" ? "Не заполнено" : value}</span>{field !== "note" && <button type="button" className="ag-editable-cell-menu" aria-label={`Открыть список: ${params.colDef?.headerName ?? field}`} title={`Открыть список: ${params.colDef?.headerName ?? field}`} onClick={(event) => { event.stopPropagation(); if (params.data) openEditor(params.data, field); }}><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" /></svg></button>}</span>;
     const patch = (changes: Partial<PersonnelSpreadsheetDraft>) => { propsRef.current.onPatchDraft(draft.key, changes); closeEditor(); };
-    if (activeEditor.initialValue !== undefined) return <div className="ag-cell-editor-host"><GridTextEditor value={activeEditor.initialValue} selectOnMount={false} placeholder={params.colDef?.headerName ?? field} onBlur={() => setActiveEditor(null)} onEnter={closeEditor} onChange={text => propsRef.current.onPatchDraft(draft.key, pastePersonnelCells(draft, { [field]: text }, propsRef.current))} /></div>;
-    if (field === "note") return <div className="ag-cell-editor-host"><GridTextEditor value={draft.note} placeholder="Примечание к отчёту" onBlur={() => setActiveEditor(null)} onEnter={closeEditor} onChange={(note) => propsRef.current.onPatchDraft(draft.key, { note })} /></div>;
+    const onPendingValue = (value: string | null) => propsRef.current.onPendingDraftInput?.(draft.key, field, value);
+    if (activeEditor.initialValue !== undefined) return <div className="ag-cell-editor-host"><GridTextEditor value={activeEditor.initialValue} originalValue={String(valueFor(row, field, propsRef.current))} selectOnMount={false} placeholder={params.colDef?.headerName ?? field} onPendingValue={onPendingValue} onBlur={() => setActiveEditor(null)} onEnter={closeEditor} onChange={text => propsRef.current.onPatchDraft(draft.key, pastePersonnelCells(draft, { [field]: text }, propsRef.current))} /></div>;
+    if (field === "note") return <div className="ag-cell-editor-host"><GridTextEditor value={draft.note} placeholder="Примечание к отчёту" onPendingValue={onPendingValue} onBlur={() => setActiveEditor(null)} onEnter={closeEditor} onChange={(note) => propsRef.current.onPatchDraft(draft.key, { note })} /></div>;
     if (field === "employeeName") return <div className="ag-cell-editor-host"><CustomSelect className="ag-custom-select" ariaLabel="Сотрудник" value={draft.employeeId} searchable autoOpen onChange={(employeeId) => patch({ employeeId, employeeQuery: propsRef.current.employees.find((item) => item.id === Number(employeeId))?.fullName ?? "" })} options={[{ value: "", label: "Выберите сотрудника" }, ...propsRef.current.employees.map((employee) => ({ value: String(employee.id), label: employee.fullName }))]} /></div>;
     if (field === "hours") return <div className="ag-cell-editor-host"><CustomSelect className="ag-custom-select" ariaLabel="Часы" value={draft.hours} autoOpen onChange={(hours) => patch({ hours })} options={[{ value: "", label: "Выберите часы" }, ...Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1), label: String(index + 1) }))]} /></div>;
     const config = optionFields[field];
@@ -279,7 +332,7 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
   const columns = useMemo<ColDef<TableRow>[]>(() => {
     // Editors recreate these definitions. Only initialize sizing so AG Grid can
     // retain manual widths instead of re-enabling flex after every cell edit.
-    const column = (field: string, headerName: string, minWidth: number, flex = 1): ColDef<TableRow> => ({ colId: field, headerName, minWidth, initialFlex: flex, valueGetter: valueGetter(field), cellRenderer: renderCell, headerComponentParams: { innerHeaderComponent: FilterHeader } });
+    const column = (field: string, headerName: string, minWidth: number, flex = 1): ColDef<TableRow> => ({ colId: field, headerName, minWidth, initialFlex: flex, valueGetter: valueGetter(field), cellRenderer: renderCell, headerComponentParams: { innerHeaderComponent: SpreadsheetFilterHeader } });
     return [
       { colId: "reportDateGroup", headerName: "Дата отчёта", valueGetter: ({ data }) => data?.workDate ?? "", rowGroup: Boolean(props.groupByDate), hide: true, lockVisible: true, suppressColumnsToolPanel: true, sortable: false, filter: false },
       { ...column("workDate", "Дата", 125), pinned: "left", initialWidth: 125, maxWidth: 145, suppressSizeToFit: true, filterParams: { ...personnelFilterParams, kind: "date", rowSortOptions: personnelReportImportSortOptions }, initialSort: "desc", initialSortIndex: 0, comparator: (a: string, b: string) => dateKey(a).localeCompare(dateKey(b)) },
@@ -289,42 +342,48 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
         suppressColumnsToolPanel: true, filter: false, sortable: true, valueGetter: valueGetter(field),
         comparator: activityComparator,
       })),
-      { ...column("employeeName", "ФИО", 220, 2), pinned: "left", initialWidth: 250, maxWidth: 320 },
-      column("status", "Статус", 165),
+      { ...column("employeeName", "ФИО", 220, 2), pinned: "left", initialWidth: 280 },
+      column("status", "Статус", 140),
       column("responsibleUserName", "Ответственный", 190),
-      column("employmentType", "Тип", 100, .6),
+      column("employmentType", "Тип", 80, .6),
       column("department", "Отдел", 125, .7),
       column("position", "Должность", 180, 1.4),
-      column("shift", "Смена", 125, .8),
+      column("shift", "Смена", 100, .8),
       column("zone", "Зона", 140),
       column("mainWork", "Вид работы", 170, 1.3),
       column("subwork", "Подвид работы", 180, 1.3),
       column("master", "Мастер", 165),
-      { ...column("hours", "Часы", 105, .6), filterParams: { ...personnelFilterParams, kind: "number" } },
+      { ...column("hours", "Часы", 80, .6), initialWidth: 84, initialFlex: undefined, filterParams: { ...personnelFilterParams, kind: "number" } },
       column("note", "Примечание", 200, 1.5),
     ];
   }, [renderCell, valueGetter, activityComparator, props.groupByDate]);
-  const defaultColDef = useMemo<ColDef<TableRow>>(() => ({ filter: personnelColumnFilter, filterParams: personnelFilterParams, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true, cellClassRules: { "personnel-cell-invalid": params => { const row = params.data && rowsRef.current.get(params.data.rowKey); return Boolean(row?.editable && row.draft && personnelCellErrors(row.draft, propsRef.current, (propsRef.current.requireComplete || propsRef.current.requiredRowKeys?.includes(row.rowKey)))[params.column.getColId() as EditableField]); } } }), []);
+  const defaultColDef = useMemo<ColDef<TableRow>>(() => ({ filter: personnelColumnFilter, filterParams: { ...personnelFilterParams, presentation: "checklist" }, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true, cellClassRules: { "personnel-cell-invalid": params => { const row = params.data && rowsRef.current.get(params.data.rowKey); return Boolean(row?.editable && row.draft && personnelCellErrors(row.draft, propsRef.current, (propsRef.current.requireComplete || propsRef.current.requiredRowKeys?.includes(row.rowKey)))[params.column.getColId() as EditableField]); } } }), []);
 
   const selectedRows = selectedKeys.flatMap((key) => rowsByKey.get(key) ?? []);
   const removableKeys = selectedRows.filter((row) => row.editable && row.draft && (row.status === "draft" || row.status === "rejected")).map((row) => row.rowKey);
-  return <section className={`personnel-history-table${props.groupByDate ? " personnel-history-grouped" : ""}`} aria-label={props.groupByDate ? "Подтверждённые отчёты по датам" : "Отчёт персонала за все дни"}>
+  const removableApprovedRows = selectedRows.filter(row => row.status === "approved" && row.editable && row.entry);
+  const footerPanel = <div className="personnel-history-footer"><div className="personnel-history-summary" role="status"><strong>Строк: {summary.rows} · Сотрудников: {summary.employees} · Часы: {formatHours(summary.hours)}</strong>{summary.approved > 0 && summary.unapprovedRows > 0 && <span className="personnel-history-approved">Подтверждено: {formatHours(summary.approved)} ч.</span>}{summary.submitted > 0 && <span>На проверке: {formatHours(summary.submitted)} ч.</span>}{summary.draft + summary.rejected > 0 && <span>Черновики: {formatHours(summary.draft + summary.rejected)} ч.</span>}{props.footerStatus && <div className="personnel-history-save-status">{props.footerStatus}</div>}</div><div className="personnel-history-footer-actions">{props.footerActions}{selectedRows.length > 0 && <>{props.canCreate && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onCopyRows(selectedRows)}>Скопировать на сегодня ({selectedRows.length})</button>}{props.onRemoveDraft && removableKeys.length > 0 && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onRemoveDraft?.(removableKeys)}>Убрать из черновика ({removableKeys.length})</button>}{props.onRemoveApproved && removableApprovedRows.length > 0 && <button type="button" className="secondary-button personnel-report-delete-button" disabled={props.loading} aria-haspopup="dialog" onClick={() => props.onRemoveApproved?.(removableApprovedRows)}>Удалить из отчёта ({removableApprovedRows.length})</button>}</>}</div></div>;
+  return <section className={`personnel-history-table personnel-page-scroll-table${props.groupByDate ? " personnel-history-grouped" : ""}`} aria-label={props.groupByDate ? "Подтверждённые отчёты по датам" : "Отчёт персонала за все дни"}>
     {props.groupByDate && <div className="personnel-date-controls"><span>Дат: <strong>{summary.dates}</strong></span><div><button type="button" disabled={props.loading || !summary.dates} onClick={() => apiRef.current?.expandAll()}>Раскрыть все</button><button type="button" disabled={props.loading || !summary.dates} onClick={() => apiRef.current?.collapseAll()}>Свернуть все</button></div></div>}
-    <div className="ag-grid-shell ag-placement-grid personnel-history-grid"><LocalizedGrid<TableRow>
+    <AgTablePageScroll gridRoot={sizingHost} api={scrollApi} footer={footerPanel} className="personnel-report-page-scroll-stage" frameClassName="personnel-report-page-scroll-frame" label="Горизонтальная прокрутка отчёта персонала">
+    <div ref={sizingHost} id={gridId} className="ag-grid-shell ag-placement-grid personnel-history-grid"><LocalizedGrid<TableRow>
       theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} postSortRows={keepDatesTogether}
+      suppressHorizontalScroll
+      scrollbarWidth={0}
       groupDisplayType={props.groupByDate ? "groupRows" : undefined} groupDefaultExpanded={0} groupMaintainOrder
       groupRowRendererParams={dateGroupRendererParams}
       enterpriseFilters showSortSummary={false} spreadsheetToolbar={false}
       getRowOrderId={getRowOrderId}
-      rowOrderFixedSorts={reportFixedSorts} rowOrderAutoSwitchSort rowOrderBlocked={Boolean(activeEditor)}
+      rowOrderFixedSorts={reportFixedSorts} rowOrderAutoSwitchSort rowOrderBlocked={Boolean(activeEditor)} preserveSavedSort={preferences.hasSavedSort}
       getRowId={({ data }) => data.rowKey} rowHeight={44} headerHeight={46} animateRows={false} loading={props.loading}
       loadingOverlayComponent={() => <span className="ag-overlay-message">Загружаем отчёты…</span>}
       noRowsOverlayComponent={() => <span className="ag-overlay-message">{props.emptyMessage ?? "За выбранный период отчётов пока нет"}</span>}
       rowClassRules={{ "personnel-date-group-row": ({ node }) => Boolean(node.group), "editable-row": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.editable), "personnel-history-today": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.workDate === propsRef.current.today), "personnel-history-rejected": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.status === "rejected") }}
       rowSelection={{ mode: "multiRow", checkboxes: ({ node }) => Boolean(!node.group && node.data), isRowSelectable: node => Boolean(!node.group && node.data), headerCheckbox: true, selectAll: "filtered", enableClickSelection: false }}
       selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true }}
-      onGridReady={(event) => { apiRef.current = event.api; reportSummary(event.api); }}
-      onModelUpdated={(event) => reportSummary(event.api)} onFilterChanged={(event) => { refreshDateGroups(event.api); reportSummary(event.api); }} onSortChanged={(event) => reportSummary(event.api)}
+      onGridReady={(event) => { apiRef.current = event.api; setScrollApi(event.api); defaultWidthsApplied.current = false; preferences.attach(event.api); reportSummary(event.api); sizeInitialColumns(); }}
+      onColumnResized={preferences.onColumnResized}
+      onModelUpdated={(event) => reportSummary(event.api)} onFilterChanged={(event) => { refreshDateGroups(event.api); reportSummary(event.api); }} onSortChanged={(event) => { preferences.onSortChanged(); reportSummary(event.api); }}
       onSelectionChanged={(event) => { const keys = event.api.getSelectedRows().flatMap(row => row?.rowKey ? [row.rowKey] : []); setSelectedKeys(keys); propsRef.current.onSelectionChange(keys); }}
       onCellMouseDown={(event) => { if (activeEditor && !isInteractive(event.event) && (event.data?.rowKey !== activeEditor.rowKey || event.column.getColId() !== activeEditor.field)) setActiveEditor(null); }}
       onCellDoubleClicked={(event) => { if (event.data && !isInteractive(event.event)) openEditor(event.data, event.column.getColId()); }}
@@ -336,6 +395,6 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
       getSpreadsheetContextActions={({ row }) => { const source = rowsRef.current.get(row.rowKey); return source && propsRef.current.canCreate ? [{ label: "Скопировать строку на сегодня", onSelect: () => propsRef.current.onCopyRows([source]) }] : []; }}
       suppressCellFocus
     /></div>
-    <div className="personnel-history-footer"><div className="personnel-history-summary" role="status"><strong>Строк: {summary.rows} · Сотрудников: {summary.employees} · Часы: {formatHours(summary.hours)}</strong>{summary.approved > 0 && summary.unapprovedRows > 0 && <span className="personnel-history-approved">Подтверждено: {formatHours(summary.approved)} ч.</span>}{summary.submitted > 0 && <span>На проверке: {formatHours(summary.submitted)} ч.</span>}{summary.draft + summary.rejected > 0 && <span>Черновики: {formatHours(summary.draft + summary.rejected)} ч.</span>}</div><div className="personnel-history-footer-actions">{props.footerActions}{selectedRows.length > 0 && <>{props.canCreate && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onCopyRows(selectedRows)}>Скопировать на сегодня ({selectedRows.length})</button>}{props.onRemoveDraft && removableKeys.length > 0 && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onRemoveDraft?.(removableKeys)}>Убрать из черновика ({removableKeys.length})</button>}</>}</div></div>
+    </AgTablePageScroll>
   </section>;
 }

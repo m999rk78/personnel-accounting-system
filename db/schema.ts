@@ -517,3 +517,25 @@ export const tableRowOrders = pgTable("table_row_orders", {
   rowIds: jsonb("row_ids").$type<number[]>().notNull().default([]),
   updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
 });
+
+export const personnelReportDraftBuffers = pgTable("personnel_report_draft_buffers", {
+  userId: integer("user_id").notNull().references(() => appUsers.id, { onDelete: "cascade" }),
+  siteId: integer("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+  revision: integer("revision").notNull().default(1),
+  snapshot: text("snapshot"),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+}, table => [
+  primaryKey({ columns: [table.userId, table.siteId] }),
+  check("personnel_report_draft_buffers_revision_positive", sql`${table.revision} > 0`),
+]);
+
+export const equipmentReportDraftBuffers = pgTable("equipment_report_draft_buffers", {
+  userId: integer("user_id").notNull().references(() => appUsers.id, { onDelete: "cascade" }),
+  siteId: integer("site_id").notNull().references(() => sites.id, { onDelete: "cascade" }),
+  revision: integer("revision").notNull().default(1),
+  snapshot: text("snapshot"),
+  updatedAt: auditTimestamp("updated_at").notNull().defaultNow(),
+}, table => [
+  primaryKey({ columns: [table.userId, table.siteId] }),
+  check("equipment_report_draft_buffers_revision_positive", sql`${table.revision} > 0`),
+]);

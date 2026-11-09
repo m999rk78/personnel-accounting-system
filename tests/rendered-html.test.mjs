@@ -1,4 +1,4 @@
-import { readWorkspaceImplementation, readDataImplementation } from "./fixtures/read-implementation.mjs";
+import { readWorkspaceImplementation, readDataImplementation, readGridImplementation } from "./fixtures/read-implementation.mjs";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -39,10 +39,8 @@ test("server-renders the protected personnel accounting workspace", async () => 
   assert.match(authGate, /useSyncExternalStore\(subscribeToHydration, hydratedInBrowser, hydratingOnServer\)/);
   assert.match(authGate, /if \(!hydrated \|\| checking \|\| !user\)/);
 
-  const grid = await readFile(
-    new URL("../app/AgDataGrids.tsx", import.meta.url),
-    "utf8",
-  );
+  const grid = await readGridImplementation();
+  const gridEntry = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
   const gridProvider = await readFile(
     new URL("../app/AgGridEnterpriseProvider.tsx", import.meta.url),
     "utf8",
@@ -51,6 +49,8 @@ test("server-renders the protected personnel accounting workspace", async () => 
   assert.match(grid, /AgGridReact/);
   assert.match(grid, /headerName: "Подвид работы"/);
   assert.match(grid, /headerName: "Должность"/);
+  assert.match(gridEntry, /export \{ EmployeeAgGrid \} from "\.\/EmployeeDirectoryGrid"/);
+  assert.match(gridEntry, /export \{ DirectoryAgGrid, PositionAgGrid, ProjectEmployeeAgGrid \} from "\.\/ReferenceDirectoryGrids"/);
   assert.doesNotMatch(grid, /AllCommunityModule/);
   assert.doesNotMatch(grid, /AgGridProvider/);
   assert.match(gridProvider, /AllCommunityModule/);
@@ -202,22 +202,32 @@ test("uses the shared accessible select instead of native dropdowns", async () =
 });
 
 test("keeps the employee grid compact without duplicated filter controls", async () => {
-  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const grid = await readGridImplementation();
+  const employeeGrid = await readFile(new URL("../app/EmployeeDirectoryGrid.tsx", import.meta.url), "utf8");
+  const select = await readFile(new URL("../app/CustomSelect.tsx", import.meta.url), "utf8");
+  const editor = await readFile(new URL("../app/GridTextEditor.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   const manifest = await readFile(new URL("../package.json", import.meta.url), "utf8");
 
-  assert.match(grid, /className="employee-performance-frame"/);
-  assert.match(grid, /field: "fullName", headerName: "ФИО"/);
-  assert.match(grid, /const \[searchQuery, setSearchQuery\] = useState\(""\)/);
-  assert.match(grid, /onFocus=\{\(event\) => \{[\s\S]*const input = event\.currentTarget[\s\S]*requestAnimationFrame\(\(\) => input\.select\(\)\)/);
-  assert.match(grid, /event\.key === "ArrowDown"[\s\S]*event\.stopPropagation\(\)/);
-  assert.match(grid, /onClick=\{openMenu\}/);
-  assert.match(grid, /field: "employmentType", headerName: "Тип"/);
-  assert.match(grid, /field: "department", headerName: "Отдел"/);
-  assert.match(grid, /field: "position", headerName: "Должность"/);
-  assert.match(grid, /field: "siteName", headerName: "Проект"/);
-  assert.match(grid, /rowSelection=\{[^\n]*?\{ mode: "multiRow"/);
-  assert.match(grid, /onSelectionChanged=/);
+  assert.match(employeeGrid, /className="employee-performance-frame employee-spreadsheet-frame"/);
+  assert.match(employeeGrid, /field: "fullName", headerName: "ФИО"/);
+  assert.match(employeeGrid, /<CustomSelect[^>]*autoOpen searchable/);
+  assert.match(select, /const \[query, setQuery\] = useState\(""\)/);
+  assert.match(select, /const filteredOptions = useMemo/);
+  assert.match(select, /event\.key === "ArrowDown"/);
+  assert.match(select, /onClick=\{\(\) => open \? close\(\) : openMenu\(\)\}/);
+  assert.match(editor, /if \(selectOnMount\) input\.current\?\.select\(\)/);
+  assert.match(editor, /event\.stopPropagation\(\)/);
+  assert.match(employeeGrid, /field: "employmentType", headerName: "Тип"/);
+  assert.match(employeeGrid, /field: "department", headerName: "Отдел"/);
+  assert.match(employeeGrid, /field: "position", headerName: "Должность"/);
+  assert.match(employeeGrid, /field: "siteName", headerName: "Проект"/);
+  assert.match(employeeGrid, /const rowSelection = useMemo[\s\S]*mode: "multiRow"/);
+  assert.match(employeeGrid, /rowSelection=\{rowSelection\}/);
+  assert.match(employeeGrid, /onSelectionChanged=/);
+  assert.match(employeeGrid, /rowHeight=\{44\} headerHeight=\{46\}/);
+  assert.match(employeeGrid, /presentation: "checklist"/);
+  assert.match(employeeGrid, /spreadsheetToolbar=\{false\} showSortSummary=\{false\}/);
   assert.doesNotMatch(grid, /headerName: "Сотрудник"/);
   assert.doesNotMatch(grid, /headerName: "Кадровые данные"/);
   assert.doesNotMatch(grid, /field: "siteName", headerName: "Назначение"/);
@@ -253,7 +263,8 @@ test("selects employees with checkboxes and deletes them in one validated reques
 test("separates full-row editing from validated bulk editing and can clear the selection", async () => {
   const app = await readWorkspaceImplementation();
   const adminFooter = await readFile(new URL("../app/AdminGridFooter.tsx", import.meta.url), "utf8");
-  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const grid = await readGridImplementation();
+  const employeeGrid = await readFile(new URL("../app/EmployeeDirectoryGrid.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
   assert.match(app, /editSelectionLabel="Редактировать"/);
@@ -281,12 +292,20 @@ test("separates full-row editing from validated bulk editing and can clear the s
   assert.match(grid, /fullRowEditIds/);
   assert.match(grid, /function EditableCellDisplay/);
   assert.match(grid, /onSpreadsheetEdit=\{\(\{ row, columnId \}\) => openCellEditor\(row, columnId\)\}/);
+  assert.match(employeeGrid, /onSpreadsheetEdit=\{\(\{ row, columnId, initialValue \}\) => openEditor\(row, columnId, initialValue\)\}/);
+  const employeeGridProps = app.slice(app.indexOf("<EmployeeAgGrid"), app.indexOf("{mayEditGlobalEmployees && <AdminGridFooter", app.indexOf("<EmployeeAgGrid")));
+  const selectionHandler = employeeGridProps.match(/onSelectionChange=\{\(ids\) => \{([^}]*)\}\}/)?.[1];
+  assert.ok(selectionHandler, "the employee selection handler must remain explicit");
+  assert.match(selectionHandler, /setEmployeePendingDeletes\(ids\)/);
+  assert.doesNotMatch(selectionHandler, /setEmployeeDrafts|setEmployeeFullRowEditIds/);
   assert.match(styles, /\.employee-selection-actions \.bulk-edit-selection-button/);
   assert.match(styles, /\.employee-footer-base/);
 });
 
 test("edits rows on double click and provides spreadsheet-style copy and paste", async () => {
-  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const grid = await readGridImplementation();
+  const employeeGrid = await readFile(new URL("../app/EmployeeDirectoryGrid.tsx", import.meta.url), "utf8");
+  const employeeModel = await readFile(new URL("../app/employeeSpreadsheet.ts", import.meta.url), "utf8");
   const filters = await readFile(new URL("../app/GridFilters.tsx", import.meta.url), "utf8");
   const styles = await readFile(new URL("../app/gridFilters.css", import.meta.url), "utf8");
   const globalStyles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
@@ -294,10 +313,15 @@ test("edits rows on double click and provides spreadsheet-style copy and paste",
   assert.match(grid, /onCellDoubleClicked/);
   assert.match(grid, /onSpreadsheetEdit/);
   assert.match(grid, /activeEditor\?\.rowKey === row\.rowKey/);
-  assert.match(grid, /setActiveEditor\(\{ rowKey: row\.rowKey, field \}\)/);
-  assert.match(grid, /currentProps\.onEdit\(row\.employee, changes\)/);
-  assert.match(grid, /pastedOptionName\(currentProps\.employmentTypes/);
-  assert.match(grid, /нельзя вставить в столбец «Тип»/);
+  assert.match(employeeGrid, /setActiveEditor\(\{ rowKey: row\.rowKey, field, initialValue \}\)/);
+  assert.match(employeeGrid, /onCellDoubleClicked=[\s\S]*openEditor\(event\.data, event\.column\.getColId\(\)\)/);
+  assert.match(employeeGrid, /onSpreadsheetBatch=\{applyBatch\}/);
+  assert.match(employeeGrid, /applyEmployeeSpreadsheetBatch\(\{ rows: batch\.rows, drafts: current\.drafts/);
+  assert.match(employeeGrid, /canCreate: current\.canCreate !== false, canUpdate: !current\.readOnly/);
+  assert.match(employeeGrid, /spreadsheetHistory=\{history\}/);
+  assert.match(employeeModel, /employmentType: optionLookup\(references\.employmentTypes\)/);
+  assert.match(employeeModel, /employmentType: "Тип"/);
+  assert.match(employeeModel, /if \(errors\.length\) throw new Error\(errors\.join\("\\n"\)\)/);
   assert.doesNotMatch(grid, /function DefaultDeleteAction/);
   assert.doesNotMatch(grid, /GridIcon name="pencil"/);
   assert.doesNotMatch(grid, /width: 72, minWidth: 64/);
@@ -339,7 +363,7 @@ test("edits rows on double click and provides spreadsheet-style copy and paste",
   assert.match(grid, /GridTextEditor/);
   assert.doesNotMatch(grid, /api\.redrawRows\(/);
   assert.match(textEditor, /createCellTextEditSession/);
-  assert.match(textEditor, /onBlur=\{\(\) => \{ commit\(\); onBlur\?\.\(\); \}\}/);
+  assert.match(textEditor, /onBlur=\{\(\) => \{ commit\(\); onPendingValue\?\.\(null\); onBlur\?\.\(\); \}\}/);
   assert.doesNotMatch(textEditor, /onChange=\{/);
   assert.match(filters, /suppressKeyboardEvent:.*isInteractiveTarget/);
   assert.match(textEditor, /event\.key !== "Enter"/);
@@ -352,7 +376,7 @@ test("edits rows on double click and provides spreadsheet-style copy and paste",
 test("adds richer filters, multi-column sorting, and persistent employee row ordering", async () => {
   const filters = await readFile(new URL("../app/GridFilters.tsx", import.meta.url), "utf8");
   const filterModel = await readFile(new URL("../app/gridFilterModel.ts", import.meta.url), "utf8");
-  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const grid = await readGridImplementation();
   const app = await readWorkspaceImplementation();
   const api = await readDataImplementation();
   const migration = await readFile(new URL("../drizzle-postgres/0018_employee_manual_order.sql", import.meta.url), "utf8");
@@ -393,14 +417,18 @@ test("validates employee cells before saving directory changes", async () => {
 });
 
 test("supports bulk editing in every reference table and refreshes master details", async () => {
-  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const grid = await readFile(new URL("../app/CatalogSpreadsheetGrid.tsx", import.meta.url), "utf8");
+  const references = await readFile(new URL("../app/ReferenceDirectoryGrids.tsx", import.meta.url), "utf8");
   const app = await readWorkspaceImplementation();
   const adminFooter = await readFile(new URL("../app/AdminGridFooter.tsx", import.meta.url), "utf8");
   const api = await readDataImplementation();
 
-  assert.match(grid, /const draftEmployeeIds = props\.drafts\.map/);
-  assert.match(grid, /usage = EMPTY_EMPLOYEE_USAGE/);
-  assert.match(grid, /directory-new-\$\{draft\.key\}/);
+  assert.match(grid, /const byId = useMemo[\s\S]*props\.drafts/);
+  assert.match(grid, /catalog-new-\$\{draft\.key\}/);
+  assert.match(grid, /grid\.refreshClientSideRowModel\("filter"\); grid\.refreshCells\(\{ force: true \}\)/);
+  assert.match(references, /employeeId = draft\?\.employeeId \|\| item\?\.employeeId/);
+  assert.match(references, /employee\.id === Number\(employeeId\)/);
+  assert.match(references, /editable: false, value: \(item, draft\) => employeeFor\(draft, item\)\?\.\[field\]/);
   assert.match(app, /const \[directoryDrafts, setDirectoryDrafts\]/);
   assert.match(app, /const \[employeeDrafts, setEmployeeDrafts\]/);
   assert.match(app, /const \[projectEmployeeDrafts, setProjectEmployeeDrafts\]/);
@@ -418,34 +446,47 @@ test("supports bulk editing in every reference table and refreshes master detail
 });
 
 test("uses spreadsheet editing for positions and the active reference tables", async () => {
-  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const grid = await readFile(new URL("../app/CatalogSpreadsheetGrid.tsx", import.meta.url), "utf8");
+  const references = await readFile(new URL("../app/ReferenceDirectoryGrids.tsx", import.meta.url), "utf8");
   const app = await readWorkspaceImplementation();
 
   assert.match(app, /const \[positionFullRowEditIds, setPositionFullRowEditIds\]/);
   assert.match(app, /<PositionAgGrid[^>]*fullRowEditIds=\{positionFullRowEditIds\}[^>]*onSelectionChange=/);
-  assert.ok([...grid.matchAll(/rowSelection=\{[^\n]*?\{ mode: "multiRow"/g)].length >= 2);
-  assert.ok([...grid.matchAll(/onCellDoubleClicked=/g)].length >= 2);
-  assert.ok([...grid.matchAll(/onSpreadsheetPaste=\{pasteIntoRow\}/g)].length >= 2);
+  assert.match(references, /CatalogSpreadsheetGrid<GridPosition, GridPositionDraft>/);
+  assert.match(references, /CatalogSpreadsheetGrid<GridOption, GridDirectoryDraft>/);
+  assert.match(grid, /mode: "multiRow"/);
+  assert.match(grid, /rowSelection=\{selection\}/);
+  assert.match(grid, /onCellDoubleClicked=[\s\S]*open\(event\.data, event\.column\.getColId\(\)\)/);
+  assert.match(grid, /onSpreadsheetBatch=\{applyRange\}/);
+  assert.match(grid, /spreadsheetHistory=\{history\}/);
   assert.ok([...app.matchAll(/uniformActions/g)].length >= 4);
 });
 
 test("uses checkbox selection and footer actions in reports and project settings tables", async () => {
-  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const grid = await readFile(new URL("../app/CatalogSpreadsheetGrid.tsx", import.meta.url), "utf8");
+  const references = await readFile(new URL("../app/ReferenceDirectoryGrids.tsx", import.meta.url), "utf8");
   const app = await readWorkspaceImplementation();
 
   const reportGrid = await readFile(new URL("../app/PersonnelReportGrid.tsx", import.meta.url), "utf8");
-  const projectEmployeeGrid = grid.slice(grid.indexOf("export function ProjectEmployeeAgGrid"), grid.indexOf("type DirectoryTableRow"));
-  const directoryGrid = grid.slice(grid.indexOf("export function DirectoryAgGrid"), grid.indexOf("type PositionGridProps"));
+  const projectEmployeeGrid = references.slice(references.indexOf("export function ProjectEmployeeAgGrid"));
+  const directoryGrid = references.slice(references.indexOf("export function DirectoryAgGrid"), references.indexOf("type PositionGridProps"));
 
-  for (const source of [reportGrid, projectEmployeeGrid, directoryGrid]) {
-    assert.match(source, /rowSelection=\{[^\n]*?\{ mode: "multiRow"/);
-    assert.match(source, /onSelectionChanged=/);
+  assert.match(reportGrid, /rowSelection=\{[^\n]*?\{ mode: "multiRow"/);
+  assert.match(reportGrid, /onSelectionChanged=/);
+  assert.doesNotMatch(reportGrid, /colId: "actions"/);
+  for (const source of [projectEmployeeGrid, directoryGrid]) {
+    assert.match(source, /CatalogSpreadsheetGrid</);
+    assert.match(source, /selectedIds=\{props\.pendingDeletes\} onSelectionChange=\{props\.onSelectionChange\}/);
+    assert.match(source, /renderFooter=\{props\.renderFooter\}/);
     assert.doesNotMatch(source, /colId: "actions"/);
   }
+  assert.match(grid, /mode: "multiRow"/);
+  assert.match(grid, /rowSelection=\{selection\}/);
+  assert.match(grid, /onSelectionChanged=/);
   assert.match(app, /onSelectionChange=\{changeDirectorySelection\}/);
   assert.match(app, /function editSelectedDirectoryItems\(\)[\s\S]*setDirectoryDrafts\(\(current\)/);
   assert.doesNotMatch(app, /selected\.forEach\(\(entry\) => startEdit\(entry\)\)/);
-  assert.match(grid, /api\.refreshClientSideRowModel\("everything"\)/);
+  assert.match(grid, /grid\.refreshClientSideRowModel\("filter"\)/);
 });
 
 test("offers permission-aware right-click actions throughout system tables", async () => {
@@ -469,10 +510,11 @@ test("offers permission-aware right-click actions throughout system tables", asy
   assert.match(styles, /\.table-context-menu/);
 });
 
-test("keeps creation, selection, and editing as exclusive table modes", async () => {
+test("keeps catalog selection safe during editing and exclusive modes for profile cards", async () => {
   const app = await readWorkspaceImplementation();
   const adminFooter = await readFile(new URL("../app/AdminGridFooter.tsx", import.meta.url), "utf8");
-  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const grid = await readFile(new URL("../app/CatalogSpreadsheetGrid.tsx", import.meta.url), "utf8");
+  const model = await readFile(new URL("../app/catalogSpreadsheetModel.ts", import.meta.url), "utf8");
   const projects = await readFile(new URL("../app/ProjectCards.tsx", import.meta.url), "utf8");
   const users = await readFile(new URL("../app/UserAccessCards.tsx", import.meta.url), "utf8");
 
@@ -480,8 +522,13 @@ test("keeps creation, selection, and editing as exclusive table modes", async ()
   assert.match(adminFooter, /!editorOpen && deletingCount === 0 && <div className="employee-footer-base">/);
   assert.ok([...app.matchAll(/editingExisting=\{[^}]+\.some\(\(draft\) => Boolean\(draft\.id\)\)\}/g)].length >= 5);
   assert.match(app, /function addDirectoryItem[\s\S]*directoryDrafts\.some\(\(draft\) => Boolean\(draft\.id\)\)/);
-  assert.ok([...grid.matchAll(/propsRef\.current\.drafts\.length === 0 && params\.data\?\.kind === "entry"/g)].length >= 3);
-  assert.ok([...grid.matchAll(/row\.kind === "entry" && [^\n]+\.drafts\.some\(\(draft\) => !draft\.id\)/g)].length >= 2);
+  assert.match(grid, /row\?\.record \? current\.current\.canSelect : row\?\.draft && current\.current\.canCreate/);
+  assert.match(grid, /rowOrderBlocked=\{editorHasDraft \|\| props\.drafts\.length > 0\}/);
+  assert.match(grid, /const identity = `\$\{props\.preferenceScope\?\.userId \?\? "standalone"\}:\$\{props\.scopeKey\}:\$\{props\.preferenceScope\?\.siteId \?\? "global"\}`/);
+  assert.match(grid, /<CatalogGridWorkspace<R, D> key=\{identity\}/);
+  assert.match(grid, /if \(ids\.length !== current\.current\.selectedIds\.length \|\| ids\.some/);
+  assert.match(model, /const existing = Boolean\(record \|\| draft\.id !== undefined\)/);
+  assert.match(model, /if \(existing \? !canUpdate : !canCreate\)/);
   for (const source of [projects, users]) {
     assert.match(source, /const editorOpen = drafts\.length > 0/);
     assert.match(source, /disabled=\{editorOpen\}/);
@@ -530,7 +577,7 @@ test("shows projects as portfolio cards", async () => {
 
 test("checks Bitrix24 read-only and links only explicitly confirmed employee matches", async () => {
   const app = await readWorkspaceImplementation();
-  const grid = await readFile(new URL("../app/AgDataGrids.tsx", import.meta.url), "utf8");
+  const grid = await readGridImplementation();
   const api = await readDataImplementation();
   assert.match(app, /Проверить с Битрикс24/);
   assert.match(app, /ДАННЫЕ НЕ ИЗМЕНЕНЫ/);

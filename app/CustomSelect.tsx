@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { choiceMenuPosition, choiceMenuWidth, type ChoiceMenuPosition } from "./choiceMenuLayout";
+import { exactCustomSelectOption } from "./customSelectOptionMatch";
 
 export type CustomSelectOption = {
   value: string;
@@ -144,8 +145,7 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
       if (enabledIndexes.length) setActiveIndex(event.key === "Home" ? enabledIndexes[0] : enabledIndexes.at(-1)!);
     } else if (event.key === "Enter" && requireExactQueryOnEnter && query.trim()) {
       event.preventDefault();
-      const normalizedQuery = normalizeSearch(query);
-      const exactOption = options.find((option) => !option.disabled && normalizeSearch(option.value) === normalizedQuery);
+      const exactOption = exactCustomSelectOption(options, query);
       if (exactOption) choose(exactOption);
       else onInvalidQuery?.(query);
     } else if (event.key === "Enter" && activeIndex >= 0 && options[activeIndex]) {

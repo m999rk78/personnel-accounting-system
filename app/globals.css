@@ -1,4 +1,8 @@
 @import "tailwindcss";
+@import "./tableHeaderAlignment.css";
+@import "./tableColumnMenu.css";
+@import "./tableWorkspaceLayout.css";
+@import "./tablePageScroll.css";
 
 :root { --ink:#171719; --muted:#737373; --line:#dedede; --soft:#f7f7f7; --sidebar:#18181b; --sidebar-hover:#27272a; --orange:#f59a23; --workspace-page-top:16px; --page-title-line-height:38px; --page-title-padding:5px; }
 * { box-sizing:border-box; }
@@ -24,10 +28,10 @@ button,input,select { font:inherit; } button { cursor:pointer; }
 .page-heading > .page-heading-title { display:flex; align-items:center; align-self:flex-start; padding-block:var(--page-title-padding); }
 .personnel-report-page,.table-workspace-page { height:100vh; min-height:0; display:flex; flex-direction:column; overflow:hidden; padding-top:var(--workspace-page-top); padding-bottom:12px; }.personnel-report-page > .page-heading,.table-workspace-page > .page-heading { min-height:48px; flex:0 0 auto; }.personnel-report-page .foreman-report-progress,.personnel-report-page .report-table-footer { flex:0 0 auto; }
 .timesheet-workspace-page { height:100vh; min-height:0; display:flex; flex-direction:column; overflow:hidden; padding:var(--workspace-page-top) 30px 22px; }
-.timesheet-workspace-page > .page-heading { height:var(--timesheet-heading-height,52px); min-height:var(--timesheet-heading-height,52px); max-height:var(--timesheet-heading-height,52px); flex:0 0 auto; overflow:hidden; opacity:var(--timesheet-header-opacity,1); transform:translateY(var(--timesheet-heading-shift,0)); will-change:height,opacity,transform; }
-.timesheet-workspace-page > .timesheet-page { min-height:0; flex:1; display:flex; flex-direction:column; gap:var(--timesheet-header-gap,10px); }
+.timesheet-workspace-page > .page-heading { height:52px; min-height:52px; max-height:52px; flex:0 0 auto; overflow:hidden; }
+.timesheet-workspace-page > .timesheet-page { min-height:0; flex:1; display:flex; flex-direction:column; gap:10px; }
 .timesheet-workspace-page > .timesheet-page > .timesheet-grid-shell { height:auto; min-height:0; max-height:none; flex:1; }
-.timesheet-workspace-page > .timesheet-page > .timesheet-top-summary { height:var(--timesheet-summary-height,42px); min-height:var(--timesheet-summary-height,42px); max-height:var(--timesheet-summary-height,42px); padding-top:var(--timesheet-summary-padding-block,4px); padding-bottom:var(--timesheet-summary-padding-block,4px); overflow:hidden; border-top-width:var(--timesheet-summary-border-y,1px); border-bottom-width:var(--timesheet-summary-border-y,1px); opacity:var(--timesheet-header-opacity,1); transform:translateY(var(--timesheet-summary-shift,0)); will-change:height,opacity,transform; }
+.timesheet-workspace-page > .timesheet-page > .timesheet-top-summary { height:42px; min-height:42px; max-height:42px; padding-top:4px; padding-bottom:4px; overflow:hidden; border-top-width:1px; border-bottom-width:1px; }
 .table-workspace-page > .admin-section { min-height:0; flex:1; display:flex; flex-direction:column; margin-top:6px; overflow:hidden; }.table-workspace-page > .admin-section > .settings-toolbar,.table-workspace-page > .admin-section > .message,.table-workspace-page .table-edit-footer { flex:0 0 auto; }.table-workspace-page > .admin-section > .ag-admin-grid,.table-workspace-page > .admin-section > .employee-performance-frame { height:auto; min-height:0; flex:1; }.table-workspace-page > .equipment-page,.table-workspace-page .equipment-settings-section > .equipment-page { min-height:0; flex:1; display:flex; flex-direction:column; gap:10px; overflow:hidden; }.table-workspace-page .equipment-report-card { min-height:0; flex:1; display:flex; flex-direction:column; overflow:hidden; }.table-workspace-page .equipment-report-card > .ag-equipment-grid { height:auto; min-height:0; flex:1; }.table-workspace-page .equipment-page > .employee-performance-frame,.table-workspace-page .equipment-page > .ag-admin-grid { height:auto; min-height:0; flex:1; }.table-workspace-page .equipment-page > .equipment-message,.table-workspace-page .equipment-page > .equipment-empty-hint { flex:0 0 auto; }
 .page-heading.settings-page-heading { min-height:48px; align-items:center; gap:10px 16px; padding-block:0; }
 .settings-page-heading > .page-heading-title { display:flex; align-items:center; gap:10px; min-width:0; min-height:38px; }
@@ -445,6 +449,9 @@ button,input,select { font:inherit; } button { cursor:pointer; }
 .equipment-timesheet-shell .equipment-month-table td.future.editable { cursor:cell; color:#71717a; background:#fbfbfc; }
 .equipment-timesheet-shell .equipment-month-table td.future.editable.filled { color:#16794b; background:#edf8f0; }
 .equipment-timesheet-shell .equipment-month-table td.future.editable.manual { color:#8a5a00; background:#fff5dc; }
+.equipment-timesheet-shell .equipment-month-table td.manual.manual-expected,
+.equipment-timesheet-shell .equipment-month-table td.future.editable.manual.manual-expected { background:#edf8f0; color:#16794b; font-weight:800; }
+.equipment-timesheet-shell .equipment-month-table tbody tr:hover td.manual.manual-expected { background:#e5f5e9; }
 
 @media (max-width:1050px) {
   .ag-equipment-grid { height:calc(100vh - 295px); min-height:430px; }

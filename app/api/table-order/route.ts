@@ -25,7 +25,7 @@ export async function GET(request: Request) {
       readTableOrder(scope, siteId, user),
       ensureTableOrderSchema().then(() => getDatabase().prepare("SELECT id FROM table_row_orders WHERE id = ?").bind(access.key).first()),
     ]);
-    const importOrder = scope === "employees" || scope === "project-personnel"
+    const importOrder = scope === "employees" || scope === "project-personnel" || scope === "project-equipment"
       ? await readPersonnelImportOrder(getDatabase(), scope, siteId, (await canonicalRowIds(scope, siteId, getDatabase(), user)).filter((id): id is number => typeof id === "number"))
       : { importIds: [], hasImportOrder: false };
     return Response.json({ ids, canWrite: access.canWrite, hasSavedOrder: Boolean(saved), ...importOrder }, { headers: { "Cache-Control": "no-store" } });

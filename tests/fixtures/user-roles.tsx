@@ -1,5 +1,7 @@
 import { useLayoutEffect, useState, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
+import { AgGridProvider } from "ag-grid-react";
+import { AllEnterpriseModule } from "ag-grid-enterprise";
 import { UserAccessCards } from "../../app/UserAccessCards";
 import { AccessRightsView } from "../../app/AccessRightsView";
 import { effectiveProjectAccess } from "../../app/roles";
@@ -68,4 +70,4 @@ function Fixture() {
     {rights ? <AccessRightsView onBack={() => setRights(false)} /> : <UserAccessCards layout="list" rows={rows} drafts={drafts} sites={sites} selectedIds={selected} onEdit={edit} onSelectionChange={setSelected} onPatchDraft={patch} onCancelEditing={() => setDrafts([])} onSave={save} saving={false} />}
   </main>;
 }
-createRoot(document.getElementById("root")!).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(<AgGridProvider modules={[AllEnterpriseModule]}><Fixture /></AgGridProvider>);

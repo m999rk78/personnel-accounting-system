@@ -5,11 +5,11 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, us
 import { createPortal } from "react-dom";
 import type { GridEquipmentUnit, GridEquipmentEntry, GridOption } from "./AgDataGrids";
 import { draftHistoryReducer, type DraftHistory, type DraftHistoryAction } from "./personnelSpreadsheet";
-import { pasteEquipmentCells, equipmentCellErrors, equipmentEditableFields, equipmentOptionFields, timestampEquipmentDraft, type EquipmentSpreadsheetDraft as GridDraftRow } from "./equipmentSpreadsheet";
+import { pasteEquipmentCells, equipmentCellErrors, equipmentEditableFields, equipmentImportedUnitOrder, equipmentOptionFields, timestampEquipmentDraft, type EquipmentImportBatch, type EquipmentSpreadsheetDraft as GridDraftRow } from "./equipmentSpreadsheet";
 import type { EquipmentReportGridRow } from "./EquipmentReportGrid";
 import type { EquipmentReport, EquipmentReportApprovedEntry, EquipmentReportData, EquipmentReportEntrySaveRequest, EquipmentReportDraftRow, EquipmentReportSaveRequest, EquipmentReportTransitionRequest, EquipmentReportRow, EquipmentReportValidationIssue, EquipmentReportValidationRequest, EquipmentReportValidationTarget } from "./equipmentReportTypes";
 import { freezeEquipmentReportSessions, mergeEquipmentReportSessions, equipmentReportImportTarget, equipmentReportNewDate, equipmentReportNewKey, equipmentReportSaveIdentity } from "./equipmentReportSessions";
-import { defaultPersonnelReportSubmissions as defaultEquipmentReportSubmissions, selectPersonnelReportSubmissions as selectEquipmentReportSubmissions, personnelReportReviewIssue as equipmentReportReviewIssue } from "./personnelReportActions";
+import { defaultPersonnelReportSubmissions as defaultEquipmentReportSubmissions, selectPersonnelReportSubmissions as selectEquipmentReportSubmissions, personnelReportReviewIssue as equipmentReportReviewIssue, isPersonnelReportDraft as isEquipmentReportDraft, personnelReportMatchesView as equipmentReportMatchesView, type PersonnelReportView as EquipmentReportView } from "./personnelReportActions";
 import { mergeEquipmentSubmissionIssues, equipmentSubmissionCanSend, equipmentSubmissionCellIssues, equipmentSubmissionToken, type EquipmentSubmissionValidationState } from "./equipmentReportSubmissionValidation";
 import { buildEquipmentReportCrew, equipmentReportCrewSource, equipmentReportYesterday } from "./equipmentReportCarryOver";
 import { canViewPendingReportsFor, type UserRole } from "./roles";
@@ -19,9 +19,12 @@ import { ExcelActionsMenu } from "./ExcelActionsMenu";
 import { downloadExcelFile, excelFileName } from "./excelFiles";
 import { equipmentExcelWorkTypePairs, equipmentReportExcelRows } from "./equipmentReportExcel";
 import { CustomSelect } from "./CustomSelect";
-import { useWorkspaceTableOrder } from "./TableRowMoves";
-import { isUnsavedEquipmentReportOrderId, equipmentReportOrderScope } from "./equipmentReportRowOrder";
+import { notifyTableImportOrder, useWorkspaceTableOrder } from "./TableRowMoves";
+import { isUnsavedEquipmentReportOrderId, orderEquipmentReportCrewRows, equipmentReportOrderScope } from "./equipmentReportRowOrder";
 import { isReportWorkDate, moveUnsavedReportDay } from "./reportDateChanges";
+import { equipmentDraftContent, type EquipmentDraftPendingInput } from "./equipmentReportDraftContent";
+import { useEquipmentReportDraftAutosave } from "./useEquipmentReportDraftAutosave";
+import type { EquipmentReportDraftSnapshot } from "./equipmentReportDraftBuffer";
 import "./personnelReport.css";
 
 const ReportGrid = lazy(() => import("./EquipmentReportGrid").then(module => ({ default: module.EquipmentReportGrid })));
@@ -78,6 +81,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
   const [visible, setVisible] = useState<string[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [importBatches, setImportBatches] = useState<EquipmentImportBatch[]>([]);
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -86,7 +90,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
   const [sendKeys, setSendKeys] = useState<string[]>([]);
   const [sendValidation, setSendValidation] = useState<(EquipmentSubmissionValidationState & { error?: string }) | null>(null);
   const [validationRetry, setValidationRetry] = useState(0);
-  const [workflowView, setWorkflowView] = useState<"all" | "draft" | "submitted">("all");
+  const [workflowView, setWorkflowView] = useState<EquipmentReportView>("approved");
   const [focusedReportKey, setFocusedReportKey] = useState<string | null>(null);
   const [actionsTarget, setActionsTarget] = useState<HTMLElement | null>(null);
   const [viewsTarget, setViewsTarget] = useState<HTMLElement | null>(null);
@@ -95,8 +99,22 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
   const request = useRef<AbortController | null>(null);
   const carryOverHandled = useRef(new Set<string>());
   const [carryOverNotice, setCarryOverNotice] = useState<{ count: number; skipped: number } | null>(null);
+  const [pendingInput, setPendingInput] = useState<EquipmentDraftPendingInput | null>(null);
   const dirty = Object.keys(edits).length > 0;
-  const locked = busy || importing;
+  const autosaveContent = useMemo(() => equipmentDraftContent(currentUser.id, siteId, today, edits, sessions, data?.reports ?? [], importBatches, pendingInput, props, toDraft), [currentUser.id, siteId, today, edits, sessions, data, importBatches, pendingInput, props]);
+  const restoreDraft = useCallback((snapshot: EquipmentReportDraftSnapshot | null) => {
+    const manualEdits = Object.fromEntries(Object.entries(edits).filter(([key]) => !Object.hasOwn(autosaveContent.edits, key)));
+    dispatchEdits({ type: "reset", value: { ...manualEdits, ...snapshot?.edits } });
+    setSessions(current => ({ ...Object.fromEntries(Object.entries(current).filter(([, report]) => !isEquipmentReportDraft(report.status))), ...snapshot?.sessions }));
+    setImportBatches(snapshot?.importBatches ?? []);
+    setPendingInput(null);
+    if (snapshot && Object.keys(snapshot.edits).length) { setWorkflowView("draft"); setFocusedReportKey(null); setSelected([]); setVisible(null); }
+  }, [edits, autosaveContent]);
+  const autosave = useEquipmentReportDraftAutosave({ userId: currentUser.id, siteId, enabled: currentUser.role !== "viewer" && showPendingReports && (permissions.create || permissions.update), content: autosaveContent, onRestore: restoreDraft });
+  const hasDraftContent = Object.keys(autosaveContent.edits).length > 0;
+  const hasManualEdits = Object.keys(edits).some(key => !Object.hasOwn(autosaveContent.edits, key));
+  const unprotectedChanges = importing || hasManualEdits || hasDraftContent && !autosave.protected;
+  const locked = busy || importing || !autosave.ready;
   const checkSubmissionReports = useCallback(async (plan: SubmissionValidationPlan, signal?: AbortSignal) => {
     setSendValidation({ token: plan.token, status: "checking", issues: plan.localIssues });
     try {
@@ -125,13 +143,13 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
     const timer = window.setTimeout(() => setNotice(""), 6500);
     return () => window.clearTimeout(timer);
   }, [notice]);
-  useEffect(() => { onDirtyChange?.(dirty || importing); return () => onDirtyChange?.(false); }, [dirty, importing, onDirtyChange]);
+  useEffect(() => { onDirtyChange?.(unprotectedChanges); return () => onDirtyChange?.(false); }, [unprotectedChanges, onDirtyChange]);
   useEffect(() => {
-    if (!dirty && !importing) return;
+    if (!unprotectedChanges) return;
     const preventLoss = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
     window.addEventListener("beforeunload", preventLoss);
     return () => window.removeEventListener("beforeunload", preventLoss);
-  }, [dirty, importing]);
+  }, [unprotectedChanges]);
   const load = useCallback(async () => {
     request.current?.abort();
     const controller = new AbortController(); request.current = controller;
@@ -152,7 +170,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
     return () => { cancelAnimationFrame(frame); request.current?.abort(); };
   }, [load, permissions.update]);
   const canReview = Boolean(data?.canReview && permissions.update);
-  const reports = useMemo(() => mergeEquipmentReportSessions(data?.reports ?? [], sessions, Object.keys(edits)), [data, edits, sessions]);
+  const reports = useMemo(() => mergeEquipmentReportSessions(data?.reports ?? [], sessions, Object.keys(edits)).filter(report => !isEquipmentReportDraft(report.status) || report.ownerUserId === currentUser.id), [data, edits, sessions, currentUser.id]);
   const rememberSessions = useCallback((keys: Iterable<string>) => {
     const capturedKeys = [...keys];
     setSessions(current => freezeEquipmentReportSessions(current, reports, capturedKeys));
@@ -161,23 +179,20 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
       return additions.length ? { ...current, ...Object.fromEntries(additions.map(entry => [entryKey(entry), entry])) } : current;
     });
   }, [reports, data]);
-  const ownToday = reports.find(report => report.ownerUserId === currentUser.id && report.workDate === today && (report.status === "draft" || report.status === "rejected"));
-  const todayAppendIssue = reports.some(report => report.ownerUserId === currentUser.id && report.workDate === today && report.status === "submitted")
-    ? "Сегодняшний отчёт на проверке. Для изменения снимите его с проверки во вкладке «На проверке»."
-    : ownToday && !permissions.update ? "Нет права изменять уже сохранённый сегодняшний отчёт." : "";
   const newDraftGroups = useMemo(() => Object.entries(edits).flatMap(([key, drafts]) => {
     const workDate = equipmentReportNewDate(key, today);
     return workDate ? [{ key, workDate, drafts }] : [];
   }).sort((left, right) => right.workDate.localeCompare(left.workDate)), [edits, today]);
-  const canEdit = useCallback((report: EquipmentReport) => permissions.update && (canReview || (report.status === "draft" || report.status === "rejected") && report.ownerUserId === currentUser.id), [permissions.update, currentUser.id, canReview]);
+  const canEdit = useCallback((report: EquipmentReport) => permissions.update && (isEquipmentReportDraft(report.status) ? report.ownerUserId === currentUser.id : canReview), [permissions.update, currentUser.id, canReview]);
   useEffect(() => {
-    if (!data || fetching || props.loading || currentUser.role !== "foreman" || !permissions.create) return;
+    if (!autosave.ready || !data || fetching || props.loading || currentUser.role !== "foreman" || !permissions.create) return;
+    if (rowOrder && !rowOrder.ready && !rowOrder.error) return;
     const sessionKey = `${siteId}:${currentUser.id}:${today}`;
     if (carryOverHandled.current.has(sessionKey)) return;
     const frame = requestAnimationFrame(() => {
       const source = equipmentReportCrewSource(data.reports, siteId, currentUser.id, today, data.entries);
       if (!source || newDraftGroups.some(group => group.workDate === today)) { carryOverHandled.current.add(sessionKey); return; }
-      const { drafts, skipped } = buildEquipmentReportCrew(source.rows, { ...props, dailyTimesheetMarks: data.availabilityMarks, workDate: today }, () => crypto.randomUUID(), new Date().toISOString());
+      const { drafts, skipped } = buildEquipmentReportCrew(orderEquipmentReportCrewRows(source.rows, rowOrder?.ids ?? []), { ...props, dailyTimesheetMarks: data.availabilityMarks, workDate: today }, () => crypto.randomUUID(), new Date().toISOString());
       if (!drafts.length) {
         if (props.units.length) {
           carryOverHandled.current.add(sessionKey);
@@ -192,7 +207,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
       setCarryOverNotice({ count: drafts.length, skipped });
     });
     return () => cancelAnimationFrame(frame);
-  }, [data, fetching, props, currentUser.role, currentUser.id, permissions.create, siteId, today, newDraftGroups, setEdits]);
+  }, [autosave.ready, data, fetching, props, currentUser.role, currentUser.id, permissions.create, siteId, today, newDraftGroups, setEdits, rowOrder]);
   const rows = useMemo<(EquipmentReportGridRow & { draftGroupKey?: string })[]>(() => {
     const staged = reports.flatMap(report => {
       const drafts = edits[keyOf(report)] ?? report.rows.map(report.status === "approved" ? toApprovedDraft : toDraft);
@@ -289,6 +304,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
       if ((edits[key] ?? report?.rows ?? []).length + drafts.length > 1000) throw new Error("В одном отчёте можно сохранить не более 1000 строк. Выберите меньше записей.");
       rememberSessions([key]);
       setEdits(current => ({ ...current, [key]: [...drafts, ...(current[key] ?? report?.rows.map(toDraft) ?? [])] }));
+      setWorkflowView("draft"); setFocusedReportKey(null); setSelected([]); setVisible(null);
       setError("");
       setNotice(submitted ? "На эту дату отчёт уже на проверке. Выберите другую дату в новой строке." : drafts.length > 1 ? `Добавлено строк: ${drafts.length}.` : "");
     } catch (failure) { setError(failure instanceof Error ? failure.message : "Не удалось добавить строки."); }
@@ -296,12 +312,11 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
   const copyRows = (source: EquipmentReportGridRow[]) => {
     if (!source.length) { setError("Выберите строки прошлых дней для копирования."); return; }
     const available = (options: GridOption[], value: string) => options.some(option => String(option.id) === value) ? value : "";
-    if (todayAppendIssue) { setError(todayAppendIssue); return; }
     appendOnDate(source.map(row => {
       const entry = row.entry;
       const seed = row.draft ?? (entry ? { equipmentId: String(entry.equipmentId), equipmentQuery: equipmentExcelName(entry), shiftId: String(entry.shiftId), zoneId: String(entry.zoneId), mainWorkTypeId: String(entry.mainWorkTypeId), subworkTypeId: String(entry.subworkTypeId), hours: String(entry.hours), note: entry.note } : {});
       const time = new Date().toISOString();
-      return makeDraft({ ...seed, key: crypto.randomUUID(), reportRowId: undefined, referenceIds: undefined, lockedEquipment: false, createdAt: time, updatedAt: time, equipmentId: props.units.some(unit => String(unit.id) === seed.equipmentId) ? seed.equipmentId : "", shiftId: available(props.shifts, seed.shiftId ?? ""), zoneId: available(props.zones, seed.zoneId ?? ""), mainWorkTypeId: available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), subworkTypeId: compatibleSubworkId(props.subworkTypes, available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), seed.subworkTypeId) });
+      return makeDraft({ ...seed, key: crypto.randomUUID(), reportRowId: undefined, importBatchId: undefined, referenceIds: undefined, lockedEquipment: false, createdAt: time, updatedAt: time, equipmentId: props.units.some(unit => String(unit.id) === seed.equipmentId) ? seed.equipmentId : "", shiftId: available(props.shifts, seed.shiftId ?? ""), zoneId: available(props.zones, seed.zoneId ?? ""), mainWorkTypeId: available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), subworkTypeId: compatibleSubworkId(props.subworkTypes, available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), seed.subworkTypeId) });
     }));
   };
   const removeDrafts = (keys: string[]) => {
@@ -381,7 +396,14 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
       if (!response.ok) throw Object.assign(new Error(result.error ?? "Не удалось исправить подтверждённую запись."), { code: result.code });
       return null;
     }
-    const report = await mutate({ action: "save", ...equipmentReportSaveIdentity(key, sessions, siteId, today), rows: drafts.map(draft => ({ ...toPayload(draft), approvedEntryRevision: sessions[key]?.rows.find(row => row.id === draft.reportRowId)?.approvedEntryRevision })) });
+    const allDrafts = Object.values(edits).flat();
+    const importEquipmentOrder = equipmentImportedUnitOrder(drafts, importBatches, allDrafts);
+    const report = await mutate({ action: "save", ...equipmentReportSaveIdentity(key, sessions, siteId, today), ...(importEquipmentOrder ? { importEquipmentOrder } : {}), rows: drafts.map(draft => ({ ...toPayload(draft), approvedEntryRevision: sessions[key]?.rows.find(row => row.id === draft.reportRowId)?.approvedEntryRevision })) });
+    if (importEquipmentOrder) {
+      const live = new Map(allDrafts.map(row => [row.key, row.equipmentId]));
+      setImportBatches(current => current.map(batch => ({ ...batch, rows: batch.rows.map(row => ({ ...row, equipmentId: live.get(row.key) ?? row.equipmentId })) })));
+      notifyTableImportOrder("project-equipment", siteId);
+    }
     if (rowOrder?.scope === equipmentReportOrderScope && rowOrder.hasSavedOrder) {
       const aliases = Object.fromEntries(drafts.flatMap((draft, index) => {
         const oldId = `${report.workDate}/${draft.key}`;
@@ -480,9 +502,12 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
       const { parseEquipmentEntriesXlsx } = await import("./placementXlsx");
       const imported = await parseEquipmentEntriesXlsx(file);
       if (!imported.length) throw new Error("В файле нет строк отчёта.");
+      const importBatchId = crypto.randomUUID();
+      const importRows: EquipmentImportBatch["rows"][number][] = [];
       const byDate = new Map<string, GridDraftRow[]>();
       for (const row of imported) {
-        const draft = pasteEquipmentCells(makeDraft(), { equipment: row.equipmentName, shift: row.shiftName, zone: row.zoneName, mainWork: row.mainWorkTypeName, subwork: row.subworkTypeName, hours: row.hours, note: row.note }, props);
+        const draft = pasteEquipmentCells(makeDraft({ importBatchId }), { equipment: row.equipmentName, shift: row.shiftName, zone: row.zoneName, mainWork: row.mainWorkTypeName, subwork: row.subworkTypeName, hours: row.hours, note: row.note }, props);
+        importRows.push({ key: draft.key, equipmentId: draft.equipmentId });
         const group = byDate.get(row.workDate) ?? [];
         group.push(draft);
         byDate.set(row.workDate, group);
@@ -498,6 +523,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
         if (previous.length + drafts.length > 1000) throw new Error(`За ${displayDate(workDate)} получится больше 1000 строк. Уменьшите объём импорта за этот день.`);
         return { key, workDate, drafts, previous };
       });
+      setImportBatches(current => [...current, { id: importBatchId, rows: importRows }]);
       rememberSessions(groups.map(group => group.key));
       setEdits(current => {
         const next = { ...current };
@@ -506,9 +532,10 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
       });
       setRequiredReports([]);
       setWorkflowView("draft"); setFocusedReportKey(null); setSelected([]); setVisible(null);
+      notifyTableImportOrder(equipmentReportOrderScope, siteId);
       const dates = [...byDate.keys()].sort();
       const range = dates.length === 1 ? displayDate(dates[0]) : `${displayDate(dates[0])}–${displayDate(dates[dates.length - 1])}`;
-      setNotice(`Импортировано строк: ${imported.length} · дней: ${dates.length} (${range}). Проверьте данные и сохраните черновики.`);
+      setNotice(`Импортировано строк: ${imported.length} · дней: ${dates.length} (${range}). Сохранён порядок Excel. Проверьте данные и сохраните черновики.`);
     } catch (failure) { setError(failure instanceof Error ? failure.message : "Не удалось прочитать Excel."); }
     finally { setImporting(false); if (importInput.current) importInput.current.value = ""; }
   }
@@ -543,13 +570,13 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
   ].filter(item => item.rowCount > 0).sort((left, right) => right.workDate.localeCompare(left.workDate) || left.ownerName.localeCompare(right.ownerName, "ru")), [reports, edits, props, data?.availabilityMarks, newDraftGroups, currentUser.id, currentUser.fullName, canEdit, permissions.create]);
   const submissionItems = reportItems.filter(item => item.canSend);
   const reviewItems = reportItems.filter(item => item.status === "submitted");
-  const draftItems = reportItems.filter(item => item.status === "draft" || item.status === "rejected");
+  const draftItems = reportItems.filter(item => equipmentReportMatchesView(item, "draft", currentUser.id));
   const activeReview = workflowView === "submitted" ? reviewItems.find(item => item.key === focusedReportKey) ?? reviewItems[0] : undefined;
   const focusedKey = activeReview?.key ?? focusedReportKey;
   const focusedItem = reportItems.find(item => item.key === focusedKey);
-  const displayedRows = rows.filter(row => (workflowView === "all" || workflowView === "draft" ? workflowView === "all" || row.status === "draft" || row.status === "rejected" : row.status === workflowView) && (!focusedKey || (row.proposalId ? String(row.proposalId) : row.draftGroupKey) === focusedKey));
+  const displayedRows = rows.filter(row => equipmentReportMatchesView({ status: row.status, ownerUserId: row.responsibleUserId }, workflowView, currentUser.id) && (!focusedKey || (row.proposalId ? String(row.proposalId) : row.draftGroupKey) === focusedKey));
   const requiredRowKeys = rows.filter(row => requiredReports.includes(ownerByRow.get(row.rowKey) ?? "")).map(row => row.rowKey);
-  const changeWorkflow = (view: typeof workflowView, key: string | null = null) => { setWorkflowView(view); setFocusedReportKey(key); setSelected([]); };
+  const changeWorkflow = (view: EquipmentReportView, key: string | null = null) => { setWorkflowView(view); setFocusedReportKey(key); setSelected([]); setVisible(null); };
   const openSend = (keys?: string[]) => { const chosen = keys ?? defaultEquipmentReportSubmissions(submissionItems, currentUser.id); setSendKeys(chosen); setRequiredReports(chosen); setSendValidation(null); setError(""); setSendOpen(true); };
   const showReport = (item: typeof reportItems[number]) => { changeWorkflow(item.status === "submitted" ? "submitted" : "draft", item.key); setSendOpen(false); };
   const beginReview = (report: EquipmentReport, action: "approve" | "reject") => {
@@ -589,11 +616,10 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
   const selectedSubmissionHours = selectedSubmissions.reduce((sum, item) => sum + item.hours, 0);
   const workflowControls = <div className="personnel-report-workflow-bar">
     <div className="personnel-report-views" role="group" aria-label="Показать отчёты">
-      <button type="button" aria-pressed={workflowView === "all"} onClick={() => changeWorkflow("all")}>Все записи</button>
-      {showPendingReports && <button type="button" aria-pressed={workflowView === "draft"} onClick={() => changeWorkflow("draft")}>Черновики <span>{draftItems.length}</span></button>}
+      <button type="button" aria-pressed={workflowView === "approved"} onClick={() => changeWorkflow("approved")}>Подтверждённые</button>
       {showPendingReports && <button type="button" className={submittedCount ? "has-pending" : ""} aria-pressed={workflowView === "submitted"} onClick={() => changeWorkflow("submitted")}>На проверке <span>{submittedCount}</span></button>}
+      {showPendingReports && <button type="button" aria-pressed={workflowView === "draft"} title="Только ваши черновики и отчёты, возвращённые на доработку" onClick={() => changeWorkflow("draft")}>Черновик <span>{draftItems.length}</span></button>}
     </div>
-    {dirty && <span className="personnel-report-dirty-caption"><i aria-hidden="true" />Есть несохранённые изменения</span>}
   </div>;
   const headerActions = <div className="personnel-report-header-actions">
     <ExcelActionsMenu actions={[
@@ -605,21 +631,25 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
     ]} />
     <button type="button" className="personnel-report-refresh" aria-label="Обновить отчёты" title="Обновить отчёты" disabled={fetching || locked} onClick={() => void load()}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 6.1A8 8 0 0 1 19.6 10M4.4 14A8 8 0 0 0 17.9 17.9" /></svg></button>
   </div>;
+  const footerStatus = hasManualEdits
+    ? <span className="personnel-report-dirty-caption"><i aria-hidden="true" />Есть несохранённые изменения</span>
+    : (hasDraftContent || !autosave.ready) ? <span className={`personnel-report-autosave status-${autosave.status}`}>{autosave.message}</span> : null;
   const footerActions = <div className="toolbar-actions personnel-report-editor-actions">
     {permissions.create && <button className="add-row-button" type="button" disabled={locked || props.loading || fetching} onClick={() => { changeWorkflow("draft"); appendOnDate([makeDraft()]); }}>Добавить строку</button>}
     {(permissions.create || permissions.update) && <>
-      <button className="secondary-button" type="button" disabled={!dirty || locked} onClick={() => void saveDrafts()}>{importing ? "Импортируем…" : busy ? "Сохраняем…" : "Сохранить изменения"}{dirty && !locked && <span className="personnel-report-unsaved-dot" aria-label="Есть несохранённые изменения" />}</button>
+      <button className="secondary-button" type="button" disabled={!dirty || locked} onClick={() => void saveDrafts()}>{importing ? "Импортируем…" : busy ? "Сохраняем…" : "Сохранить изменения"}{unprotectedChanges && !locked && <span className="personnel-report-unsaved-dot" aria-label="Есть несохранённые изменения" />}</button>
       {!(canReview && workflowView === "submitted") && <button className="save-edits-button" type="button" disabled={locked || fetching || props.loading || !submissionItems.length} aria-haspopup="dialog" onClick={() => openSend()}>Отправить на проверку…</button>}
     </>}
     {(dirty || history.past.length > 0 || history.future.length > 0) && <button className="personnel-report-discard" aria-label="Отменить изменения" title="Отменить изменения" type="button" disabled={locked} onClick={() => { dispatchEdits({ type: "reset", value: {} }); setSessions({}); setEntrySessions({}); setSelected([]); setRequiredReports([]); }}>Отменить</button>}
   </div>;
-  return <section className="personnel-report-workspace equipment-report-workspace">
+  return <section className="personnel-report-workspace equipment-report-workspace" data-draft-autosave-protected={workflowView === "draft" && autosave.protected ? "true" : undefined}>
     {actionsTarget ? createPortal(headerActions, actionsTarget) : headerActions}
     {permissions.create && <input ref={importInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={event => { const file = event.target.files?.[0]; if (file) void importExcel(file); }} />}
     {error && <div className="message error personnel-report-error" role="alert"><span>{error}</span><button type="button" aria-label="Закрыть сообщение об ошибке" onClick={() => setError("")}>×</button></div>}
     {notice && <div className="personnel-report-toast" role="status"><span>{notice}</span><button type="button" aria-label="Закрыть уведомление" onClick={() => setNotice("")}>×</button></div>}
     {viewsTarget ? createPortal(workflowControls, viewsTarget) : workflowControls}
-    {carryOverNotice && rows.some(row => row.workDate === today && row.draft?.carriedFromPreviousDay) && <div className="personnel-report-carry-notice" role="status"><span><strong>Ваша техника на сегодня</strong> Из отчёта за {displayDate(equipmentReportYesterday(today))} перенесено строк: {carryOverNotice.count}. Проверьте технику, работы и часы перед отправкой.{carryOverNotice.skipped > 0 && ` Не перенесено строк: ${carryOverNotice.skipped} — техника снята с проекта или недоступна по табелю.`}</span><button type="button" aria-label="Закрыть подсказку о технике" onClick={() => setCarryOverNotice(null)}>×</button></div>}
+    {(autosave.status === "error" || autosave.status === "local" || autosave.status === "conflict") && <div className="personnel-report-autosave-warning" role="status"><span>{autosave.message}</span><div className="toolbar-actions">{autosave.status === "conflict" ? <><button type="button" className="secondary-button" onClick={() => void autosave.acceptServer()}>Загрузить сохранённый</button><button type="button" className="secondary-button" onClick={() => void autosave.keepLocal()}>Сохранить эту версию</button></> : <button type="button" className="secondary-button" onClick={() => void autosave.retry()}>Повторить автосохранение</button>}</div></div>}
+    {workflowView === "draft" && carryOverNotice && rows.some(row => row.workDate === today && row.draft?.carriedFromPreviousDay) && <div className="personnel-report-carry-notice" role="status"><span><strong>Ваша техника на сегодня</strong> Из отчёта за {displayDate(equipmentReportYesterday(today))} перенесено строк: {carryOverNotice.count}. Проверьте технику, работы и часы перед отправкой.{carryOverNotice.skipped > 0 && ` Не перенесено строк: ${carryOverNotice.skipped} — техника снята с проекта или недоступна по табелю.`}</span><button type="button" aria-label="Закрыть подсказку о технике" onClick={() => setCarryOverNotice(null)}>×</button></div>}
     {activeReview?.report && <section className="personnel-report-review-focus" aria-label={canReview ? "Проверка отчёта" : "Отчёт на проверке"}>
       <div className="personnel-report-review-focus-title"><span className="personnel-report-step" aria-hidden="true">✓</span><div><strong>{canReview ? "Проверка отчёта" : "Отчёт на проверке"}</strong><p>{canReview ? "Выберите прораба и дату. Можно исправить данные прямо в таблице и сохранить перед подтверждением." : currentUser.role === "viewer" ? "Выберите прораба и дату для просмотра отчёта." : "Выберите отчёт по дате. Свой отчёт можно снять с проверки и вернуть в черновики."}</p></div><span className="personnel-report-status submitted">На проверке: {submittedCount}</span></div>
       <div className="personnel-report-review-focus-controls">
@@ -630,7 +660,8 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
       {equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits)) && <p className="personnel-report-dialog-error">{equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits))}</p>}
     </section>}
     {!activeReview && focusedItem && <div className="personnel-report-focused-caption"><span><strong>{displayDate(focusedItem.workDate)} · {focusedItem.ownerName}</strong> · строк: {focusedItem.rowCount} · {focusedItem.hours} ч{focusedItem.report?.reviewComment && <small className="personnel-report-return-comment">Комментарий инженера: {focusedItem.report.reviewComment}</small>}</span><button type="button" onClick={() => changeWorkflow(workflowView)}>Показать все даты</button></div>}
-    <Suspense fallback={<p role="status">Загружаем таблицу…</p>}><ReportGrid rows={displayedRows} selectionScope={workflowView} today={today} loading={props.loading || fetching || importing} canCreate={permissions.create && !locked && !todayAppendIssue} canReview={canReview} units={props.units} shifts={props.shifts} zones={props.zones} mainWorkTypes={props.mainWorkTypes} subworkTypes={props.subworkTypes} dailyTimesheetMarks={data?.availabilityMarks} onChangeDate={changeReportDate} onPatchDraft={patchDraft} onApplyRange={applyRange} requiredRowKeys={requiredRowKeys} emptyMessage={workflowView === "submitted" ? "Нет отчётов на проверке" : workflowView === "draft" ? "Нет черновиков" : "За выбранный период отчётов пока нет"} history={{ undo: () => { if (!locked) dispatchEdits({ type: "undo" }); }, redo: () => { if (!locked) dispatchEdits({ type: "redo" }); }, canUndo: !locked && history.past.length > 0, canRedo: !locked && history.future.length > 0 }} onSelectionChange={setSelected} onCopyRows={copyRows} onRemoveDraft={permissions.delete ? removeDrafts : undefined} onValidationError={setError} onVisibleRowsChange={setVisible} footerActions={footerActions} /></Suspense>
+    {canReview && workflowView === "approved" && <div className="personnel-report-focused-caption"><span>Подтверждённые записи можно исправлять прямо в таблице. Нажмите «Сохранить изменения» — табель обновится, статус останется «Подтверждён».</span></div>}
+    <Suspense fallback={<p role="status">Загружаем таблицу…</p>}><ReportGrid rows={displayedRows} sizingRows={rows} preferenceScope={{ userId: currentUser.id, siteId }} selectionScope={workflowView} today={today} loading={props.loading || fetching || importing || !autosave.ready} canCreate={permissions.create && !locked} canReview={canReview} units={props.units} shifts={props.shifts} zones={props.zones} mainWorkTypes={props.mainWorkTypes} subworkTypes={props.subworkTypes} dailyTimesheetMarks={data?.availabilityMarks} onChangeDate={changeReportDate} onPatchDraft={patchDraft} onPendingDraftInput={(rowKey, field, value) => setPendingInput(value === null ? null : { rowKey, field, value })} onApplyRange={applyRange} requiredRowKeys={requiredRowKeys} emptyMessage={workflowView === "submitted" ? "Нет отчётов на проверке" : workflowView === "draft" ? "У вас пока нет черновиков" : "Нет подтверждённых отчётов"} history={{ undo: () => { if (!locked) dispatchEdits({ type: "undo" }); }, redo: () => { if (!locked) dispatchEdits({ type: "redo" }); }, canUndo: !locked && history.past.length > 0, canRedo: !locked && history.future.length > 0 }} onSelectionChange={setSelected} onCopyRows={copyRows} onRemoveDraft={permissions.delete ? removeDrafts : undefined} onValidationError={setError} onVisibleRowsChange={setVisible} footerStatus={footerStatus} footerActions={footerActions} /></Suspense>
     {sendOpen && <ReportDialog titleId="personnel-send-title" onClose={() => setSendOpen(false)} busy={locked} className="personnel-report-send-modal">
       <header className="personnel-report-dialog-heading"><div><h2 id="personnel-send-title">Отправить отчёты на проверку</h2><p>Выберите даты. Сначала сохраним изменения, затем отправим выбранные отчёты инженеру.</p></div><button type="button" className="personnel-report-dialog-close" aria-label="Закрыть отправку отчётов" disabled={locked} onClick={() => setSendOpen(false)}>×</button></header>
       <div className="personnel-report-send-select"><label><input type="checkbox" aria-label="Выбрать все отчёты для отправки" checked={submissionItems.length > 0 && selectedSubmissions.length === submissionItems.length} disabled={locked || !submissionItems.length} onChange={event => setSendKeys(event.target.checked ? submissionItems.map(item => item.key) : [])} />Выбрать все даты</label><span>{selectedSubmissions.length} отч. · {selectedSubmissionRows} строк · {selectedSubmissionHours} ч</span></div>

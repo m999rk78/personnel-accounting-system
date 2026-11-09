@@ -1,16 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
-import ts from "typescript";
 import { rolePermissionTemplate } from "../app/permissionModel.ts";
+import { compileModuleGraph } from "./fixtures/compile-module-graph.mjs";
 
-let source = ts.transpileModule(await readFile(new URL("../app/equipmentReportStore.ts", import.meta.url), "utf8"), {
-  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
-}).outputText;
-for (const name of ["equipmentReportWorkflow", "equipmentExcel", "equipmentAvailability"]) {
-  source = source.replaceAll(JSON.stringify(`./${name}`), JSON.stringify(new URL(`../app/${name}.ts`, import.meta.url).href));
-}
-const { mutateEquipmentReport, changeEquipmentReportEntryDate } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+// Load the real dependency graph, including shared import-order helpers, rather
+// than keeping a hand-written list of the store's current relative imports.
+const { mutateEquipmentReport, changeEquipmentReportEntryDate } = await import(await compileModuleGraph(new URL("../app/equipmentReportStore.ts", import.meta.url)));
 const engineer = { id: 8, role: "engineer", fullName: "Инженер", projectAccess: { mode: "selected", siteIds: [7] }, permissions: rolePermissionTemplate("engineer") };
 const foreman = { id: 9, role: "foreman", fullName: "Прораб", projectAccess: { mode: "selected", siteIds: [7] }, permissions: rolePermissionTemplate("foreman") };
 const oldDate = "2026-10-30", newDate = "2026-11-02";
@@ -116,7 +111,16 @@ for (const status of ["submitted", "approved"]) test(`foreman cannot move ${stat
 
 for (const [options, expected] of [[{ duplicate: true, status: "draft" }, "REPORT_EXISTS"], [{ unavailable: true }, "EQUIPMENT_UNAVAILABLE"], [{ unavailable: true, status: "draft" }, "EQUIPMENT_UNAVAILABLE"], [{ usedHours: 13 }, "HOURS_CONFLICT"], [{ deleted: true }, "STALE_REPORT"], [{ linkedDate: "2026-10-29" }, "STALE_REPORT"]]) test(`equipment move rejects ${JSON.stringify(options)} atomically`, async () => {
   const db = fixture(options), before = db.state();
-  await assert.rejects(move(db), code(expected));
+  // A draft belongs to its author; reach the date/hour validation as that
+  // author rather than being rejected by the earlier ownership guard.
+  await assert.rejects(move(db, options.status === "draft" ? foreman : engineer), code(expected));
+  assert.deepEqual(db.state(), before);
+  assert.equal(db.writes.length, 0);
+});
+
+test("review rights do not let an engineer move another user's private draft", async () => {
+  const db = fixture({ status: "draft" }), before = db.state();
+  await assert.rejects(move(db, engineer), code("REPORT_FORBIDDEN"));
   assert.deepEqual(db.state(), before);
   assert.equal(db.writes.length, 0);
 });

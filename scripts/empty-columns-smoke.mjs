@@ -75,15 +75,42 @@ try {
     await frames();
     // Users and permissions intentionally keep their original ordinary list.
     if (kind === "users") return usersException(label);
+    if (kind === "ag") {
+      // Column-model boundaries are final immediately; native headers may still
+      // be completing AG's short pin/move/autosize transition.
+      await page.waitForFunction(() => !document.querySelector(".page-content .ag-grid-empty-rows .ag-column-moving, .page-content .ag-grid-empty-rows .ag-animate-autosize"));
+      await frames();
+    }
     const result = await page.evaluate(kind => {
       const roots = [...document.querySelectorAll(".page-content .ag-grid-empty-rows")];
       const agRoot = roots.find(root => root.querySelector(".ag-header"));
       const overlay = kind === "ag" ? agRoot?.querySelector(".ag-empty-grid-columns") : kind === "users" ? document.querySelector(".users-table-wrap") : document.querySelector(".timesheet-fill-row > td, .equipment-month-table tbody > tr > td[data-empty-column-boundaries]");
       if (!overlay) return { error: "No decorative column host" };
-      const raw = overlay.getAttribute("data-column-boundaries") ?? overlay.getAttribute("data-empty-column-boundaries");
-      if (!raw) return { error: "No measurable decorative boundaries", class: overlay.className };
       const rect = overlay.getBoundingClientRect();
-      const boundaries = JSON.parse(raw).map(Number).filter(Number.isFinite).map(x => rect.left + x);
+      let boundaries;
+      let regionBackground;
+      if (kind === "ag") {
+        // Each lane paints local model coordinates. The browser scrolls the
+        // centre surface and sticks the opaque pinned surfaces above it.
+        const regions = [...overlay.querySelectorAll(".ag-empty-grid-region")];
+        if (regions.length !== 3) return { error: "Expected three decorative column regions", regions: regions.length };
+        const lanes = regions.filter(region => !region.hidden && getComputedStyle(region).display !== "none").map(region => ({
+          element: region, rect: region.getBoundingClientRect(), raw: region.getAttribute("data-column-boundaries"),
+          side: region.classList.contains("ag-empty-grid-region-left") ? "left" : region.classList.contains("ag-empty-grid-region-right") ? "right" : "center",
+        })).filter(region => region.rect.width > 0);
+        if (lanes.some(region => !region.raw)) return { error: "No measurable decorative region boundaries" };
+        const pinnedLeft = lanes.find(region => region.side === "left")?.rect.right ?? -Infinity;
+        const pinnedRight = lanes.find(region => region.side === "right")?.rect.left ?? Infinity;
+        boundaries = lanes.flatMap(region => JSON.parse(region.raw).map(Number).filter(Number.isFinite)
+          .map(x => region.rect.left + x)
+          // Centre lines underneath a pinned mask are intentionally invisible.
+          .filter(x => region.side !== "center" || x > pinnedLeft + .5 && x <= pinnedRight + .5));
+        regionBackground = lanes.map(region => getComputedStyle(region.element).backgroundImage).join("; ");
+      } else {
+        const raw = overlay.getAttribute("data-column-boundaries") ?? overlay.getAttribute("data-empty-column-boundaries");
+        if (!raw) return { error: "No measurable decorative boundaries", class: overlay.className };
+        boundaries = JSON.parse(raw).map(Number).filter(Number.isFinite).map(x => rect.left + x);
+      }
       const headerRoot = kind === "ag" ? agRoot : kind === "users" ? document.querySelector(".users-table") : document.querySelector(".timesheet-table");
       const viewport = kind === "ag" ? agRoot.querySelector(".ag-grid-viewport") : kind === "users" ? overlay : document.querySelector(".timesheet-grid-shell");
       const viewportBox = viewport.getBoundingClientRect();
@@ -99,7 +126,7 @@ try {
       const expected = [...new Set(headers.map(x => Math.round(x * 100) / 100))];
       const actual = [...new Set(boundaries.filter(x => x > left + 1 && x < right - 1).map(x => Math.round(x * 100) / 100))];
       const lastRowBottom = kind === "ag" ? Math.max(0, ...[...agRoot.querySelectorAll(".ag-row")].map(row => row.getBoundingClientRect().bottom)) : 0;
-      return { expected, actual, top: rect.top, height: rect.height, lastRowBottom, pointerEvents: getComputedStyle(overlay).pointerEvents, hidden: overlay.getAttribute("aria-hidden"), bg: getComputedStyle(overlay, kind === "users" ? "::after" : null).backgroundImage };
+      return { expected, actual, top: rect.top, height: rect.height, lastRowBottom, pointerEvents: getComputedStyle(overlay).pointerEvents, hidden: overlay.getAttribute("aria-hidden"), bg: regionBackground ?? getComputedStyle(overlay, kind === "users" ? "::after" : null).backgroundImage };
     }, kind);
     assert.equal(result.error, undefined, `${label}: ${JSON.stringify(result)}`);
     assert.ok(result.expected.length > 0 && result.actual.length > 0, `${label}: non-empty visible boundaries ${JSON.stringify(result)}`);

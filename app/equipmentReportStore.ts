@@ -2,6 +2,7 @@ import type { PostgresDatabase } from "../db/client";
 import type { AuthUser } from "./auth";
 import { equipmentExcelName } from "./equipmentExcel";
 import { equipmentUnavailableReason } from "./equipmentAvailability";
+import { rememberPersonnelImportOrder as rememberEquipmentImportOrder } from "./personnelImportOrderServer";
 import type { EquipmentReport, EquipmentReportApprovedEntry, EquipmentReportAvailabilityMark, EquipmentReportData, EquipmentReportEntrySaveRequest, EquipmentReportDateRequest, EquipmentReportEntryDateRequest, EquipmentReportRequest, EquipmentReportRow, EquipmentReportRowValidationIssue, EquipmentReportValidationIssue, EquipmentReportValidationRequest, EquipmentReportValidationResult } from "./equipmentReportTypes";
 import {
   assertCanSaveEquipmentReport, assertEquipmentReportHours, assertEquipmentReportOwner,
@@ -111,11 +112,17 @@ export async function listEquipmentReports(db: Executor, user: AuthUser, siteId:
   const rangeFilter = `${from ? " AND report.work_date >= ?" : ""}${to ? " AND report.work_date <= ?" : ""}`;
   const ownFilter = user.role === "foreman" ? " AND report.owner_user_id = ?" : "";
   const hidePending = !canViewPendingReportsFor(user);
-  const statusFilter = hidePending ? " AND report.status = 'approved'" : "";
+  const privateDrafts = !hidePending && user.role !== "foreman";
+  const statusFilter = hidePending ? " AND report.status = 'approved'"
+    : privateDrafts ? " AND (report.status IN ('approved', 'submitted') OR report.owner_user_id = ?)" : "";
   const parameters = [siteId, ...(from ? [from] : []), ...(to ? [to] : []), ...(user.role === "foreman" ? [user.id] : [])];
   const headers = await db.prepare(`${HEADER_SELECT} WHERE report.site_id = ? ${rangeFilter} ${ownFilter} ${statusFilter}
-    ORDER BY report.work_date DESC, report.id DESC LIMIT 5001`).bind(...parameters).all<Header>();
-  const visibleHeaders = hidePending ? headers.results.filter(report => report.status === "approved") : headers.results;
+    ORDER BY report.work_date DESC, report.id DESC LIMIT 5001`).bind(...parameters, ...(privateDrafts ? [user.id] : [])).all<Header>();
+  const visibleHeaders = headers.results.filter(report => {
+    if (user.role === "foreman" && report.ownerUserId !== user.id) return false;
+    if (hidePending) return report.status === "approved";
+    return report.status === "approved" || report.status === "submitted" || report.ownerUserId === user.id;
+  });
   if (visibleHeaders.length > 5000) throw new EquipmentReportError("В выбранном периоде слишком много отчётов. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
   const entryFilter = `${from ? " AND entry.work_date >= ?" : ""}${to ? " AND entry.work_date <= ?" : ""}${user.role === "foreman" ? " AND entry.responsible_user_id = ?" : ""}`;
   const entries = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
@@ -536,6 +543,18 @@ export async function mutateEquipmentReport(database: PostgresDatabase, user: Au
       if (!positiveId(payload.siteId) || !validEquipmentReportDate(payload.workDate)) throw new EquipmentReportError("Укажите проект и корректную дату отчёта.");
       await assertActiveSite(db, user, payload.siteId);
       const rows = normalizeEquipmentReportRows(payload.rows);
+      const importOrder = payload.importEquipmentOrder;
+      if (importOrder !== undefined) {
+        if (!Array.isArray(importOrder) || importOrder.length > 5000 || importOrder.some(id => !positiveId(id)) || new Set(importOrder).size !== importOrder.length) {
+          throw new EquipmentReportError("Порядок импорта должен содержать не более 5000 уникальных единиц техники.", 400, "INVALID_IMPORT_ORDER");
+        }
+        const assigned = await db.prepare(`SELECT equipment.id FROM equipment_units equipment
+          WHERE equipment.id = ANY(?) AND equipment.active = 1 AND EXISTS (
+            SELECT 1 FROM equipment_project_assignments assignment
+            WHERE assignment.equipment_id = equipment.id AND assignment.site_id = ? AND assignment.active = 1
+          )`).bind(importOrder, payload.siteId).all<{ id: number }>();
+        if (assigned.results.length !== importOrder.length) throw new EquipmentReportError("Одна из единиц техники порядка импорта не назначена на этот проект или архивирована.", 400, "INVALID_IMPORT_ORDER");
+      }
       let snapshots: RowSnapshots[] = [];
       let reportId = payload.reportId;
       let previousRows: EquipmentReportRow[] = [];
@@ -596,6 +615,7 @@ export async function mutateEquipmentReport(database: PostgresDatabase, user: Au
       }
       await saveDraftRows(db, reportId, rows, snapshots, previousRows);
       if (approvedReport) await publishEquipmentReportRows(db, user, approvedReport);
+      if (importOrder?.length) await rememberEquipmentImportOrder(db, "project-equipment", payload.siteId, importOrder);
       return readReport(db, reportId);
     }
     if (!["submit", "approve", "reject", "reopen"].includes(payload.action) || !positiveId(payload.reportId)) throw new EquipmentReportError("Некорректное действие с отчётом.");
