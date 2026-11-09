@@ -205,7 +205,7 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.doesNotMatch(view, /syncTimesheetHeaderScroll|resetTimesheetHeaderScroll/);
   assert.match(view, /section === "month" \? "timesheet-page"/);
   assert.match(view, /<ExcelActionsMenu actions=\{\[\s*\{ label: "Экспорт в Excel", onSelect: openTimesheetExportPreview, disabled: loading \|\| monthRows\.length === 0 \}/);
-  assert.match(view, /className="equipment-total"><small>Всего<\/small><strong>\{monthSummary\.total\} ч\.<\/strong>/);
+  assert.match(view, /className="equipment-total"><small>Всего<\/small><strong>\{formatTimesheetHours\(monthSummary\.total\)\} ч\.<\/strong>/);
   // Empty/filler rows must follow the same visible tracks as the real table,
   // not the unfiltered calendar length (selected days can be non-contiguous).
   assert.match(view, /const monthColumnResize = useTimesheetColumnResize\(monthViewport\.shellRef, \{\s*kind: "equipment", dayCount: monthDays\.length, dayNumbers: visibleMonthDays/);

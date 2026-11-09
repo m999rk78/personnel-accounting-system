@@ -28,6 +28,7 @@ import { useNativeEmptyColumns } from "./useNativeEmptyColumns";
 import { useTimesheetColumnResize } from "./useTimesheetColumnResize";
 import { useNativeTimesheetColumnMenu } from "./useNativeTimesheetColumnMenu";
 import { NativeTimesheetPageScroll } from "./NativeTimesheetPageScroll";
+import { formatTimesheetHours } from "./timesheetFormatting";
 
 type TimesheetEmployee = {
   id: number;
@@ -955,8 +956,8 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDi
       {!loading && <>
         <span><small>Сотрудники</small><strong>{visibleEmployees.length}</strong></span>
         <span><small>С отчётами</small><strong>{employeesWithReports}</strong></span>
-        <span className="productive"><small>По табелю</small><strong>{reconciliationTimesheet} ч.</strong></span>
-        <span className={reconciliationDifference === 0 ? "difference ok" : "difference warning"}><small>Разница</small><strong>{reconciliationDifference > 0 ? "+" : ""}{reconciliationDifference} ч.</strong></span>
+        <span className="productive"><small>По табелю</small><strong>{formatTimesheetHours(reconciliationTimesheet)} ч.</strong></span>
+        <span className={reconciliationDifference === 0 ? "difference ok" : "difference warning"}><small>Разница</small><strong>{reconciliationDifference > 0 ? "+" : ""}{formatTimesheetHours(reconciliationDifference)} ч.</strong></span>
       </>}
     </div>}
     <TimesheetSaveStatus status={batchSave.status} busy={savingBulkMarks}
@@ -1100,9 +1101,9 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDi
                   {saveState && !isInlineEditing && <span className="timesheet-cell-save-indicator" aria-hidden="true">{saveState.state === "error" ? "!" : saveState.state === "saved" ? "✓" : "·"}</span>}
                 </td>;
               })}
-              <td className={`timesheet-total-column timesheet-tabell-total ${clipboardCellClass(employeeIndex, visibleDays.length)}`} {...clipboardCellHandlers(employeeIndex, visibleDays.length)}>{totals.timesheet || "—"}</td>
-              <td className={`timesheet-total-column timesheet-report-total ${clipboardCellClass(employeeIndex, visibleDays.length + 1)}`} {...clipboardCellHandlers(employeeIndex, visibleDays.length + 1)}>{totals.reports || "—"}</td>
-              <td className={`timesheet-total-column timesheet-difference-total ${difference ? "has-difference" : ""} ${clipboardCellClass(employeeIndex, visibleDays.length + 2)}`} {...clipboardCellHandlers(employeeIndex, visibleDays.length + 2)}>{difference > 0 ? "+" : ""}{difference || "—"}</td>
+              <td className={`timesheet-total-column timesheet-tabell-total ${clipboardCellClass(employeeIndex, visibleDays.length)}`} {...clipboardCellHandlers(employeeIndex, visibleDays.length)}>{totals.timesheet ? formatTimesheetHours(totals.timesheet) : "—"}</td>
+              <td className={`timesheet-total-column timesheet-report-total ${clipboardCellClass(employeeIndex, visibleDays.length + 1)}`} {...clipboardCellHandlers(employeeIndex, visibleDays.length + 1)}>{totals.reports ? formatTimesheetHours(totals.reports) : "—"}</td>
+              <td className={`timesheet-total-column timesheet-difference-total ${difference ? "has-difference" : ""} ${clipboardCellClass(employeeIndex, visibleDays.length + 2)}`} {...clipboardCellHandlers(employeeIndex, visibleDays.length + 2)}>{difference > 0 ? "+" : ""}{difference ? formatTimesheetHours(difference) : "—"}</td>
             </tr>;
           })}
           {viewport.bottom > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={columnResize.columnCount} style={{ height: viewport.bottom }} /></tr>}
@@ -1114,11 +1115,11 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDi
             {visibleDays.map((day) => {
               const workDate = dateForDay(month, day);
               const totals = dayTotals.get(workDate);
-              return <td key={workDate} title={totals?.difference ? `Расхождение ОПР: ${totals.difference > 0 ? "+" : ""}${totals.difference} ч.` : ""}>{totals?.timesheet || ""}</td>;
+              return <td key={workDate} title={totals?.difference ? `Расхождение ОПР: ${totals.difference > 0 ? "+" : ""}${formatTimesheetHours(totals.difference)} ч.` : ""}>{totals?.timesheet ? formatTimesheetHours(totals.timesheet) : ""}</td>;
             })}
-            <th className="timesheet-total-column timesheet-tabell-total">{reconciliationTimesheet}</th>
-            <th className="timesheet-total-column timesheet-report-total">{reconciliationReports}</th>
-            <th className={`timesheet-total-column timesheet-difference-total ${reconciliationDifference ? "has-difference" : ""}`}>{reconciliationDifference > 0 ? "+" : ""}{reconciliationDifference}</th>
+            <th className="timesheet-total-column timesheet-tabell-total">{formatTimesheetHours(reconciliationTimesheet)}</th>
+            <th className="timesheet-total-column timesheet-report-total">{formatTimesheetHours(reconciliationReports)}</th>
+            <th className={`timesheet-total-column timesheet-difference-total ${reconciliationDifference ? "has-difference" : ""}`}>{reconciliationDifference > 0 ? "+" : ""}{formatTimesheetHours(reconciliationDifference)}</th>
           </tr>
         </tfoot>
       </table>}

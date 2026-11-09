@@ -7,6 +7,7 @@ import { useWorkspaceAccess } from "./TableAccessContext";
 import { useNativeRowMoves, useWorkspaceTableOrder } from "./TableRowMoves";
 import { useTableViewport } from "./useTableViewport";
 import { NativeTimesheetPageScroll } from "./NativeTimesheetPageScroll";
+import { formatTimesheetHours } from "./timesheetFormatting";
 import { createPortal } from "react-dom";
 import { EquipmentDailyAgGrid, EquipmentRegistryAgGrid, ProjectEquipmentAgGrid, type GridEquipmentDraft, type GridEquipmentEntry, type GridEquipmentRegistryDraft, type GridEquipmentUnit, type GridProjectEquipmentDraft } from "./LazyDataGrids";
 import { workTypeChanges } from "./workTypeHierarchy";
@@ -1694,9 +1695,9 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
           <button type="button" onClick={() => changeMonth(shiftMonth(month, 1))} aria-label="Следующий месяц">›</button>
         </div>
         <span><small>Техника в работе</small><strong>{monthRows.filter((row) => row.total > 0).length}</strong></span>
-        <span className="productive"><small>Работа</small><strong>{monthSummary.productive} ч.</strong></span>
-        <span className="downtime"><small>Простой</small><strong>{monthSummary.downtime} ч.</strong></span>
-        <span className="equipment-total"><small>Всего</small><strong>{monthSummary.total} ч.</strong></span>
+        <span className="productive"><small>Работа</small><strong>{formatTimesheetHours(monthSummary.productive)} ч.</strong></span>
+        <span className="downtime"><small>Простой</small><strong>{formatTimesheetHours(monthSummary.downtime)} ч.</strong></span>
+        <span className="equipment-total"><small>Всего</small><strong>{formatTimesheetHours(monthSummary.total)} ч.</strong></span>
       </div>
       {monthRowMoves.ui}
       <TimesheetSaveStatus status={batchSave.status} busy={savingBulkTimesheetMarks}
@@ -1809,10 +1810,10 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
               }}
             ><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4 6 8l3.5-4Z" /></svg></button>}
           </>}{saveState && !isInlineEditing && <span className="timesheet-cell-save-indicator" aria-hidden="true">{saveState.state === "error" ? "!" : saveState.state === "saved" ? "✓" : "·"}</span>}</td>;
-        })}<td className={`timesheet-total-column equipment-work-total ${timesheetClipboardCellClass(index, visibleMonthDays.length)}`} {...timesheetClipboardCellHandlers(index, visibleMonthDays.length)}>{row.productive || "—"}</td>
-          <td className={`timesheet-total-column equipment-idle-total has-difference ${timesheetClipboardCellClass(index, visibleMonthDays.length + 1)}`} {...timesheetClipboardCellHandlers(index, visibleMonthDays.length + 1)}>{row.downtime || "—"}</td>
-          <td className={`timesheet-total-column equipment-all-total ${timesheetClipboardCellClass(index, visibleMonthDays.length + 2)}`} {...timesheetClipboardCellHandlers(index, visibleMonthDays.length + 2)}>{row.total || "—"}</td></tr>; }) : <tr><td colSpan={monthColumnResize.columnCount}><div className="equipment-table-empty"><strong>В этом месяце данных нет</strong><span>Записи появятся после заполнения ежедневных отчётов техники.</span></div></td></tr>}{monthViewport.bottom > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} style={{ height: monthViewport.bottom }} /></tr>}{monthRows.length > 0 && <tr className="timesheet-fill-row" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} /></tr>}</tbody>
-        {monthRows.length > 0 && <tfoot><tr><th className="timesheet-sticky timesheet-summary-label" colSpan={3}>Итого по дням</th>{visibleMonthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; return <td key={date}>{monthDayTotals.get(date) || ""}</td>; })}<th className="timesheet-total-column equipment-work-total">{monthSummary.productive}</th><th className="timesheet-total-column equipment-idle-total has-difference">{monthSummary.downtime}</th><th className="timesheet-total-column equipment-all-total">{monthSummary.total}</th></tr></tfoot>}
+        })}<td className={`timesheet-total-column equipment-work-total ${timesheetClipboardCellClass(index, visibleMonthDays.length)}`} {...timesheetClipboardCellHandlers(index, visibleMonthDays.length)}>{row.productive ? formatTimesheetHours(row.productive) : "—"}</td>
+          <td className={`timesheet-total-column equipment-idle-total has-difference ${timesheetClipboardCellClass(index, visibleMonthDays.length + 1)}`} {...timesheetClipboardCellHandlers(index, visibleMonthDays.length + 1)}>{row.downtime ? formatTimesheetHours(row.downtime) : "—"}</td>
+          <td className={`timesheet-total-column equipment-all-total ${timesheetClipboardCellClass(index, visibleMonthDays.length + 2)}`} {...timesheetClipboardCellHandlers(index, visibleMonthDays.length + 2)}>{row.total ? formatTimesheetHours(row.total) : "—"}</td></tr>; }) : <tr><td colSpan={monthColumnResize.columnCount}><div className="equipment-table-empty"><strong>В этом месяце данных нет</strong><span>Записи появятся после заполнения ежедневных отчётов техники.</span></div></td></tr>}{monthViewport.bottom > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} style={{ height: monthViewport.bottom }} /></tr>}{monthRows.length > 0 && <tr className="timesheet-fill-row" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} /></tr>}</tbody>
+        {monthRows.length > 0 && <tfoot><tr><th className="timesheet-sticky timesheet-summary-label" colSpan={3}>Итого по дням</th>{visibleMonthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; const hours = monthDayTotals.get(date); return <td key={date}>{hours ? formatTimesheetHours(hours) : ""}</td>; })}<th className="timesheet-total-column equipment-work-total">{formatTimesheetHours(monthSummary.productive)}</th><th className="timesheet-total-column equipment-idle-total has-difference">{formatTimesheetHours(monthSummary.downtime)}</th><th className="timesheet-total-column equipment-all-total">{formatTimesheetHours(monthSummary.total)}</th></tr></tfoot>}
       </table></div></NativeTimesheetPageScroll>
       {timesheetInfoOpen && <div className="equipment-reference-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setTimesheetInfoOpen(false); }}><section className="equipment-reference-dialog" role="dialog" aria-modal="true" aria-labelledby="equipment-timesheet-reference-title">
         <header><div><span>ТАБЕЛЬ ТЕХНИКИ</span><h2 id="equipment-timesheet-reference-title">Информация и справочник</h2><p>Цвета в таблице и обозначения, которые используются в табеле.</p></div><button type="button" aria-label="Закрыть справочник" onClick={() => setTimesheetInfoOpen(false)}>×</button></header>
