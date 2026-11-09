@@ -1,6 +1,8 @@
 import type { AuthUser } from "./auth";
 import { canAccessProject, canViewPendingReportsFor } from "./roles.ts";
 export { canViewPendingReportsFor };
+import { hasReportStatusPermission } from "./permissionModel.ts";
+export { hasReportStatusPermission };
 import type { EquipmentReportDraftRow, EquipmentReportRowValidationIssue, EquipmentReportStatus, EquipmentReportTransitionRequest } from "./equipmentReportTypes";
 
 export class EquipmentReportError extends Error {
@@ -32,7 +34,7 @@ export function validEquipmentReportDate(value: unknown): value is string {
 }
 
 export function canReviewEquipmentReport(user: Actor) {
-  return (user.role === "engineer" || user.role === "superadmin") && Boolean(user.permissions.equipment_report?.update);
+  return hasReportStatusPermission(user.permissions, "equipment_report", "submitted", "update") || hasReportStatusPermission(user.permissions, "equipment_report", "approved", "update");
 }
 
 export function assertEquipmentReportSiteAccess(user: Actor, siteId: number) {
@@ -43,9 +45,7 @@ export function assertEquipmentReportSiteAccess(user: Actor, siteId: number) {
 
 export function assertEquipmentReportOwner(user: Actor, report: Pick<ReportIdentity, "siteId" | "ownerUserId" | "status">) {
   assertEquipmentReportSiteAccess(user, report.siteId);
-  if (user.role === "foreman" && report.ownerUserId !== user.id) {
-    throw new EquipmentReportError("Прораб может изменять только свою часть отчёта.", 403, "REPORT_FORBIDDEN");
-  }
+  if (!hasReportStatusPermission(user.permissions, "equipment_report", report.status, "view")) throw new EquipmentReportError("Нет доступа к отчётам в этом статусе.", 403, "REPORT_FORBIDDEN");
   if (report.ownerUserId !== user.id && (report.status === "draft" || report.status === "rejected")) {
     throw new EquipmentReportError("Черновик доступен только его автору.", 403, "REPORT_FORBIDDEN");
   }
@@ -61,32 +61,36 @@ export function assertEquipmentReportRevision(actual: number, expected: unknown)
 }
 
 export function assertCanSaveEquipmentReport(user: Actor, report?: ReportIdentity) {
-  if (user.role === "viewer") throw new EquipmentReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   if (!report) {
-    if (!user.permissions.equipment_report?.create) throw new EquipmentReportError("Нет права создавать отчёты.", 403, "REPORT_FORBIDDEN");
+    if (!hasReportStatusPermission(user.permissions, "equipment_report", "draft", "create")) throw new EquipmentReportError("Нет права создавать черновики отчётов.", 403, "REPORT_FORBIDDEN");
     return;
   }
   assertEquipmentReportOwner(user, report);
   if (!user.permissions.equipment_report?.update) throw new EquipmentReportError("Нет права редактировать отчёты.", 403, "REPORT_FORBIDDEN");
-  if (report.status !== "draft" && report.status !== "rejected" && !canReviewEquipmentReport(user)) {
-    throw new EquipmentReportError("Этот отчёт может исправить инженер. Для изменения прорабом снимите его с проверки или верните на доработку.", 409, "REPORT_LOCKED");
-  }
+  if (!hasReportStatusPermission(user.permissions, "equipment_report", report.status, "update")) throw new EquipmentReportError("Нет права редактировать отчёты в этом статусе.", 403, "REPORT_FORBIDDEN");
 }
 
 export function nextEquipmentReportStatus(user: Actor, report: ReportIdentity, action: EquipmentReportTransitionRequest["action"], comment = ""): EquipmentReportStatus {
-  if (user.role === "viewer") throw new EquipmentReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   assertEquipmentReportOwner(user, report);
   if (!user.permissions.equipment_report?.update) throw new EquipmentReportError("Нет права изменять отчёты.", 403, "REPORT_FORBIDDEN");
   if ((action === "approve" || action === "reject") && !canReviewEquipmentReport(user)) {
-    throw new EquipmentReportError("Подтвердить или вернуть отчёт может только инженер.", 403, "REVIEW_FORBIDDEN");
+    throw new EquipmentReportError("Нет права проверять отчёты.", 403, "REVIEW_FORBIDDEN");
   }
-  if (action === "submit" && (report.status === "draft" || report.status === "rejected")) return "submitted";
-  if (action === "approve" && report.status === "submitted") return "approved";
+  if (!hasReportStatusPermission(user.permissions, "equipment_report", report.status, action === "reopen" ? "view" : "update")) throw new EquipmentReportError("Нет права изменять отчёты в этом статусе.", 403, "REPORT_FORBIDDEN");
+  if (action === "submit" && (report.status === "draft" || report.status === "rejected")) {
+    if (!hasReportStatusPermission(user.permissions, "equipment_report", "submitted", "view")) throw new EquipmentReportError("Нет доступа к отправке отчётов на проверку.", 403, "REPORT_FORBIDDEN");
+    return "submitted";
+  }
+  if (action === "approve" && report.status === "submitted") {
+    if (!hasReportStatusPermission(user.permissions, "equipment_report", "approved", "create")) throw new EquipmentReportError("Нет права подтверждать отчёты.", 403, "REPORT_FORBIDDEN");
+    return "approved";
+  }
   if (action === "reject" && report.status === "submitted") {
     if (!comment.trim()) throw new EquipmentReportError("Укажите причину возврата отчёта.");
     return "rejected";
   }
   if (action === "reopen" && report.status === "submitted") {
+    if (!hasReportStatusPermission(user.permissions, "equipment_report", "draft", "update")) throw new EquipmentReportError("Нет права возвращать отчёт в черновик.", 403, "REPORT_FORBIDDEN");
     if (report.ownerUserId !== user.id) throw new EquipmentReportError("Снять с проверки можно только свой отчёт.", 403, "REPORT_FORBIDDEN");
     return "draft";
   }

@@ -1,5 +1,6 @@
 import { useLayoutEffect, useState, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
+import { SelectionCopyTarget } from "./selection-copy-target";
 import { AgGridProvider } from "ag-grid-react";
 import { AllEnterpriseModule } from "ag-grid-enterprise";
 import { UserAccessCards } from "../../app/UserAccessCards";
@@ -65,6 +66,7 @@ function Fixture() {
   };
   return <main style={{ padding: 24, height: "100vh", display: "flex", flexDirection: "column", gap: 16 }}>
     <p>Изолированный стенд ролей. Рабочая база и отправка приглашений не подключены.</p>
+    <SelectionCopyTarget />
     <header style={{ display: "flex", alignItems: "center", gap: 16 }}><h1>{rights ? "Права доступа" : "Пользователи системы"}</h1><button type="button" onClick={() => setRights(value => !value)}>{rights ? "К пользователям" : "Права доступа"}</button>{!rights && <button type="button" onClick={() => { setDrafts([{ key: "new", fullName: "Тестовый пользователь", email: "test@invalid.test", role: "viewer", assignedSiteId: "", projectAccess: { mode: "selected", siteIds: [] }, canViewPendingReports: false }]); setNotice(""); }}>Добавить пользователя</button>}</header>
     {notice && <p role="status">{notice}</p>}
     {rights ? <AccessRightsView onBack={() => setRights(false)} /> : <UserAccessCards layout="list" rows={rows} drafts={drafts} sites={sites} selectedIds={selected} onEdit={edit} onSelectionChange={setSelected} onPatchDraft={patch} onCancelEditing={() => setDrafts([])} onSave={save} saving={false} />}

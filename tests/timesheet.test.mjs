@@ -145,7 +145,6 @@ test("builds the monthly timesheet from saved daily reports with document scroll
   const nativeFilters = await readFile(new URL("../app/GridEnterpriseFilters.tsx", import.meta.url), "utf8");
   const xlsx = await readFile(new URL("../app/placementXlsx.ts", import.meta.url), "utf8");
   const app = await readWorkspaceImplementation();
-  const roles = await readFile(new URL("../app/roles.ts", import.meta.url), "utf8");
   const migration = await readFile(new URL("../drizzle-postgres/0007_timesheet_marks.sql", import.meta.url), "utf8");
   const cleanupMigration = await readFile(new URL("../drizzle-postgres/0008_position_catalog_cleanup.sql", import.meta.url), "utf8");
   const dockerfile = await readFile(new URL("../Dockerfile", import.meta.url), "utf8");
@@ -342,8 +341,9 @@ test("builds the monthly timesheet from saved daily reports with document scroll
   assert.match(app, /aria-label="Отчёт персонала"/);
   assert.match(app, /aria-label="Табель персонала"/);
   assert.match(app, /aria-label="Табель техники"/);
-  assert.match(roles, /canAccessTimesheets/);
-  assert.match(roles, /role === "engineer" \|\| role === "viewer" \|\| role === "superadmin"/);
+  const workspaceAccess = await readFile(new URL("../app/workspaceAccess.ts", import.meta.url), "utf8");
+  assert.match(workspaceAccess, /timesheet: "workers_timesheet", equipmentTimesheet: "equipment_timesheet"/);
+  assert.match(workspaceAccess, /hasPermission\(permissions, resource, "view"\)/);
 });
 
 test("allows future personnel planning and retains timesheet queries for compatible report clients", async () => {

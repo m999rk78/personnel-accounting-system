@@ -3,8 +3,8 @@ import { withAuditTrail } from "../../auditLog";
 import { assertSameOrigin, getAuthUser } from "../../auth";
 import { hasPermission, limitPermissionsToRole, normalizePermissionSet, rolePermissionTemplate, type PermissionSet } from "../../permissionModel";
 import { ensurePermissionSchema, loadEffectivePermissions, resetUserPermissions, saveUserPermissions } from "../../permissions";
-import { ensureUserProjectAccessSchema, loadUserProjectAccess, saveUserProjectAccess } from "../../projectAccessServer";
-import { accessibleProjectIds, hasRestrictedProjectAccess, isUserRole, visibleUserProjectAccess, type UserRole } from "../../roles";
+import { canManageUserProjectAccess, ensureUserProjectAccessSchema, loadUserProjectAccess, normalizeProjectAccess, saveUserProjectAccess } from "../../projectAccessServer";
+import { accessibleProjectIds, isUserRole, visibleUserProjectAccess, type UserRole } from "../../roles";
 import { ensureCustomRolesSchema, loadCustomRole } from "../../customRolesServer";
 
 function errorResponse(message: string, status: number) { return Response.json({ error: message }, { status }); }
@@ -33,13 +33,14 @@ export async function GET(request: Request) {
       const customRole = user.customRoleId ? await loadCustomRole(user.customRoleId) : null;
       if (user.customRoleId && (!customRole || customRole.baseRole !== user.role)) throw new Error("Пользовательская роль недоступна. Обновите список ролей.");
       const settings = await loadUserProjectAccess(user);
-      const permissions = await loadEffectivePermissions(user.id, user.role, settings.projectAccess, getDatabase(), customRole);
+      const permissions = await loadEffectivePermissions(user.id, user.role, settings.projectAccess, getDatabase(), customRole, settings.canViewPendingReports);
       return visibleUserProjectAccess({ ...user, customRoleId: customRole?.id ?? null, customRoleName: customRole?.name ?? null,
-        roleTemplate: customRole?.permissions ?? rolePermissionTemplate(user.role), ...permissions, customized: permissions.permissionsCustomized, ...settings }, authUser);
+        roleTemplate: customRole?.permissions ?? rolePermissionTemplate(user.role), ...permissions, customized: permissions.permissionsCustomized,
+        permissionsManageable: canManageUserProjectAccess(authUser, settings.projectAccess), ...settings }, authUser);
     }));
     const sites = await getDatabase().prepare(`SELECT id, name FROM sites WHERE active = 1${scoped ? " AND id = ANY(?::integer[])" : ""} ORDER BY name, id`)
       .bind(...(scoped ? [allowedIds] : [])).all<{ id: number; name: string }>();
-    return Response.json({ users, sites: sites.results, canManage: authUser.role !== "viewer" && !scoped && hasPermission(authUser.permissions, "access_rights", "update"), currentUserId: authUser.id });
+    return Response.json({ users, sites: sites.results, canManage: hasPermission(authUser.permissions, "access_rights", "update"), currentUserId: authUser.id });
   } catch (error) {
     console.error("Access rights request failed", error);
     return errorResponse(error instanceof Error ? error.message : "Не удалось загрузить права доступа.", 500);
@@ -51,7 +52,7 @@ async function handlePOST(request: Request) {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return errorResponse("Требуется авторизация.", 401);
-    if (authUser.role === "viewer" || hasRestrictedProjectAccess(authUser) || !hasPermission(authUser.permissions, "access_rights", "update")) return errorResponse("Недостаточно прав для изменения настроек доступа.", 403);
+    if (!hasPermission(authUser.permissions, "access_rights", "view") || !hasPermission(authUser.permissions, "access_rights", "update")) return errorResponse("Недостаточно прав для изменения настроек доступа.", 403);
     const payload = await request.json() as { userId?: unknown; reset?: unknown; permissions?: unknown; projectAccess?: unknown; canViewPendingReports?: unknown };
     const userId = positiveInteger(payload.userId);
     if (!userId) return errorResponse("Не выбран пользователь.", 400);
@@ -66,27 +67,29 @@ async function handlePOST(request: Request) {
       if (!target || !isUserRole(target.role)) throw new Error("Пользователь не найден.");
       const customRole = target.customRoleId ? await loadCustomRole(target.customRoleId, db) : null;
       if (target.customRoleId && (!customRole || customRole.baseRole !== target.role)) throw new Error("Пользовательская роль недоступна.");
-      const roleTemplate = customRole?.permissions ?? rolePermissionTemplate(target.role);
+      const previousSettings = await loadUserProjectAccess(target, db);
+      const requestedAccess = payload.projectAccess === undefined ? previousSettings.projectAccess : normalizeProjectAccess(payload.projectAccess);
+      if (!canManageUserProjectAccess(authUser, previousSettings.projectAccess) || !canManageUserProjectAccess(authUser, requestedAccess)) {
+        throw Object.assign(new Error("Нельзя изменять доступ пользователя за пределами ваших проектов."), { status: 403 });
+      }
       const settings = payload.projectAccess !== undefined || payload.canViewPendingReports !== undefined
         ? await saveUserProjectAccess(userId, { projectAccess: payload.projectAccess, canViewPendingReports: payload.canViewPendingReports }, authUser.id, db)
-        : await loadUserProjectAccess(target, db);
+        : previousSettings;
       if (payload.reset === true) {
-        if (userId === authUser.id && target.role !== "superadmin") throw new Error("Нельзя сбросить собственные права управления доступом.");
         await resetUserPermissions(userId, db);
       } else if (payload.permissions !== undefined) {
         const permissions = limitPermissionsToRole(target.role, normalizePermissionSet(payload.permissions as Partial<PermissionSet>), settings.projectAccess);
         if (userId === authUser.id && (!permissions.access_rights.view || !permissions.access_rights.update)) throw new Error("Нельзя отключить себе просмотр и изменение прав доступа.");
         await saveUserPermissions(userId, permissions, authUser.id, db);
       }
-      const effective = payload.reset === true ? { permissions: limitPermissionsToRole(target.role, roleTemplate, settings.projectAccess), permissionsCustomized: false }
-        : await loadEffectivePermissions(userId, target.role, settings.projectAccess, db, customRole);
+      const effective = await loadEffectivePermissions(userId, target.role, settings.projectAccess, db, customRole, settings.canViewPendingReports);
       if (userId === authUser.id && (!effective.permissions.access_rights.view || !effective.permissions.access_rights.update)) throw new Error("Нельзя отключить себе просмотр и изменение прав доступа.");
       return { permissions: effective.permissions, customized: effective.permissionsCustomized, ...settings };
     });
     return Response.json(result);
   } catch (error) {
     console.error("Access rights update failed", error);
-    return errorResponse(error instanceof Error ? error.message : "Не удалось сохранить права доступа.", 400);
+    return errorResponse(error instanceof Error ? error.message : "Не удалось сохранить права доступа.", error && typeof error === "object" && "status" in error && error.status === 403 ? 403 : 400);
   }
 }
 export async function POST(request: Request) { return withAuditTrail(request, handlePOST); }

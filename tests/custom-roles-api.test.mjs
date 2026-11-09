@@ -71,9 +71,9 @@ delete process.env.DATABASE_RUNTIME_BOOTSTRAP;
 
 const changeRequest = (method, payload) => new Request("http://localhost/api/roles", { method, headers: { "Content-Type": "application/json", origin: "http://localhost" }, body: JSON.stringify(payload) });
 
-test("role update/delete have the same authentication, global scope and management boundary as creation", async () => {
+test("role update/delete require the same explicit management permission as creation", async () => {
   const h = await harness();
-  for (const user of [null, actor({ role: "viewer" }), actor({ role: "engineer", projectAccess: { mode: "selected", siteIds: [7] } }), actor({ role: "engineer", permissions: rolePermissionTemplate("engineer") })]) {
+  for (const user of [null, actor({ role: "viewer", permissions: rolePermissionTemplate("viewer") }), actor({ role: "foreman", permissions: rolePermissionTemplate("foreman") }), actor({ role: "engineer", permissions: rolePermissionTemplate("engineer") })]) {
     h.as(user);
     for (const method of ["PATCH", "DELETE"]) assert.equal((await h.route[method](changeRequest(method, { roleId: 1, revision: 1, name: "Другая", permissions: {} }))).status, user ? 403 : 401);
   }
@@ -137,25 +137,24 @@ test("role endpoints require authentication and default viewers cannot list or c
   assert.equal(h.db.queries.length, 0);
 });
 
-test("viewers cannot create roles even with forged write permissions, and scoped managers cannot create global roles", async () => {
-  const h = await harness();
-  for (const user of [
-    actor({ role: "viewer" }),
-    actor({ role: "engineer", projectAccess: { mode: "selected", siteIds: [7,8] } }),
-    actor({ role: "engineer", projectAccess: { mode: "selected", siteIds: [] } }),
-    actor({ role: "engineer", permissions: rolePermissionTemplate("engineer") }),
-  ]) {
-    h.as(user);
-    assert.equal((await h.route.POST(request({ name: "Роль", permissions: {} }))).status, 403);
+test("explicit managers of every role and project mode can create, change and delete reusable roles", async () => {
+  for (const role of ["viewer", "foreman", "engineer"]) for (const projectAccess of [{ mode: "all", siteIds: [] }, { mode: "selected", siteIds: [7] }]) {
+    const h = await harness(); h.as(actor({ role, projectAccess }));
+    const created = await h.route.POST(request({ name: `Настраиваемая роль ${role}`, permissions: {} }));
+    assert.equal(created.status, 201);
+    const { role: saved } = await created.json();
+    const patched = await h.route.PATCH(changeRequest("PATCH", { roleId: saved.id, revision: saved.revision, name: `Изменено ${role}`, permissions: { workers_report: { update: true } } }));
+    assert.equal(patched.status, 200);
+    const { role: updated } = await patched.json();
+    assert.equal((await h.route.DELETE(changeRequest("DELETE", { roleId: updated.id, revision: updated.revision }))).status, 200);
   }
-  assert.equal(h.db.queries.length, 0);
-  h.as(actor({ role: "engineer", projectAccess: { mode: "selected", siteIds: [] } }));
-  assert.equal((await h.route.GET(new Request("http://localhost/api/roles"))).status, 403);
 });
 
 test("read access lists reusable templates without authorizing role management", async () => {
   const h = await harness();
-  for (const user of [actor({ role: "viewer" }), actor({ role: "engineer", projectAccess: { mode: "selected", siteIds: [7] } }), actor({ role: "engineer", permissions: rolePermissionTemplate("engineer") })]) {
+  for (const role of ["viewer", "foreman", "engineer"]) {
+    const permissions = emptyPermissionSet(); permissions.access_rights.view = true;
+    const user = actor({ role, permissions, projectAccess: { mode: "selected", siteIds: [7] } });
     h.as(user);
     const response = await h.route.GET(new Request("http://localhost/api/roles"));
     assert.equal(response.status, 200);

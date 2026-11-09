@@ -20,6 +20,7 @@ const { mutateEquipmentReport, mutateEquipmentReportEntry, listEquipmentReports,
   "./equipmentReportWorkflow": new URL("../app/equipmentReportWorkflow.ts", import.meta.url).href,
   "./equipmentExcel": new URL("../app/equipmentExcel.ts", import.meta.url).href,
   "./equipmentAvailability": new URL("../app/equipmentAvailability.ts", import.meta.url).href,
+  "./personnelImportOrderServer": new URL("../app/personnelImportOrderServer.ts", import.meta.url).href,
 });
 const pool = new pg.Pool({ ...(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : {}), ssl: false, max: 1, connectionTimeoutMillis: 5000 });
 const connection = await pool.connect();
@@ -73,7 +74,7 @@ try {
   assert.equal(report.rows[0].updatedAt, original.updatedAt);
   report = await transition(foreman, report, "submit");
   assert.equal(await total(report.workDate), 0);
-  await assert.rejects(save(foreman, report.workDate, report.rows, report), code("REPORT_LOCKED"));
+  await assert.rejects(save(foreman, report.workDate, report.rows, report), code("REPORT_FORBIDDEN"));
   await assert.rejects(transition(otherForeman, report, "reopen"), code("REPORT_FORBIDDEN"));
   await assert.rejects(transition(engineer, report, "reopen"), code("REPORT_FORBIDDEN"));
   report = await save(engineer, report.workDate, [{ ...report.rows[0], hours: 7 }], report);

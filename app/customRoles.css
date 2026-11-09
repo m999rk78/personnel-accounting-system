@@ -9,6 +9,12 @@
 .permission-cell:has(input:focus-visible) > span { outline:2px solid #9b6a0e; outline-offset:3px; }
 .permission-matrix.compact .permission-row { min-height:48px; }
 .permission-matrix.compact .permission-row > div:first-child { padding-top:9px; padding-bottom:9px; }
+.permission-report-help { margin:0; padding:10px 22px; border-bottom:1px solid #ececef; color:#71717a; background:#fafafa; font-size:11px; line-height:1.5; }
+.permission-matrix .permission-report-row { background:#fafafa; }
+.permission-matrix .permission-status-row > div:first-child { position:relative; padding-left:42px; }
+.permission-matrix .permission-status-row > div:first-child::before { content:""; position:absolute; left:23px; top:50%; width:8px; height:1px; background:#b8b8c1; }
+.permission-matrix .permission-status-row > div:first-child strong { font-size:12px; font-weight:500; }
+@media (max-width:760px) { .permission-report-help { padding:10px 14px; }.permission-matrix .permission-status-row > div:first-child { padding-left:28px; }.permission-matrix .permission-status-row > div:first-child::before { left:14px; width:6px; } }
 .access-rights-footer > div { margin-left:auto; }
 .role-catalog { padding:0 14px 14px; }
 .role-catalog-search { display:flex; align-items:center; gap:10px; margin-bottom:10px; color:#71717a; font-size:11px; }

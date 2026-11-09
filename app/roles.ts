@@ -1,6 +1,8 @@
 export type UserRole = "foreman" | "engineer" | "viewer" | "superadmin";
 export type ProjectAccess = { mode: "all" | "selected"; siteIds: number[] };
-export type ProjectAccessUser = { role: UserRole; customRoleId?: number | null; assignedSiteId?: number | null; projectAccess?: ProjectAccess; canViewPendingReports?: boolean };
+import type { PermissionSet } from "./permissionModel.ts";
+
+export type ProjectAccessUser = { role: UserRole; customRoleId?: number | null; assignedSiteId?: number | null; projectAccess?: ProjectAccess; canViewPendingReports?: boolean; permissions?: Partial<PermissionSet> };
 
 export const ROLE_LABELS: Record<UserRole, string> = {
   foreman: "Прораб", engineer: "Инженер", viewer: "Просмотр", superadmin: "Супер-админ",
@@ -51,11 +53,10 @@ export function visibleUserProjectAccess<T extends ProjectAccessUser>(target: T,
   return { ...target, assignedSiteId, projectAccess: { mode: "selected" as const, siteIds }, projectAccessLimitedToViewer: true,
     ...("assignedSiteName" in target ? { assignedSiteName: assignedSiteId ? target.assignedSiteName : null } : {}) };
 }
-export function canViewPendingReportsFor(user: ProjectAccessUser) { return user.role !== "viewer" || user.canViewPendingReports === true; }
-export function canAccessGeneralSettings(role: UserRole) { return role === "engineer" || role === "superadmin"; }
-export function canEditGlobalEmployees(role: UserRole) { return role === "engineer" || role === "superadmin"; }
-export function canEditGlobalReferences(role: UserRole) { return role === "superadmin"; }
-export function canManageBitrix24(role: UserRole) { return role === "superadmin"; }
-export function canInspectBitrix24(role: UserRole) { return role === "engineer" || role === "superadmin"; }
-export function canEditProjectSettings(role: UserRole) { return role === "engineer" || role === "superadmin"; }
-export function canAccessTimesheets(role: UserRole) { return role === "engineer" || role === "viewer" || role === "superadmin"; }
+export function canViewPendingReportsFor(user: ProjectAccessUser) {
+  if (!user.permissions) return user.role !== "viewer" || user.canViewPendingReports === true;
+  return (["workers_report", "equipment_report"] as const).some(resource => {
+    const parent = user.permissions?.[resource];
+    return parent?.view && (["draft", "submitted"] as const).some(status => (user.permissions?.[`${resource}_${status}`] ?? parent)?.view);
+  });
+}

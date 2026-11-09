@@ -4,6 +4,9 @@ import { createElement, useCallback, useEffect, useLayoutEffect, useRef, useStat
 import { TableContextMenu, type TableContextMenuAction } from "./TableContextMenu";
 import { useWorkspaceAccess } from "./TableAccessContext";
 import { useTableEscapeSelection } from "./useTableEscapeSelection";
+import { isTableSelectAllShortcut } from "./tableSelectAllShortcut";
+import { useTablePageSelectAll } from "./useTablePageSelectAll";
+import "./timesheetSelection.css";
 
 export type TimesheetClipboardChange = {
   rowIndex: number;
@@ -37,7 +40,7 @@ function partialClipboardStatus(saved: number, failed: number) {
 }
 
 type ClipboardPoint = { rowIndex: number; columnIndex: number };
-type ClipboardSelection = { start: ClipboardPoint; end: ClipboardPoint };
+type ClipboardSelection = { start: ClipboardPoint | null; end: ClipboardPoint | null; includeHeaders?: boolean };
 type ClipboardUndoEntry = { id: string; changes: TimesheetClipboardChange[] };
 
 function isTimesheetInputTarget(target: EventTarget | null) {
@@ -64,7 +67,7 @@ function scrollCellIntoVisibleArea(shell: HTMLDivElement, point: ClipboardPoint)
     : cellRect.bottom > visibleBottom
       ? cellRect.bottom - visibleBottom
       : 0;
-  const horizontalOffset = cellRect.left < visibleLeft
+  const horizontalOffset = cell.classList.contains("timesheet-sticky") ? 0 : cellRect.left < visibleLeft
     ? cellRect.left - visibleLeft
     : cellRect.right > shellRect.right
       ? cellRect.right - shellRect.right
@@ -84,8 +87,11 @@ type TimesheetClipboardOptions = {
   ensureRowVisible?: (rowIndex: number) => void;
   rowCount: number;
   columnCount: number;
+  /** Day columns keep indices 0..columnCount-1. Read-only columns may use signed or trailing indices. */
+  columnIndexes?: readonly number[];
   resetKey: string;
   getValue: (rowIndex: number, columnIndex: number) => string;
+  getHeader?: (columnIndex: number) => string;
   canPaste: (rowIndex: number, columnIndex: number) => boolean;
   onPaste: (changes: TimesheetClipboardChange[], context?: TimesheetClipboardSaveContext) => Promise<number | TimesheetClipboardSaveResult>;
   getUndoValue?: (rowIndex: number, columnIndex: number) => string;
@@ -97,7 +103,7 @@ type TimesheetClipboardOptions = {
 };
 
 function selectionBounds(selection: ClipboardSelection | null) {
-  if (!selection) return null;
+  if (!selection?.start || !selection.end) return null;
   return {
     rowStart: Math.min(selection.start.rowIndex, selection.end.rowIndex),
     rowEnd: Math.max(selection.start.rowIndex, selection.end.rowIndex),
@@ -106,7 +112,7 @@ function selectionBounds(selection: ClipboardSelection | null) {
   };
 }
 
-export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelection, escapeBlocked = false, getContextActions, shellRef: suppliedShellRef, ensureRowVisible, rowCount, columnCount, resetKey, getValue, canPaste, onPaste, getUndoValue = getValue, getUndoNote, canDelete, onDelete, onActivate, onType }: TimesheetClipboardOptions) {
+export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelection, escapeBlocked = false, getContextActions, shellRef: suppliedShellRef, ensureRowVisible, rowCount, columnCount, columnIndexes, resetKey, getValue, getHeader, canPaste, onPaste, getUndoValue = getValue, getUndoNote, canDelete, onDelete, onActivate, onType }: TimesheetClipboardOptions) {
   const access = useWorkspaceAccess();
   const defaultShellRef = useRef<HTMLDivElement>(null);
   const shellRef = suppliedShellRef ?? defaultShellRef;
@@ -120,6 +126,8 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
   const mutation = useRef<symbol | null>(null);
   const scopeVersion = useRef(0);
   const historySequence = useRef(0);
+  const lastHeaderCopy = useRef<string | null>(null);
+  const selectionColumns = columnIndexes ?? Array.from({ length: columnCount }, (_, index) => index);
 
   const createHistoryId = useCallback(() => `${scopeVersion.current}:${++historySequence.current}`, []);
 
@@ -171,10 +179,6 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
   });
 
   useEffect(() => {
-    selectionRef.current = selection;
-  }, [selection]);
-
-  useEffect(() => {
     const finishDrag = () => { dragging.current = false; };
     window.addEventListener("mouseup", finishDrag);
     return () => window.removeEventListener("mouseup", finishDrag);
@@ -197,6 +201,10 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     undoStack.current = [];
     mutation.current = null;
     undoing.current = false;
+    // Event handlers may run before the visual reset frame. Invalidate their
+    // coordinates now, before the new view's value getters can be used.
+    selectionRef.current = null;
+    dragging.current = false;
     const frame = requestAnimationFrame(clearSelection);
     return () => {
       scopeVersion.current += 1;
@@ -213,9 +221,10 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
 
   const selectCell = useCallback((rowIndex: number, columnIndex: number, event: MouseEvent<HTMLTableCellElement>) => {
     if (event.button !== 0) return;
+    if (typeof Element !== "undefined" && event.target instanceof Element && event.target.closest("button, input, textarea, select, [contenteditable='true'], [role='combobox']")) return;
     event.preventDefault();
     const point = { rowIndex, columnIndex };
-    const start = event.shiftKey && selectionRef.current ? selectionRef.current.start : point;
+    const start = event.shiftKey && selectionRef.current?.start ? selectionRef.current.start : point;
     const next = { start, end: point };
     dragging.current = true;
     selectionRef.current = next;
@@ -225,20 +234,21 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
   }, [shellRef]);
 
   const extendSelection = useCallback((rowIndex: number, columnIndex: number) => {
-    if (!dragging.current || !selectionRef.current) return;
+    if (!dragging.current || !selectionRef.current?.start) return;
     const next = { start: selectionRef.current.start, end: { rowIndex, columnIndex } };
     selectionRef.current = next;
     setSelection(next);
   }, []);
 
   const focusSelection = useCallback((point: ClipboardPoint, extend: boolean) => {
-    if (rowCount <= 0 || columnCount <= 0) return;
+    if (rowCount <= 0 || !selectionColumns.length) return;
+    const columnIndex = selectionColumns.reduce((nearest, index) => Math.abs(index - point.columnIndex) < Math.abs(nearest - point.columnIndex) ? index : nearest, selectionColumns[0]);
     const nextPoint = {
       rowIndex: Math.max(0, Math.min(rowCount - 1, point.rowIndex)),
-      columnIndex: Math.max(0, Math.min(columnCount - 1, point.columnIndex)),
+      columnIndex,
     };
     const next = {
-      start: extend && selectionRef.current ? selectionRef.current.start : nextPoint,
+      start: extend && selectionRef.current?.start ? selectionRef.current.start : nextPoint,
       end: nextPoint,
     };
     dragging.current = false;
@@ -248,45 +258,77 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     requestAnimationFrame(() => {
       if (shellRef.current) scrollCellIntoVisibleArea(shellRef.current, nextPoint);
     });
-  }, [columnCount, ensureRowVisible, rowCount, shellRef]);
+  }, [selectionColumns, ensureRowVisible, rowCount, shellRef]);
+
+  const selectAllCells = useCallback(() => {
+    if (!selectionColumns.length || escapeBlocked || !rowCount && !getHeader) return false;
+    const next = { start: rowCount ? { rowIndex: 0, columnIndex: selectionColumns[0] } : null, end: rowCount ? { rowIndex: rowCount - 1, columnIndex: selectionColumns.at(-1)! } : null, includeHeaders: true };
+    dragging.current = false;
+    selectionRef.current = next;
+    setSelection(next);
+    setContextMenu(null);
+    setStatus(`Выделено: ${rowCount} × ${selectionColumns.length}`);
+    return true;
+  }, [escapeBlocked, getHeader, rowCount, selectionColumns]);
+
+  useTablePageSelectAll({ rootRef: shellRef, selectAll: selectAllCells, enabled: !escapeBlocked });
 
   const selectedText = useCallback(() => {
     const bounds = selectionBounds(selectionRef.current);
-    if (!bounds) return undefined;
+    if (!bounds && !(selectionRef.current?.includeHeaders && getHeader)) return undefined;
     const rows: string[] = [];
-    for (let rowIndex = bounds.rowStart; rowIndex <= bounds.rowEnd; rowIndex++) {
+    if (selectionRef.current?.includeHeaders && getHeader) {
+      rows.push(selectionColumns.filter(index => !bounds || index >= bounds.columnStart && index <= bounds.columnEnd)
+        .map(index => getHeader(index).replaceAll("\t", " ").replaceAll(/\r?\n/g, " ")).join("\t"));
+    }
+    for (let rowIndex = bounds?.rowStart ?? 0; bounds && rowIndex <= bounds.rowEnd; rowIndex++) {
       const values: string[] = [];
-      for (let columnIndex = bounds.columnStart; columnIndex <= bounds.columnEnd; columnIndex++) {
+      for (const columnIndex of selectionColumns.filter(index => index >= bounds.columnStart && index <= bounds.columnEnd)) {
         values.push(getValue(rowIndex, columnIndex).replaceAll("\t", " ").replaceAll(/\r?\n/g, " "));
       }
       rows.push(values.join("\t"));
     }
     return rows.join("\n");
-  }, [getValue]);
+  }, [getHeader, getValue, selectionColumns]);
 
   const onCopy = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
     if (isTimesheetInputTarget(event.target)) return;
     const bounds = selectionBounds(selectionRef.current);
     const text = selectedText();
-    if (!bounds || text === undefined) return;
+    if (text === undefined) return;
     event.preventDefault();
     event.clipboardData.setData("text/plain", text);
-    setStatus(`Скопировано: ${bounds.rowEnd - bounds.rowStart + 1} × ${bounds.columnEnd - bounds.columnStart + 1}`);
-  }, [selectedText]);
+    const headerRows = selectionRef.current?.includeHeaders && getHeader ? 1 : 0;
+    lastHeaderCopy.current = headerRows ? text : null;
+    setStatus(`Скопировано: ${(bounds ? bounds.rowEnd - bounds.rowStart + 1 : 0) + headerRows} × ${selectionColumns.filter(index => !bounds || index >= bounds.columnStart && index <= bounds.columnEnd).length}`);
+  }, [getHeader, selectedText, selectionColumns]);
 
   const pasteText = useCallback(async (text: string) => {
     if (mutation.current) return 0;
     const bounds = selectionBounds(selectionRef.current);
     if (!bounds) return 0;
-    const lines = text.replace(/\r/g, "").split("\n");
+    const clipboardText = text.replace(/\r/g, "");
+    const lines = clipboardText.split("\n");
     if (lines.at(-1) === "") lines.pop();
     const matrix = lines.map((line) => line.split("\t"));
+    if ((selectionRef.current?.includeHeaders || lastHeaderCopy.current === clipboardText) && getHeader && matrix.length) {
+      const headers = selectionColumns.slice(selectionColumns.indexOf(bounds.columnStart), selectionColumns.indexOf(bounds.columnStart) + matrix[0].length)
+        .map(index => getHeader(index).replaceAll("\t", " ").replaceAll(/\r?\n/g, " "));
+      // A select-all copy can be pasted back into the same table without treating
+      // its exact visible header row as employee data, even after choosing a target.
+      if (matrix[0].length === headers.length && matrix[0].every((value, index) => value === headers[index])) matrix.shift();
+      else if (lastHeaderCopy.current === clipboardText) {
+        setStatus("Столбцы скопированной таблицы не совпадают с местом вставки. Выберите первую ячейку исходного диапазона.");
+        return 0;
+      }
+    }
     if (!matrix.length) return 0;
 
     const sourceRows = matrix.length;
     const sourceColumns = Math.max(...matrix.map((line) => line.length));
     const selectedRows = bounds.rowEnd - bounds.rowStart + 1;
-    const selectedColumns = bounds.columnEnd - bounds.columnStart + 1;
+    const selectedColumns = selectionColumns.filter(index => index >= bounds.columnStart && index <= bounds.columnEnd).length;
+    const targetColumnStart = selectionColumns.indexOf(bounds.columnStart);
     const targetRows = sourceRows === 1 ? selectedRows : sourceRows;
     const targetColumns = sourceColumns === 1 ? selectedColumns : sourceColumns;
     const changes: TimesheetClipboardChange[] = [];
@@ -295,8 +337,8 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
       const rowIndex = bounds.rowStart + rowOffset;
       if (rowIndex >= rowCount) break;
       for (let columnOffset = 0; columnOffset < targetColumns; columnOffset++) {
-        const columnIndex = bounds.columnStart + columnOffset;
-        if (columnIndex >= columnCount || !canPaste(rowIndex, columnIndex)) continue;
+        const columnIndex = selectionColumns[targetColumnStart + columnOffset];
+        if (columnIndex === undefined || columnIndex < 0 || columnIndex >= columnCount || !canPaste(rowIndex, columnIndex)) continue;
         changes.push({
           rowIndex,
           columnIndex,
@@ -327,7 +369,7 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     } finally {
       if (mutation.current === token) mutation.current = null;
     }
-  }, [canPaste, columnCount, createHistoryId, onPaste, previousValues, rememberUndo, rowCount]);
+  }, [canPaste, columnCount, createHistoryId, getHeader, onPaste, previousValues, rememberUndo, rowCount, selectionColumns]);
 
   const onClipboardPaste = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
     if (isTimesheetInputTarget(event.target)) return;
@@ -343,8 +385,8 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     if (!bounds) return 0;
     const changes: TimesheetClipboardChange[] = [];
     for (let rowIndex = bounds.rowStart; rowIndex <= bounds.rowEnd; rowIndex++) {
-      for (let columnIndex = bounds.columnStart; columnIndex <= bounds.columnEnd; columnIndex++) {
-        if (rowIndex < rowCount && columnIndex < columnCount && canDelete(rowIndex, columnIndex)) {
+      for (const columnIndex of selectionColumns.filter(index => index >= bounds.columnStart && index <= bounds.columnEnd)) {
+        if (rowIndex < rowCount && columnIndex >= 0 && columnIndex < columnCount && canDelete(rowIndex, columnIndex)) {
           changes.push({ rowIndex, columnIndex, value: "" });
         }
       }
@@ -371,16 +413,18 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     } finally {
       if (mutation.current === token) mutation.current = null;
     }
-  }, [canDelete, columnCount, createHistoryId, onDelete, previousValues, rememberUndo, rowCount]);
+  }, [canDelete, columnCount, createHistoryId, onDelete, previousValues, rememberUndo, rowCount, selectionColumns]);
 
   const openContextMenu = useCallback((rowIndex: number, columnIndex: number, event: MouseEvent<HTMLTableCellElement>) => {
     const cell = event.currentTarget;
     const shell = shellRef.current;
-    if (!shell?.contains(cell) || cell.closest(".timesheet-grid-shell") !== shell || cell.tagName !== "TD") return;
+    if (!shell?.contains(cell) || cell.closest(".timesheet-grid-shell") !== shell || !["TD", "TH"].includes(cell.tagName)) return;
     event.preventDefault();
     event.stopPropagation();
     const point = { rowIndex, columnIndex };
-    const next = { start: point, end: point };
+    const bounds = selectionBounds(selectionRef.current);
+    const insideSelection = bounds && rowIndex >= bounds.rowStart && rowIndex <= bounds.rowEnd && columnIndex >= bounds.columnStart && columnIndex <= bounds.columnEnd;
+    const next = insideSelection ? selectionRef.current! : { start: point, end: point };
     selectionRef.current = next;
     setSelection(next);
     shellRef.current?.focus({ preventScroll: true });
@@ -456,12 +500,15 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     if (movement && !event.altKey && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
       const current = selectionRef.current?.end ?? { rowIndex: 0, columnIndex: 0 };
-      focusSelection({ rowIndex: current.rowIndex + movement.row, columnIndex: current.columnIndex + movement.column }, event.shiftKey);
+      const currentColumn = selectionColumns.indexOf(current.columnIndex);
+      const nextColumn = selectionColumns[Math.max(0, Math.min(selectionColumns.length - 1, currentColumn + movement.column))] ?? current.columnIndex;
+      focusSelection({ rowIndex: current.rowIndex + movement.row, columnIndex: nextColumn }, event.shiftKey);
       return;
     }
     if ((event.key === "Enter" || event.key === "F2") && onActivate) {
       const current = selectionRef.current?.end;
       if (!current) return;
+      if (current.columnIndex < 0 || current.columnIndex >= columnCount) return;
       const anchor = shellRef.current?.querySelector<HTMLElement>(`[data-timesheet-row="${current.rowIndex}"][data-timesheet-column="${current.columnIndex}"]`);
       if (!anchor) return;
       event.preventDefault();
@@ -471,6 +518,7 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     if (event.key.length === 1 && event.key.trim() && !event.altKey && !event.ctrlKey && !event.metaKey && onType) {
       const current = selectionRef.current?.end;
       if (!current) return;
+      if (current.columnIndex < 0 || current.columnIndex >= columnCount) return;
       const anchor = shellRef.current?.querySelector<HTMLElement>(`[data-timesheet-row="${current.rowIndex}"][data-timesheet-column="${current.columnIndex}"]`);
       if (!anchor) return;
       event.preventDefault();
@@ -480,7 +528,15 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     if (event.key !== "Delete" && event.key !== "Backspace") return;
     event.preventDefault();
     await deleteSelection();
-  }, [deleteSelection, focusSelection, onActivate, onType, shellRef, undoLastChange]);
+  }, [columnCount, deleteSelection, focusSelection, onActivate, onType, selectionColumns, shellRef, undoLastChange]);
+
+  const onKeyDownCapture = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+    if (!isTableSelectAllShortcut(event)) return;
+    if (!selectAllCells()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    shellRef.current?.focus({ preventScroll: true });
+  }, [selectAllCells, shellRef]);
 
   const cellClass = useCallback((rowIndex: number, columnIndex: number) => {
     const bounds = selectionBounds(selection);
@@ -498,6 +554,7 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     shellRef,
     status,
     activeCell: selection?.end ?? null,
+    headersSelected: Boolean(selection?.includeHeaders && getHeader),
     focusCell: (rowIndex: number, columnIndex: number) => focusSelection({ rowIndex, columnIndex }, false),
     cellClass,
     cellHandlers: (rowIndex: number, columnIndex: number) => ({
@@ -508,7 +565,7 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
       "data-timesheet-column": columnIndex,
       "aria-selected": Boolean(cellClass(rowIndex, columnIndex)),
     }),
-    shellHandlers: { onCopy, onPaste: onClipboardPaste, onKeyDown },
+    shellHandlers: { onCopy, onPaste: onClipboardPaste, onKeyDown, onKeyDownCapture },
     // Menu callbacks read the current selection only after the user chooses an action.
     // eslint-disable-next-line react-hooks/refs
     contextMenu: contextMenu ? createElement(TableContextMenu, {
@@ -520,7 +577,7 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
       onClose: () => setContextMenu(null),
       actions: [
         ...(getContextActions?.(contextMenu.rowIndex, () => setContextMenu(null)) ?? []),
-        { label: "Копировать ячейку", shortcut: "Ctrl+C", onSelect: async () => { try { await navigator.clipboard.writeText(selectedText() ?? ""); setStatus("Ячейка скопирована"); setContextMenu(null); } catch { setContextMenu((current) => current ? { ...current, error: "Не удалось скопировать. Разрешите доступ к буферу обмена." } : current); } } },
+        { label: "Копировать ячейку", shortcut: "Ctrl+C", onSelect: async () => { try { const text = selectedText() ?? ""; await navigator.clipboard.writeText(text); lastHeaderCopy.current = selectionRef.current?.includeHeaders && getHeader ? text : null; setStatus("Ячейка скопирована"); setContextMenu(null); } catch { setContextMenu((current) => current ? { ...current, error: "Не удалось скопировать. Разрешите доступ к буферу обмена." } : current); } } },
         ...(access?.edit !== false ? [{ label: "Вставить в ячейку", shortcut: "Ctrl+V", disabled: !canPaste(contextMenu.rowIndex, contextMenu.columnIndex), title: canPaste(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Нет права редактирования этой ячейки", onSelect: async () => { try { const changed = await pasteText(await navigator.clipboard.readText()); if (changed) setContextMenu(null); else setContextMenu((current) => current ? { ...current, error: "Значение не вставлено." } : current); } catch { setContextMenu((current) => current ? { ...current, error: "Не удалось прочитать буфер обмена. Разрешите доступ в браузере." } : current); } } }] satisfies TableContextMenuAction[] : []),
         ...(access?.edit !== false ? [{ label: "Редактировать ячейку", shortcut: "Enter", separatorBefore: true, disabled: !onActivate || !canPaste(contextMenu.rowIndex, contextMenu.columnIndex), title: onActivate && canPaste(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Нет права редактирования этой ячейки", onSelect: () => { const anchor = document.querySelector<HTMLElement>(`[data-timesheet-row="${contextMenu.rowIndex}"][data-timesheet-column="${contextMenu.columnIndex}"]`); if (anchor) onActivate?.(contextMenu.rowIndex, contextMenu.columnIndex, anchor); setContextMenu(null); } }] satisfies TableContextMenuAction[] : []),
         ...(access?.delete !== false ? [{ label: "Удалить ручное значение", shortcut: "Delete", danger: true, separatorBefore: true, disabled: !canDelete?.(contextMenu.rowIndex, contextMenu.columnIndex), title: canDelete?.(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Удалить можно только ручное значение при наличии права", onSelect: async () => { const changed = await deleteSelection(); if (changed) setContextMenu(null); else setContextMenu((current) => current ? { ...current, error: "В ячейке нет доступного для удаления ручного значения." } : current); } }] satisfies TableContextMenuAction[] : []),

@@ -16,11 +16,12 @@ import { closeTableContextMenus, TableContextMenu, type TableContextMenuAction }
 import { useRowMoveActions, useWorkspaceTableOrder } from "./TableRowMoves";
 import { gridRowEntityId, rowMoveIsBlocked, saveManualRowMove, type RowOrderId } from "./tableRowOrder";
 import "./gridFilters.css";
-import { parseSpreadsheetText, serializeSpreadsheetText } from "./spreadsheetClipboard";
+import { parseSpreadsheetText, serializeSpreadsheetText, stripSpreadsheetHeaderRow } from "./spreadsheetClipboard";
 import { useWorkspaceAccess } from "./TableAccessContext";
 import { SelectionRowDragRenderer } from "./SelectionRowDragRenderer";
 import { gridRowSelection } from "./gridRowSelection";
-import { findSpreadsheetDataRowIndex, isStructuralSpreadsheetRow, spreadsheetPointRowIndex, spreadsheetRangeHasStructuralRows } from "./gridSpreadsheetRows";
+import { allSpreadsheetCells, findSpreadsheetDataRowIndex, isStructuralSpreadsheetRow, spreadsheetDataColumns, spreadsheetHeaderValues, spreadsheetPointRowIndex, spreadsheetRangeHasStructuralRows } from "./gridSpreadsheetRows";
+import { isTableSelectAllShortcut } from "./tableSelectAllShortcut";
 import { createImportOrderRank, IMPORT_ORDER_COLUMN, importOrderColumnState, importOrderScopes, shouldApplyImportOrder } from "./importOrderSorting";
 import { useEmptyGridRows } from "./useEmptyGridRows";
 import { useTableEscapeSelection } from "./useTableEscapeSelection";
@@ -270,10 +271,7 @@ function isInteractiveTarget(event?: Event | null) {
 }
 
 function spreadsheetColumns<TData>(grid: GridApi<TData>) {
-  return grid.getAllDisplayedColumns().filter((column) => {
-    const columnId = column.getColId();
-    return columnId !== "actions" && columnId !== "rowOrder" && columnId !== "ag-Grid-SelectionColumn";
-  });
+  return spreadsheetDataColumns(grid);
 }
 
 function spreadsheetBounds<TData>(grid: GridApi<TData>, current: SpreadsheetSelection | null) {
@@ -419,6 +417,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     if (addedEditableRows && api.isAnyFilterPresent()) api.setFilterModel(null);
   }, [api, nativeFilters, sourceRows, sourceGetRowId, sourceContext]);
   const [selection, setSelection] = useState<SpreadsheetSelection | null>(null);
+  const [includeSelectedHeaders, setIncludeSelectedHeaders] = useState(false);
   const [spreadsheetStatus, setSpreadsheetStatus] = useState("");
   const [contextMenu, setContextMenu] = useState<(SpreadsheetContextPayload<TData> & { x: number; y: number; error: string }) | null>(null);
   const body = useRef<HTMLDivElement>(null);
@@ -427,6 +426,8 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
   useEffect(() => stopRowDragScroll, [api, rowMoveDisabled, rowOrder?.busy, rowOrder?.canWrite, stopRowDragScroll]);
   useEmptyGridRows(body, api, props.rowHeight ?? 54);
   const selectionRef = useRef(selection);
+  const selectionIncludesHeaders = useRef(false);
+  const lastHeaderClipboard = useRef<string | null>(null);
   const lastSelectionRef = useRef(selection);
   const previousFocusRequestKey = useRef(spreadsheetFocusRequestKey);
   const dragging = useRef(false);
@@ -461,10 +462,18 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       const root = body.current;
       if (!root) return;
       root.querySelectorAll(".ag-excel-selected,.ag-excel-top,.ag-excel-right,.ag-excel-bottom,.ag-excel-left").forEach((cell) => cell.classList.remove("ag-excel-selected", "ag-excel-top", "ag-excel-right", "ag-excel-bottom", "ag-excel-left"));
+      root.querySelectorAll(".ag-excel-header-selected").forEach(header => header.classList.remove("ag-excel-header-selected"));
       const bounds = spreadsheetBounds(grid, selectionRef.current);
+      if (selectionIncludesHeaders.current) {
+        const selectedColumns = new Set((bounds ? bounds.columns.slice(bounds.columnStart, bounds.columnEnd + 1) : spreadsheetColumns(grid)).map(column => column.getColId()));
+        root.querySelectorAll<HTMLElement>(".ag-header-cell[col-id]").forEach(header => {
+          if (header.closest(".localized-grid-body") === root && selectedColumns.has(header.getAttribute("col-id") ?? "")) header.classList.add("ag-excel-header-selected");
+        });
+      }
       if (!bounds) return;
       root.querySelectorAll<HTMLElement>(".ag-cell[col-id]").forEach((cell) => {
         const row = Number(cell.closest(".ag-row")?.getAttribute("row-index"));
+        if (isStructuralSpreadsheetRow(grid.getDisplayedRowAtIndex(row))) return;
         const column = bounds.columns.findIndex((item) => item.getColId() === cell.getAttribute("col-id"));
         if (row < bounds.rowStart || row > bounds.rowEnd || column < bounds.columnStart || column > bounds.columnEnd) return;
         cell.classList.add("ag-excel-selected");
@@ -484,7 +493,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     // Event handlers update the ref synchronously; a delayed effect must not
     // overwrite a newer click just before a paste.
     if (api) paintSelection(api);
-  }, [api, paintSelection, selection]);
+  }, [api, paintSelection, selection, includeSelectedHeaders]);
   useEffect(() => {
     if (previousFocusRequestKey.current === spreadsheetFocusRequestKey) return;
     previousFocusRequestKey.current = spreadsheetFocusRequestKey;
@@ -509,6 +518,8 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     if (mouseEvent?.button === 2 && onSpreadsheetBatch) return;
     const start = mouseEvent?.shiftKey && selectionRef.current ? selectionRef.current.start : point;
     dragging.current = true;
+    selectionIncludesHeaders.current = false;
+    setIncludeSelectedHeaders(false);
     const next = { start, end: point };
     selectionRef.current = next;
     lastSelectionRef.current = next;
@@ -524,13 +535,15 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
   }, []);
   const clearSelection = useCallback(() => {
     dragging.current = false;
+    selectionIncludesHeaders.current = false;
+    setIncludeSelectedHeaders(false);
     selectionRef.current = null;
     setSelection(null);
     setSpreadsheetStatus("");
     setContextMenu(null);
   }, []);
   useTableEscapeSelection({
-    hasSelection: () => Boolean(selectionRef.current || api && !api.isDestroyed() && (api.getSelectedNodes().length || api.getFocusedCell() || api.isModuleRegistered("CellSelectionModule") && api.getCellRanges()?.length)),
+    hasSelection: () => Boolean(selectionRef.current || selectionIncludesHeaders.current || api && !api.isDestroyed() && (api.getSelectedNodes().length || api.getFocusedCell() || api.isModuleRegistered("CellSelectionModule") && api.getCellRanges()?.length)),
     isEditing: () => Boolean(api && !api.isDestroyed() && api.getEditingCells().length),
     clearSelection: () => {
       clearSelection();
@@ -583,6 +596,8 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     };
     event.preventDefault();
     dragging.current = false;
+    selectionIncludesHeaders.current = false;
+    setIncludeSelectedHeaders(false);
     selectionRef.current = next;
     lastSelectionRef.current = next;
     setSelection(next);
@@ -607,7 +622,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
   useEffect(() => {
     const clearSelectionOutsideGrid = (event: PointerEvent) => {
       const target = event.target;
-      if (!selectionRef.current || !(target instanceof Node) || body.current?.contains(target)) return;
+      if ((!selectionRef.current && !selectionIncludesHeaders.current) || !(target instanceof Node) || body.current?.contains(target)) return;
       if (target instanceof Element && target.closest(".custom-select-menu,.ag-employee-menu,.table-context-menu,.personnel-spreadsheet-tools")) return;
       if (target instanceof Element && target.closest("[data-table-page-horizontal]") && target.closest(".table-page-scroll-stage") === body.current?.closest(".table-page-scroll-stage")) return;
       clearSelection();
@@ -616,17 +631,23 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     return () => document.removeEventListener("pointerdown", clearSelectionOutsideGrid);
   }, [clearSelection]);
   const selectedText = useCallback(() => {
-    if (!api || !selectionRef.current) return;
+    if (!api || !selectionRef.current && !selectionIncludesHeaders.current) return;
     const bounds = spreadsheetBounds(api, selectionRef.current);
-    if (!bounds) return "";
-    const lines: string[][] = [];
+    if (!bounds) {
+      const text = selectionIncludesHeaders.current ? serializeSpreadsheetText([spreadsheetHeaderValues(api, spreadsheetColumns(api))]) : "";
+      lastHeaderClipboard.current = selectionIncludesHeaders.current ? text : null;
+      return text;
+    }
+    const lines: string[][] = selectionIncludesHeaders.current ? [spreadsheetHeaderValues(api, bounds.columns.slice(bounds.columnStart, bounds.columnEnd + 1))] : [];
     for (let rowIndex = bounds.rowStart; rowIndex <= bounds.rowEnd; rowIndex++) {
       const rowNode = api.getDisplayedRowAtIndex(rowIndex);
-      if (!rowNode?.data) continue;
+      if (!rowNode?.data || isStructuralSpreadsheetRow(rowNode)) continue;
       lines.push(bounds.columns.slice(bounds.columnStart, bounds.columnEnd + 1).map((column) => String(api.getCellValue({ rowNode, colKey: column, useFormatter: true }) ?? "")));
     }
-    return onSpreadsheetBatch ? serializeSpreadsheetText(lines) : lines.map(row => row.map(value => value.replaceAll("\t", " ").replaceAll(/\r?\n/g, " ")).join("\t")).join("\n");
-  }, [api, onSpreadsheetBatch]);
+    const text = serializeSpreadsheetText(lines);
+    lastHeaderClipboard.current = selectionIncludesHeaders.current ? text : null;
+    return text;
+  }, [api]);
   const copySelection = useCallback((event: React.ClipboardEvent<HTMLDivElement>) => {
     if (isInteractiveTarget(event.nativeEvent)) return;
     const text = selectedText();
@@ -636,7 +657,10 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     const bounds = api ? spreadsheetBounds(api, selectionRef.current) : null;
     if (!bounds) return;
     let copiedRows = 0;
-    for (let index = bounds.rowStart; index <= bounds.rowEnd; index++) if (api?.getDisplayedRowAtIndex(index)?.data) copiedRows++;
+    for (let index = bounds.rowStart; index <= bounds.rowEnd; index++) {
+      const node = api?.getDisplayedRowAtIndex(index);
+      if (node?.data && !isStructuralSpreadsheetRow(node)) copiedRows++;
+    }
     setSpreadsheetStatus(`Скопировано: ${copiedRows} × ${bounds.columnEnd - bounds.columnStart + 1}`);
   }, [api, selectedText]);
   const previousCellValues = useCallback((rowNode: IRowNode<TData>, columns: { getColId: () => string }[]) => Object.fromEntries(columns.flatMap((column) => {
@@ -655,7 +679,9 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     if (!api || (!onSpreadsheetPaste && !onSpreadsheetBatch) || !selectionRef.current) return false;
     const bounds = spreadsheetBounds(api, selectionRef.current);
     if (!bounds) return false;
-    const matrix = parseSpreadsheetText(text);
+    const parsed = parseSpreadsheetText(text);
+    const includesHeaders = selectionIncludesHeaders.current || lastHeaderClipboard.current === serializeSpreadsheetText(parsed);
+    const matrix = includesHeaders ? stripSpreadsheetHeaderRow(parsed, spreadsheetHeaderValues(api, spreadsheetColumns(api))) : parsed;
     if (!matrix.length) return false;
     const sourceRows = matrix.length;
     const sourceColumns = matrix.reduce((maximum, line) => Math.max(maximum, line.length), 0);
@@ -763,6 +789,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     const clickedColumn = existing?.columns.findIndex(column => column.getColId() === columnId) ?? -1;
     const inside = onSpreadsheetBatch && existing && rowIndex >= existing.rowStart && rowIndex <= existing.rowEnd && clickedColumn >= existing.columnStart && clickedColumn <= existing.columnEnd;
     const next = inside ? selectionRef.current! : { start: point, end: point };
+    if (!inside) { selectionIncludesHeaders.current = false; setIncludeSelectedHeaders(false); }
     selectionRef.current = next;
     lastSelectionRef.current = next;
     setSelection(next);
@@ -827,20 +854,23 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     return () => document.removeEventListener("keydown", undoOutsideGrid);
   }, [undoSpreadsheetChange, spreadsheetHistory]);
   const handleSpreadsheetKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented) return;
     if (event.key === "Escape") return; // The shared capture handler clears every selection together.
+    if (isTableSelectAllShortcut(event.nativeEvent)) {
+      event.preventDefault();
+      const next = api && !api.isDestroyed() ? allSpreadsheetCells(api, spreadsheetColumns(api)) : null;
+      dragging.current = false;
+      selectionIncludesHeaders.current = Boolean(api && !api.isDestroyed() && spreadsheetColumns(api).length);
+      setIncludeSelectedHeaders(selectionIncludesHeaders.current);
+      selectionRef.current = next; lastSelectionRef.current = next; setSelection(next);
+      setContextMenu(null);
+      body.current?.focus({ preventScroll: true });
+      setSpreadsheetStatus(next ? "Выделены все данные и заголовки таблицы. Ctrl+C или ⌘C — скопировать." : selectionIncludesHeaders.current ? "Выделены заголовки таблицы. Ctrl+C или ⌘C — скопировать." : "В таблице нет данных для выделения.");
+      return;
+    }
     if (isInteractiveTarget(event.nativeEvent)) return;
     if (onSpreadsheetBatch) {
       const modifier = event.ctrlKey || event.metaKey;
-      if (modifier && event.code === "KeyA" && api) {
-        const columns = spreadsheetColumns(api);
-        const last = api.getDisplayedRowCount() - 1;
-        if (columns.length && last >= 0) {
-          event.preventDefault();
-          const next = { start: { rowIndex: 0, rowId: api.getDisplayedRowAtIndex(0)?.id, columnId: columns[0].getColId() }, end: { rowIndex: last, rowId: api.getDisplayedRowAtIndex(last)?.id, columnId: columns.at(-1)!.getColId() } };
-          selectionRef.current = next; lastSelectionRef.current = next; setSelection(next);
-        }
-        return;
-      }
       if (modifier && (event.code === "KeyY" || event.code === "KeyZ" && event.shiftKey)) { event.preventDefault(); onSpreadsheetCancelEdit?.(); spreadsheetHistory?.redo(); return; }
       if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); changeRange("clear"); return; }
       if (modifier && (event.code === "KeyD" || event.code === "KeyR")) { event.preventDefault(); changeRange(event.code === "KeyD" ? "down" : "right"); return; }
@@ -876,6 +906,8 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
         if (rowElement && columnId && !["actions", "rowOrder", "ag-Grid-SelectionColumn"].includes(columnId) && Number.isInteger(rowIndex) && !isStructuralSpreadsheetRow(api.getDisplayedRowAtIndex(rowIndex))) {
           const point = { rowIndex, columnId, rowId: api.getDisplayedRowAtIndex(rowIndex)?.id };
           const next = { start: event.shiftKey && selectionRef.current ? selectionRef.current.start : point, end: point };
+          selectionIncludesHeaders.current = false;
+          setIncludeSelectedHeaders(false);
           dragging.current = true; selectionRef.current = next; lastSelectionRef.current = next; setSelection(next);
           body.current?.focus({ preventScroll: true });
         }
@@ -893,7 +925,11 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       event.preventDefault();
       event.clipboardData.setData("text/plain", text);
       changeRange("clear", true);
-    } : undefined} onPaste={pasteSelection} onKeyDown={onSpreadsheetBatch ? undefined : handleSpreadsheetKeyDown} onKeyDownCapture={onSpreadsheetBatch ? event => { handleSpreadsheetKeyDown(event); if (event.defaultPrevented) event.stopPropagation(); } : undefined} aria-label="Таблица. Стрелки перемещают выбранную ячейку, Shift со стрелками расширяет выделение. Двойной клик, Enter или F2 открывает редактирование. Доступны копирование, вставка и отмена через Ctrl+Z как в Excel.">
+    } : undefined} onPaste={pasteSelection} onKeyDown={onSpreadsheetBatch ? undefined : handleSpreadsheetKeyDown} onKeyDownCapture={event => {
+      if (!onSpreadsheetBatch && !isTableSelectAllShortcut(event.nativeEvent)) return;
+      handleSpreadsheetKeyDown(event);
+      if (event.defaultPrevented) event.stopPropagation();
+    }} aria-label="Таблица. Ctrl+A или ⌘A выделяет все данные; Ctrl+C или ⌘C копирует выделенное. Стрелки перемещают выбранную ячейку, Shift со стрелками расширяет выделение. Двойной клик, Enter или F2 открывает редактирование. Доступны вставка и отмена через Ctrl+Z как в Excel.">
       {spreadsheetStatus && <span className="sr-only" aria-live="polite">{spreadsheetStatus}</span>}
       {/* AG's global suppression also blocks header menus. Disable only its body
           items: cells use our scoped clipboard menu, headers keep native actions. */}
@@ -935,10 +971,11 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       onCellMouseOver={(event) => { extendSelection(event); props.onCellMouseOver?.(event); }}
       onCellDoubleClicked={(event) => { if (access?.edit === false) return; if (event.rowIndex !== null && !isInteractiveTarget(event.event)) rememberCellUndo(event.rowIndex, event.column.getColId()); props.onCellDoubleClicked?.(event); }}
       onBodyScroll={(event) => { paintSelection(event.api); props.onBodyScroll?.(event); }}
+      onDisplayedColumnsChanged={event => { paintSelection(event.api); props.onDisplayedColumnsChanged?.(event); }}
       onModelUpdated={(event) => { updateSummary(event.api); paintSelection(event.api); refreshRowNumbers(event.api); props.onModelUpdated?.(event); }}
       onRowGroupOpened={(event) => { clearSelection(); props.onRowGroupOpened?.(event); }}
-      onFilterChanged={(event) => { if (onSpreadsheetBatch) clearSelection(); updateSummary(event.api); props.onFilterChanged?.(event); }}
-      onSortChanged={(event) => { if (onSpreadsheetBatch) clearSelection(); updateSummary(event.api); props.onSortChanged?.(event); }}
+      onFilterChanged={(event) => { clearSelection(); updateSummary(event.api); props.onFilterChanged?.(event); }}
+      onSortChanged={(event) => { clearSelection(); updateSummary(event.api); props.onSortChanged?.(event); }}
     />{contextMenu && <TableContextMenu
       x={contextMenu.x}
       y={contextMenu.y}

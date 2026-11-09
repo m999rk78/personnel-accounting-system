@@ -131,7 +131,7 @@ test("new codes respect independent create, update and delete permissions", asyn
 test("the expanded values do not bypass authentication, project or employee membership guards", async () => {
   for (const [user, options, overrides, status] of [
     [null, {}, {}, 401],
-    [{ ...actor(), role: "viewer" }, {}, {}, 403],
+    [{ ...actor(), role: "viewer", permissions: rolePermissionTemplate("viewer") }, {}, {}, 403],
     [actor(), {}, { siteId: 8 }, 403],
     [actor(), { member: false }, {}, 404],
   ]) {
@@ -139,4 +139,15 @@ test("the expanded values do not bypass authentication, project or employee memb
     assert.equal((await save("ЛО", overrides)).status, status);
     assert.deepEqual(state.writes, []);
   }
+});
+
+for (const role of ["foreman", "viewer"]) test(`${role} can save, edit and delete a mark when matching actions are granted`, async () => {
+  const user = { ...actor(), role };
+  const state = fixture(user);
+  assert.equal((await save(8)).status, 200);
+  assert.equal(state.mark().hours, 8);
+  assert.equal((await save("О")).status, 200);
+  assert.equal(state.mark().code, "О");
+  assert.equal((await save("")).status, 200);
+  assert.equal(state.mark(), null);
 });

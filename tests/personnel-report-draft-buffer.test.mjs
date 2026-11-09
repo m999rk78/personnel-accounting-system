@@ -8,7 +8,7 @@ const dataUrl = value => `data:text/javascript;base64,${Buffer.from(value).toStr
 const store = await import(await compileModuleGraph(new URL("../app/personnelReportDraftBufferStore.ts", import.meta.url)));
 const time = "2026-11-06T09:00:00.000Z";
 const actor = (patch = {}) => ({ id: 10, role: "foreman", fullName: "Прораб", assignedSiteId: 7,
-  projectAccess: { mode: "selected", siteIds: [7, 8] }, permissions: rolePermissionTemplate("foreman"), ...patch });
+  projectAccess: { mode: "selected", siteIds: [7, 8] }, permissions: rolePermissionTemplate(patch.role ?? "foreman"), ...patch });
 const draft = (index = 1) => ({ key: `row-${index}`, employeeId: String(index), employeeQuery: `Рабочий ${index}`, shiftId: "", zoneId: "", mainWorkTypeId: "",
   subworkTypeId: "", masterId: "", hours: "", note: "", createdAt: time, updatedAt: time });
 const snapshot = (userId = 10, siteId = 7) => ({ version: 1, userId, siteId, savedAt: time,

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
+import { SelectionCopyTarget } from "./selection-copy-target";
 import { AllCommunityModule } from "ag-grid-community";
 import { AllEnterpriseModule } from "ag-grid-enterprise";
 import { AgGridProvider } from "ag-grid-react";
@@ -16,6 +17,7 @@ function EditingSmoke() {
   return <main style={{ padding: 16 }}>
     <h1>Таблицы — проверка непрерывного ввода</h1>
     <p>Только тестовые данные. Нет подключения к рабочей базе.</p>
+    <SelectionCopyTarget />
     <label>Раздел <select value={section} onChange={(event) => { setSection(event.target.value); setSelected([]); }}><option value="zones">Зоны</option><option value="equipment">Техника</option><option value="employees">Сотрудники</option><option value="positions">Должности</option></select></label>
     {section === "equipment" ? <>
       <button onClick={() => { setUnits(current => current.map(unit => ({ ...unit, ...equipmentDrafts.find(d => d.id === unit.id) }))); setEquipmentDrafts([]); }}>Сохранить технику</button>

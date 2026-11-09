@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { TablePageScroll, type TablePageScrollSource } from "./TablePageScroll";
+import { useNativeTableSelectAll } from "./useNativeTableSelectAll";
+import { excelPreviewClipboardHeaders, excelPreviewClipboardRows } from "./excelPreviewClipboardRows";
 import "./previewPageScroll.css";
 import { createEquipmentPlacementXlsx, createEquipmentTimesheetXlsx, createPersonnelTimesheetXlsx, createPlacementXlsx, createTableXlsx, type EquipmentPlacementExportRow } from "./placementXlsx";
 import { takeExcelExportPreview, type ExcelExportPreviewPayload } from "./excelExportPreviewStore";
@@ -94,6 +96,9 @@ export function ExcelExportPreviewPage() {
   const [baseTimesheetPayload, setBaseTimesheetPayload] = useState<ExcelExportPreviewPayload | null>(null);
   const periodPicker = useRef<HTMLDivElement>(null);
   const tableViewport = useRef<HTMLDivElement>(null);
+  const clipboardRows = useMemo(() => excelPreviewClipboardRows(payload), [payload]);
+  const clipboardHeaders = useMemo(() => excelPreviewClipboardHeaders(payload), [payload]);
+  const { className: selectionClass, handlers: selectionHandlers } = useNativeTableSelectAll({ rows: clipboardRows, headers: clipboardHeaders, resetKey: payload?.fileName ?? "", enabled: ready && !rangeLoading, rootRef: tableViewport });
   const pageScrollSource = useMemo<TablePageScrollSource>(() => ({
     getViewport: () => tableViewport.current,
     getContentHeight: () => {
@@ -427,7 +432,7 @@ export function ExcelExportPreviewPage() {
       </div>
 
       <TablePageScroll gridRoot={tableViewport} source={pageScrollSource} footer={footer} geometryKey={`${payload.workbook.kind}:${payload.fileName}:${payload.rows.length}`} label="Горизонтальная прокрутка предпросмотра Excel">
-      <div ref={tableViewport} className={placementTemplate || timesheetTemplate ? "excel-preview-table-wrap excel-template-preview-wrap" : "excel-preview-table-wrap"}>
+      <div ref={tableViewport} className={`${placementTemplate || timesheetTemplate ? "excel-preview-table-wrap excel-template-preview-wrap" : "excel-preview-table-wrap"} ${selectionClass}`} role="grid" aria-label="Данные предпросмотра Excel" tabIndex={0} {...selectionHandlers}>
         {placementTemplate ? <table className={`excel-template-preview-table ${personnelPlacement ? "personnel" : "equipment"}`}>
           <colgroup>{(personnelPlacement ? [82, 292, 98, 178, 388, 350, 286, 270, 82, 510] : [78, 440, 98, 178, 388, 346, 286, 82]).map((width, index) => <col key={index} style={{ width }} />)}</colgroup>
           <thead>

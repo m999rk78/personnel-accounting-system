@@ -77,6 +77,7 @@ function databaseFixture(events = []) {
 
 test("audit access cannot bypass hidden pending reports, including historical and mixed snapshots", async () => {
   const permissions = rolePermissionTemplate("viewer"); permissions.audit_log.view = true;
+  for (const resource of ["workers_report", "equipment_report"]) for (const status of ["draft", "submitted"]) permissions[`${resource}_${status}`].view = false;
   const events = [
     { id: 9, siteId: 7, category: "reports", actionKey: "personnel_report.save", entityType: "personnel_report_draft", afterData: { requested: { rows: [{ note: "Скрытый черновик" }] } } },
     { id: 8, siteId: 7, category: "reports", actionKey: "equipment_report.approve", entityType: "equipment_report_draft", beforeData: { status: "submitted", reviewComment: "Внутреннее обсуждение" }, afterData: { result: { report: { status: "approved" } } } },
@@ -98,7 +99,9 @@ test("audit access cannot bypass hidden pending reports, including historical an
   assert.deepEqual(db.queries[0].values, [[7], 10, 2]);
 
   for (const overrides of [{ canViewPendingReports: true }, { role: "engineer" }]) {
-    boundary.configure(actor(permissions, overrides), databaseFixture(events));
+    const enabled = structuredClone(permissions);
+    enabled.workers_report_submitted.view = true;
+    boundary.configure(actor(enabled, overrides), databaseFixture(events));
     const allowed = await auditRoute.GET(new Request("http://localhost/api/audit-log"));
     assert.deepEqual((await allowed.json()).events.map(event => event.id), [9, 8, 7, 6, 5, 4, 3, 2]);
   }
@@ -132,6 +135,7 @@ test("equipment legitimate UI, carryover and Excel modes keep separate read perm
   ];
   for (const [resource] of modes) {
     const permissions = emptyPermissionSet(); permissions[resource].view = true;
+    if (resource === "equipment_report") permissions.equipment_report_approved.view = true;
     for (const [required, query] of modes) {
       const db = databaseFixture(); boundary.configure(actor(permissions), db);
       const response = await equipmentRoute.GET(equipmentRequest(query));

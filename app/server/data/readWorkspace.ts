@@ -1,6 +1,6 @@
 import { getAuthUser } from "../../auth";
 import { accessibleProjectIds, canAccessProject, canViewAllProjects, hasRestrictedProjectAccess } from "../../roles";
-import { hasPermission, type PermissionResource } from "../../permissionModel";
+import { hasPermission, hasReportStatusPermission, type PermissionResource } from "../../permissionModel";
 import { syncProjectMasters } from "../../projectMasters";
 import { settingsReadPolicy } from "../../settingsReadPolicy";
 import { readOptionalBatch } from "../../readOptionalBatch";
@@ -23,31 +23,28 @@ export async function handleGET(request: Request) {
     const allowedSiteIds = accessibleProjectIds(authUser);
     const siteId = requestedSiteId ?? allowedSiteIds?.[0] ?? (canAccessProject(authUser, authUser.assignedSiteId) ? authUser.assignedSiteId : null) ?? 1;
     const scope = url.searchParams.get("scope");
+    const canViewApproved = hasReportStatusPermission(authUser.permissions, "workers_report", "approved", "view");
+    const canViewSubmitted = hasReportStatusPermission(authUser.permissions, "workers_report", "submitted", "view");
+    const canViewReports = (["draft", "submitted", "approved"] as const).some(status => hasReportStatusPermission(authUser.permissions, "workers_report", status, "view"));
     if (scope === "navigation") {
       const sites = await env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id").all();
       return Response.json({ sites: sites.results.filter(site => canAccessProject(authUser, Number(site.id))) });
     }
     if (!canAccessProject(authUser, siteId)) return forbidden();
-    const responsibleUserId = authUser.role === "foreman" ? authUser.id : undefined;
+    const responsibleUserId = undefined;
     const workDate = url.searchParams.get("date") ?? todayInMoscow();
     if (!validDate(workDate)) throw new Error("Некорректная дата отчёта.");
     const rangeStart = url.searchParams.get("rangeStart") ?? workDate;
     const rangeEnd = url.searchParams.get("rangeEnd") ?? workDate;
     if (!validDate(rangeStart) || !validDate(rangeEnd) || rangeStart > rangeEnd) throw new Error("Некорректный диапазон дат отчёта.");
-    if (scope && scope !== "settings" && !hasPermission(authUser.permissions, "workers_report", "view")) return forbidden();
+    if (scope && scope !== "settings" && !canViewReports) return forbidden();
     if (scope === "carryover") {
-      if (authUser.role === "viewer" && !authUser.canViewPendingReports) return Response.json({ sourceDate: null, entries: [] });
-      const previous = authUser.role === "foreman"
-        ? await env.DB.prepare(`SELECT work_date AS workDate
-          FROM placement_report_contributions
-          WHERE site_id = ? AND foreman_id = ? AND status = 'submitted' AND work_date < ?
-          ORDER BY work_date DESC LIMIT 1`).bind(siteId, authUser.id, workDate).first<{ workDate: string }>()
-        : await env.DB.prepare(`SELECT work_date AS workDate
-          FROM placement_report_days
-          WHERE site_id = ? AND work_date < ?
-          ORDER BY work_date DESC LIMIT 1`).bind(siteId, workDate).first<{ workDate: string }>();
+      if (!canViewApproved) return Response.json({ sourceDate: null, entries: [] });
+      const previous = await env.DB.prepare(`SELECT work_date AS workDate FROM placement_entries
+          WHERE site_id = ? AND responsible_user_id = ? AND deleted_at IS NULL AND work_date < ?
+          ORDER BY work_date DESC LIMIT 1`).bind(siteId, authUser.id, workDate).first<{ workDate: string }>();
       if (!previous) return Response.json({ sourceDate: null, entries: [] });
-      const entries = await placementEntriesStatement(siteId, previous.workDate, responsibleUserId).all();
+      const entries = await placementEntriesStatement(siteId, previous.workDate, authUser.id).all();
       return Response.json({ sourceDate: previous.workDate, entries: entries.results });
     }
     if (scope === "entries") {
@@ -60,22 +57,23 @@ export async function handleGET(request: Request) {
         reportTimesheetMarksStatement(siteId, workDate),
       ]);
       return Response.json({
-        entries: entries.results,
-        filledDates: filledDates.results.map((row) => (row as { workDate: string }).workDate),
-        reportSubmitted: (authUser.role !== "viewer" || Boolean(authUser.canViewPendingReports)) && Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
-        employeeUsage: employeeUsage.results,
-        foremanProgress: authUser.role === "viewer" && !authUser.canViewPendingReports ? [] : foremanProgress.results,
+        entries: canViewApproved ? entries.results : [],
+        filledDates: canViewApproved ? filledDates.results.map((row) => (row as { workDate: string }).workDate) : [],
+        reportSubmitted: canViewSubmitted && Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
+        employeeUsage: canViewApproved ? employeeUsage.results : [],
+        foremanProgress: canViewSubmitted ? foremanProgress.results : [],
         timesheetMarks: timesheetMarks.results,
       });
     }
     if (scope === "export-range") {
+      if (!canViewApproved) return forbidden();
       const rangeDays = Math.floor((Date.parse(`${rangeEnd}T00:00:00Z`) - Date.parse(`${rangeStart}T00:00:00Z`)) / 86400000) + 1;
       if (rangeDays > 366) throw new Error("Для выгрузки можно выбрать период не более 366 дней.");
       const entries = await placementEntriesForRangeStatement(siteId, rangeStart, rangeEnd, responsibleUserId).all();
       return Response.json({ entries: entries.results });
     }
     if (scope === "report-catalog") {
-      if (authUser.role !== "viewer") await syncProjectMasters(env.DB, siteId);
+      if (hasPermission(authUser.permissions, "project_directories", "create") || hasPermission(authUser.permissions, "project_directories", "update")) await syncProjectMasters(env.DB, siteId);
       const [sites, reportEmployees, placementEmployees, shifts, zones, mainWorkTypes, subworkTypes, masters] = await env.DB.readBatch(reportCatalogStatements(siteId));
       return Response.json({
         sites: canViewAllProjects(authUser) ? sites.results : sites.results.filter((site) => canAccessProject(authUser, Number(site.id))),
@@ -89,7 +87,7 @@ export async function handleGET(request: Request) {
       });
     }
     if (scope === "workspace") {
-      if (authUser.role !== "viewer") await syncProjectMasters(env.DB, siteId);
+      if (hasPermission(authUser.permissions, "project_directories", "create") || hasPermission(authUser.permissions, "project_directories", "update")) await syncProjectMasters(env.DB, siteId);
       const [sites, reportEmployees, placementEmployees, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, reportSubmission, employeeUsage, foremanProgress, timesheetMarks] = await env.DB.readBatch([
         ...reportCatalogStatements(siteId),
         placementEntriesStatement(siteId, workDate, responsibleUserId),
@@ -114,11 +112,11 @@ export async function handleGET(request: Request) {
         mainWorkTypes: mainWorkTypes.results,
         subworkTypes: subworkTypes.results,
         masters: masters.results,
-        entries: entries.results,
-        filledDates: filledDates.results.map((row) => (row as { workDate: string }).workDate),
-        reportSubmitted: (authUser.role !== "viewer" || Boolean(authUser.canViewPendingReports)) && Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
-        employeeUsage: employeeUsage.results,
-        foremanProgress: authUser.role === "viewer" && !authUser.canViewPendingReports ? [] : foremanProgress.results,
+        entries: canViewApproved ? entries.results : [],
+        filledDates: canViewApproved ? filledDates.results.map((row) => (row as { workDate: string }).workDate) : [],
+        reportSubmitted: canViewSubmitted && Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
+        employeeUsage: canViewApproved ? employeeUsage.results : [],
+        foremanProgress: canViewSubmitted ? foremanProgress.results : [],
         timesheetMarks: timesheetMarks.results,
         users: [],
       });
@@ -131,7 +129,7 @@ export async function handleGET(request: Request) {
       const reads = settingsReadPolicy(authUser.permissions, url.searchParams.get("section"));
       if (hasRestrictedProjectAccess(authUser)) reads.sync = false;
       if (!reads.allowed) return forbidden();
-      if (reads.directories) if (authUser.role !== "viewer") await syncProjectMasters(env.DB, siteId);
+      if (reads.directories) if (hasPermission(authUser.permissions, "project_directories", "create") || hasPermission(authUser.permissions, "project_directories", "update")) await syncProjectMasters(env.DB, siteId);
       const [sites, employees, projectEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, users, syncStatus, bitrix24ActionLimits, projectStats] = await readOptionalBatch(env.DB, [
         env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
         reads.employees ? employeeCatalogStatement(authUser, url.searchParams.get("section") === "projectEmployees") : null,
@@ -202,7 +200,7 @@ export async function handleGET(request: Request) {
         projectStats: reads.projectStats ? projectStats.results.filter(row => canViewAllSites || canAccessProject(authUser, Number(row.siteId))) : undefined,
       });
     }
-    if (hasPermission(authUser.permissions, "project_directories", "view") || hasPermission(authUser.permissions, "workers_report", "view")) if (authUser.role !== "viewer") await syncProjectMasters(env.DB, siteId);
+    if (hasPermission(authUser.permissions, "project_directories", "view") || hasPermission(authUser.permissions, "workers_report", "view")) if (hasPermission(authUser.permissions, "project_directories", "create") || hasPermission(authUser.permissions, "project_directories", "update")) await syncProjectMasters(env.DB, siteId);
     const [sites, employees, reportEmployees, placementEmployees, projectEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, entries, filledDates, reportSubmission, users, syncStatus, bitrix24ActionLimits, employeeUsage, foremanProgress, timesheetMarks] = await env.DB.readBatch([
       env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
       employeeCatalogStatement(authUser),
@@ -236,7 +234,7 @@ export async function handleGET(request: Request) {
       foremanProgressStatement(siteId, workDate),
       reportTimesheetMarksStatement(siteId, workDate),
     ]);
-    const canViewWorkerReports = hasPermission(authUser.permissions, "workers_report", "view");
+    const canViewWorkerReports = canViewReports;
     const canViewEmployees = hasPermission(authUser.permissions, "employees", "view");
     const canManageEmployees = hasPermission(authUser.permissions, "employees", "create") || hasPermission(authUser.permissions, "employees", "update");
     const canViewProjectEmployees = hasPermission(authUser.permissions, "project_employees", "view");
@@ -262,11 +260,11 @@ export async function handleGET(request: Request) {
       mainWorkTypes: canViewProjectDirectories ? mainWorkTypes.results : [],
       subworkTypes: canViewProjectDirectories ? subworkTypes.results : [],
       masters: canViewProjectDirectories ? masters.results : [],
-      entries: canViewWorkerReports ? entries.results : [],
-      filledDates: canViewWorkerReports ? filledDates.results.map((row) => (row as { workDate: string }).workDate) : [],
-      reportSubmitted: canViewWorkerReports && (authUser.role !== "viewer" || Boolean(authUser.canViewPendingReports)) && Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
-      employeeUsage: canViewWorkerReports ? employeeUsage.results : [],
-      foremanProgress: canViewWorkerReports && (authUser.role !== "viewer" || authUser.canViewPendingReports) ? foremanProgress.results : [],
+      entries: canViewApproved ? entries.results : [],
+      filledDates: canViewApproved ? filledDates.results.map((row) => (row as { workDate: string }).workDate) : [],
+      reportSubmitted: canViewSubmitted && Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
+      employeeUsage: canViewApproved ? employeeUsage.results : [],
+      foremanProgress: canViewSubmitted ? foremanProgress.results : [],
       timesheetMarks: canViewWorkerReports ? timesheetMarks.results : [],
       users: canViewSystemUsers ? (await usersWithProjectAccess(users.results, authUser)).filter(Boolean) : [],
       syncStatus: canViewEmployees && !hasRestrictedProjectAccess(authUser) ? syncStatus.results[0] ?? null : null,

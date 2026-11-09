@@ -32,6 +32,7 @@ export type PersonnelReportGridRow = {
   entry?: GridEntry;
   draft?: PersonnelSpreadsheetDraft;
   editable?: boolean;
+  removable?: boolean;
   dateEditable?: boolean;
   dateScopeLabel?: string;
   proposalId?: number;
@@ -361,7 +362,7 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
 
   const selectedRows = selectedKeys.flatMap((key) => rowsByKey.get(key) ?? []);
   const removableKeys = selectedRows.filter((row) => row.editable && row.draft && (row.status === "draft" || row.status === "rejected")).map((row) => row.rowKey);
-  const removableApprovedRows = selectedRows.filter(row => row.status === "approved" && row.editable && row.entry);
+  const removableApprovedRows = selectedRows.filter(row => row.status === "approved" && (row.removable ?? row.editable) && row.entry);
   const footerPanel = <div className="personnel-history-footer"><div className="personnel-history-summary" role="status"><strong>Строк: {summary.rows} · Сотрудников: {summary.employees} · Часы: {formatHours(summary.hours)}</strong>{summary.approved > 0 && summary.unapprovedRows > 0 && <span className="personnel-history-approved">Подтверждено: {formatHours(summary.approved)} ч.</span>}{summary.submitted > 0 && <span>На проверке: {formatHours(summary.submitted)} ч.</span>}{summary.draft + summary.rejected > 0 && <span>Черновики: {formatHours(summary.draft + summary.rejected)} ч.</span>}{props.footerStatus && <div className="personnel-history-save-status">{props.footerStatus}</div>}</div><div className="personnel-history-footer-actions">{props.footerActions}{selectedRows.length > 0 && <>{props.canCreate && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onCopyRows(selectedRows)}>Скопировать на сегодня ({selectedRows.length})</button>}{props.onRemoveDraft && removableKeys.length > 0 && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onRemoveDraft?.(removableKeys)}>Убрать из черновика ({removableKeys.length})</button>}{props.onRemoveApproved && removableApprovedRows.length > 0 && <button type="button" className="secondary-button personnel-report-delete-button" disabled={props.loading} aria-haspopup="dialog" onClick={() => props.onRemoveApproved?.(removableApprovedRows)}>Удалить из отчёта ({removableApprovedRows.length})</button>}</>}</div></div>;
   return <section className={`personnel-history-table personnel-page-scroll-table${props.groupByDate ? " personnel-history-grouped" : ""}`} aria-label={props.groupByDate ? "Подтверждённые отчёты по датам" : "Отчёт персонала за все дни"}>
     {props.groupByDate && <div className="personnel-date-controls"><span>Дат: <strong>{summary.dates}</strong></span><div><button type="button" disabled={props.loading || !summary.dates} onClick={() => apiRef.current?.expandAll()}>Раскрыть все</button><button type="button" disabled={props.loading || !summary.dates} onClick={() => apiRef.current?.collapseAll()}>Свернуть все</button></div></div>}

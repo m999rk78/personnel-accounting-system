@@ -7,6 +7,7 @@ import {
   emptyPermissionSet,
   limitPermissionsToRole,
   normalizePermissionSet,
+  patchPermissionSet,
   permissionSetsEqual,
   rolePermissionTemplate,
   roleAllowsPermission,
@@ -40,6 +41,7 @@ type AccessUser = {
   permissions: PermissionSet;
   customized: boolean;
   permissionsCustomized?: boolean;
+  permissionsManageable?: boolean;
 };
 
 type AccessPayload = { sites?: { id: number; name: string }[]; users?: AccessUser[]; canManage?: boolean; currentUserId?: number; error?: string };
@@ -76,6 +78,7 @@ export function AccessRightsView({ onBack, onDirtyChange, onBusyChange, initialU
   const rolesRequestSequence = useRef({ version: 0 });
 
   const selectedUser = users.find((user) => user.id === selectedUserId) ?? null;
+  const selectedCanManage = canManage && selectedUser?.permissionsManageable !== false;
   const roleTemplate = selectedUser ? limitPermissionsToRole(selectedUser.role, selectedUser.roleTemplate ?? rolePermissionTemplate(selectedUser.role), projectAccess) : emptyPermissionSet();
   const changed = selectedUser ? !permissionSetsEqual(draft, selectedUser.permissions) || (projectAccess.mode !== displayedUserProjectAccess(selectedUser).mode || [...projectAccess.siteIds].sort((a,b) => a-b).join(",") !== displayedUserProjectAccess(selectedUser).siteIds.join(",")) || pendingReports !== (selectedUser.canViewPendingReports ?? selectedUser.role !== "viewer") : false;
   useLayoutEffect(() => { onDirtyChange?.(changed); return () => onDirtyChange?.(false); }, [changed, onDirtyChange]);
@@ -178,23 +181,13 @@ export function AccessRightsView({ onBack, onDirtyChange, onBusyChange, initialU
   }
 
   function patchPermission(resource: PermissionResource, action: PermissionAction, enabled: boolean) {
-    if (!selectedUser || !canManage || !roleAllowsPermission(selectedUser.role, resource, action, projectAccess)) return;
-    setDraft((current) => {
-      const next = clonePermissions(current);
-      next[resource][action] = enabled;
-      if (action !== "view" && enabled) next[resource].view = true;
-      if (action === "view" && !enabled) {
-        next[resource].create = false;
-        next[resource].update = false;
-        next[resource].delete = false;
-      }
-      return limitPermissionsToRole(selectedUser.role, next, projectAccess);
-    });
+    if (!selectedUser || !selectedCanManage) return;
+    setDraft(current => patchPermissionSet(current, resource, action, enabled));
     setNotice("");
   }
 
   async function save(reset = false) {
-    if (!selectedUser || !canManage) return;
+    if (!selectedUser || !selectedCanManage) return;
     setSaving(true);
     setError("");
     setNotice("");
@@ -256,19 +249,17 @@ export function AccessRightsView({ onBack, onDirtyChange, onBusyChange, initialU
       <div className="access-matrix-panel">
         {selectedUser ? <>
           <section className="access-project-panel" aria-label="Доступ выбранного пользователя к проектам">
-            <header><h3>Доступ к проектам</h3>{selectedUser.projectAccessLimitedToViewer && <span>В пределах вашего доступа</span>}</header>
-            <ProjectAccessPicker key={selectedUser.id} value={projectAccess} sites={sites} disabled={!canManage || saving || selectedUser.role === "superadmin"} onChange={next => { setProjectAccess(next); setDraft(current => limitPermissionsToRole(selectedUser.role, current, next)); setNotice(""); }} />
-            {selectedUser.role === "viewer" && <label className="access-pending-toggle" aria-label="Показывать черновики и отчёты на проверке"><input type="checkbox" checked={pendingReports} disabled={!canManage || saving} onChange={event => { setPendingReports(event.target.checked); setNotice(""); }} /><span><strong>Показывать черновики и отчёты на проверке</strong><small>По умолчанию пользователь видит подтверждённые отчёты и табели. Роль «Просмотр» не позволяет менять данные.</small></span></label>}
+            <header><h3>Доступ к проектам</h3>{selectedUser.projectAccessLimitedToViewer && <span>{selectedCanManage ? "В пределах вашего доступа" : "Доступ пользователя выходит за пределы ваших проектов"}</span>}</header>
+            <ProjectAccessPicker key={selectedUser.id} value={projectAccess} sites={sites} disabled={!selectedCanManage || saving || selectedUser.role === "superadmin"} onChange={next => { setProjectAccess(next); setDraft(current => limitPermissionsToRole(selectedUser.role, current, next)); setNotice(""); }} />
+
           </section>
-          <div className="access-preset-bar"><div><strong>{changed ? "Не сохранено" : "Сохранено"}</strong></div>{canManage && <div><button type="button" onClick={() => setDraft(clonePermissions(roleTemplate))} disabled={saving}>Шаблон роли</button><button type="button" onClick={applyViewOnly} disabled={saving}>Только просмотр</button><button type="button" onClick={applyFullAccess} disabled={saving}>{selectedUser.role === "viewer" ? "Все разделы" : "Полный доступ"}</button></div>}</div>
-          <PermissionMatrix compact label={`Права доступа: ${selectedUser.fullName}`} value={draft} disabled={!canManage || saving} onChange={patchPermission} cellPolicy={(resource, action) => {
-            const allowed = selectedUser.projectAccessLimitedToViewer
-              ? selectedUser.role !== "viewer" || action === "view"
-              : roleAllowsPermission(selectedUser.role, resource, action, projectAccess);
+          <div className="access-preset-bar"><div><strong>{changed ? "Не сохранено" : "Сохранено"}</strong></div>{selectedCanManage && <div><button type="button" onClick={() => setDraft(clonePermissions(roleTemplate))} disabled={saving}>Шаблон роли</button><button type="button" onClick={applyViewOnly} disabled={saving}>Только просмотр</button><button type="button" onClick={applyFullAccess} disabled={saving}>Полный доступ</button></div>}</div>
+          <PermissionMatrix compact label={`Права доступа: ${selectedUser.fullName}`} value={draft} disabled={!selectedCanManage || saving} onChange={patchPermission} cellPolicy={(resource, action) => {
+            const allowed = roleAllowsPermission(selectedUser.role, resource, action, projectAccess);
             const locked = selectedUser.id === currentUserId && resource === "access_rights" && (action === "view" || action === "update");
-            return { allowed, locked, ...(!allowed ? { title: selectedUser.role === "viewer" ? "Роль «Просмотр» не позволяет изменять данные" : "Доступ к выбранным проектам не позволяет менять общие настройки пользователей" } : {}) };
+            return { allowed, locked };
           }} />
-          <footer className="access-rights-footer">{selectedUser.id === currentUserId && <span>Собственное управление доступом защищено.</span>}{canManage && <div><button type="button" className="back-button" onClick={() => void save(true)} disabled={saving || (!selectedUser.customized && permissionSetsEqual(draft, roleTemplate))}>Вернуть права роли</button><button type="button" className="primary-button" onClick={() => void save(false)} disabled={saving || !changed}>{saving ? "Сохраняем…" : "Сохранить доступ"}</button></div>}</footer>
+          <footer className="access-rights-footer">{selectedUser.id === currentUserId && <span>Собственное управление доступом защищено.</span>}{selectedCanManage && <div><button type="button" className="back-button" onClick={() => void save(true)} disabled={saving || (!selectedUser.customized && permissionSetsEqual(draft, roleTemplate))}>Вернуть права роли</button><button type="button" className="primary-button" onClick={() => void save(false)} disabled={saving || !changed}>{saving ? "Сохраняем…" : "Сохранить доступ"}</button></div>}</footer>
         </> : <div className="access-matrix-empty">{embedded ? loading ? "Загружаем права…" : "Пользователь недоступен" : "Выберите пользователя слева"}</div>}
       </div>
     </div>

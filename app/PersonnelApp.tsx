@@ -15,12 +15,12 @@ import { useConfirmationDialog } from "./useConfirmationDialog";
 import { CustomSelect } from "./CustomSelect";
 import { EquipmentAccountingView } from "./EquipmentAccountingView";
 import { ExcelActionsMenu } from "./ExcelActionsMenu";
-import { hasPermission, limitPermissionsToRole, type PermissionAction, type PermissionResource } from "./permissionModel";
+import { getReportStatusPermission, hasPermission, limitPermissionsToRole, type PermissionAction, type PermissionResource } from "./permissionModel";
 import { ProjectCards } from "./ProjectCards";
 import { TimesheetView } from "./TimesheetView";
 import { UserAccessCards } from "./UserAccessCards";
 import { parseWorkspaceLocation, workspaceDocumentTitle, workspaceUrl } from "./appRoutes";
-import { accessibleProjectIds, canAccessProject, canInspectBitrix24, canViewAllProjects, hasRestrictedProjectAccess } from "./roles";
+import { accessibleProjectIds, canAccessProject, canViewAllProjects, canViewPendingReportsFor, hasRestrictedProjectAccess } from "./roles";
 import { profileProjectChangeAllowed, userDraftProjectAccess, userProjectAccessValid, userProjectLabel, userRoleLabel, userVisibleProjects } from "./userAccessModel";
 import { WorkspaceAccessProvider } from "./TableAccessContext";
 import { SidebarToggleButton } from "./SidebarToggleButton";
@@ -49,8 +49,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const missingAssignedProject = projectIds !== null && projectIds.length === 0;
   const may = useCallback((resource: PermissionResource, action: PermissionAction = "view") => !missingAssignedProject && hasPermission(effectivePermissions, resource, action), [effectivePermissions, missingAssignedProject]);
   const anyAction = (resource: PermissionResource) => (["create", "update", "delete"] as PermissionAction[]).some((action) => may(resource, action));
-  const mayViewWorkersReport = may("workers_report");
-  const mayViewEquipmentReport = may("equipment_report");
+  const reportVisible = (resource: "workers_report" | "equipment_report") => may(resource) && (["approved", "submitted", "draft"] as const).some(status => (status === "approved" || canViewPendingReportsFor(currentUser)) && getReportStatusPermission(effectivePermissions, resource, status).view);
+  const mayViewWorkersReport = reportVisible("workers_report");
+  const mayViewEquipmentReport = reportVisible("equipment_report");
   const mayViewWorkersTimesheet = may("workers_timesheet");
   const mayViewEquipmentTimesheet = may("equipment_timesheet");
   const mayCreateWorkersReport = may("workers_report", "create");
@@ -79,14 +80,14 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const mayDeleteProjectDirectories = may("project_directories", "delete");
   const mayAccessGeneralSettings = GENERAL_SETTINGS_RESOURCES.some((resource) => may(resource));
   const mayAccessProjectSettings = PROJECT_SETTINGS_RESOURCES.some((resource) => may(resource));
-  const mayInspectBitrix24 = canInspectBitrix24(role) && !hasRestrictedProjectAccess(currentUser) && may("employees");
+  const mayInspectBitrix24 = !hasRestrictedProjectAccess(currentUser) && may("employees");
   const mayViewAllProjects = canViewAllProjects(currentUser) || (projectIds?.length ?? 0) > 1;
   const [initialLocation] = useState(() => parseWorkspaceLocation(
     typeof window === "undefined" ? "/reports/workers" : window.location.pathname,
     typeof window === "undefined" ? "" : window.location.search,
     initialToday,
   ));
-  const viewAllowed = useCallback((candidate: View) => !missingAssignedProject && workspaceViewAllowed(effectivePermissions, candidate), [effectivePermissions, missingAssignedProject]);
+  const viewAllowed = useCallback((candidate: View) => candidate === "placement" ? mayViewWorkersReport : candidate === "equipment" ? mayViewEquipmentReport : !missingAssignedProject && workspaceViewAllowed(effectivePermissions, candidate), [effectivePermissions, missingAssignedProject, mayViewWorkersReport, mayViewEquipmentReport]);
   const fallbackView = useMemo(() => (["placement", "equipment", "timesheet", "equipmentTimesheet", "projectSettings", "settings"] as View[]).find(viewAllowed) ?? "placement", [viewAllowed]);
   const [initialView] = useState(() => viewAllowed(initialLocation.view) ? initialLocation.view : fallbackView);
   const [sidebarOpen, setSidebarOpen] = useState(true);

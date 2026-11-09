@@ -24,7 +24,6 @@ export async function handlePOST(request: Request) {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
-    if (authUser.role === "viewer") return forbidden();
     await ensureDatabaseInitialized();
     const payload = (await request.json()) as EntryPayload & UserPayload & { entries?: EntryPayload[] };
     if (payload.action && (!canRunAction(authUser, payload) || !scopedDataActionAllowed(authUser, payload))) return forbidden();

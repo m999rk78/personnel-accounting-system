@@ -1,6 +1,8 @@
 import type { AuthUser } from "./auth";
 import { canAccessProject, canViewPendingReportsFor } from "./roles.ts";
 export { canViewPendingReportsFor };
+import { hasReportStatusPermission } from "./permissionModel.ts";
+export { hasReportStatusPermission };
 import type { PersonnelReportDraftRow, PersonnelReportRowValidationIssue, PersonnelReportStatus, PersonnelReportTransitionRequest } from "./personnelReportTypes";
 
 export class PersonnelReportError extends Error {
@@ -38,7 +40,7 @@ export function validPersonnelReportDate(value: unknown): value is string {
 }
 
 export function canReviewPersonnelReport(user: Actor) {
-  return (user.role === "engineer" || user.role === "superadmin") && Boolean(user.permissions.workers_report?.update);
+  return hasReportStatusPermission(user.permissions, "workers_report", "submitted", "update") || hasReportStatusPermission(user.permissions, "workers_report", "approved", "update");
 }
 
 export function assertPersonnelReportSiteAccess(user: Actor, siteId: number) {
@@ -49,9 +51,7 @@ export function assertPersonnelReportSiteAccess(user: Actor, siteId: number) {
 
 export function assertPersonnelReportOwner(user: Actor, report: Pick<ReportIdentity, "siteId" | "ownerUserId" | "status">) {
   assertPersonnelReportSiteAccess(user, report.siteId);
-  if (user.role === "foreman" && report.ownerUserId !== user.id) {
-    throw new PersonnelReportError("Прораб может изменять только свою часть отчёта.", 403, "REPORT_FORBIDDEN");
-  }
+  if (!hasReportStatusPermission(user.permissions, "workers_report", report.status, "view")) throw new PersonnelReportError("Нет доступа к отчётам в этом статусе.", 403, "REPORT_FORBIDDEN");
   if (report.ownerUserId !== user.id && (report.status === "draft" || report.status === "rejected")) {
     throw new PersonnelReportError("Черновик доступен только его автору.", 403, "REPORT_FORBIDDEN");
   }
@@ -67,32 +67,39 @@ export function assertPersonnelReportRevision(actual: number, expected: unknown)
 }
 
 export function assertCanSavePersonnelReport(user: Actor, report?: ReportIdentity) {
-  if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   if (!report) {
-    if (!user.permissions.workers_report?.create) throw new PersonnelReportError("Нет права создавать отчёты.", 403, "REPORT_FORBIDDEN");
+    if (!hasReportStatusPermission(user.permissions, "workers_report", "draft", "create")) throw new PersonnelReportError("Нет права создавать черновики отчётов.", 403, "REPORT_FORBIDDEN");
     return;
   }
   assertPersonnelReportOwner(user, report);
   if (!user.permissions.workers_report?.update) throw new PersonnelReportError("Нет права редактировать отчёты.", 403, "REPORT_FORBIDDEN");
-  if (report.status !== "draft" && report.status !== "rejected" && !canReviewPersonnelReport(user)) {
-    throw new PersonnelReportError("Этот отчёт может исправить инженер. Для изменения прорабом снимите его с проверки или верните на доработку.", 409, "REPORT_LOCKED");
-  }
+  if (!hasReportStatusPermission(user.permissions, "workers_report", report.status, "update")) throw new PersonnelReportError("Нет права редактировать отчёты в этом статусе.", 403, "REPORT_FORBIDDEN");
 }
 
 export function nextPersonnelReportStatus(user: Actor, report: ReportIdentity, action: PersonnelReportTransitionRequest["action"], comment = ""): PersonnelReportStatus {
-  if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
   assertPersonnelReportOwner(user, report);
   if (!user.permissions.workers_report?.update) throw new PersonnelReportError("Нет права изменять отчёты.", 403, "REPORT_FORBIDDEN");
   if ((action === "approve" || action === "reject") && !canReviewPersonnelReport(user)) {
-    throw new PersonnelReportError("Подтвердить или вернуть отчёт может только инженер.", 403, "REVIEW_FORBIDDEN");
+    throw new PersonnelReportError("Нет права проверять отчёты.", 403, "REVIEW_FORBIDDEN");
   }
-  if (action === "submit" && (report.status === "draft" || report.status === "rejected")) return "submitted";
-  if (action === "approve" && report.status === "submitted") return "approved";
+  if (!hasReportStatusPermission(user.permissions, "workers_report", report.status, action === "reopen" ? "view" : "update")) throw new PersonnelReportError("Нет права изменять отчёты в этом статусе.", 403, "REPORT_FORBIDDEN");
+  if (action === "submit" && (report.status === "draft" || report.status === "rejected")) {
+    if (!hasReportStatusPermission(user.permissions, "workers_report", "submitted", "view")) throw new PersonnelReportError("Нет доступа к отправке отчётов на проверку.", 403, "REPORT_FORBIDDEN");
+    return "submitted";
+  }
+  if (action === "approve" && report.status === "submitted") {
+    if (!hasReportStatusPermission(user.permissions, "workers_report", "approved", "create")) throw new PersonnelReportError("Нет права подтверждать отчёты.", 403, "REPORT_FORBIDDEN");
+    return "approved";
+  }
   if (action === "reject" && report.status === "submitted") {
     if (!comment.trim()) throw new PersonnelReportError("Укажите причину возврата отчёта.");
     return "rejected";
   }
-  if (action === "reopen" && report.status === "submitted") return "draft";
+  if (action === "reopen" && report.status === "submitted") {
+    if (report.ownerUserId !== user.id) throw new PersonnelReportError("Снять с проверки можно только свой отчёт.", 403, "REPORT_FORBIDDEN");
+    if (!hasReportStatusPermission(user.permissions, "workers_report", "draft", "update")) throw new PersonnelReportError("Нет права возвращать отчёт в черновик.", 403, "REPORT_FORBIDDEN");
+    return "draft";
+  }
   throw new PersonnelReportError("Состояние отчёта уже изменилось. Обновите таблицу.", 409, "INVALID_TRANSITION");
 }
 

@@ -9,6 +9,7 @@ import { gridTheme, pinnableHeader, type GridEquipmentUnit } from "../../app/AgD
 import { LocalizedGrid, personnelColumnFilter, personnelFilterParams } from "../../app/GridFilters";
 import { TableOrderProvider } from "../../app/TableRowMoves";
 import { moveRowBlock, reconcileRowOrder } from "../../app/tableRowOrder";
+import { SelectionCopyTarget } from "./selection-copy-target";
 import "../../app/globals.css";
 
 type Screen = "workers" | "equipment" | "grid" | "legacy";
@@ -26,6 +27,12 @@ const units: GridEquipmentUnit[] = [
   { id: 103, organization: "Стройтехника", equipmentType: "Самосвал", brand: "Тест", model: "СМ-3", registrationNumber: "ТЕСТ-103", note: "" },
   { id: 104, organization: "Контроль", equipmentType: "Погрузчик", brand: "Тест", model: "ПГ-4", registrationNumber: "ТЕСТ-104", note: "" },
 ];
+if (new URLSearchParams(location.search).has("many")) {
+  for (let index = 0; index < 400; index++) {
+    employees.push({ id: 10_000 + index, fullName: `Сотрудник для проверки виртуализации ${String(index + 1).padStart(3, "0")}`, employmentType: "ОПР", department: "Учебный отдел", position: "Монтажник" });
+    units.push({ id: 20_000 + index, organization: "Учебная организация", equipmentType: "Экскаватор", brand: "Тест", model: `Тестовая модель ${index + 1}`, registrationNumber: `ТЕСТ-${20_000 + index}`, note: "" });
+  }
+}
 const stores = new Map<string, ReturnType<typeof makeStore>>();
 const orders = new Map<string, number[]>();
 function makeStore(month: string) {
@@ -110,7 +117,7 @@ window.fetch = async (input, init) => {
 
 type ExampleRow = { id: number; kind: "entry"; name: string; organization: string; hours: number; date: string };
 function ExampleGrid({ month, enterprise = true }: { month: string; enterprise?: boolean }) {
-  const [rows, setRows] = useState<ExampleRow[]>(() => employees.map((employee, index) => ({ id: employee.id, kind: "entry", name: employee.fullName, organization: units[index].organization, hours: [0, 4, 8, 12][index], date: `${month}-0${index + 1}` })));
+  const [rows, setRows] = useState<ExampleRow[]>(() => employees.map((employee, index) => ({ id: employee.id, kind: "entry", name: employee.fullName, organization: units[index].organization, hours: [0, 4, 8, 12][index % 4], date: `${month}-${String(index % 28 + 1).padStart(2, "0")}` })));
   const columns = useMemo<ColDef<ExampleRow>[]>(() => [
     { field: "name", headerName: "Сотрудник", minWidth: 260, flex: 2 },
     { field: "organization", headerName: "Организация", minWidth: 220, flex: 1.5 },
@@ -147,6 +154,7 @@ function Fixture() {
       <button type="button" onClick={() => { stores.clear(); orders.clear(); setVersion(value => value + 1); }}>Сбросить тестовые данные</button>
     </nav>
     <p className="unified-fixture-note">По 4 строки. Данные 1–2 числа: часы, код В, ручные правки, расхождения, простой и пустые дни. Все изменения остаются в памяти браузера.</p>
+    <SelectionCopyTarget />
     <div className="unified-fixture-content timesheet-workspace-page">
       {!gridScreen && <div id={screen === "workers" ? "personnel-timesheet-actions" : "equipment-timesheet-actions"} className="unified-fixture-actions"/>}
       <TableOrderProvider key={key} scope={screen === "equipment" ? "project-equipment" : "project-personnel"} siteId={siteId}>

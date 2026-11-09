@@ -15,7 +15,7 @@ export function personnelReportDeletionPlan(siteId: number, selectedRows: Person
   const payload: PersonnelReportDeleteApprovedRequest = { action: "delete-approved-rows", siteId, rows: [] };
   const items: PersonnelReportDeletionPlan["items"] = [];
   for (const row of selectedRows) {
-    if (row.status !== "approved" || !row.editable) throw new Error("Можно удалить только доступные вам подтверждённые записи.");
+    if (row.status !== "approved" || !(row.removable ?? row.editable)) throw new Error("Можно удалить только доступные вам подтверждённые записи.");
     const report = row.proposalId ? reports.find(item => item.id === row.proposalId) : undefined;
     const source = report?.rows.find(item => row.rowKey === `report-${report.id}-${item.id}`);
     const entry = row.proposalId ? undefined : entries.find(item => row.rowKey === `approved-${item.id}` && !item.orderReportId);

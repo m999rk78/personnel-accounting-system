@@ -1,12 +1,13 @@
 import { type AuthUser } from "../../auth";
-import { type PermissionAction, hasPermission, type PermissionResource } from "../../permissionModel";
+import { type PermissionAction, hasPermission, hasReportStatusPermission, type PermissionResource } from "../../permissionModel";
 import { canAccessProject } from "../../roles";
 import { validDate, asPositiveInteger } from "./validation";
 import { type UserPayload } from "./types";
 import { directoryTable } from "./catalogs";
 
 export function canManagePlacement(user: AuthUser, siteId: number | undefined, workDate: string | undefined, action: PermissionAction = "update") {
-  if (!hasPermission(user.permissions, "workers_report", action)) return false;
+  // This legacy API writes published placements; draft rights cannot authorize it.
+  if (!hasReportStatusPermission(user.permissions, "workers_report", "approved", action)) return false;
   if (!workDate || !validDate(workDate)) return false;
   return canAccessProject(user, siteId);
 }
@@ -43,7 +44,7 @@ export function canRunAction(user: AuthUser, payload: UserPayload) {
 }
 
 export function canDeleteEntity(user: AuthUser, entity: string | null, kind: string | null) {
-  if (!entity) return hasPermission(user.permissions, "workers_report", "delete");
+  if (!entity) return hasReportStatusPermission(user.permissions, "workers_report", "approved", "delete");
   if (entity === "employee") return hasPermission(user.permissions, "employees", "delete");
   if (entity === "employee-assignment") return hasPermission(user.permissions, "project_employees", "delete");
   if (entity === "user") return hasPermission(user.permissions, "system_users", "delete");

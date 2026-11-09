@@ -10,7 +10,7 @@ const moduleUrl = source => `data:text/javascript;base64,${Buffer.from(source).t
 async function compile(path,replacements={}) {
   let source=ts.transpileModule(await readFile(new URL(path,import.meta.url),"utf8"),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext,jsx:ts.JsxEmit.ReactJSX}}).outputText;
   // Selection keyboard handling is tested separately; this harness exercises roles.
-  for(const [specifier,replacement] of Object.entries({react:import.meta.resolve("react"),"react-dom":import.meta.resolve("react-dom"),"react/jsx-runtime":import.meta.resolve("react/jsx-runtime"),"./customRoles.css":moduleUrl(""),"./usersRights.css":moduleUrl(""),"./useTableEscapeSelection":moduleUrl("export function useTableEscapeSelection(){}"),"./useTimesheetFilters":moduleUrl("export function useTimesheetFilters({rows}){return {rows,context:{},controller:null,isActive:false,activeCount:0,reset(){}};}"),"./TimesheetColumnFilter":moduleUrl("export function TimesheetFiltersProvider({children}){return children;}export function TimesheetFilterableHeading({children}){return children;}"),...replacements})) source=source.replaceAll(JSON.stringify(specifier),JSON.stringify(replacement));
+  for(const [specifier,replacement] of Object.entries({react:import.meta.resolve("react"),"react-dom":import.meta.resolve("react-dom"),"react/jsx-runtime":import.meta.resolve("react/jsx-runtime"),"./customRoles.css":moduleUrl(""),"./usersRights.css":moduleUrl(""),"./useTableEscapeSelection":moduleUrl("export function useTableEscapeSelection(){}"),"./useNativeTableSelectAll":moduleUrl("export function useNativeTableSelectAll(){return {ref:{current:null},selected:false,className:'',handlers:{}};}"),"./useTimesheetFilters":moduleUrl("export function useTimesheetFilters({rows}){return {rows,context:{},controller:null,isActive:false,activeCount:0,reset(){}};}"),"./TimesheetColumnFilter":moduleUrl("export function TimesheetFiltersProvider({children}){return children;}export function TimesheetFilterableHeading({children}){return children;}"),...replacements})) source=source.replaceAll(JSON.stringify(specifier),JSON.stringify(replacement));
   return moduleUrl(source);
 }
 const pickerUrl=await compile("../app/ProjectAccessPicker.tsx");
@@ -42,7 +42,8 @@ test("engineer no longer requires a single assigned project and viewer must sele
   assert.match(viewer,/<span class="custom-select-value">Аудитор<\/span>/);
   assert.doesNotMatch(viewer,/class="user-role-card/);
   assert.doesNotMatch(viewer,/<strong>Админ<\/strong>/);
-  assert.match(viewer,/По умолчанию доступны подтверждённые отчёты и табели/);
+  assert.match(viewer,/Роли настраиваются на вкладке «Роли и права»/);
+  assert.doesNotMatch(viewer,/Изменение данных всегда запрещено|Роль «Просмотр» не позволяет менять данные/);
   const closed=render([draft({role:"viewer",projectAccess:{mode:"selected",siteIds:[]}})]);
   assert.doesNotMatch(closed,/class="user-create-submit" disabled/);
   const selected=render([draft({role:"viewer",projectAccess:{mode:"selected",siteIds:[7,8]}})]);

@@ -165,12 +165,12 @@ export async function GET(request: Request) {
       siteId,
       siteName: site.name,
       month,
-      canEdit: authUser.role !== "viewer" && (hasPermission(authUser.permissions, "workers_timesheet", "create")
+      canEdit: hasPermission(authUser.permissions, "workers_timesheet", "create")
         || hasPermission(authUser.permissions, "workers_timesheet", "update")
-        || hasPermission(authUser.permissions, "workers_timesheet", "delete")),
-      canCreate: authUser.role !== "viewer" && hasPermission(authUser.permissions, "workers_timesheet", "create"),
-      canUpdate: authUser.role !== "viewer" && hasPermission(authUser.permissions, "workers_timesheet", "update"),
-      canDelete: authUser.role !== "viewer" && hasPermission(authUser.permissions, "workers_timesheet", "delete"),
+        || hasPermission(authUser.permissions, "workers_timesheet", "delete"),
+      canCreate: hasPermission(authUser.permissions, "workers_timesheet", "create"),
+      canUpdate: hasPermission(authUser.permissions, "workers_timesheet", "update"),
+      canDelete: hasPermission(authUser.permissions, "workers_timesheet", "delete"),
       employees: orderPersonnelTimesheetReferenceEmployees(employeesResult.results as TimesheetEmployee[]),
       entries: entriesResult.results as TimesheetEntry[],
       marks: marksResult.results as TimesheetMark[],
@@ -186,8 +186,8 @@ async function handlePOST(request: Request): Promise<Response> {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return errorResponse("Требуется авторизация.", 401);
-    if (authUser.role === "viewer") return errorResponse("Роль «Просмотр» не может изменять данные.", 403);
     if (!hasPermission(authUser.permissions, "workers_timesheet", "view")) return errorResponse("Нет доступа к табелю рабочих.", 403);
+    if (!(["create", "update", "delete"] as const).some(action => hasPermission(authUser.permissions, "workers_timesheet", action))) return errorResponse("Нет права изменять табель рабочих.", 403);
 
     const payload = await request.json() as { siteId?: unknown; employeeId?: unknown; workDate?: unknown; value?: unknown; note?: unknown };
     const requestedSiteId = positiveInteger(payload.siteId);

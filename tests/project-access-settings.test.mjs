@@ -86,19 +86,34 @@ test("a later permission persistence error rolls back already saved project gran
   assert.ok(h.db.attemptedWrites.some(write=>write.sql.startsWith("INSERT INTO user_project_access (")&&write.values[1]===1));
 });
 
-test("a viewer cannot acquire writes through custom permissions or administer access",async()=>{
+test("explicit viewer grants allow working and management rights while revoking them denies writes",async()=>{
   const h=await projectAccessHarness(); await h.asUser(4);
   const response=await h.route.POST(accessRequest({userId:3,projectAccess:{mode:"all",siteIds:[]},permissions:rolePermissionTemplate("superadmin"),canViewPendingReports:true}));
   assert.equal(response.status,200);
   const payload=await response.json();
-  for(const row of Object.values(payload.permissions))for(const action of ["create","update","delete"])assert.equal(row[action],false);
-  await h.asUser(3,{permissions:rolePermissionTemplate("superadmin")});
+  assert.deepEqual(payload.permissions,rolePermissionTemplate("superadmin"));
+  await h.asUser(3);
+  assert.equal((await h.route.POST(accessRequest({userId:2,projectAccess:{mode:"all",siteIds:[]}}))).status,200);
+  const fresh=await h.permissions.loadEffectivePermissions(3,"viewer",{mode:"all",siteIds:[]},h.db);
+  assert.equal(hasPermission(fresh.permissions,"workers_report","view"),true);
+  assert.equal(hasPermission(fresh.permissions,"workers_report","update"),true);
+  await h.asUser(3,{permissions:rolePermissionTemplate("viewer")});
   const writes=h.db.attemptedWrites.length;
   assert.equal((await h.route.POST(accessRequest({userId:2,projectAccess:{mode:"all",siteIds:[]}}))).status,403);
   assert.equal(h.db.attemptedWrites.length,writes);
-  const fresh=await h.permissions.loadEffectivePermissions(3,"viewer",{mode:"all",siteIds:[]},h.db);
-  assert.equal(hasPermission(fresh.permissions,"workers_report","view"),true);
-  assert.equal(hasPermission(fresh.permissions,"workers_report","update"),false);
+});
+
+ test("a project-scoped manager can change an in-scope account but cannot widen project grants",async t=>{
+  t.mock.method(console,"error",()=>{});
+  const h=await projectAccessHarness();
+  await h.settings.saveUserProjectAccess(3,{projectAccess:{mode:"selected",siteIds:[7]}},4,h.db);
+  await h.asUser(2,{projectAccess:{mode:"selected",siteIds:[7]},permissions:rolePermissionTemplate("superadmin")});
+  assert.equal((await h.route.POST(accessRequest({userId:3,permissions:rolePermissionTemplate("engineer")}))).status,200);
+  const before=structuredClone(h.db.state);
+  for(const projectAccess of [{mode:"all",siteIds:[]},{mode:"selected",siteIds:[7,8]}]){
+    assert.equal((await h.route.POST(accessRequest({userId:3,projectAccess,permissions:rolePermissionTemplate("superadmin")}))).status,403);
+    assert.deepEqual(h.db.state,before);
+  }
 });
 
 test("resetting section permissions preserves project revocation and pending-report settings",async()=>{

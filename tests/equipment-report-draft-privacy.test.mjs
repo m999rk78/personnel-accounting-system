@@ -5,9 +5,11 @@ import { compileModuleGraph } from "./fixtures/compile-module-graph.mjs";
 
 const store = await import(await compileModuleGraph(new URL("../app/equipmentReportStore.ts", import.meta.url)));
 
-const actor = (role, id = 8, canViewPendingReports = true) => ({ id, role, fullName: `Пользователь ${id}`,
-  assignedSiteId: 7, projectAccess: { mode: "selected", siteIds: [7] }, canViewPendingReports,
-  permissions: rolePermissionTemplate(role) });
+const actor = (role, id = 8, canViewPendingReports = true) => {
+  const permissions = rolePermissionTemplate(role);
+  if (role === "viewer" && canViewPendingReports) for (const resource of ["workers_report_draft", "equipment_report_draft"]) permissions[resource].view = true;
+  return { id, role, fullName: `Пользователь ${id}`, assignedSiteId: 7, projectAccess: { mode: "selected", siteIds: [7] }, canViewPendingReports, permissions };
+};
 const headers = [7, 8, 9].flatMap(ownerUserId => ["draft", "rejected", "submitted", "approved"].map((status, index) => ({
   id: ownerUserId * 10 + index, siteId: 7, workDate: "2026-11-05", ownerUserId, ownerName: `Прораб ${ownerUserId}`, status, revision: 1,
 })));
@@ -61,28 +63,29 @@ for (const role of ["engineer", "superadmin", "viewer"]) test(`${role}: own draf
   assert.deepEqual(result.entries.map(entry => entry.responsibleUserId), [7, 8, 9]);
   const headerQuery = db.queries.find(query => query.sql.includes("JOIN app_users owner"));
   assert.match(headerQuery.sql, /report\.status IN \('approved', 'submitted'\) OR report\.owner_user_id = \?/);
-  assert.deepEqual(headerQuery.values, [7, "2026-11-01", "2026-11-30", user.id]);
+  assert.deepEqual(headerQuery.values, [7, "2026-11-01", "2026-11-30", user.id, ["draft", "rejected", "submitted", "approved"]]);
   const entryQuery = db.queries.find(query => query.sql.includes("FROM equipment_entries entry"));
   assert.deepEqual(entryQuery.values, [7, "2026-11-01", "2026-11-30"]);
   const rowQuery = db.queries.find(query => query.sql.includes("FROM equipment_report_rows draft_row JOIN"));
   assert.deepEqual(rowQuery.values, [result.reports.map(report => report.id)]);
 });
 
-test("several foremen each receive only their own reports and published crew", async () => {
+test("foremen see published project records while every private draft stays with its author", async () => {
   for (const id of [7, 8, 9]) {
     const db = database();
     const result = await store.listEquipmentReports(db, actor("foreman", id), 7, null, null);
-    assert.equal(result.reports.length, 4);
-    assert.ok(result.reports.every(report => report.ownerUserId === id));
-    assert.ok(result.reports.flatMap(report => report.rows).every(row => row.equipmentId === id * 100));
-    assert.deepEqual(result.entries.map(entry => entry.responsibleUserId), [id]);
-    assert.match(db.queries.find(query => query.sql.includes("JOIN app_users owner")).sql, /AND report\.owner_user_id = \?/);
+    assert.equal(result.reports.length, 8);
+    assert.ok(result.reports.filter(report => ["draft", "rejected"].includes(report.status)).every(report => report.ownerUserId === id));
+    assert.equal(result.reports.filter(report => report.status === "submitted").length, 3);
+    assert.equal(result.reports.filter(report => report.status === "approved").length, 3);
+    assert.deepEqual(result.entries.map(entry => entry.responsibleUserId), [7, 8, 9]);
+    assert.match(db.queries.find(query => query.sql.includes("JOIN app_users owner")).sql, /report\.status IN \('approved', 'submitted'\) OR report\.owner_user_id = \?/);
   }
 });
 
 test("viewer without pending permission receives no drafts, even their own", async () => {
   const result = await store.listEquipmentReports(database(), actor("viewer", 8, false), 7, null, null);
-  assert.deepEqual(result.reports.map(report => report.status), ["approved", "approved", "approved"]);
+  assert.deepEqual(result.reports.map(report => report.status), ["submitted", "approved", "submitted", "approved", "submitted", "approved"]);
 });
 
 test("foreign drafts cannot be saved, submitted, moved or prevalidated even by engineers and superadmins", async () => {

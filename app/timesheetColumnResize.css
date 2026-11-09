@@ -11,10 +11,12 @@
 .timesheet-grid-shell .timesheet-table.timesheet-resizable .timesheet-summary-label { width:var(--timesheet-sticky-width)!important; min-width:var(--timesheet-sticky-width)!important; max-width:var(--timesheet-sticky-width)!important; }
 .timesheet-resizable thead th { isolation:isolate; }
 .timesheet-resizable thead .timesheet-filterable-heading { width:100%; padding:0; }
-.timesheet-resizable thead .timesheet-filterable-heading-label { box-sizing:border-box; width:100%; padding-right:18px; text-align:center; }
+.timesheet-resizable thead .timesheet-filterable-heading-label { box-sizing:border-box; width:100%; padding:0; text-align:center; }
 /* The filter shares the caption's vertical center without covering its text. */
-.timesheet-resizable thead .timesheet-filterable-heading:not(.compact) .timesheet-header-filter { top:50%; right:0; width:16px; height:24px; transform:translateY(-50%); }
-.timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-filterable-heading-label { padding-right:14px; }
+.timesheet-resizable thead .timesheet-filterable-heading:not(.compact) .timesheet-header-filter { top:50%; right:-8px; width:16px; height:24px; transform:translateY(-50%); }
+.timesheet-resizable thead .timesheet-filterable-heading:not(.compact) .timesheet-header-filter-icon svg { width:11px; height:11px; }
+.timesheet-resizable thead .timesheet-total-column .timesheet-filterable-heading-label { font-size:9px; }
+.timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-filterable-heading-label { padding:0; }
 .timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-header-filter { top:50%; right:0; bottom:auto; width:14px; height:22px; transform:translateY(-50%); }
 .timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-header-filter-icon,.timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-header-filter-icon svg { width:11px; height:11px; }
 .timesheet-resizable .timesheet-total-column { text-align:center; }

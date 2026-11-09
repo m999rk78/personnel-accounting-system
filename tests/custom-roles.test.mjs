@@ -119,7 +119,7 @@ test("custom role store persists normalized reusable templates and handles concu
   assert.deepEqual(await h.server.listCustomRoles(h.db), [], "corrupt roles cannot re-enter authorization");
 });
 
-test("effective permissions use custom defaults, preserve explicit overrides, and retain scope/read-only limits", async () => {
+test("effective permissions use custom defaults and preserve explicit per-user grants for every role", async () => {
   const h = await harness();
   const role = await h.server.createCustomRole({ name: "Диспетчер", permissions: { equipment_report: { create: true, update: true } } }, 4, h.db);
   let effective = await h.permissions.loadEffectivePermissions(9, "engineer", { mode: "all", siteIds: [] }, h.db, role);
@@ -134,7 +134,7 @@ test("effective permissions use custom defaults, preserve explicit overrides, an
   const viewerRole = await h.server.createCustomRole({ name: "Сметный контроль", permissions: { workers_report: { view: true } } }, 4, h.db);
   h.db.overrides.push({ resource: "workers_report", canView: 1, canCreate: 1, canUpdate: 1, canDelete: 1 });
   effective = await h.permissions.loadEffectivePermissions(9, "viewer", { mode: "all", siteIds: [] }, h.db, viewerRole);
-  assert.deepEqual(effective.permissions.workers_report, { view: true, create: false, update: false, delete: false });
+  assert.deepEqual(effective.permissions.workers_report, { view: true, create: true, update: true, delete: true });
 });
 
 test("sessions load assigned custom roles on every request and reject missing, inactive, or mismatched roles", async () => {

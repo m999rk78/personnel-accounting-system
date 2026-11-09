@@ -5,17 +5,18 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
-import { normalizePermissionSet, rolePermissionTemplate } from "../app/permissionModel.ts";
+import { PERMISSION_ACTIONS, PERMISSION_CATALOG, normalizePermissionSet, rolePermissionTemplate } from "../app/permissionModel.ts";
 
 const dataUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const confirmationUrl = dataUrl("export function useConfirmationDialog(){return {confirm:options=>Promise.resolve(globalThis.customRoleUiConfirm?.(options) ?? false),dialog:null};}");
 const fileUrl = name => new URL(`../app/${name}.ts`, import.meta.url).href;
 const userFiltersUrl = dataUrl(`export function useTimesheetFilters(options){globalThis.customRoleUiFilterOptions=options;const ids=globalThis.customRoleUiFilterIds;return {rows:ids?options.rows.filter(row=>ids.includes(row.id)):options.rows,context:{},controller:null,isActive:Boolean(ids),activeCount:ids?1:0,reset(){delete globalThis.customRoleUiFilterIds;}};}`);
 const userFilterHeadingsUrl = dataUrl("export function TimesheetFiltersProvider({children}){return children;}export function TimesheetFilterableHeading({children}){return children;}");
+const nativeSelectionUrl = dataUrl("export function useNativeTableSelectAll(){return {ref:{current:null},className:'',handlers:{}};}");
 async function compile(name, replacements = {}) {
   let code = ts.transpileModule(await readFile(new URL(`../app/${name}.tsx`, import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   // Selection keyboard handling is tested separately; this harness exercises roles.
-  for (const [specifier, replacement] of Object.entries({ react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"), "./permissionModel": fileUrl("permissionModel"), "./customRoles.css": dataUrl(""), "./usersRights.css": dataUrl(""), "./useTableEscapeSelection": dataUrl("export function useTableEscapeSelection(){}"), "./useTimesheetFilters": userFiltersUrl, "./TimesheetColumnFilter": userFilterHeadingsUrl, "./useConfirmationDialog": confirmationUrl, ...replacements })) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(replacement));
+  for (const [specifier, replacement] of Object.entries({ react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"), "./permissionModel": fileUrl("permissionModel"), "./customRoles.css": dataUrl(""), "./usersRights.css": dataUrl(""), "./useTableEscapeSelection": dataUrl("export function useTableEscapeSelection(){}"), "./useNativeTableSelectAll": nativeSelectionUrl, "./useTimesheetFilters": userFiltersUrl, "./TimesheetColumnFilter": userFilterHeadingsUrl, "./useConfirmationDialog": confirmationUrl, ...replacements })) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(replacement));
   return dataUrl(code);
 }
 const matrixUrl = await compile("PermissionMatrix");
@@ -217,9 +218,12 @@ test("the shared permissions matrix names every checkbox and keeps unsupported/l
   const permissions = normalizePermissionSet({ workers_report: { create: true }, access_rights: { update: true } });
   const html = renderToStaticMarkup(createElement(PermissionMatrix, { label: "Права роли", value: permissions, onChange() {}, cellPolicy(resource, action) { return { locked: resource === "access_rights" && action === "update" }; } }));
   assert.match(html, /aria-label="Права роли"/);
-  assert.equal((html.match(/type="checkbox"/g) ?? []).length, 56);
+  assert.equal((html.match(/type="checkbox"/g) ?? []).length, PERMISSION_CATALOG.length * PERMISSION_ACTIONS.length);
+  assert.equal((html.match(/class="permission-row permission-status-row"/g) ?? []).length, 6);
   assert.match(html, /aria-label="Добавление: Отчёт рабочих" checked=""/);
   assert.match(html, /aria-label="Просмотр: Отчёт рабочих" checked=""/);
+  assert.match(html, /aria-label="Добавление: Отчёт рабочих — Черновики" checked=""/);
+  assert.match(html, /aria-label="Редактирование: Отчёт техники — Подтверждённые"/);
   assert.match(html, /aria-label="Добавление: Журнал действий" disabled=""/);
   assert.match(html, /aria-label="Редактирование: Права доступа" disabled="" checked=""/);
 });

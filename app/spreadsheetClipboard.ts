@@ -23,3 +23,9 @@ export function parseSpreadsheetText(text: string): string[][] {
 export function serializeSpreadsheetText(rows: string[][]): string {
   return rows.map(row => row.map(value => /[\t\r\n"]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value).join("\t")).join("\n");
 }
+
+/** Strip only our complete, exact header row when actual data follows it. */
+export function stripSpreadsheetHeaderRow(rows: string[][], headers: string[]) {
+  return rows.length > 1 && headers.length > 0 && rows[0].length === headers.length
+    && headers.every((header, index) => rows[0][index] === header) ? rows.slice(1) : rows;
+}

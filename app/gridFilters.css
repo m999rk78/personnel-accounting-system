@@ -5,6 +5,7 @@
 .localized-grid-body .ag-cell.ag-excel-right { border-right:2px solid #3b82f6!important; }
 .localized-grid-body .ag-cell.ag-excel-bottom { border-bottom:2px solid #3b82f6!important; }
 .localized-grid-body .ag-cell.ag-excel-left { border-left:2px solid #3b82f6!important; }
+.ag-header-cell.ag-excel-header-selected { background:#dbeafe!important; box-shadow:inset 0 2px #3b82f6; }
 .grid-filter-summary { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:9px 12px; border-bottom:1px solid #e4e4e7; background:#fffcf3; font-size:12px; color:#52525b; }
 .grid-filter-chips { display:flex; flex:1; flex-wrap:wrap; gap:6px; }
 .grid-filter-chips button { display:flex; align-items:center; gap:8px; max-width:300px; padding:5px 8px; border:1px solid #ecd39c; border-radius:6px; background:#fff4d8; color:#714600; text-align:left; font-size:11px; }

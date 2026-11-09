@@ -1,0 +1,15 @@
+.native-table-select-all:focus { outline:none; }
+.native-table-select-all tbody > tr > td:not(.users-table-selection),
+.native-table-select-all tbody > tr > th,
+.native-table-select-all .users-table > thead > tr > th:not(.users-table-selection),
+.native-table-select-all .excel-preview-table > thead > tr > th,
+.native-table-select-all .excel-template-header-row > th,
+.native-table-select-all .excel-timesheet-header-row > th,
+.permission-matrix.native-table-select-all .permission-matrix-header > [role="columnheader"],
+.permission-matrix.native-table-select-all .permission-row > [role="cell"],
+.permission-matrix.native-table-select-all .permission-cell {
+  background:#eaf2ff!important;
+  box-shadow:inset 0 0 0 1px rgba(22,119,255,.2);
+}
+.native-table-select-all table,
+.permission-matrix.native-table-select-all { outline:1px solid #1677ff; outline-offset:-1px; }

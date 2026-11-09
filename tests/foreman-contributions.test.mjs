@@ -50,16 +50,16 @@ test("stores report rows under a responsible foreman and tracks each personal su
   assert.match(migration, /ALTER TABLE "placement_entries" ADD COLUMN IF NOT EXISTS "revision" integer DEFAULT 1 NOT NULL/);
 });
 
-test("carries forward the latest submitted report of the signed-in foreman", async () => {
+test("carries forward only the signed-in author’s latest published brigade for every role", async () => {
   const api = await source("app/server/data/readWorkspace.ts");
   const carryover = section(api, 'if (scope === "carryover")', 'if (scope === "entries")');
 
-  assert.match(carryover, /const previous = authUser\.role === "foreman"/);
-  assert.match(carryover, /FROM placement_report_contributions/);
-  assert.match(carryover, /site_id = \? AND foreman_id = \? AND status = 'submitted' AND work_date < \?/);
+  assert.doesNotMatch(carryover, /authUser\.role/);
+  assert.match(carryover, /FROM placement_entries/);
+  assert.match(carryover, /site_id = \? AND responsible_user_id = \? AND deleted_at IS NULL AND work_date < \?/);
   assert.match(carryover, /ORDER BY work_date DESC LIMIT 1/);
   assert.match(carryover, /\.bind\(siteId, authUser\.id, workDate\)/);
-  assert.match(carryover, /placementEntriesStatement\(siteId, previous\.workDate, responsibleUserId\)/);
+  assert.match(carryover, /placementEntriesStatement\(siteId, previous\.workDate, authUser\.id\)/);
   assert.match(carryover, /sourceDate: previous\.workDate, entries: entries\.results/);
 });
 
@@ -69,18 +69,21 @@ test("returns ownership, revision, shared usage, and foreman progress with repor
   ]);
 
   assert.match(api, /pe\.responsible_user_id AS responsibleUserId, responsible\.full_name AS responsibleUserName, pe\.revision/);
-  assert.match(reads, /const responsibleUserId = authUser\.role === "foreman" \? authUser\.id : undefined/);
+  assert.match(reads, /const responsibleUserId = undefined/);
   assert.match(api, /function employeeUsageStatement\(workDate: string, siteId: number, user: AuthUser\)/);
   assert.match(reads, /employeeUsageStatement\(workDate, siteId, authUser\)/);
   assert.match(api, /assignment\.site_id = \? AND assignment\.active = 1[\s\S]*UNION[\s\S]*historical\.site_id = \?/);
   assert.match(api, /function foremanProgressStatement\(siteId: number, workDate: string\)/);
   assert.match(api, /contribution\.status = 'submitted' THEN 'submitted'[\s\S]*contribution\.status = 'draft' THEN 'draft' ELSE 'not_started'/);
-  assert.match(reads, /employeeUsage: employeeUsage\.results/);
+  assert.match(reads, /employeeUsage: canViewApproved \? employeeUsage\.results : \[\]/);
   assert.match(reads, /foremanProgress:.*foremanProgress\.results/);
   const owner = { id: 17, role: "foreman", assignedSiteId: 1, permissions: rolePermissionTemplate("foreman") };
   const entry = { id: 1, siteId: 1, workDate: "2026-09-01", responsibleUserId: 17, revision: 2 };
+  assert.throws(() => placement.assertPlacementOwnership(owner, [entry]), error => error.status === 403);
+  owner.permissions.workers_report_approved.update = true;
   placement.assertPlacementOwnership(owner, [entry]);
-  assert.throws(() => placement.assertPlacementOwnership(owner, [{ ...entry, responsibleUserId: 18 }]), error => error.status === 403 && error.code === "ENTRY_OWNERSHIP_FORBIDDEN");
+  placement.assertPlacementOwnership(owner, [{ ...entry, responsibleUserId: 18 }]);
+  assert.throws(() => placement.assertPlacementOwnership(owner, [{ ...entry, siteId: 2 }]), error => error.status === 403 && error.code === "ENTRY_OWNERSHIP_FORBIDDEN");
   placement.assertEntryRevisions([{ id: 1, revision: 2 }], [entry]);
   assert.throws(() => placement.assertEntryRevisions([{ id: 1, revision: 1 }], [entry]), error => error.status === 409 && error.code === "STALE_ENTRY");
   assert.match(updates, /revision = revision \+ 1/);
@@ -91,13 +94,22 @@ test("allows permitted historical report actions without weakening foreman scope
     source("app/server/data/access.ts"), source("app/server/data/createData.ts"), source("app/server/data/updateData.ts"),
   ]);
   const permissionGuard = section(access, "function canManagePlacement", "function canRunAction");
-  assert.match(permissionGuard, /hasPermission\(user\.permissions, "workers_report", action\)/);
+  assert.match(permissionGuard, /hasReportStatusPermission\(user\.permissions, "workers_report", "approved", action\)/);
   assert.match(permissionGuard, /canAccessProject\(user, siteId\)/);
   assert.doesNotMatch(permissionGuard, /todayInMoscow|workDate\s*[!=]==?\s*today/);
 
   assert.match(creates, /canManagePlacement\(authUser, asPositiveInteger\(row\.siteId\) \?\? undefined, row\.workDate, "create"\)/);
   assert.match(updates, /canManagePlacement\(authUser, asPositiveInteger\(entry\.siteId\) \?\? undefined, entry\.workDate, "update"\)/);
-  assert.match(access, /if \(!entity\) return hasPermission\(user\.permissions, "workers_report", "delete"\)/);
+  assert.match(access, /if \(!entity\) return hasReportStatusPermission\(user\.permissions, "workers_report", "approved", "delete"\)/);
+});
+
+test("an authorized correction preserves the original responsible user independently of the editor's role", async () => {
+  const db = { prepare() { throw new Error("Keeping the previous responsible user needs no directory lookup"); } };
+  for (const role of ["foreman", "viewer", "engineer"]) {
+    const user = { id: 17, role, permissions: rolePermissionTemplate("superadmin") };
+    const owners = await placement.resolveResponsibleUsers(db, user, [{ id: 11, siteId: 1 }], [{ id: 11, responsibleUserId: 28 }]);
+    assert.deepEqual(owners, [28]);
+  }
 });
 
 test("historical placement actions keep engineer project limits independent of resource overrides", async () => {
@@ -144,7 +156,7 @@ test("serializes daily-hour mutations and reports a conflict instead of overspen
   assert.match(patch, /assertPlacementOwnership\(authUser, existing/);
   assert.match(patch, /lockPlacementHours\(db,/);
   assert.match(deletion, /env\.DB\.transaction\(async \(db\) =>/);
-  assert.match(deletion, /assertPlacementOwnership\(authUser, entries\.results\)/);
+  assert.match(deletion, /assertPlacementOwnership\(authUser, entries\.results, "delete"\)/);
   assert.match(deletion, /lockPlacementHours\(db, \[\], entries\.results\)/);
   assert.match(api, /used \+ hours > 10/);
   assert.match(api, /У сотрудника «\$\{employee\.fullName\}» уже учтено/);
@@ -160,7 +172,7 @@ test("keeps personal submission separate from the engineer's global finalization
   assert.match(api, /finalizeReport\?: ReportFinalizationPayload/);
   assert.match(api, /touchForemanContribution\([\s\S]*Boolean\(ownSubmission\)/);
   assert.match(api, /finalizeGlobalReport\(db, authUser, finalizationSiteId, finalizationWorkDate\)/);
-  assert.match(api, /if \(finalization && authUser\.role === "foreman"\) return forbidden\(\)/);
+  assert.match(api, /if \(placementCreates \|\| ownSubmission \|\| finalization\) return approvalRequired\(\)/);
 
 });
 

@@ -1,5 +1,5 @@
 import type { WorkspaceView } from "./appRoutes";
-import { hasPermission, type PermissionResource, type PermissionSet } from "./permissionModel.ts";
+import { hasPermission, hasReportStatusPermission, type PermissionResource, type PermissionSet } from "./permissionModel.ts";
 
 export const GENERAL_SETTINGS_RESOURCES: PermissionResource[] = ["employees", "equipment_registry", "positions", "system_users", "projects", "audit_log", "access_rights"];
 export const PROJECT_SETTINGS_RESOURCES: PermissionResource[] = ["project_employees", "project_equipment", "project_directories"];
@@ -11,13 +11,19 @@ const VIEW_RESOURCES: Partial<Record<WorkspaceView, PermissionResource>> = {
 };
 
 export function workspaceViewAllowed(permissions: PermissionSet, view: WorkspaceView) {
+  if (view === "placement" || view === "equipment") {
+    const resource = view === "placement" ? "workers_report" : "equipment_report";
+    return (["draft", "submitted", "approved"] as const).some(status => hasReportStatusPermission(permissions, resource, status, "view"));
+  }
   const resources = view === "settings" ? GENERAL_SETTINGS_RESOURCES : view === "projectSettings" ? PROJECT_SETTINGS_RESOURCES : [VIEW_RESOURCES[view]];
   return resources.some(resource => resource && hasPermission(permissions, resource, "view"));
 }
 
 export function workspaceTableAccess(permissions: PermissionSet, view: WorkspaceView) {
   const resource = VIEW_RESOURCES[view];
-  const may = (action: "view" | "create" | "update" | "delete") => Boolean(resource && hasPermission(permissions, resource, "view") && hasPermission(permissions, resource, action));
+  const may = (action: "view" | "create" | "update" | "delete") => resource === "workers_report" || resource === "equipment_report"
+    ? (["draft", "submitted", "approved"] as const).some(status => hasReportStatusPermission(permissions, resource, status, action))
+    : Boolean(resource && hasPermission(permissions, resource, "view") && hasPermission(permissions, resource, action));
   const create = may("create"), update = may("update"), remove = may("delete");
   return { create, update, delete: remove, edit: create || update, select: create || update || remove,
     // Shared row orders must not leak report editing controls into read-only project settings.

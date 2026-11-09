@@ -145,8 +145,18 @@ test("self deletion, unknown targets and read-only actors cannot revoke account 
   response = await h.remove(999);
   assert.equal(response.status, 400);
   assert.match((await response.json()).error, /не найден/);
-  await h.asUser(3, { projectAccess: { mode: "all", siteIds: [] }, permissions: rolePermissionTemplate("superadmin") });
+  await h.asUser(3, { projectAccess: { mode: "all", siteIds: [] }, permissions: rolePermissionTemplate("viewer") });
   response = await h.remove(2);
   assert.equal(response.status, 403);
   assert.ok(h.observations.every(query => !query.sql.startsWith("UPDATE")));
+});
+
+for (const role of ["viewer", "foreman"]) test(`${role} may delete an ordinary account after an explicit system-users grant`, async () => {
+  const h = await fixture();
+  await h.asUser(3, { role, projectAccess: { mode: "all", siteIds: [] }, permissions: rolePermissionTemplate("superadmin") });
+  const response = await h.remove(2);
+  assert.equal(response.status, 200);
+  assert.equal(h.db.state.users.get(2).active, 0);
+  assert.notEqual(h.db.state.users.get(4).active, 0);
+  assert.ok(h.observations.filter(query => query.sql.startsWith("UPDATE")).every(query => query.transaction && query.locked));
 });

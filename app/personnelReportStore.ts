@@ -3,7 +3,7 @@ import type { AuthUser } from "./auth";
 import { rememberPersonnelImportOrder } from "./personnelImportOrderServer";
 import type { PersonnelReport, PersonnelReportApprovedEntry, PersonnelReportDeleteApprovedRequest, PersonnelReportData, PersonnelReportDateRequest, PersonnelReportEntryDateRequest, PersonnelReportEntrySaveRequest, PersonnelReportRequest, PersonnelReportRow, PersonnelReportRowValidationIssue, PersonnelReportValidationIssue, PersonnelReportValidationRequest, PersonnelReportValidationResult } from "./personnelReportTypes";
 import {
-  assertCanSavePersonnelReport, assertPersonnelReportHours, assertPersonnelReportOwner,
+  hasReportStatusPermission, assertCanSavePersonnelReport, assertPersonnelReportHours, assertPersonnelReportOwner,
   assertPersonnelReportRevision, assertPersonnelReportSiteAccess, canReviewPersonnelReport, canViewPendingReportsFor,
   completePersonnelReportRows, nextPersonnelReportStatus, normalizePersonnelReportRows,
   PersonnelReportError, validPersonnelReportDate, personnelReportRowChanged, inspectPersonnelReportRows, personnelReportEmployeeRestriction,
@@ -114,22 +114,22 @@ export async function listPersonnelReports(db: Executor, user: AuthUser, siteId:
     throw new PersonnelReportError("Укажите корректный период отчёта.");
   }
   const rangeFilter = `${from ? " AND report.work_date >= ?" : ""}${to ? " AND report.work_date <= ?" : ""}`;
-  const ownFilter = user.role === "foreman" ? " AND report.owner_user_id = ?" : "";
   const hidePending = !canViewPendingReportsFor(user);
-  const privateDrafts = !hidePending && user.role !== "foreman";
+  const privateDrafts = !hidePending;
+  const visibleStatuses = (["draft", "rejected", "submitted", "approved"] as const).filter(status => (!hidePending || status === "approved") && hasReportStatusPermission(user.permissions, "workers_report", status, "view"));
   const statusFilter = hidePending ? " AND report.status = 'approved'"
     : privateDrafts ? " AND (report.status IN ('approved', 'submitted') OR report.owner_user_id = ?)" : "";
-  const entryParameters = [siteId, ...(from ? [from] : []), ...(to ? [to] : []), ...(user.role === "foreman" ? [user.id] : [])];
-  const headers = await db.prepare(`${HEADER_SELECT} WHERE report.site_id = ? ${rangeFilter} ${ownFilter} ${statusFilter}
-    ORDER BY report.work_date DESC, report.id DESC LIMIT 5001`).bind(...entryParameters, ...(privateDrafts ? [user.id] : [])).all<Header>();
+  const entryParameters = [siteId, ...(from ? [from] : []), ...(to ? [to] : [])];
+  const headers = await db.prepare(`${HEADER_SELECT} WHERE report.site_id = ? ${rangeFilter} ${statusFilter} AND report.status = ANY(?)
+    ORDER BY report.work_date DESC, report.id DESC LIMIT 5001`).bind(...entryParameters, ...(privateDrafts ? [user.id] : []), visibleStatuses).all<Header>();
   const visibleHeaders = headers.results.filter(report => {
-    if (user.role === "foreman" && report.ownerUserId !== user.id) return false;
+    if (!visibleStatuses.includes(report.status)) return false;
     if (hidePending) return report.status === "approved";
     return report.status === "approved" || report.status === "submitted" || report.ownerUserId === user.id;
   });
   if (visibleHeaders.length > 5000) throw new PersonnelReportError("В выбранном периоде слишком много отчётов. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
-  const entryFilter = `${from ? " AND entry.work_date >= ?" : ""}${to ? " AND entry.work_date <= ?" : ""}${user.role === "foreman" ? " AND entry.responsible_user_id = ?" : ""}`;
-  const entries = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
+  const entryFilter = `${from ? " AND entry.work_date >= ?" : ""}${to ? " AND entry.work_date <= ?" : ""}`;
+  const entries = hasReportStatusPermission(user.permissions, "workers_report", "approved", "view") ? await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
     entry.employee_id AS employeeId, entry.shift_id AS shiftId, entry.zone_id AS zoneId,
     entry.main_work_type_id AS mainWorkTypeId, entry.subwork_type_id AS subworkTypeId, entry.master_id AS masterId,
     entry.hours, entry.note, entry.revision, entry.responsible_user_id AS responsibleUserId, responsible.full_name AS responsibleUserName,
@@ -149,7 +149,7 @@ export async function listPersonnelReports(db: Executor, user: AuthUser, siteId:
     WHERE entry.site_id = ? AND entry.deleted_at IS NULL
       AND UPPER(TRIM(COALESCE(NULLIF(entry.employment_type_snapshot, ''), employee.employment_type))) = 'ОПР' ${entryFilter}
     ORDER BY entry.created_at DESC, origin.row_order, entry.id DESC LIMIT 20001`)
-    .bind(...entryParameters).all<PersonnelReportApprovedEntry>();
+    .bind(...entryParameters).all<PersonnelReportApprovedEntry>() : { results: [] as PersonnelReportApprovedEntry[] };
   if (entries.results.length > 20000) throw new PersonnelReportError("В выбранном периоде больше 20 000 строк. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
   const rows = visibleHeaders.length ? await reportRowsStatement(db, visibleHeaders.map((report) => report.id)).all<PersonnelReportRow>() : { results: [] as PersonnelReportRow[] };
   if (rows.results.length > 20000) throw new PersonnelReportError("В выбранном периоде больше 20 000 строк черновиков. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
@@ -239,7 +239,7 @@ async function checkHours(db: Executor, workDate: string, rows: ReturnType<typeo
 
 /** A read-only preview; authoritative mutations always run the same final guards again. */
 export async function validatePersonnelReportSubmissions(db: Executor, user: AuthUser, payload: PersonnelReportValidationRequest): Promise<PersonnelReportValidationResult> {
-  if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
+  if (!hasReportStatusPermission(user.permissions, "workers_report", "draft", "update")) throw new PersonnelReportError("Нет права отправлять отчёты на проверку.", 403, "REPORT_FORBIDDEN");
   if (!positiveId(payload.siteId) || !Array.isArray(payload.reports) || !payload.reports.length || payload.reports.length > 100) throw new PersonnelReportError("Укажите проект и от 1 до 100 отчётов для проверки.");
   const keys = new Set<string>(); const reportIds = new Set<number>(); const newDates = new Set<string>();
   let total = 0;
@@ -256,14 +256,14 @@ export async function validatePersonnelReportSubmissions(db: Executor, user: Aut
   }
   if (total > 5000) throw new PersonnelReportError("Проверьте не более 5000 строк за один раз.", 413, "REPORT_TOO_LARGE");
   await assertActiveSite(db, user, payload.siteId);
-  if (!user.permissions.workers_report.update) throw new PersonnelReportError("Нет права отправлять отчёты на проверку.", 403, "REPORT_FORBIDDEN");
+  if (!hasReportStatusPermission(user.permissions, "workers_report", "draft", "update") || !hasReportStatusPermission(user.permissions, "workers_report", "submitted", "view")) throw new PersonnelReportError("Нет права отправлять отчёты на проверку.", 403, "REPORT_FORBIDDEN");
   const existing = reportIds.size ? await db.prepare(`${HEADER_SELECT} WHERE report.id = ANY(?)`).bind([...reportIds]).all<Header>() : { results: [] as Header[] };
   // Authorise the entire batch before returning any reference, revision or hour details.
   for (const current of existing.results) {
     assertPersonnelReportOwner(user, current);
     if (current.siteId !== payload.siteId) throw new PersonnelReportError("Отчёт не относится к выбранному проекту.", 403, "REPORT_FORBIDDEN");
   }
-  if (newDates.size && !user.permissions.workers_report.create) throw new PersonnelReportError("Нет права создавать отчёты.", 403, "REPORT_FORBIDDEN");
+  if (newDates.size && !hasReportStatusPermission(user.permissions, "workers_report", "draft", "create")) throw new PersonnelReportError("Нет права создавать отчёты.", 403, "REPORT_FORBIDDEN");
   const currentById = new Map<number, PersonnelReport>();
   for (const header of existing.results) currentById.set(header.id, await readReport(db, header.id));
   const active = newDates.size ? await db.prepare(`SELECT id, work_date AS workDate FROM personnel_reports
@@ -282,8 +282,8 @@ export async function validatePersonnelReportSubmissions(db: Executor, user: Aut
     const inspected = inspectPersonnelReportRows(target.rows);
     const rows = inspected.rows;
     if (current) {
-      if (rows.some(row => !row.id) && !user.permissions.workers_report.create) throw new PersonnelReportError("Нет права добавлять строки отчёта.", 403, "REPORT_FORBIDDEN");
-      if (current.rows.some(previous => !rows.some(row => row.id === previous.id)) && !user.permissions.workers_report.delete) throw new PersonnelReportError("Нет права удалять строки отчёта.", 403, "REPORT_FORBIDDEN");
+      if (rows.some(row => !row.id) && !hasReportStatusPermission(user.permissions, "workers_report", current.status, "create")) throw new PersonnelReportError("Нет права добавлять строки отчёта.", 403, "REPORT_FORBIDDEN");
+      if (current.rows.some(previous => !rows.some(row => row.id === previous.id)) && !hasReportStatusPermission(user.permissions, "workers_report", current.status, "delete")) throw new PersonnelReportError("Нет права удалять строки отчёта.", 403, "REPORT_FORBIDDEN");
       if (current.workDate !== target.workDate) issues.push({ key: target.key, workDate: target.workDate, code: "REPORT_DATE_MISMATCH", message: "Нельзя изменить дату существующего отчёта." });
       try { assertPersonnelReportRevision(current.revision, target.revision); } catch (error) { issueFromError(target, error); }
       try { nextPersonnelReportStatus(user, current, "submit"); } catch (error) { issueFromError(target, error); }
@@ -431,7 +431,7 @@ async function movePersonnelPublishedDay(db: Executor, user: AuthUser, siteId: n
 
 /** A date belongs to the daily report: keep its identity and move all rows atomically. */
 export async function mutatePersonnelReportDate(database: PostgresDatabase, user: AuthUser, payload: PersonnelReportDateRequest): Promise<PersonnelReport> {
-  if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
+  if (!user.permissions.workers_report?.update) throw new PersonnelReportError("Нет права изменять дату отчёта.", 403, "REPORT_FORBIDDEN");
   if (payload.action !== "change-date" || !positiveId(payload.reportId)) throw new PersonnelReportError("Укажите отчёт.");
   assertPersonnelDateChange(payload.workDate);
   return database.transaction(async db => {
@@ -489,7 +489,7 @@ export async function mutatePersonnelReportDate(database: PostgresDatabase, user
 
 /** Approved entries created before daily reports retain their own revision and identity. */
 export async function mutatePersonnelReportEntryDate(database: PostgresDatabase, user: AuthUser, payload: PersonnelReportEntryDateRequest): Promise<PersonnelReportApprovedEntry> {
-  if (user.role === "viewer" || !canReviewPersonnelReport(user)) throw new PersonnelReportError("Изменять дату подтверждённой записи может только инженер.", 403, "REPORT_FORBIDDEN");
+  if (!canReviewPersonnelReport(user) || !hasReportStatusPermission(user.permissions, "workers_report", "approved", "update")) throw new PersonnelReportError("Нет права изменять дату подтверждённой записи.", 403, "REPORT_FORBIDDEN");
   if (payload.action !== "change-entry-date" || !positiveId(payload.entryId) || !positiveId(payload.siteId)) throw new PersonnelReportError("Укажите запись и проект.");
   assertPersonnelDateChange(payload.workDate);
   return database.transaction(async db => {
@@ -525,9 +525,9 @@ export async function mutatePersonnelReportEntryDate(database: PostgresDatabase,
 
 /** Older approved entries have no draft header. Correct them with their own optimistic revision. */
 export async function mutatePersonnelReportEntry(database: PostgresDatabase, user: AuthUser, payload: PersonnelReportEntrySaveRequest): Promise<PersonnelReportApprovedEntry> {
-  if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
+  if (!hasReportStatusPermission(user.permissions, "workers_report", "approved", "update")) throw new PersonnelReportError("Нет права исправлять подтверждённые записи.", 403, "REPORT_FORBIDDEN");
   return database.transaction(async db => {
-    if (!canReviewPersonnelReport(user)) throw new PersonnelReportError("Исправлять подтверждённые записи может только инженер.", 403, "REPORT_FORBIDDEN");
+    if (!canReviewPersonnelReport(user) || !hasReportStatusPermission(user.permissions, "workers_report", "approved", "update")) throw new PersonnelReportError("Нет права исправлять подтверждённые записи.", 403, "REPORT_FORBIDDEN");
     if (!positiveId(payload.entryId) || !positiveId(payload.siteId) || !validPersonnelReportDate(payload.workDate)) throw new PersonnelReportError("Укажите запись, проект и дату отчёта.");
     await assertActiveSite(db, user, payload.siteId);
     const previous = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate, entry.employee_id AS employeeId,
@@ -558,8 +558,8 @@ export async function mutatePersonnelReportEntry(database: PostgresDatabase, use
 
 /** Delete exactly the selected published rows, including the last row of an approved report. */
 export async function deletePersonnelReportApprovedRows(database: PostgresDatabase, user: AuthUser, payload: PersonnelReportDeleteApprovedRequest): Promise<{ deletedEntryIds: number[] }> {
-  if (!canReviewPersonnelReport(user) || !user.permissions.workers_report.delete) {
-    throw new PersonnelReportError("Удалять подтверждённые записи может только инженер с правом удаления отчётов.", 403, "REPORT_FORBIDDEN");
+  if (!hasReportStatusPermission(user.permissions, "workers_report", "approved", "delete")) {
+    throw new PersonnelReportError("Нет права удалять подтверждённые записи отчётов.", 403, "REPORT_FORBIDDEN");
   }
   if (!positiveId(payload.siteId) || !Array.isArray(payload.rows) || !payload.rows.length || payload.rows.length > 5000) {
     throw new PersonnelReportError("Выберите проект и от 1 до 5000 подтверждённых строк.");
@@ -632,7 +632,7 @@ export async function deletePersonnelReportApprovedRows(database: PostgresDataba
 }
 
 export async function mutatePersonnelReport(database: PostgresDatabase, user: AuthUser, payload: Exclude<PersonnelReportRequest, PersonnelReportEntrySaveRequest | PersonnelReportValidationRequest | PersonnelReportDateRequest | PersonnelReportEntryDateRequest | PersonnelReportDeleteApprovedRequest>): Promise<PersonnelReport> {
-  if (user.role === "viewer") throw new PersonnelReportError("Роль «Просмотр» не может изменять отчёты.", 403, "REPORT_FORBIDDEN");
+  if (!(["draft", "submitted", "approved"] as const).some(status => (["create", "update", "delete"] as const).some(action => hasReportStatusPermission(user.permissions, "workers_report", status, action)))) throw new PersonnelReportError("Нет права изменять отчёты.", 403, "REPORT_FORBIDDEN");
   return database.transaction(async (db) => {
     if (payload.action === "save") {
       if (!positiveId(payload.siteId) || !validPersonnelReportDate(payload.workDate)) throw new PersonnelReportError("Укажите проект и корректную дату отчёта.");
@@ -665,8 +665,8 @@ export async function mutatePersonnelReport(database: PostgresDatabase, user: Au
         assertCanSavePersonnelReport(user, current);
         assertPersonnelReportRevision(current.revision, payload.revision);
         if (current.siteId !== payload.siteId || current.workDate !== payload.workDate) throw new PersonnelReportError("Нельзя изменить проект или дату существующего отчёта.");
-        if (rows.some(row => !row.id) && !user.permissions.workers_report.create) throw new PersonnelReportError("Нет права добавлять строки отчёта.", 403, "REPORT_FORBIDDEN");
-        if (current.rows.some(previous => !rows.some(row => row.id === previous.id)) && !user.permissions.workers_report.delete) throw new PersonnelReportError("Нет права удалять строки отчёта.", 403, "REPORT_FORBIDDEN");
+        if (rows.some(row => !row.id) && !hasReportStatusPermission(user.permissions, "workers_report", current.status, "create")) throw new PersonnelReportError("Нет права добавлять строки отчёта.", 403, "REPORT_FORBIDDEN");
+        if (current.rows.some(previous => !rows.some(row => row.id === previous.id)) && !hasReportStatusPermission(user.permissions, "workers_report", current.status, "delete")) throw new PersonnelReportError("Нет права удалять строки отчёта.", 403, "REPORT_FORBIDDEN");
         previousRows = current.rows;
         const historical = new Map<number, PersonnelReportRow>();
         if (current.status === "approved") rows.forEach((row, index) => {

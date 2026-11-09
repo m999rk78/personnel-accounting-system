@@ -1,10 +1,15 @@
 import { getDatabase, type PostgresDatabase } from "../db/client";
-import { defaultProjectAccess, isUserRole, type ProjectAccess, type UserRole } from "./roles.ts";
+import { accessibleProjectIds, defaultProjectAccess, isUserRole, type ProjectAccess, type ProjectAccessUser, type UserRole } from "./roles.ts";
 
 type Executor = Pick<PostgresDatabase, "prepare" | "batch">;
 type ProjectUser = { id: number; role: UserRole; assignedSiteId?: number | null; customRoleId?: number | null };
 export type UserProjectAccessSettings = { projectAccess: ProjectAccess; canViewPendingReports: boolean };
 export type UserProjectAccessInput = { projectAccess?: unknown; canViewPendingReports?: unknown };
+
+export function canManageUserProjectAccess(actor: ProjectAccessUser, target: ProjectAccess) {
+  const allowed = accessibleProjectIds(actor);
+  return allowed === null || target.mode === "selected" && target.siteIds.every(id => allowed.includes(id));
+}
 const schemaTasks = new WeakMap<PostgresDatabase, Promise<void>>();
 
 export async function ensureUserProjectAccessSchema(db = getDatabase()) {

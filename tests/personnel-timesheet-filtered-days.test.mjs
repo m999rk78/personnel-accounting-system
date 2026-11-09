@@ -29,19 +29,33 @@ const month = "2026-11", days = Array.from({ length: 30 }, (_, index) => index +
 const employee = { id: 7, fullName: "Тестовый сотрудник", employmentType: "ОПР", department: "Монтаж", position: "Монтажник" };
 const entriesByCell = new Map([["7:2026-11-01", { employeeId: 7, workDate: "2026-11-01", hours: 9, masters: "Мастер", zones: "А" }], ["7:2026-11-06", { employeeId: 7, workDate: "2026-11-06", hours: 8, masters: "Мастер", zones: "А" }], ["7:2026-11-08", { employeeId: 7, workDate: "2026-11-08", hours: 5, masters: "Мастер", zones: "А" }]]);
 const marksByCell = new Map([["7:2026-11-06", { employeeId: 7, workDate: "2026-11-06", hours: 4, code: null, note: "Шестое число" }], ["7:2026-11-08", { employeeId: 7, workDate: "2026-11-08", hours: 3, code: null, note: "Восьмое число" }]]);
-const base = { ...helpers, month, visibleDays: [6, 8], visibleEmployees: [employee], entriesByCell, marksByCell };
+const base = { ...helpers, month, visibleDays: days, visibleEmployees: [employee], entriesByCell, marksByCell };
 
-test("day presentation focuses only valid current-month filter dates and restores the month when cleared", () => {
-  const code = ["filteredDays", "visibleDays", "hasDayFilters"].map(declaration).join("\n");
-  for (const [ids, expected] of [[["2026-11-08", "2026-11-06"], [6, 8]], [["2026-12-06"], days], [[], days]]) {
-    const result = bind(code, "{visibleDays,hasDayFilters}", { days, month, filters: { dayFilterIds: ids }, useMemo: create => create(), dateForDay: helpers.dateForDay });
-    assert.deepEqual(result.visibleDays, expected);
-    assert.equal(result.hasDayFilters, expected !== days);
+test("one or several day filters keep every date column and retain the filtered employee rows", () => {
+  const code = ["visibleDays", "visibleDaysKey", "visibleEmployees"].map(declaration).join("\n");
+  for (const dayCount of [28, 29, 30, 31]) {
+    const calendarDays = Array.from({ length: dayCount }, (_, index) => index + 1);
+    for (const ids of [["2026-11-02"], ["2026-11-08", "2026-11-06"], ["2026-12-06"], []]) {
+      const selectedRows = [employee];
+      const result = bind(code, "{visibleDays,visibleDaysKey,visibleEmployees}", {
+        days: calendarDays, month, filters: { dayFilterIds: ids, rows: selectedRows }, useMemo: create => create(), dateForDay: helpers.dateForDay,
+      });
+      assert.equal(result.visibleDays, calendarDays, "Filtering rows must not replace or narrow the calendar tracks");
+      assert.equal(result.visibleDaysKey, calendarDays.join("|"));
+      assert.equal(result.visibleEmployees, selectedRows, "Only the matching employees remain visible");
+    }
+  }
+  assert.doesNotMatch(source, /personnel-timesheet-day-focus|Выбранные дни/, "A day filter must not add a layout-shifting focus bar");
+  assert.match(source, /<th colSpan=\{visibleDays\.length\}>Дни месяца<\/th>/);
+  for (const tag of ["thead", "tbody", "tfoot"]) {
+    const section = nodes.find(node => ts.isJsxElement(node) && node.openingElement.tagName.getText(ast) === tag);
+    assert.ok(section?.getText(ast).includes("visibleDays.map("), `${tag} must use the same complete calendar`);
   }
 });
 
-test("clipboard values, undo values and activation map visible indices to the actual selected dates", () => {
-  for (const [index, day] of [[0, 6], [1, 8]]) {
+test("clipboard values, undo values and activation keep calendar indices after day filtering", () => {
+  assert.equal(clipboardCallback("getValue", base)(0, 0), "9", "The unfiltered first date stays at its original coordinate");
+  for (const [index, day] of [[5, 6], [7, 8]]) {
     assert.equal(clipboardCallback("getValue", base)(0, index), String(day === 6 ? 4 : 3));
     assert.equal(clipboardCallback("getUndoValue", base)(0, index), String(day === 6 ? 4 : 3));
     assert.equal(clipboardCallback("getUndoNote", base)(0, index), day === 6 ? "Шестое число" : "Восьмое число");
@@ -57,7 +71,7 @@ function pasteHarness() {
     ...base, isPersonnelTimesheetValue, dateLabel: value => value,
     payload: { siteId: 1, month, canEdit: true, canCreate: true, canUpdate: true, canDelete: true },
     navigationBusy: false, loading: false, activeScope: { current: `1:${month}` },
-    clipboardViewScope: { current: "view:6|8" },
+    clipboardViewScope: { current: "view:all-days:employee-7" },
     window: { location: { replace() { assert.fail("Unexpected redirect"); } } },
     fetch: async (_url, options) => { const body = JSON.parse(options.body); requests.push(body); return { ok: true, status: 200, json: async () => ({}) }; },
     batchSave: { getCellState: () => undefined, run: async jobs => ({ saved: await Promise.all(jobs.map(async job => ({ job, value: await job.save() }))), failed: [] }) },
@@ -65,10 +79,10 @@ function pasteHarness() {
   return { requests, paste: bind(declaration("pasteTimesheetCells"), "pasteTimesheetCells", environment) };
 }
 
-test("pasting and clearing a discontinuous date selection never writes to hidden calendar days", async () => {
+test("pasting and clearing chosen cells do not remap dates or write to other calendar columns", async () => {
   for (const value of ["6", ""]) {
     const ui = pasteHarness();
-    const changes = [{ rowIndex: 0, columnIndex: 0, value }, { rowIndex: 0, columnIndex: 1, value }];
+    const changes = [{ rowIndex: 0, columnIndex: 5, value }, { rowIndex: 0, columnIndex: 7, value }];
     const result = await ui.paste(changes);
     assert.deepEqual(ui.requests.map(request => request.workDate), ["2026-11-06", "2026-11-08"]);
     assert.deepEqual(ui.requests.map(request => request.employeeId), [7, 7]);
@@ -77,15 +91,17 @@ test("pasting and clearing a discontinuous date selection never writes to hidden
   }
 });
 
-test("changing the visible dates resets clipboard identity even when employee rows are unchanged", () => {
+test("day filters preserve clipboard column identity while row and month changes still invalidate it", () => {
   const code = declaration("rowOrderKey");
-  const environment = { siteId: 1, month, visibleEmployees: [employee], useMemo: create => create() };
-  const first = bind(code, "rowOrderKey", { ...environment, visibleDaysKey: "6|8" });
-  const second = bind(code, "rowOrderKey", { ...environment, visibleDaysKey: "8" });
-  assert.notEqual(first, second);
+  const environment = { siteId: 1, month, visibleEmployees: [employee], visibleDaysKey: days.join("|"), useMemo: create => create() };
+  const first = bind(code, "rowOrderKey", { ...environment, filters: { dayFilterIds: ["2026-11-06"] } });
+  const second = bind(code, "rowOrderKey", { ...environment, filters: { dayFilterIds: ["2026-11-06", "2026-11-08"] } });
+  assert.equal(first, second, "The same rows and calendar keep their existing coordinates");
+  assert.notEqual(first, bind(code, "rowOrderKey", { ...environment, visibleEmployees: [] }));
+  assert.notEqual(first, bind(code, "rowOrderKey", { ...environment, month: "2026-12" }));
 });
 
-test("monthly totals and Excel retain hidden day data while the grid focuses selected dates", () => {
+test("monthly totals and Excel retain the full calendar while employee rows are filtered", () => {
   const payload = { siteName: "Учебный проект", employees: [employee] };
   const metrics = bind(declaration("rowMetricsByEmployee"), "rowMetricsByEmployee", { ...base, days, payload, useMemo: create => create() });
   assert.deepEqual(metrics.get(7), { timesheet: 16, reports: 22, difference: -6 });
@@ -97,7 +113,7 @@ test("monthly totals and Excel retain hidden day data while the grid focuses sel
   exportPreview();
   assert.equal(preview.workbook.dates.length, 30);
   assert.equal(preview.workbook.dates[0], "2026-11-01");
-  assert.equal(preview.workbook.rows[0].dailyValues[0], 9, "The hidden first day is still present in monthly export");
+  assert.equal(preview.workbook.rows[0].dailyValues[0], 9, "A different day's filter must not remove first-day values from export");
   assert.equal(preview.workbook.rows[0].timesheetHours, 16);
   assert.equal(preview.workbook.rows[0].reportHours, 22);
 });
@@ -106,7 +122,7 @@ test("late single-cell saves do not insert stale visible-column indices into a d
   for (const viewChanged of [false, true]) {
     let respond;
     const undo = [];
-    const scope = { current: "view:6|8" };
+    const scope = { current: "view:all-days:employee-7" };
     const environment = {
       ...base,
       payload: { siteId: 1, month, canEdit: true, canCreate: true, canUpdate: true, canDelete: true },
@@ -119,10 +135,10 @@ test("late single-cell saves do not insert stale visible-column indices into a d
     };
     const save = bind(declaration("persistMark"), "persistMark", environment);
     const pending = save({ employeeId: 7, workDate: "2026-11-06" }, "5");
-    if (viewChanged) scope.current = "view:8";
+    if (viewChanged) scope.current = "view:all-days:different-rows";
     respond({ ok: true, status: 200, json: async () => ({}) });
     assert.equal(await pending, true);
     assert.equal(undo.length, viewChanged ? 0 : 1);
-    if (!viewChanged) assert.equal(undo[0].columnIndex, 0, "The sixth calendar day was the first visible column");
+    if (!viewChanged) assert.equal(undo[0].columnIndex, 5, "The sixth calendar day remains at its full-month coordinate");
   }
 });

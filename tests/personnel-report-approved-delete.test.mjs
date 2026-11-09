@@ -161,10 +161,28 @@ for (const role of ["foreman", "viewer"]) test(`${role} cannot delete approved r
   assert.deepEqual(db.queries, []);
 });
 
-for (const permission of ["delete", "update", "view"]) test(`engineer without ${permission} permission cannot delete approved rows`, async () => {
+for (const role of ["foreman", "viewer"]) test(`${role} can delete approved rows when that permission is explicitly granted`, async () => {
+  const db = fixture(), user = actor(role);
+  user.permissions = rolePermissionTemplate("superadmin");
+  user.permissions.workers_report.update = false;
+  user.permissions.workers_report_approved.update = false;
+  assert.deepEqual(await deletePersonnelReportApprovedRows(db, user, request(target(501))), { deletedEntryIds: [501] });
+  assert.equal(db.state().entries.find(row => row.id === 501).deletedAt, changedAt);
+});
+
+for (const permission of ["delete", "view"]) test(`engineer without ${permission} permission cannot delete approved rows`, async () => {
   const db = fixture(), user = actor(); user.permissions.workers_report[permission] = false;
   await assert.rejects(deletePersonnelReportApprovedRows(db, user, request(target(501))), rejectCode("REPORT_FORBIDDEN", 403));
   assert.deepEqual(db.writes, []);
+});
+
+test("a dedicated approved deletion grant does not require parent or status editing rights", async () => {
+  const db = fixture(), user = actor();
+  user.permissions.workers_report.update = false;
+  user.permissions.workers_report_approved.update = false;
+  user.permissions.workers_report_approved.delete = true;
+  assert.deepEqual(await deletePersonnelReportApprovedRows(db, user, request(target(501))), { deletedEntryIds: [501] });
+  assert.equal(db.state().entries.find(row => row.id === 501).deletedAt, changedAt);
 });
 
 test("project access and every selected entry's project are checked", async () => {

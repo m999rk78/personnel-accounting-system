@@ -39,8 +39,11 @@ function harness(save = async changes => changes.length, remove = save) {
   const statuses = [];
   const scope = {
     selectionRef: { current: { start: { rowIndex: 0, columnIndex: 0 }, end: { rowIndex: 0, columnIndex: 2 } } },
+    dragging: { current: false },
+    lastHeaderCopy: { current: null },
     rowCount: 1,
     columnCount: 3,
+    selectionColumns: [0, 1, 2],
     canPaste: () => true,
     canDelete: () => true,
     previousValues: changes => changes.map(change => cell(change.columnIndex)),
@@ -160,6 +163,7 @@ test("late completion in an old scope cannot unlock an operation in a new scope"
   const env = harness(() => ++calls === 1 ? oldSave.promise : newSave.promise);
   const oldPaste = env.api.pasteText("8\t9\t10");
   env.api.resetScope();
+  env.scope.selectionRef.current = { start: { rowIndex: 0, columnIndex: 0 }, end: { rowIndex: 0, columnIndex: 2 } };
   const newPaste = env.api.pasteText("5\t6\t7");
   oldSave.resolve(3);
   await oldPaste;

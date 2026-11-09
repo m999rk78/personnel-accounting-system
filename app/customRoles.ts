@@ -1,8 +1,8 @@
-import { PERMISSION_ACTIONS, PERMISSION_CATALOG, normalizePermissionSet, rolePermissionTemplate, type PermissionSet } from "./permissionModel.ts";
-import { ROLE_LABELS } from "./roles.ts";
+import { PERMISSION_ACTIONS, PERMISSION_CATALOG, emptyPermissionSet, normalizePermissionSet, rolePermissionTemplate, type PermissionResource, type PermissionSet } from "./permissionModel.ts";
+import { ROLE_LABELS, type UserRole } from "./roles.ts";
 
 export type CustomRoleBaseRole = "foreman" | "engineer" | "viewer";
-export type CustomRole = { id: number; name: string; baseRole: CustomRoleBaseRole; permissions: PermissionSet; revision: number; legacyRoleKey?: "foreman" | "engineer" | "viewer" };
+export type CustomRole = { id: number; name: string; baseRole: CustomRoleBaseRole; permissions: PermissionSet; revision: number; legacyRoleKey?: "foreman" | "engineer" | "viewer"; inheritedStatusPermissions?: PermissionResource[] };
 export const managedDefaultRoleSeeds = () => (["foreman", "engineer", "viewer"] as const).map(key => ({ key, name: ROLE_LABELS[key], permissions: rolePermissionTemplate(key) }));
 export type CustomRoleInput = { name?: unknown; permissions?: unknown };
 
@@ -30,7 +30,7 @@ export function normalizeCustomRoleName(value: unknown) {
   return name;
 }
 
-export function normalizeCustomRolePermissions(value: unknown): PermissionSet {
+export function normalizeCustomRolePermissions(value: unknown, legacyRole?: UserRole): PermissionSet {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new CustomRoleError("Выберите права для роли.");
   const input = value as Record<string, unknown>;
   for (const [resource, row] of Object.entries(input)) {
@@ -39,7 +39,18 @@ export function normalizeCustomRolePermissions(value: unknown): PermissionSet {
       if (!(PERMISSION_ACTIONS as readonly string[]).includes(action) || typeof enabled !== "boolean") throw new CustomRoleError("Значения прав роли должны быть логическими.");
     }
   }
-  return normalizePermissionSet(input as Partial<PermissionSet>);
+  // Existing JSON templates predate status rows. Migrate only those new rows
+  // from the base role; unrelated resources stay exactly as configured.
+  const legacyFallback = legacyRole ? emptyPermissionSet() : undefined;
+  if (legacyFallback && legacyRole) {
+    const template = rolePermissionTemplate(legacyRole);
+    for (const definition of PERMISSION_CATALOG) if (definition.parent) legacyFallback[definition.key] = template[definition.key];
+  }
+  return normalizePermissionSet(input as Partial<PermissionSet>, legacyFallback);
+}
+
+export function inheritedCustomRoleStatusPermissions(input: Record<string, unknown>): PermissionResource[] {
+  return PERMISSION_CATALOG.filter(item => item.parent && !Object.hasOwn(input, item.key)).map(item => item.key);
 }
 
 export function inferCustomRoleBaseRole(permissions: PermissionSet): CustomRoleBaseRole {

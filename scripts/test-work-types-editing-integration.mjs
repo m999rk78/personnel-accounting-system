@@ -83,6 +83,10 @@ try {
     INSERT INTO equipment_entries VALUES (1,1,1);
     INSERT INTO personnel_reports VALUES (1,1);
     INSERT INTO personnel_report_rows VALUES (1,1,1);`);
+  // Production disables runtime DDL: migrate the isolated fixture schema as a
+  // deployed database would, instead of depending on development bootstrap.
+  const auditMigration = await readFile(new URL("../drizzle-postgres/0014_audit_events.sql", import.meta.url), "utf8");
+  for (const statement of auditMigration.split("--> statement-breakpoint")) if (statement.trim()) await query(statement);
   const { ensureAuditSchema } = await import(auditModule);
   await ensureAuditSchema();
   const history = async () => ({ placement: (await query("SELECT * FROM placement_entries")).rows, equipment: (await query("SELECT * FROM equipment_entries")).rows, report: (await query("SELECT * FROM personnel_report_rows")).rows });

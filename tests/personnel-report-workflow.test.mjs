@@ -45,8 +45,8 @@ test("engineer review has explicit transitions and a reason when returning for c
   assert.doesNotThrow(() => assertCanSavePersonnelReport(engineer, submitted));
   assert.doesNotThrow(() => assertCanSavePersonnelReport(engineer, { ...report, status: "approved" }));
   assert.doesNotThrow(() => assertCanSavePersonnelReport({ ...engineer, role: "superadmin" }, { ...report, status: "approved" }));
-  assert.throws(() => assertCanSavePersonnelReport(foreman, submitted), code("REPORT_LOCKED"));
-  assert.throws(() => assertCanSavePersonnelReport(foreman, { ...report, status: "approved" }), code("REPORT_LOCKED"));
+  assert.throws(() => assertCanSavePersonnelReport(foreman, submitted), code("REPORT_FORBIDDEN"));
+  assert.throws(() => assertCanSavePersonnelReport(foreman, { ...report, status: "approved" }), code("REPORT_FORBIDDEN"));
 });
 
 test("custom permissions remain effective even for the engineer role", () => {

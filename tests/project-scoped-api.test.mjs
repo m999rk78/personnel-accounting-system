@@ -65,7 +65,8 @@ function fakeDatabase(userRows) {
     if (/SELECT role, password_hash/.test(sql)) return [{ role: "foreman", passwordHash: "already-activated" }];
     if (/SELECT id FROM app_users WHERE email/.test(sql)) return [];
     if (/SELECT id FROM equipment_units WHERE id = \?/.test(sql)) return [{ id: values[0] }];
-    if (/SELECT id FROM employees WHERE id = \?/.test(sql)) return [{ id: values[0] }];
+    if (/SELECT id FROM employees WHERE id = \?/.test(sql) || /SELECT e.id FROM employees e WHERE e.id = \?/.test(sql)) return [{ id: values[0] }];
+    if (/SELECT eu.id FROM equipment_units eu WHERE eu.id = \?/.test(sql)) return [{ id: values[0] }];
     if (/FROM sites WHERE id = \?/.test(sql)) return sites.filter(site => site.id === values[0]);
     if (/SELECT id, name(?:, code, timezone)? FROM sites WHERE active = 1/.test(sql)) return sites;
     if (/FROM personnel_options|FROM position_catalog/.test(sql)) return [{ id: 1 }];
@@ -168,11 +169,10 @@ test("foremen retain legacy assignment validation and engineers use explicit acc
   assert.equal((await dataRoute.POST(request("/api/data", "POST", { action: "create-user", ...user, role: "admin" }))).status, 400);
 });
 
-test("engineer mutations cannot transfer global profiles, import other projects or escalate users", async () => {
+test("explicit global grants do not bypass project asset boundaries or whole-registry import scope", async () => {
   const database = configure();
   for (const payload of [
-    { action: "create-user", role: "superadmin" }, { action: "update-user", userId: 1, role: "admin" },
-    { action: "assign-site", userId: 1, assignedSiteId: 2 }, { action: "sync-bitrix24" },
+    { action: "sync-bitrix24" },
     { action: "import-employees", employees: [] }, { action: "reorder-employees", employeeIds: [10] },
     { action: "update-employee", employeeId: 80, projectSiteId: 1 },
     { action: "assign-employee-project", employeeId: 80, siteId: 1 },
@@ -213,8 +213,8 @@ test("project selection supports several projects and an explicit empty selectio
   assert.equal((await timesheetRoute.GET(request("/api/timesheet?siteId=1&month=2026-10"))).status, 403);
 });
 
-test("viewers cannot mutate any legacy route even when individual permission bits are forged", async () => {
-  const database = configure({ ...actor("viewer", null), projectAccess: { mode: "selected", siteIds: [1, 2] } });
+test("default viewer permissions remain read-only until the matching actions are explicitly granted", async () => {
+  const database = configure({ ...actor("viewer", null), permissions: rolePermissionTemplate("viewer"), projectAccess: { mode: "selected", siteIds: [1, 2] } });
   for (const [method, body] of [["POST", { action: "create-employee", projectSiteId: 1 }], ["PATCH", { action: "update-employee", employeeId: 10, projectSiteId: 1 }], ["DELETE", { ids: [10] }]]) {
     assert.equal((await dataRoute[method](request("/api/data?entity=employee", method, body))).status, 403);
   }
@@ -232,6 +232,32 @@ test("viewers cannot mutate any legacy route even when individual permission bit
   assert.equal(timesheet.canCreate, false);
   assert.equal(timesheet.canUpdate, false);
   assert.equal(timesheet.canDelete, false);
+});
+
+for (const role of ["foreman", "viewer"]) test(`${role} can use granted global settings and both timesheets without changing role name`, async () => {
+  const user = { ...actor(role, 1), projectAccess: { mode: "selected", siteIds: [1] } };
+  const db = configure(user);
+  let response = await dataRoute.POST(request("/api/data", "POST", { action: "create-user", role: "engineer", fullName: "Новый сотрудник", email: `${role}@invalid.test` }));
+  assert.equal(response.status, 201, await response.text());
+  assert.ok(db.writes.some(write => write.sql.includes("INSERT INTO app_users")));
+  response = await dataRoute.PATCH(request("/api/data", "PATCH", { action: "update-site", siteId: 1, name: "Новый проект" }));
+  assert.equal(response.status, 200, await response.text());
+  response = await timesheetRoute.POST(request("/api/timesheet", "POST", { siteId: 1, employeeId: 10, workDate: "2026-10-30", value: 8 }));
+  assert.equal(response.status, 200, await response.text());
+  assert.ok(db.writes.some(write => write.sql.includes("INSERT INTO timesheet_marks")));
+  response = await equipmentRoute.POST(request("/api/equipment", "POST", { action: "save-timesheet-mark", siteId: 1, equipmentId: 10, workDate: "2026-10-30", productiveHours: 8, downtimeHours: 0 }));
+  assert.equal(response.status, 200, await response.text());
+  assert.ok(db.writes.some(write => write.sql.includes("INSERT INTO equipment_timesheet_marks")));
+  assert.equal((await timesheetRoute.POST(request("/api/timesheet", "POST", { siteId: 2, employeeId: 10, workDate: "2026-10-30", value: 8 }))).status, 403, "An explicit grant never expands project scope");
+});
+
+test("resource-level denies still reject global manager actions before database mutation", async () => {
+  const user = actor("engineer"); user.permissions = rolePermissionTemplate("engineer");
+  const db = configure(user);
+  for (const [method, body] of [["POST", { action: "create-user" }], ["PATCH", { action: "update-user" }], ["PATCH", { action: "create-position" }]]) {
+    assert.equal((await dataRoute[method](request("/api/data", method, body))).status, 403);
+  }
+  assert.equal(db.writes.length, 0);
 });
 
 test("viewer project access is saved with the user and changing into viewer defaults to no grants", async () => {

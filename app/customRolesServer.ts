@@ -1,6 +1,6 @@
 import { getDatabase, type PostgresDatabase } from "../db/client";
 import { randomUUID } from "node:crypto";
-import { CustomRoleError, customRoleNameKey, inferCustomRoleBaseRole, managedDefaultRoleSeeds, normalizeCustomRoleInput, normalizeCustomRoleName, normalizeCustomRolePermissions, type CustomRole, type CustomRoleInput } from "./customRoles.ts";
+import { CustomRoleError, customRoleNameKey, inferCustomRoleBaseRole, inheritedCustomRoleStatusPermissions, managedDefaultRoleSeeds, normalizeCustomRoleInput, normalizeCustomRoleName, normalizeCustomRolePermissions, type CustomRole, type CustomRoleInput } from "./customRoles.ts";
 
 type Executor = Pick<PostgresDatabase, "prepare">;
 const schemaTasks = new WeakMap<PostgresDatabase, Promise<void>>();
@@ -54,10 +54,12 @@ export async function ensureCustomRolesSchema(db?: PostgresDatabase) {
 type CustomRoleRow = { id: number; name: string; baseRole: string; permissions: unknown; revision: number; legacyRoleKey?: CustomRole["legacyRoleKey"] };
 function customRoleFromRow(row: CustomRoleRow): CustomRole | null {
   try {
-    const permissions = normalizeCustomRolePermissions(typeof row.permissions === "string" ? JSON.parse(row.permissions) : row.permissions);
+    const original = typeof row.permissions === "string" ? JSON.parse(row.permissions) : row.permissions;
+    const permissions = normalizeCustomRolePermissions(original, row.baseRole === "foreman" || row.baseRole === "engineer" || row.baseRole === "viewer" ? row.baseRole : undefined);
+    const inheritedStatusPermissions = inheritedCustomRoleStatusPermissions(original);
     const baseRole = row.baseRole === "foreman" ? "foreman" : inferCustomRoleBaseRole(permissions);
     if (baseRole !== row.baseRole || !Number.isSafeInteger(row.id) || row.id < 1 || !Number.isSafeInteger(row.revision) || row.revision < 1) return null;
-    return { id: row.id, name: normalizeCustomRoleName(row.name), baseRole, permissions, revision: row.revision, ...(row.legacyRoleKey ? { legacyRoleKey: row.legacyRoleKey } : {}) };
+    return { id: row.id, name: normalizeCustomRoleName(row.name), baseRole, permissions, revision: row.revision, ...(row.legacyRoleKey ? { legacyRoleKey: row.legacyRoleKey } : {}), ...(inheritedStatusPermissions.length ? { inheritedStatusPermissions } : {}) };
   } catch { return null; }
 }
 const columns = "id, name, base_role AS baseRole, permissions, revision, legacy_role_key AS legacyRoleKey";

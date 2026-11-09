@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
+import { SelectionCopyTarget } from "./selection-copy-target";
 import { AllEnterpriseModule } from "ag-grid-enterprise";
 import { AgGridProvider } from "ag-grid-react";
 import { TableOrderProvider } from "../../app/TableRowMoves";
@@ -217,6 +218,7 @@ function Fixture() {
       <div className="work-types-fixture-account"><strong>Аванесов Марк Давидович</strong><small>Супер-админ</small></div>
     </aside>
     <main className="page-content table-workspace-page work-types-workspace-page">
+      <SelectionCopyTarget />
       <header className="page-heading"><div><h1>Виды и подвиды работ</h1><p>Учебный проект</p></div><label className="work-types-fixture-controls">Тестовые данные<select aria-label="Тестовые данные" value={sample} onChange={event => {
         const value = event.target.value as Sample;
         ({ parents, children } = makeData(value)); nextId = 100_000; savedRowOrder = []; hasSavedOrder = false;

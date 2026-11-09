@@ -18,6 +18,9 @@ import { useTableEscapeSelection } from "./useTableEscapeSelection";
 import { SpreadsheetFilterHeader } from "./SpreadsheetFilterHeader";
 import { useCatalogGridPreferences } from "./useCatalogGridPreferences";
 import { AgTablePageScroll } from "./TablePageScroll";
+import { isTableSelectAllShortcut, isTableTextEntryTarget } from "./tableSelectAllShortcut";
+import { nativeSpreadsheetSelectionKey, nativeSpreadsheetSelectionValues, spreadsheetDataColumns, spreadsheetDataRowRanges, spreadsheetHeaderValues } from "./gridSpreadsheetRows";
+import { serializeSpreadsheetText, stripSpreadsheetHeaderRow } from "./spreadsheetClipboard";
 
 type Props = {
   masters: WorkTypeRow[];
@@ -80,10 +83,31 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
   }, [rows, selectedKeys]);
   const selectedNew = selected.filter(row => row.id === undefined && !row.unassigned);
   const selectedSaved = selected.filter(row => row.id !== undefined || row.unassigned);
+  const selectionIncludesHeaders = useRef<string | null>(null);
+  const lastHeaderClipboard = useRef<string | null>(null);
+  const paintSelectedHeaders = useCallback((grid: GridApi<WorkTypeRow>) => {
+    requestAnimationFrame(() => {
+      const root = gridElement.current;
+      if (!root || grid.isDestroyed()) return;
+      const selectedIds = new Set(selectionIncludesHeaders.current !== null ? spreadsheetDataColumns(grid).map(column => column.getColId()) : []);
+      root.querySelectorAll<HTMLElement>(".ag-header-cell[col-id]").forEach(header => {
+        if (header.closest(".work-types-master-grid,.work-types-detail-grid") !== root) return;
+        header.classList.toggle("ag-excel-header-selected", selectedIds.has(header.getAttribute("col-id") ?? ""));
+      });
+    });
+  }, []);
+  const clearSelectedHeaders = useCallback(() => {
+    selectionIncludesHeaders.current = null;
+    if (api && !api.isDestroyed()) {
+      api.setGridOption("copyHeadersToClipboard", false);
+      paintSelectedHeaders(api);
+    }
+  }, [api, paintSelectedHeaders]);
   useTableEscapeSelection({
-    hasSelection: () => Boolean(api && !api.isDestroyed() && (api.getSelectedNodes().length || api.getFocusedCell() || api.isModuleRegistered("CellSelectionModule") && api.getCellRanges()?.length)),
+    hasSelection: () => Boolean(selectionIncludesHeaders.current !== null || api && !api.isDestroyed() && (api.getSelectedNodes().length || api.getFocusedCell() || api.isModuleRegistered("CellSelectionModule") && api.getCellRanges()?.length)),
     isEditing: () => Boolean(api && !api.isDestroyed() && api.getEditingCells().length),
     clearSelection: () => {
+      clearSelectedHeaders();
       if (!api || api.isDestroyed()) return;
       api.deselectAll();
       setSelectedKeys([]);
@@ -257,9 +281,46 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
   const pendingCount = master ? pending.length : localPending.length;
   const canAdd = props.canCreate && !props.disabled && (master || parentKey !== "unassigned");
   const selectable = (row?: WorkTypeRow) => Boolean(row && !props.disabled && (row.unassigned ? props.canDelete : row.id === undefined ? props.canCreate : props.canUpdate || props.canDelete));
-  const grid = <div ref={gridElement} className={`ag-grid-shell ag-admin-grid ag-reference-grid ag-grid-empty-rows ${master ? "work-types-master-grid" : "work-types-detail-grid"}`} role="grid" aria-label={master ? "Таблица видов работ" : "Таблица подвидов работ"} aria-busy={props.disabled} tabIndex={0} onKeyDownCapture={event => {
+  const grid = <div ref={gridElement} className={`ag-grid-shell ag-admin-grid ag-reference-grid ag-grid-empty-rows ${master ? "work-types-master-grid" : "work-types-detail-grid"}`} role="grid" aria-label={master ? "Таблица видов работ" : "Таблица подвидов работ"} aria-busy={props.disabled} tabIndex={0} onPointerDownCapture={event => {
+      if (event.button === 2 || !(event.target instanceof Element) || event.target.closest(".work-types-master-grid,.work-types-detail-grid") !== event.currentTarget) return;
+      clearSelectedHeaders();
+    }} onKeyDownCapture={event => {
+      // The nested detail grid owns its shortcut; the master must not overwrite its range.
+      if (event.target instanceof Element && event.target.closest(".work-types-master-grid,.work-types-detail-grid") !== event.currentTarget) return;
+      if (isTableSelectAllShortcut(event.nativeEvent)) {
+        event.preventDefault(); event.stopPropagation();
+        if (!api || api.isDestroyed() || !api.isModuleRegistered("CellSelectionModule")) return;
+        const columns = spreadsheetDataColumns(api);
+        api.clearCellSelection();
+        const ranges = spreadsheetDataRowRanges(api);
+        if (columns.length) {
+          for (const range of ranges) api.addCellRange({ ...range, columns });
+          if (ranges.length) api.setFocusedCell(ranges[0].rowStartIndex, columns[0]);
+        }
+        selectionIncludesHeaders.current = columns.length ? nativeSpreadsheetSelectionKey(api) : null;
+        api.setGridOption("copyHeadersToClipboard", selectionIncludesHeaders.current !== null);
+        paintSelectedHeaders(api);
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && !event.nativeEvent.isComposing
+        && (event.code === "KeyC" || event.key.toLocaleLowerCase("en-US") === "c") && !isTableTextEntryTarget(event.target)) {
+        // Preserve the browser copy event. AG's native key handler cancels it
+        // and writes through navigator.clipboard, which is not always granted.
+        event.stopPropagation();
+        return;
+      }
+      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "Tab"].includes(event.key) && !isTableTextEntryTarget(event.target)) clearSelectedHeaders();
       if (!(event.ctrlKey || event.metaKey) || event.target instanceof Element && event.target.closest("input,textarea")) return;
       if (event.code === "KeyZ" || event.code === "KeyY") { event.preventDefault(); event.stopPropagation(); if (event.shiftKey || event.code === "KeyY") latest.current.history.redo(); else latest.current.history.undo(); }
+    }} onCopyCapture={event => {
+      if (event.defaultPrevented || isTableTextEntryTarget(event.target) || !api || api.isDestroyed() || !api.isModuleRegistered("CellSelectionModule")) return;
+      if (event.target instanceof Element && event.target.closest(".work-types-master-grid,.work-types-detail-grid") !== event.currentTarget) return;
+      const matrix = nativeSpreadsheetSelectionValues(api, { includeHeaders: selectionIncludesHeaders.current !== null });
+      if (!matrix) return;
+      event.preventDefault(); event.stopPropagation();
+      const text = serializeSpreadsheetText(matrix);
+      event.clipboardData.setData("text/plain", text);
+      lastHeaderClipboard.current = selectionIncludesHeaders.current !== null ? text : null;
     }}>
       <AgGridReact<WorkTypeRow>
         theme={gridTheme} localeText={gridLocaleRu} rowData={orderedRows} columnDefs={columns} defaultColDef={defaultColDef}
@@ -274,6 +335,13 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
         rowSelection={props.canCreate || props.canUpdate || props.canDelete ? { mode: "multiRow", selectAll: "filtered", enableClickSelection: false, checkboxes: params => !params.node.detail && selectable(params.data), headerCheckbox: !props.disabled, hideDisabledCheckboxes: true, isRowSelectable: node => !node.detail && selectable(node.data) } : undefined}
         selectionColumnDef={selectionColumnDef}
         cellSelection={{ handle: { mode: "fill" } }} copyHeadersToClipboard={false} suppressClipboardPaste={props.disabled || !props.canCreate && !props.canUpdate}
+        processDataFromClipboard={params => {
+          const headers = spreadsheetHeaderValues(params.api, spreadsheetDataColumns(params.api));
+          if (selectionIncludesHeaders.current !== null && params.api.getDisplayedRowCount() === 0 && params.data.length === 1
+            && params.data[0].length === headers.length && headers.every((header, index) => params.data[0][index] === header)) return null;
+          const includesHeaders = selectionIncludesHeaders.current !== null || lastHeaderClipboard.current === serializeSpreadsheetText(params.data);
+          return includesHeaders ? stripSpreadsheetHeaderRow(params.data, headers) : params.data;
+        }}
         processCellForClipboard={params => params.column.getColId() === "parentKey" ? parentOptions.find(row => row.key === params.value)?.name ?? "Без вида работы" : String(params.value ?? "")}
         onCellEditRequest={event => {
           if (!event.data || event.colDef.field !== "name" && event.colDef.field !== "parentKey") return;
@@ -304,10 +372,16 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
         getContextMenuItems={contextMenu} columnMenu="new" getMainMenuItems={tableColumnMenuItems} rowDragMultiRow rowDragManaged={false} suppressMoveWhenRowDragging suppressRowDrag={moveBlocked || !order?.canWrite || order.busy} onRowDragEnd={dragEnd}
         onGridReady={({ api: ready }) => { ready.setGridAriaProperty("label", master ? "Виды работ" : "Подвиды работ"); if (master && masterGridRef) masterGridRef.current = ready; preferences.attach(ready); setApi(ready); }}
         onColumnResized={preferences.onColumnResized}
-        onSortChanged={preferences.onSortChanged}
+        onSortChanged={() => { clearSelectedHeaders(); preferences.onSortChanged(); }}
+        onCellSelectionChanged={event => {
+          if (selectionIncludesHeaders.current !== null && nativeSpreadsheetSelectionKey(event.api) !== selectionIncludesHeaders.current) clearSelectedHeaders();
+          else paintSelectedHeaders(event.api);
+        }}
+        onBodyScroll={event => paintSelectedHeaders(event.api)}
+        onDisplayedColumnsChanged={event => paintSelectedHeaders(event.api)}
         onGridSizeChanged={event => queueDetailHeights(event.api)}
-        onModelUpdated={event => { let total = 0; event.api.forEachNodeAfterFilter(node => { if (node.data && !node.detail && !node.data.unassigned) total++; }); setVisibleCount(total); queueDetailHeights(event.api); }}
-        onFilterChanged={event => setFiltered(event.api.isAnyFilterPresent() || Boolean(props.query))}
+        onModelUpdated={event => { let total = 0; event.api.forEachNodeAfterFilter(node => { if (node.data && !node.detail && !node.data.unassigned) total++; }); setVisibleCount(total); queueDetailHeights(event.api); paintSelectedHeaders(event.api); }}
+        onFilterChanged={event => { clearSelectedHeaders(); setFiltered(event.api.isAnyFilterPresent() || Boolean(props.query)); }}
         onSelectionChanged={event => setSelectedKeys(event.api.getSelectedRows().map(row => row.key))}
         popupParent={typeof document === "undefined" ? undefined : document.body}
       />

@@ -143,7 +143,7 @@ test("stale revisions are rejected before inspecting links or moving hours", asy
   assert.equal(h.queries.some(query => query.sql.includes("FROM personnel_report_rows")), false); assert.equal(h.writes.length, 0);
 });
 
-for (const [role, status, code] of [["viewer", 403, undefined], ["foreman", 409, "APPROVAL_REQUIRED"]]) {
+for (const [role, status, code] of [["viewer", 403, undefined], ["foreman", 403, undefined]]) {
   test(`${role} cannot use the legacy PATCH endpoint to move approved report rows`, async () => {
     const h = await fixture(actor(role));
     const response = await h.patch(payload(500, { workDate: targetDate }));

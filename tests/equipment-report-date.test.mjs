@@ -105,7 +105,7 @@ test("a foreman can move an incomplete own draft without requiring missing field
 
 for (const status of ["submitted", "approved"]) test(`foreman cannot move ${status} equipment report`, async () => {
   const db = fixture({ status }), before = db.state();
-  await assert.rejects(move(db, foreman), code("REPORT_LOCKED"));
+  await assert.rejects(move(db, foreman), code("REPORT_FORBIDDEN"));
   assert.deepEqual(db.state(), before);
 });
 
@@ -151,7 +151,7 @@ test("date changes require update rights, project scope, ownership, and a valid 
     await assert.rejects(move(db, engineer, { workDate }));
     assert.equal(db.sqlLog.length, 0);
   }
-  const viewer = { ...engineer, role: "viewer" };
+  const viewer = { ...engineer, role: "viewer", permissions: rolePermissionTemplate("viewer") };
   const db = fixture();
   await assert.rejects(move(db, viewer), code("REPORT_FORBIDDEN"));
   await assert.rejects(moveEntry(db, viewer), code("REPORT_FORBIDDEN"));

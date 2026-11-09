@@ -193,6 +193,7 @@ export function useTimesheetColumnResize(rootRef: RefObject<HTMLElement | null>,
     colGroup: <colgroup>{columns.map(column => <col key={column.id} data-column-id={column.id} style={{ width: `var(--timesheet-width-${column.id})` }} />)}</colgroup>,
     handle,
     columnCount: columns.length,
+    columnIds: columns.map(column => column.id),
     stickyCount: layout.stickyCount,
     headerActions,
   };

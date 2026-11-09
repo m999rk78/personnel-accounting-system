@@ -13,9 +13,11 @@ async function load(path, replacements) {
   return import(dataUrl(source));
 }
 
-const actor = (role = "viewer", pending = false) => ({ id: 8, role, assignedSiteId: null,
-  projectAccess: { mode: "selected", siteIds: [7, 11] }, canViewPendingReports: pending,
-  permissions: rolePermissionTemplate(role) });
+const actor = (role = "viewer", pending = false) => {
+  const permissions = rolePermissionTemplate(role);
+  if (pending) for (const resource of ["workers_report_draft", "equipment_report_draft"]) permissions[resource].view = true;
+  return { id: 8, role, assignedSiteId: null, projectAccess: { mode: "selected", siteIds: [7, 11] }, canViewPendingReports: pending, permissions };
+};
 function readonlyDatabase(domain, siteId, includeOwnPrivateReports = false) {
   const queries = [];
   const headers = ["draft", "submitted", "approved", "rejected"].map((status, index) => ({ id: 10 + index, siteId, workDate: "2026-10-30", ownerUserId: 9,
@@ -51,15 +53,15 @@ function readonlyDatabase(domain, siteId, includeOwnPrivateReports = false) {
 for (const domain of ["personnel", "equipment"]) {
   const title = domain[0].toUpperCase()+domain.slice(1);
   const store = await import(await compileModuleGraph(`app/${domain}ReportStore.ts`));
-  test(`${domain}: viewers receive approved data only and pending reports require an explicit grant`, async () => {
+  test(`${domain}: viewers see submitted and approved project reports, while private drafts require a separate grant`, async () => {
     const db = readonlyDatabase(domain, 7);
     const result = await store[`list${title}Reports`](db, actor(), 7, null, null);
-    assert.deepEqual(result.reports.map(report=>report.status), ["approved"]);
-    assert.equal(result.reports[0].reviewComment, "");
-    assert.deepEqual(result.reports[0].rows.map(row=>row.note), ["Row approved"]);
+    assert.deepEqual(result.reports.map(report=>report.status), ["submitted", "approved"]);
+    assert.equal(result.reports[0].reviewComment, "Internal submitted");
+    assert.deepEqual(result.reports[0].rows.map(row=>row.note), ["Row submitted"]);
     assert.equal(result.entries[0].note, "Опубликованная строка");
     assert.equal(result.canReview, false);
-    assert.deepEqual(db.queries.find(query=>query.sql.includes(`FROM ${domain}_report_rows draft_row`)).values, [[12]]);
+    assert.deepEqual(db.queries.find(query=>query.sql.includes(`FROM ${domain}_report_rows draft_row`)).values, [[11, 12]]);
     const enabled = await store[`list${title}Reports`](readonlyDatabase(domain, 11), actor("viewer", true), 11, null, null);
     assert.deepEqual(enabled.reports.map(report=>report.status), ["submitted", "approved"]);
     assert.equal(enabled.canReview, false);
@@ -76,12 +78,12 @@ for (const domain of ["personnel", "equipment"]) {
     assert.deepEqual(result.reports.filter(report => ["draft", "rejected"].includes(report.status)).map(report => report.ownerUserId), [user.id, user.id]);
     assert.equal(result.canReview, false);
     const reportQuery = db.queries.find(query => query.sql.includes("JOIN app_users owner"));
-    assert.deepEqual(reportQuery.values, [7, user.id]);
+    assert.deepEqual(reportQuery.values, [7, user.id, ["draft", "rejected", "submitted", "approved"]]);
     assert.match(reportQuery.sql, /report\.status IN \('approved', 'submitted'\) OR report\.owner_user_id = \?/);
   });
 
-  test(`${domain}: viewer writes are forbidden before any database operation even with forged full permissions`, async () => {
-    const user = { ...actor("viewer", true), permissions:rolePermissionTemplate("superadmin") };
+  test(`${domain}: default viewer write denials are enforced before any database operation`, async () => {
+    const user = actor("viewer", true);
     const db = readonlyDatabase(domain, 7);
     const denied = error => error.status===403 && error.code==="REPORT_FORBIDDEN";
     for (const action of ["save", "submit", "approve", "reject", "reopen"]) {
@@ -103,22 +105,25 @@ for (const domain of ["personnel", "equipment"]) {
   });
 }
 
-test("viewer row-order reads hide pending records and all order writes stay disabled", async () => {
+test("viewer row-order access follows its actual status grants and private drafts stay hidden by default", async () => {
   const databaseUrl=dataUrl("export function getDatabase(){throw new Error('Use injected database');}");
   const server=await load("../app/tableRowOrderServer.ts", {
     "../db/client":databaseUrl,"./roles.ts":fileUrl("roles"),"./permissionModel":fileUrl("permissionModel"),
     "./tableRowOrder":fileUrl("tableRowOrder"),"./personnelReportRowOrder":fileUrl("personnelReportRowOrder"),
     "./equipmentReportRowOrder":fileUrl("equipmentReportRowOrder"),"./workTypesRowOrder":fileUrl("workTypesRowOrder"),
   });
-  const user={...actor(),permissions:rolePermissionTemplate("superadmin")};
+  const user=actor();
   for (const scope of ["personnel-report-rows","equipment-report-rows"]) {
     assert.equal(server.rowOrderAccess(user,scope,7).canRead,true);
     assert.equal(server.rowOrderAccess(user,scope,7).canWrite,false);
     const queries=[];
     const executor={prepare(sql){return {bind(...values){return {async all(){queries.push({sql,values});return {results:[{id:"2026-10-30/approved-100"}]};}};}};}};
     assert.deepEqual(await server.canonicalRowIds(scope,7,executor,user),["2026-10-30/approved-100"]);
-    assert.match(queries[0].sql,/report\.status <> 'approved' AND FALSE/);
-    await server.canonicalRowIds(scope,7,executor,{...user,canViewPendingReports:true});
+    assert.match(queries[0].sql, /report\.status IN \('draft', 'rejected'\) AND FALSE/);
+    assert.match(queries[0].sql, /report\.status = 'submitted' AND TRUE/);
+    const granted = {...user,permissions:rolePermissionTemplate("superadmin")};
+    assert.equal(server.rowOrderAccess(granted,scope,7).canWrite,true);
+    await server.canonicalRowIds(scope,7,executor,granted);
     assert.doesNotMatch(queries[1].sql,/AND FALSE/);
   }
 });

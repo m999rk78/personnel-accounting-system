@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { PermissionMatrix } from "./PermissionMatrix";
-import { emptyPermissionSet, normalizePermissionSet, permissionSetsEqual, rolePermissionTemplate, type PermissionAction, type PermissionResource, type PermissionSet } from "./permissionModel";
+import { emptyPermissionSet, normalizePermissionSet, patchPermissionSet, permissionSetsEqual, rolePermissionTemplate, type PermissionAction, type PermissionResource, type PermissionSet } from "./permissionModel";
 import type { CustomRole } from "./customRoles";
 import { useConfirmationDialog } from "./useConfirmationDialog";
 import "./customRoles.css";
@@ -44,13 +44,7 @@ export function RoleEditorDialog({ onClose, onCreated, previewRole, editable = f
   }
 
   function patchPermission(resource: PermissionResource, action: PermissionAction, enabled: boolean) {
-    setPermissions(current => {
-      const next = normalizePermissionSet(current);
-      next[resource][action] = enabled;
-      if (action !== "view" && enabled) next[resource].view = true;
-      if (action === "view" && !enabled) next[resource] = { view: false, create: false, update: false, delete: false };
-      return normalizePermissionSet(next);
-    });
+    setPermissions(current => patchPermissionSet(current, resource, action, enabled));
     setError("");
   }
 
@@ -80,7 +74,7 @@ export function RoleEditorDialog({ onClose, onCreated, previewRole, editable = f
       {error && <div className="role-editor-error" role="alert">{error}</div>}
       <div className="role-editor-body">
         {!readOnly && <label className="role-editor-name"><span>Название роли</span><input ref={nameRef} value={name} onChange={event => { setName(event.target.value); setError(""); }} maxLength={80} required disabled={saving} placeholder="Например, Руководитель проекта" autoComplete="off" /></label>}
-        {!readOnly && <div className="role-editor-tools"><div><button type="button" disabled={saving} onClick={() => { setPermissions(rolePermissionTemplate("viewer")); setError(""); }}>Только просмотр</button><button type="button" disabled={saving} onClick={() => { setPermissions(emptyPermissionSet()); setError(""); }}>Сбросить права</button></div></div>}
+        {!readOnly && <div className="role-editor-tools"><div><button type="button" disabled={saving} onClick={() => { setPermissions(rolePermissionTemplate("viewer")); setError(""); }}>Только просмотр</button><button type="button" disabled={saving} onClick={() => { setPermissions(rolePermissionTemplate("superadmin")); setError(""); }}>Полный доступ</button><button type="button" disabled={saving} onClick={() => { setPermissions(emptyPermissionSet()); setError(""); }}>Сбросить права</button></div></div>}
         {editable && previewRole && <p className="role-editor-review-hint">Обновится шаблон роли. Индивидуальные настройки пользователей сохранятся.</p>}
         <PermissionMatrix compact label={previewRole ? `Права роли: ${previewRole.name}` : "Права новой роли"} value={permissions} disabled={saving || readOnly} onChange={readOnly ? undefined : patchPermission} />
       </div>

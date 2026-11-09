@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { canAccessGeneralSettings, canAccessTimesheets, canEditGlobalEmployees, canEditGlobalReferences, canEditProjectSettings, canInspectBitrix24, canManageBitrix24, canViewAllProjects, canAccessProject, isUserRole, effectiveProjectAccess } from '../app/roles.ts';
+import { canViewAllProjects, canAccessProject, isUserRole, effectiveProjectAccess } from '../app/roles.ts';
+import { rolePermissionTemplate, limitPermissionsToRole } from '../app/permissionModel.ts';
 
 test('only foreman, engineer, viewer and superadmin remain selectable roles', () => {
   for (const role of ['foreman','engineer','viewer','superadmin']) assert.equal(isUserRole(role),true);
@@ -8,9 +9,8 @@ test('only foreman, engineer, viewer and superadmin remain selectable roles', ()
 });
 test('legacy foremen keep their assigned project until explicit access is configured', () => {
   const actor={role:'foreman',assignedSiteId:7};
-  assert.equal(canAccessGeneralSettings('foreman'),false);
-  assert.equal(canEditProjectSettings('foreman'),false);
-  assert.equal(canAccessTimesheets('foreman'),false);
+  assert.equal(rolePermissionTemplate('foreman').workers_timesheet.view,false);
+  assert.equal(rolePermissionTemplate('foreman').project_directories.update,false);
   assert.equal(canAccessProject(actor,7),true);
   assert.equal(canAccessProject(actor,8),false);
   assert.equal(canAccessProject({...actor,assignedSiteId:null},7),false);
@@ -18,11 +18,9 @@ test('legacy foremen keep their assigned project until explicit access is config
 test('engineers recover their previous working role and all-project default', () => {
   assert.equal(canViewAllProjects('engineer'),true);
   assert.equal(canAccessProject({role:'engineer',assignedSiteId:7},8),true);
-  assert.equal(canEditGlobalEmployees('engineer'),true);
-  assert.equal(canEditProjectSettings('engineer'),true);
-  assert.equal(canInspectBitrix24('engineer'),true);
-  assert.equal(canEditGlobalReferences('engineer'),false);
-  assert.equal(canManageBitrix24('engineer'),false);
+  assert.equal(rolePermissionTemplate('engineer').employees.update,true);
+  assert.equal(rolePermissionTemplate('engineer').project_directories.update,true);
+  assert.equal(rolePermissionTemplate('engineer').positions.update,false);
 });
 test('explicit project grants are independent of role and legacy assignment', () => {
   for (const role of ['foreman','engineer','viewer']) {
@@ -38,13 +36,14 @@ test('explicit project grants are independent of role and legacy assignment', ()
 test('viewer starts with no project grants and no editing role capabilities', () => {
   assert.deepEqual(effectiveProjectAccess({role:'viewer'}),{mode:'selected',siteIds:[]});
   assert.equal(canAccessProject({role:'viewer',assignedSiteId:7},7),false);
-  assert.equal(canAccessTimesheets('viewer'),true);
-  assert.equal(canEditGlobalEmployees('viewer'),false);
-  assert.equal(canEditProjectSettings('viewer'),false);
+  assert.equal(rolePermissionTemplate('viewer').workers_timesheet.view,true);
+  assert.equal(rolePermissionTemplate('viewer').employees.update,false);
+  assert.equal(rolePermissionTemplate('viewer').project_directories.update,false);
+  assert.deepEqual(limitPermissionsToRole('viewer',rolePermissionTemplate('superadmin')),rolePermissionTemplate('superadmin'));
 });
 test('superadmin keeps all projects including when a stale selected list is supplied', () => {
   assert.equal(canAccessProject({role:'superadmin',projectAccess:{mode:'selected',siteIds:[]}},7),true);
-  assert.equal(canEditGlobalReferences('superadmin'),true);
-  assert.equal(canManageBitrix24('superadmin'),true);
+  assert.equal(rolePermissionTemplate('superadmin').positions.update,true);
+  assert.equal(rolePermissionTemplate('superadmin').access_rights.update,true);
   assert.equal(canAccessProject({role:'superadmin'},0),false);
 });

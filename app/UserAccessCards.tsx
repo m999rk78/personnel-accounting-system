@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTableEscapeSelection } from "./useTableEscapeSelection";
+import { useNativeTableSelectAll } from "./useNativeTableSelectAll";
 import { CustomSelect } from "./CustomSelect";
 import { ProjectAccessPicker } from "./ProjectAccessPicker";
 import { useTimesheetFilters, type TimesheetFilterColumn } from "./useTimesheetFilters";
@@ -20,6 +21,11 @@ const userFilterColumns: readonly TimesheetFilterColumn<AccessUser>[] = [
   { colId: "roleStatus", headerName: "Роль и статус", getValue: user => `${userRoleLabel(user)} · ${user.status === "active" ? "Активен" : "Приглашён"}` },
 ];
 const userFilterRowId = (user: AccessUser) => String(user.id);
+export const USER_TABLE_CLIPBOARD_HEADERS = ["ФИО", "Email", "Роль", "Статус"] as const;
+
+export function userTableClipboardRows(rows: readonly AccessUser[]) {
+  return rows.map(user => [user.fullName, user.email, userRoleLabel(user), user.status === "active" ? "Активен" : "Приглашён"]);
+}
 
 type UserAccessCardsProps = {
   rows: AccessUser[];
@@ -69,7 +75,7 @@ function UserDetailsDialog({ user, sites, onClose, onEdit, onEditRole, onOpenPer
       <div><dt>Роль</dt><dd>{userRoleLabel(user)}</dd></div>
       <div><dt>Проекты</dt><dd>{userProjectLabel(user.role, user.assignedSiteId, sites, user.projectAccess, user.projectAccessLimitedToViewer)}</dd></div>
       <div><dt>Статус</dt><dd>{user.status === "active" ? "Активен" : "Приглашён"}</dd></div>
-      {user.role === "viewer" && <div><dt>Черновики</dt><dd>{user.canViewPendingReports ? "Доступны для просмотра" : "Скрыты"}</dd></div>}
+
     </dl>
     <footer className="user-detail-actions">{onOpenPermissions && <button type="button" className="back-button" onClick={onOpenPermissions}>Индивидуальные права</button>}{onEditRole && <button type="button" className="back-button" onClick={onEditRole}>Изменить роль</button>}{onEdit && <button type="button" className="primary-button" onClick={onEdit}>Редактировать</button>}</footer>
   </dialog>;
@@ -125,7 +131,7 @@ function UserEditorDialog({ drafts, sites, saving, onPatch, onCancel, onSave, ro
             <span>Доступ к проектам</span>
             <ProjectAccessPicker value={userDraftProjectAccess(draft)} sites={sites} disabled={saving || draft.role === "superadmin"} onChange={projectAccess => onPatch(draft.key, { projectAccess, assignedSiteId: projectAccess.mode === "selected" ? String(projectAccess.siteIds[0] ?? "") : "" })} />
             {activeProjectInvalid && <p className="user-create-project-error" role="alert">Выберите хотя бы один доступный проект или разрешите все проекты.</p>}
-            {draft.role === "viewer" && <label className="access-pending-toggle" aria-label="Показывать черновики и отчёты на проверке"><input type="checkbox" checked={Boolean(draft.canViewPendingReports)} disabled={saving} onChange={event => onPatch(draft.key, { canViewPendingReports: event.target.checked })} /><span><strong>Показывать черновики и отчёты на проверке</strong><small>По умолчанию доступны подтверждённые отчёты и табели. Изменение данных всегда запрещено.</small></span></label>}
+
           </div>
         </section>
       </div>
@@ -152,6 +158,8 @@ export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onEd
   const searchedRows = useMemo(() => rows.filter((user) => !search || normalize(`${user.fullName} ${user.email} ${userRoleLabel(user)} ${sites.find((site) => site.id === user.assignedSiteId)?.name ?? ""}`).includes(search)), [rows, search, sites]);
   const filters = useTimesheetFilters({ rows: searchedRows, columns: userFilterColumns, getRowId: userFilterRowId, resetKey: "users-list", presentation: "checklist" });
   const visibleRows = layout === "list" ? filters.rows : searchedRows;
+  const clipboardRows = useMemo(() => userTableClipboardRows(visibleRows), [visibleRows]);
+  const { ref: selectionRef, className: selectionClass, handlers: selectionHandlers } = useNativeTableSelectAll({ rows: clipboardRows, headers: USER_TABLE_CLIPBOARD_HEADERS, resetKey: layout, enabled: layout === "list" && !editorOpen && !detailUser });
   const activeCount = rows.filter((user) => user.status === "active").length;
   const invitedCount = rows.length - activeCount;
   const adminCount = rows.filter((user) => user.role === "superadmin").length;
@@ -196,7 +204,7 @@ export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onEd
       <label className="user-access-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Найти пользователя…" aria-label="Найти пользователя" />{query && <button type="button" onClick={() => setQuery("")} aria-label="Очистить поиск">×</button>}</label>
     </div>
 
-    {layout === "list" ? <div className="users-table-wrap"><table className="users-table" aria-label="Список пользователей"><thead><tr>{mayDelete && <th className="users-table-selection"><input type="checkbox" aria-label="Выбрать всех пользователей" checked={allSelected} disabled={editorOpen || !visibleRows.length} ref={element => { if (element) element.indeterminate = !allSelected && visibleRows.some(user => selectedIds.includes(user.id)); }} onChange={() => { const ids = new Set(visibleRows.map(user => user.id)); onSelectionChange(allSelected ? selectedIds.filter(id => !ids.has(id)) : [...new Set([...selectedIds, ...ids])]); }} /></th>}<th scope="col"><TimesheetFilterableHeading columnId="fullName" label="ФИО">ФИО</TimesheetFilterableHeading></th><th scope="col"><TimesheetFilterableHeading columnId="roleStatus" label="Роль и статус">Роль и статус</TimesheetFilterableHeading></th></tr></thead><tbody>{visibleRows.map(user => <tr key={user.id} className={selectedIds.includes(user.id) ? "selected" : ""}>{mayDelete && <td className="users-table-selection"><input type="checkbox" checked={selectedIds.includes(user.id)} disabled={editorOpen} onChange={() => toggleUser(user.id)} aria-label={`Выбрать пользователя ${user.fullName}`} /></td>}<td><button type="button" className="users-table-open" aria-label={`Открыть пользователя ${user.fullName}`} disabled={editorOpen} onClick={() => setDetailUser(user)}><span className="user-access-avatar" aria-hidden="true">{initials(user.fullName)}</span><span className="users-table-identity"><strong>{user.fullName}</strong><small>{user.email}</small></span></button></td><td><span className={`user-role${user.customRoleId ? " custom" : ""}`}>{userRoleLabel(user)}</span><small className="users-table-status"><span className={user.status === "active" ? "is-active" : "is-invited"} aria-hidden="true" />{user.status === "active" ? "Активен" : "Приглашён"}</small></td></tr>)}</tbody></table>{!visibleRows.length && <div className="user-access-empty"><strong>Пользователи не найдены</strong><span>Попробуйте изменить поисковый запрос.</span></div>}</div> : <div className="user-access-list">
+    {layout === "list" ? <div ref={selectionRef} className={`users-table-wrap ${selectionClass}`} role="grid" aria-label="Данные пользователей" tabIndex={0} {...selectionHandlers}><table className="users-table" aria-label="Список пользователей"><thead><tr>{mayDelete && <th className="users-table-selection"><input type="checkbox" aria-label="Выбрать всех пользователей" checked={allSelected} disabled={editorOpen || !visibleRows.length} ref={element => { if (element) element.indeterminate = !allSelected && visibleRows.some(user => selectedIds.includes(user.id)); }} onChange={() => { const ids = new Set(visibleRows.map(user => user.id)); onSelectionChange(allSelected ? selectedIds.filter(id => !ids.has(id)) : [...new Set([...selectedIds, ...ids])]); }} /></th>}<th scope="col"><TimesheetFilterableHeading columnId="fullName" label="ФИО">ФИО</TimesheetFilterableHeading></th><th scope="col"><TimesheetFilterableHeading columnId="roleStatus" label="Роль и статус">Роль и статус</TimesheetFilterableHeading></th></tr></thead><tbody>{visibleRows.map(user => <tr key={user.id} className={selectedIds.includes(user.id) ? "selected" : ""}>{mayDelete && <td className="users-table-selection"><input type="checkbox" checked={selectedIds.includes(user.id)} disabled={editorOpen} onChange={() => toggleUser(user.id)} aria-label={`Выбрать пользователя ${user.fullName}`} /></td>}<td><button type="button" className="users-table-open" aria-label={`Открыть пользователя ${user.fullName}`} disabled={editorOpen} onClick={() => setDetailUser(user)}><span className="user-access-avatar" aria-hidden="true">{initials(user.fullName)}</span><span className="users-table-identity"><strong>{user.fullName}</strong><small>{user.email}</small></span></button></td><td><span className={`user-role${user.customRoleId ? " custom" : ""}`}>{userRoleLabel(user)}</span><small className="users-table-status"><span className={user.status === "active" ? "is-active" : "is-invited"} aria-hidden="true" />{user.status === "active" ? "Активен" : "Приглашён"}</small></td></tr>)}</tbody></table>{!visibleRows.length && <div className="user-access-empty"><strong>Пользователи не найдены</strong><span>Попробуйте изменить поисковый запрос.</span></div>}</div> : <div className="user-access-list">
       {visibleRows.map((user) => {
         const selected = selectedIds.includes(user.id);
         const scopeTitle = user.projectAccessLimitedToViewer ? "Проекты в пределах вашего доступа" : user.role === "superadmin" ? "Полный доступ" : user.role === "viewer" ? "Только просмотр" : "Рабочий доступ";

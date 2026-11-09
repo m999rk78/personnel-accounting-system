@@ -4,16 +4,15 @@ import { withAuditTrail } from "../../auditLog";
 import { CustomRoleError } from "../../customRoles";
 import { createCustomRole, deleteCustomRole, ensureCustomRolesSchema, listCustomRoles, updateCustomRole } from "../../customRolesServer";
 import { hasPermission } from "../../permissionModel";
-import { accessibleProjectIds, hasRestrictedProjectAccess } from "../../roles";
 
 function canManageRoles(user: NonNullable<Awaited<ReturnType<typeof getAuthUser>>>) {
-  return user.role !== "viewer" && !hasRestrictedProjectAccess(user) && hasPermission(user.permissions, "access_rights", "update");
+  return hasPermission(user.permissions, "access_rights", "view") && hasPermission(user.permissions, "access_rights", "update");
 }
 
 export async function GET(request: Request) {
   const user = await getAuthUser(request);
   if (!user) return Response.json({ error: "Войдите в систему." }, { status: 401 });
-  if (accessibleProjectIds(user)?.length === 0 || !(["access_rights", "system_users"] as const)
+  if (!(["access_rights", "system_users"] as const)
     .some(resource => hasPermission(user.permissions, resource, "view") || resource === "system_users"
       && (hasPermission(user.permissions, resource, "create") || hasPermission(user.permissions, resource, "update")))) {
     return Response.json({ error: "Нет права просмотра ролей." }, { status: 403 });

@@ -1,6 +1,7 @@
 import type { PostgresDatabase } from "../db/client";
 import type { AuthUser } from "./auth";
 import { canAccessProject } from "./roles";
+import { getReportStatusPermission } from "./permissionModel.ts";
 import { parsePersonnelReportDraftSnapshot, PersonnelReportDraftBufferError, type PersonnelReportDraftBuffer } from "./personnelReportDraftBuffer";
 
 type Executor = Pick<PostgresDatabase, "prepare">;
@@ -20,9 +21,9 @@ export async function ensurePersonnelReportDraftBufferSchema(db: Executor) {
 }
 
 export function assertPersonnelReportDraftBufferAccess(user: AuthUser, siteId: number) {
-  const permission = user.permissions.workers_report;
+  const permission = getReportStatusPermission(user.permissions, "workers_report", "draft");
   if (!Number.isSafeInteger(siteId) || siteId < 1 || siteId > 2_147_483_647) throw new PersonnelReportDraftBufferError("Укажите проект.");
-  if (user.role === "viewer" || !permission?.view || !permission.create && !permission.update || !canAccessProject(user, siteId)) {
+  if (!permission?.view || !permission.create && !permission.update || !canAccessProject(user, siteId)) {
     throw new PersonnelReportDraftBufferError("Нет доступа к черновику этого проекта.", 403, "DRAFT_BUFFER_FORBIDDEN");
   }
 }

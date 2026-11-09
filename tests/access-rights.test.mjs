@@ -21,7 +21,8 @@ test("role templates provide safe defaults and allow granular overrides", () => 
   assert.equal(hasPermission(engineer, "access_rights", "view"), true);
   assert.equal(hasPermission(engineer, "access_rights", "update"), false);
   assert.equal(hasPermission(admin, "access_rights", "update"), true);
-  assert.equal(PERMISSION_CATALOG.length, 14);
+  assert.equal(PERMISSION_CATALOG.filter(resource => !resource.parent).length, 14);
+  assert.deepEqual(PERMISSION_CATALOG.filter(resource => resource.parent).map(resource => resource.key), ["workers_report_draft", "workers_report_submitted", "workers_report_approved", "equipment_report_draft", "equipment_report_submitted", "equipment_report_approved"]);
 
   const custom = normalizePermissionSet({ workers_report: { view: true, create: false, update: false, delete: false } });
   assert.equal(custom.workers_report.view, true);
@@ -53,8 +54,8 @@ test("stores permissions, exposes a separate settings page, and enforces them in
   assert.match(migration, /PRIMARY KEY \("user_id", "resource"\)/);
   assert.match(accessApi, /access_rights", "update"/);
   assert.match(accessApi, /Нельзя отключить себе/);
-  assert.match(dataApi, /workers_report", "delete"/);
-  assert.match(equipmentApi, /equipment_report", entryId \? "update" : "create"/);
+  assert.match(dataApi, /hasReportStatusPermission\(user\.permissions, "workers_report", "approved", "delete"\)/);
+  assert.match(equipmentApi, /hasReportStatusPermission\(authUser\.permissions, "equipment_report", "approved", entryId \? "update" : "create"\)/);
   assert.match(timesheetApi, /existingMark \? "update" : "create"/);
   assert.match(app, /title: "Пользователи и права"/);
   assert.match(app, /canViewUsers=\{may\("system_users"\)\} canViewRoles=\{may\("access_rights"\)\}/);

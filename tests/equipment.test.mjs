@@ -154,7 +154,7 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(api, /hours > 10/);
   assert.match(api, /payload\.action === "import-units"/);
   assert.match(api, /payload\.action === "import-entries"/);
-  assert.match(api, /hasPermission\(authUser\.permissions, "equipment_report", "create"\)/);
+  assert.match(api, /hasReportStatusPermission\(authUser\.permissions, "equipment_report", "approved", "create"\)/);
   assert.match(api, /SELECT DISTINCT work_date AS "workDate"/);
   assert.match(api, /INSERT INTO equipment_entries/);
   assert.match(api, /equipment_project_assignments/);
@@ -208,7 +208,8 @@ test("builds equipment accounting from a shared registry and daily entries", asy
   assert.match(view, /className="equipment-total"><small>Всего<\/small><strong>\{monthSummary\.total\} ч\.<\/strong>/);
   // Empty/filler rows must follow the same visible tracks as the real table,
   // not the unfiltered calendar length (selected days can be non-contiguous).
-  assert.match(view, /const monthColumnResize = useTimesheetColumnResize\(timesheetClipboardShellRef, \{\s*kind: "equipment", dayCount: monthDays\.length, dayNumbers: visibleMonthDays/);
+  assert.match(view, /const monthColumnResize = useTimesheetColumnResize\(monthViewport\.shellRef, \{\s*kind: "equipment", dayCount: monthDays\.length, dayNumbers: visibleMonthDays/);
+  assert.match(view, /shellRef: monthViewport\.shellRef/);
   assert.match(view, /timesheet-fill-row[^\n]*colSpan=\{monthColumnResize\.columnCount\}/);
   for (const dayCount of [28, 29, 30, 31]) {
     const columns = timesheetSizingColumns("equipment", dayCount);
@@ -360,13 +361,13 @@ test("separates the daily equipment report into foreman contributions", async ()
   assert.match(api, /canCreateDaily: may\("equipment_report", "create"\)/);
   assert.match(api, /canUpdateDaily: may\("equipment_report", "update"\)/);
   assert.match(api, /canDeleteDaily: may\("equipment_report", "delete"\)/);
-  assert.match(api, /hasPermission\(authUser\.permissions, "equipment_report", entryId \? "update" : "create"\)/);
-  assert.match(api, /payload\.action === "delete-entry"[\s\S]*hasPermission\(authUser\.permissions, "equipment_report", "delete"\)/);
+  assert.match(api, /hasReportStatusPermission\(authUser\.permissions, "equipment_report", "approved", entryId \? "update" : "create"\)/);
+  assert.match(api, /payload\.action === "delete-entry"[\s\S]*hasReportStatusPermission\(authUser\.permissions, "equipment_report", "approved", "delete"\)/);
   assert.doesNotMatch(api, /Прораб[^\n]*(?:сегодняшн|только сегодня)/i);
-  assert.match(api, /responsibleUserId = authUser\.role === "foreman" && section === "daily" \? authUser\.id : null/);
+  assert.match(api, /const responsibleUserId = null/);
   assert.match(api, /ee\.responsible_user_id = \?/);
-  assert.match(api, /Прораб может изменять только собственные строки отчёта назначенного проекта/);
-  assert.match(api, /Прораб может удалять только собственные строки отчёта назначенного проекта/);
+  assert.doesNotMatch(api, /Прораб может изменять только собственные строки отчёта назначенного проекта/);
+  assert.doesNotMatch(api, /Прораб может удалять только собственные строки отчёта назначенного проекта/);
   assert.match(api, /payload\.action === "submit-daily-report"/);
   assert.match(api, /INSERT INTO equipment_report_contributions[\s\S]*RETURNING revision/);
   assert.match(api, /INSERT INTO equipment_report_days[\s\S]*RETURNING site_id/);

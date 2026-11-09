@@ -1,5 +1,5 @@
 import { getDatabase, type PostgresDatabase } from "../db/client";
-import { hasPermission, type PermissionResource } from "./permissionModel";
+import { hasPermission, hasReportStatusPermission, type PermissionResource } from "./permissionModel";
 import type { AuthUser } from "./auth";
 import { reconcileRowOrder, type RowOrderId } from "./tableRowOrder";
 import { groupPersonnelReportDates, isUnsavedPersonnelReportOrderId, personnelReportOrderScope } from "./personnelReportRowOrder";
@@ -53,8 +53,14 @@ export function rowOrderAccess(user: AuthUser, scope: string, siteId: number | n
   const projectIds = accessibleProjectIds(user) ?? [];
   const projectId = definition.project ? siteId : scopedCatalog ? siteId ?? projectIds[0] ?? null : null;
   if ((definition.project || scopedCatalog) && !canAccessProject(user, projectId)) throw new TableOrderAccessError("Нет доступа к проекту.");
-  const canRead = definition.resources.some((resource) => hasPermission(user.permissions, resource, "view"));
-  const canWrite = user.role !== "viewer" && definition.resources.some((resource) => hasPermission(user.permissions, resource, "update") || (resource === "project_employees" && hasPermission(user.permissions, resource, "create")));
+  const reportResource = scope === personnelReportOrderScope ? "workers_report" : scope === equipmentReportOrderScope ? "equipment_report" : null;
+  const statuses = ["draft", "submitted", "approved"] as const;
+  const canRead = reportResource
+    ? statuses.some(status => hasReportStatusPermission(user.permissions, reportResource, status, "view"))
+    : definition.resources.some((resource) => hasPermission(user.permissions, resource, "view"));
+  const canWrite = reportResource
+    ? statuses.some(status => hasReportStatusPermission(user.permissions, reportResource, status, "update"))
+    : definition.resources.some((resource) => hasPermission(user.permissions, resource, "update") || (resource === "project_employees" && hasPermission(user.permissions, resource, "create")));
   const scopeKey = scopedCatalog ? `selected:${[...projectIds].sort((left, right) => left - right).join(".")}` : projectId ?? 0;
   return { canRead, canWrite, key: `${scope}:${scopeKey}${definition.personal ? `:${user.id}` : ""}`, definition };
 }
@@ -93,38 +99,40 @@ export async function canonicalRowIds(scope: string, siteId: number | null, exec
     return rows.results.map(row => row.id);
   }
   if (scope === equipmentReportOrderScope) {
-    const own = user?.role === "foreman";
     const pending = !user || canViewPendingReportsFor(user);
-    const privateDrafts = user && !own && pending;
-    const parameters = [siteId, ...(user && (own || privateDrafts) ? [user.id] : []), siteId, ...(own ? [user.id] : [])];
+    const privateDrafts = user && pending;
+    const visible = (status: "draft" | "submitted" | "approved") => !user || hasReportStatusPermission(user.permissions, "equipment_report", status, "view");
+    const parameters = [siteId, ...(privateDrafts ? [user.id] : []), siteId];
     const rows = await executor.prepare(`SELECT id FROM (
       SELECT to_char(report.work_date::date, 'YYYY-MM-DD') || '/report-' || report.id || '-' || row.id AS id,
         report.work_date::date AS day, row.created_at AS created, row.row_order AS rank
       FROM equipment_report_rows row JOIN equipment_reports report ON report.id = row.report_id
       WHERE report.site_id = ? AND report.status <> 'approved' ${pending ? "" : "AND FALSE"}
-        ${own ? "AND report.owner_user_id = ?" : privateDrafts ? "AND (report.status = 'submitted' OR report.owner_user_id = ?)" : ""}
+        AND ((report.status IN ('draft', 'rejected') AND ${visible("draft") ? "TRUE" : "FALSE"}) OR (report.status = 'submitted' AND ${visible("submitted") ? "TRUE" : "FALSE"}))
+        ${privateDrafts ? "AND (report.status = 'submitted' OR report.owner_user_id = ?)" : ""}
       UNION ALL
       SELECT to_char(entry.work_date::date, 'YYYY-MM-DD') || '/' || CASE WHEN origin.id IS NOT NULL THEN 'report-' || origin.report_id || '-' || origin.id ELSE 'approved-' || entry.id END AS id,
         entry.work_date::date AS day, entry.created_at AS created, COALESCE(origin.row_order, 0) AS rank
-      FROM equipment_entries entry LEFT JOIN equipment_report_rows origin ON origin.approved_entry_id = entry.id WHERE entry.site_id = ? AND entry.deleted_at IS NULL ${own ? "AND entry.responsible_user_id = ?" : ""}
+      FROM equipment_entries entry LEFT JOIN equipment_report_rows origin ON origin.approved_entry_id = entry.id WHERE entry.site_id = ? AND entry.deleted_at IS NULL ${visible("approved") ? "" : "AND FALSE"}
     ) records ORDER BY day DESC, created DESC, rank, id DESC`).bind(...parameters).all<{ id: string }>();
     return rows.results.map(row => row.id);
   }
   if (scope === personnelReportOrderScope) {
-    const own = user?.role === "foreman";
     const pending = !user || canViewPendingReportsFor(user);
-    const privateDrafts = user && !own && pending;
-    const parameters = [siteId, ...(user && (own || privateDrafts) ? [user.id] : []), siteId, ...(own ? [user.id] : [])];
+    const privateDrafts = user && pending;
+    const visible = (status: "draft" | "submitted" | "approved") => !user || hasReportStatusPermission(user.permissions, "workers_report", status, "view");
+    const parameters = [siteId, ...(privateDrafts ? [user.id] : []), siteId];
     const rows = await executor.prepare(`SELECT id FROM (
       SELECT to_char(report.work_date::date, 'YYYY-MM-DD') || '/report-' || report.id || '-' || row.id AS id,
         report.work_date::date AS day, row.created_at AS created, row.row_order AS rank
       FROM personnel_report_rows row JOIN personnel_reports report ON report.id = row.report_id
       WHERE report.site_id = ? AND report.status <> 'approved' ${pending ? "" : "AND FALSE"}
-        ${own ? "AND report.owner_user_id = ?" : privateDrafts ? "AND (report.status = 'submitted' OR report.owner_user_id = ?)" : ""}
+        AND ((report.status IN ('draft', 'rejected') AND ${visible("draft") ? "TRUE" : "FALSE"}) OR (report.status = 'submitted' AND ${visible("submitted") ? "TRUE" : "FALSE"}))
+        ${privateDrafts ? "AND (report.status = 'submitted' OR report.owner_user_id = ?)" : ""}
       UNION ALL
       SELECT to_char(entry.work_date::date, 'YYYY-MM-DD') || '/' || CASE WHEN origin.id IS NOT NULL THEN 'report-' || origin.report_id || '-' || origin.id ELSE 'approved-' || entry.id END AS id,
         entry.work_date::date AS day, entry.created_at AS created, COALESCE(origin.row_order, 0) AS rank
-      FROM placement_entries entry LEFT JOIN personnel_report_rows origin ON origin.approved_entry_id = entry.id WHERE entry.site_id = ? AND entry.deleted_at IS NULL ${own ? "AND entry.responsible_user_id = ?" : ""}
+      FROM placement_entries entry LEFT JOIN personnel_report_rows origin ON origin.approved_entry_id = entry.id WHERE entry.site_id = ? AND entry.deleted_at IS NULL ${visible("approved") ? "" : "AND FALSE"}
     ) records ORDER BY day DESC, created DESC, rank, id DESC`).bind(...parameters).all<{ id: string }>();
     return rows.results.map(row => row.id);
   }
@@ -144,7 +152,8 @@ export async function readTableOrder(scope: string, siteId: number | null, user?
   // Unsaved draft UUIDs are view preferences too, and can survive a draft session restore.
   const reportRows = scope === personnelReportOrderScope || scope === equipmentReportOrderScope;
   const isUnsavedReportOrderId = scope === equipmentReportOrderScope ? isUnsavedEquipmentReportOrderId : isUnsavedPersonnelReportOrderId;
-  const drafts = reportRows && (!user || user.role !== "viewer") ? (saved?.ids ?? []).filter((id): id is string => typeof id === "string" && isUnsavedReportOrderId(id)) : [];
+  const reportResource = scope === equipmentReportOrderScope ? "equipment_report" : "workers_report";
+  const drafts = reportRows && (!user || canViewPendingReportsFor(user) && hasReportStatusPermission(user.permissions, reportResource, "draft", "view")) ? (saved?.ids ?? []).filter((id): id is string => typeof id === "string" && isUnsavedReportOrderId(id)) : [];
   const result = reconcileRowOrder([...available, ...drafts], saved?.ids ?? []);
   if (scope === personnelReportOrderScope) groupPersonnelReportDates(result, id => String(id).slice(0, 10));
   if (scope === equipmentReportOrderScope) groupEquipmentReportDates(result, id => String(id).slice(0, 10));

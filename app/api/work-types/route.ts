@@ -12,7 +12,6 @@ export async function POST(request: Request) {
       assertSameOrigin(request);
       const user = await getAuthUser(request);
       if (!user) return Response.json({ error: "Войдите в систему." }, { status: 401 });
-      if (user.role === "viewer") return Response.json({ error: "Роль «Просмотр» не может изменять справочники." }, { status: 403 });
       const payload = await request.json() as { action?: string; siteId: number; mainWorkTypeId?: number; ids?: number[]; entries?: Array<{ name: string; subworkName: string }>; parents?: unknown[]; children?: unknown[] };
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("Укажите данные справочника работ.");
       if (!canAccessProject(user, payload.siteId)) return Response.json({ error: "Нет доступа к этому проекту." }, { status: 403 });

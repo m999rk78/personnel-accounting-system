@@ -11,7 +11,7 @@ const draft = "2026-11-06/d0471ab9-d379-46f2-af6e-51ed0be6cfbf", persisted = "20
 /** Actual route/store; only the SQL and auth boundaries are synthetic. */
 function database() {
   const saved = new Map();
-  const records = [first, second, third].map(id => ({ id, siteId: 7, ownerUserId: 10 }));
+  const records = [first, second, third].map(id => ({ id, siteId: 7, ownerUserId: 10, status: "draft" }));
   records.push({ id: "2026-11-06/report-2-21", siteId: 7, ownerUserId: 11 }, { id: "2026-11-06/report-3-31", siteId: 8, ownerUserId: 10 });
   const db = { saved, records,
     prepare(sql) {
@@ -19,8 +19,8 @@ function database() {
       const execute = () => {
         if (sql.startsWith("CREATE TABLE IF NOT EXISTS table_row_orders")) return null;
         if (sql.includes("FROM personnel_report_rows row JOIN personnel_reports")) {
-          assert.match(sql, /AND report\.owner_user_id = \?/);
-          return records.filter(row => row.siteId === values[0] && row.ownerUserId === values[1]).map(row => ({ id: row.id }));
+          assert.match(sql, /AND \(report\.status = 'submitted' OR report\.owner_user_id = \?\)/);
+          return records.filter(row => row.siteId === values[0] && (["approved", "submitted"].includes(row.status) || row.ownerUserId === values[1])).map(row => ({ id: row.id }));
         }
         if (sql.startsWith("SELECT row_ids AS ids FROM table_row_orders")) return saved.has(values[0]) ? { ids: [...saved.get(values[0])] } : null;
         if (sql.startsWith("SELECT id FROM table_row_orders")) return saved.has(values[0]) ? { id: values[0] } : null;
@@ -83,4 +83,13 @@ test("saving a reordered local row retains its exact position when UUID becomes 
   const afterSave = await read();
   assert.deepEqual(afterSave.ids, [first, persisted, second, third]);
   assert.equal(afterSave.ids.includes(draft), false);
+});
+
+test("project-wide submitted rows remain visible without exposing another user's private draft order", async () => {
+  context.user = actor(); context.db = database();
+  const submitted = "2026-11-06/report-4-41";
+  context.db.records.push({ id: submitted, siteId: 7, ownerUserId: 11, status: "submitted" });
+  const ids = (await read()).ids;
+  assert.ok(ids.includes(submitted));
+  assert.equal(ids.includes("2026-11-06/report-2-21"), false);
 });

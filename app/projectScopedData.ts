@@ -1,13 +1,13 @@
 import { accessibleProjectIds, canAccessProject, type UserRole } from "./roles.ts";
+import { hasPermission, type PermissionSet, type PermissionResource, type PermissionAction } from "./permissionModel.ts";
 
-type ScopedUser = { role: UserRole; assignedSiteId: number | null; projectAccess?: { mode: "all" | "selected"; siteIds: number[] } };
+type ScopedUser = { role: UserRole; assignedSiteId: number | null; projectAccess?: { mode: "all" | "selected"; siteIds: number[] }; permissions?: PermissionSet };
 type ScopeDatabase = {
   prepare(sql: string): { bind(...values: unknown[]): { all<T = Record<string, unknown>>(): Promise<{ results: T[] }> } };
 };
 
 /** Global profile mutations may not remove or transfer another project's assets. */
 export async function projectEntitiesAllowed(db: ScopeDatabase, user: ScopedUser, kind: "employee" | "equipment", ids: number[], exclusive = false, allowFormer = false) {
-  if (user.role === "viewer") return false;
   const siteIds = accessibleProjectIds(user);
   if (siteIds === null) return true;
   if (!ids.length || !siteIds.length) return false;
@@ -29,9 +29,8 @@ export async function projectEntitiesAllowed(db: ScopeDatabase, user: ScopedUser
   return ids.every(id => allowed.has(id));
 }
 
-/** Includes role scope as a hard boundary, independent of customized permissions. */
+/** Project assets retain their explicit scope; global actions require their own grant. */
 export function scopedDataActionAllowed(user: ScopedUser, payload: { action?: string; siteId?: unknown; projectSiteId?: unknown; entity?: unknown }) {
-  if (user.role === "viewer") return false;
   const siteIds = accessibleProjectIds(user);
   if (siteIds === null) return true;
   if (!siteIds.length) return false;
@@ -39,8 +38,19 @@ export function scopedDataActionAllowed(user: ScopedUser, payload: { action?: st
   if (payload.siteId !== undefined && !canAccessProject(user, positive(payload.siteId))) return false;
   if (payload.projectSiteId !== undefined && !canAccessProject(user, positive(payload.projectSiteId))) return false;
   const action = payload.action ?? "";
-  if (/bitrix24/.test(action) || ["reorder-employees", "import-employees", "create-user", "update-user", "assign-site", "create-position", "update-position", "import-positions", "create-site"].includes(action)) return false;
+  // Whole-registry imports and Bitrix synchronization can change assets in
+  // several projects, so they still require an explicit all-project scope.
+  if (/bitrix24/.test(action) || ["reorder-employees", "import-employees"].includes(action)) return false;
+  const globalActions: Record<string, [PermissionResource, PermissionAction]> = {
+    "create-user": ["system_users", "create"], "update-user": ["system_users", "update"], "assign-site": ["system_users", "update"],
+    "create-position": ["positions", "create"], "update-position": ["positions", "update"], "import-positions": ["positions", "create"],
+    "create-site": ["projects", "create"],
+  };
+  const grant = globalActions[action];
+  if (grant) return Boolean(user.permissions && hasPermission(user.permissions, ...grant));
   if ((action === "create-employee" || action === "update-employee") && !canAccessProject(user, positive(payload.projectSiteId))) return false;
-  if ((action === "create-directory" || action === "update-directory") && ["employmentType", "department", "position"].includes(String(payload.entity))) return false;
+  if ((action === "create-directory" || action === "update-directory") && ["employmentType", "department", "position"].includes(String(payload.entity))) {
+    return Boolean(user.permissions && hasPermission(user.permissions, "positions", action === "create-directory" ? "create" : "update"));
+  }
   return true;
 }

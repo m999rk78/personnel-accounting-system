@@ -1,0 +1,18 @@
+.timesheet-table tbody :is(td, th).timesheet-cell-selected {
+  --selection-top: inset 0 0 0 transparent;
+  --selection-right: inset 0 0 0 transparent;
+  --selection-bottom: inset 0 0 0 transparent;
+  --selection-left: inset 0 0 0 transparent;
+  background: #eaf2ff !important;
+  box-shadow: var(--selection-top), var(--selection-right), var(--selection-bottom), var(--selection-left), inset 0 0 0 1px rgba(22, 119, 255, .18) !important;
+  user-select: none;
+}
+.timesheet-table tbody .timesheet-sticky.timesheet-cell-selected { position: sticky; z-index: 3; overflow: hidden; }
+.timesheet-table tbody :is(td, th).timesheet-cell-selection-top { --selection-top: inset 0 2px #1677ff; }
+.timesheet-table tbody :is(td, th).timesheet-cell-selection-right { --selection-right: inset -2px 0 #1677ff; }
+.timesheet-table tbody :is(td, th).timesheet-cell-selection-bottom { --selection-bottom: inset 0 -2px #1677ff; }
+.timesheet-table tbody :is(td, th).timesheet-cell-selection-left { --selection-left: inset 2px 0 #1677ff; }
+.timesheet-clipboard-shell.timesheet-headers-selected .timesheet-table thead th {
+  background: #eaf2ff !important;
+  box-shadow: inset 0 0 0 1px rgba(22, 119, 255, .3);
+}

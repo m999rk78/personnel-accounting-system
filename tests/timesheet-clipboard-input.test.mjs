@@ -33,6 +33,9 @@ function harness() {
   const scope = {
     Element: ElementTarget,
     selectionRef: { current: { end: { rowIndex: 1, columnIndex: 2 } } },
+    selectionColumns: [0, 1, 2],
+    columnCount: 3,
+    lastHeaderCopy: { current: null },
     selectionBounds: () => ({ rowStart: 1, rowEnd: 1, columnStart: 2, columnEnd: 2 }),
     selectedText: () => "8",
     setStatus() {},

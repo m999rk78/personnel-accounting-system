@@ -18,18 +18,18 @@ function userPayload(h, id, changes = {}) {
     projectAccess: { mode: "selected", siteIds: [7] }, ...changes };
 }
 
-test("role creation is denied to unauthenticated, read-only and project-scoped accounts", async () => {
+test("role creation requires explicit management rights rather than a particular role or project mode", async () => {
   const h = await projectAccessHarness(); const roles = await h.loadRolesRoute();
-  const post = () => roles.POST(new Request("http://localhost/api/roles", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Новая роль", permissions: rolePermissionTemplate("viewer") }) }));
+  const post = name => roles.POST(new Request("http://localhost/api/roles", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, permissions: rolePermissionTemplate("viewer") }) }));
   h.boundary.configure(null, h.db);
-  assert.equal((await post()).status, 401);
-  await h.asUser(3, { projectAccess: { mode: "all", siteIds: [] }, permissions: rolePermissionTemplate("superadmin") });
-  assert.equal((await post()).status, 403);
-  await h.asUser(2, { projectAccess: { mode: "selected", siteIds: [7] }, permissions: rolePermissionTemplate("superadmin") });
-  assert.equal((await post()).status, 403);
-  await h.asUser(2);
-  assert.equal((await post()).status, 403);
+  assert.equal((await post("Не авторизован")).status, 401);
+  await h.asUser(3);
+  assert.equal((await post("Нет права")).status, 403);
   assert.deepEqual(h.db.attemptedWrites, []);
+  await h.asUser(3, { projectAccess: { mode: "all", siteIds: [] }, permissions: rolePermissionTemplate("superadmin") });
+  assert.equal((await (await roles.GET(new Request("http://localhost/api/roles"))).json()).canManage, true);
+  await h.asUser(2, { projectAccess: { mode: "selected", siteIds: [7] }, permissions: rolePermissionTemplate("superadmin") });
+  assert.equal((await (await roles.GET(new Request("http://localhost/api/roles"))).json()).canManage, true);
 });
 
 test("custom role matrices replace the builtin fallback, while legacy users keep the original defaults", async () => {
@@ -44,9 +44,7 @@ test("custom role matrices replace the builtin fallback, while legacy users keep
   assert.deepEqual(legacy.permissions, normalizePermissionSet(rolePermissionTemplate("engineer")));
   await h.permissions.saveUserPermissions(user.id, rolePermissionTemplate("superadmin"), 4, h.db);
   const overridden = await h.permissions.loadEffectivePermissions(user.id, "viewer", { mode: "all", siteIds: [] }, h.db, readRole);
-  for (const permission of Object.values(overridden.permissions)) {
-    assert.equal(permission.create, false); assert.equal(permission.update, false); assert.equal(permission.delete, false);
-  }
+  assert.deepEqual(overridden.permissions, normalizePermissionSet(rolePermissionTemplate("superadmin")));
 });
 
 test("custom working roles with no saved grants cannot inherit an engineer's all-project default", async () => {

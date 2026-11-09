@@ -43,7 +43,7 @@ type PermissionRow = {
   canDelete: number | boolean;
 };
 
-export async function loadEffectivePermissions(userId: number, role: UserRole, projectAccess?: ProjectAccess, executor: PermissionExecutor = getDatabase(), customRole?: Pick<CustomRole, "id" | "baseRole" | "permissions"> | null): Promise<{ permissions: PermissionSet; permissionsCustomized: boolean }> {
+export async function loadEffectivePermissions(userId: number, role: UserRole, projectAccess?: ProjectAccess, executor: PermissionExecutor = getDatabase(), customRole?: Pick<CustomRole, "id" | "baseRole" | "permissions" | "inheritedStatusPermissions"> | null, legacyPendingReports = false): Promise<{ permissions: PermissionSet; permissionsCustomized: boolean }> {
   if (customRole && customRole.baseRole !== role) throw new Error("Пользовательская роль не соответствует учётной записи.");
   await ensurePermissionSchema();
   const result = await executor.prepare(`SELECT resource, can_view AS "canView", can_create AS "canCreate",
@@ -52,7 +52,13 @@ export async function loadEffectivePermissions(userId: number, role: UserRole, p
   const overrides = Object.fromEntries(result.results.map((row) => [row.resource, {
     view: Boolean(row.canView), create: Boolean(row.canCreate), update: Boolean(row.canUpdate), delete: Boolean(row.canDelete),
   }])) as Partial<Record<PermissionResource, ResourcePermission>>;
-  return { permissions: limitPermissionsToRole(role, normalizePermissionSet(overrides, customRole?.permissions ?? rolePermissionTemplate(role)), projectAccess), permissionsCustomized: result.results.length > 0 };
+  const fallback = normalizePermissionSet(customRole?.permissions ?? rolePermissionTemplate(role));
+  if (role === "viewer" && legacyPendingReports) for (const resource of ["workers_report_draft", "equipment_report_draft"] as const) {
+    // Preserve an older user's opt-in, but never replace a status row that was
+    // explicitly configured on the user or their role.
+    if (!overrides[resource] && (!customRole || customRole.inheritedStatusPermissions?.includes(resource))) fallback[resource].view = true;
+  }
+  return { permissions: limitPermissionsToRole(role, normalizePermissionSet(overrides, fallback), projectAccess), permissionsCustomized: result.results.length > 0 };
 }
 
 export async function saveUserPermissions(userId: number, permissions: PermissionSet, updatedByUserId: number, executor?: PermissionExecutor) {

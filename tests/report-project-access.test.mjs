@@ -70,7 +70,7 @@ for (const domain of ["personnel", "equipment"]) {
       assert.deepEqual(result.reports.map(report => report.ownerUserId), [30, 31]);
       assert.equal(result.canReview, true);
       const reportQuery = queries.find(query => query.sql.includes("JOIN app_users owner"));
-      assert.deepEqual(reportQuery.values, [siteId, actor.id]);
+      assert.deepEqual(reportQuery.values, [siteId, actor.id, ["draft", "rejected", "submitted", "approved"]]);
       assert.match(reportQuery.sql, /report\.status IN \('approved', 'submitted'\) OR report\.owner_user_id = \?/);
     }
   });
@@ -90,7 +90,7 @@ for (const domain of ["personnel", "equipment"]) {
     const result = await store[`list${title}Reports`](database(seed, queries), engineer, 1, null, null);
     assert.deepEqual(result.reports.map(report => report.id), [23, 24, 25, 26]);
     const reportQuery = queries.find(query => query.sql.includes("JOIN app_users owner"));
-    assert.deepEqual(reportQuery.values, [1, engineer.id]);
+    assert.deepEqual(reportQuery.values, [1, engineer.id, ["draft", "rejected", "submitted", "approved"]]);
     assert.match(reportQuery.sql, /report\.status IN \('approved', 'submitted'\) OR report\.owner_user_id = \?/);
     assert.ok(queries.every(query => /^SELECT\b/.test(query.sql.trim())));
   });
@@ -104,9 +104,9 @@ test("work type mutations enforce the engineer's project before invoking directo
   const routeUrl = await moduleSource("../app/api/work-types/route.ts", {
     "../../../db/client": `data:text/javascript,${encodeURIComponent("export function getDatabase(){return {};}")}`,
     "../../auth": authUrl,
-    "../../auditLog": `data:text/javascript,${encodeURIComponent("export async function withAuditTrail(request,handler){return handler(request);}")}`,
     "../../permissionModel": new URL("../app/permissionModel.ts", import.meta.url).href,
     "../../roles": new URL("../app/roles.ts", import.meta.url).href,
+    "../../auditLog": `data:text/javascript,${encodeURIComponent("export async function withAuditTrail(request,handler){return handler(request);}")}`,
     "../../workTypeHierarchyServer": helpersUrl,
     "../../workTypesEditingServer": helpersUrl,
   });
@@ -120,8 +120,11 @@ test("work type mutations enforce the engineer's project before invoking directo
   assert.equal((await POST(request({ siteId: 2, action: "save", parents: [], children: [] }))).status, 200);
   assert.equal(helpers.calls, 2);
   auth.setActor({ id: 12, role: "viewer", assignedSiteId: null, projectAccess: { mode: "selected", siteIds: [1, 2] }, permissions: rolePermissionTemplate("superadmin") });
-  for (const action of ["save", "archive", "assign", undefined]) assert.equal((await POST(request({ siteId: 1, action, parents: [], children: [], ids: [1], mainWorkTypeId: 1, entries: [] }))).status, 403);
-  assert.equal(helpers.calls, 2, "viewer requests never invoke mutating directory helpers");
+  for (const action of ["save", "archive", "assign", undefined]) assert.equal((await POST(request({ siteId: 1, action, parents: [], children: [], ids: [1], mainWorkTypeId: 1, entries: [] }))).status, 200);
+  assert.equal(helpers.calls, 6, "Explicit grants authorize directory actions irrespective of role name");
+  auth.setActor({ id: 12, role: "viewer", assignedSiteId: null, projectAccess: { mode: "selected", siteIds: [1, 2] }, permissions: rolePermissionTemplate("viewer") });
+  assert.equal((await POST(request({ siteId: 1, action: "save", parents: [], children: [] }))).status, 403);
+  assert.equal(helpers.calls, 6, "Read-only defaults never invoke mutating helpers");
 });
 
 test("table-order read, move and draft-remap endpoints deny foreign project access before database work", async () => {
@@ -140,6 +143,8 @@ test("table-order read, move and draft-remap endpoints deny foreign project acce
   const routeUrl = await moduleSource("../app/api/table-order/route.ts", {
     "../../../db/client": databaseUrl,
     "../../auth": authUrl,
+    "../../permissionModel": new URL("../app/permissionModel.ts", import.meta.url).href,
+    "../../roles": new URL("../app/roles.ts", import.meta.url).href,
     "../../auditLog": `data:text/javascript,${encodeURIComponent("export async function withAuditTrail(request,handler){return handler(request);}")}`,
     "../../tableRowOrderServer": serverUrl,
     "../../personnelImportOrderServer": new URL("../app/personnelImportOrderServer.ts", import.meta.url).href,

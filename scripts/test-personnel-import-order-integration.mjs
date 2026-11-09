@@ -52,7 +52,7 @@ const dataReplacements = {
   "../../projectAccessServer": noop(["loadUserProjectAccess", "saveUserProjectAccess"]),
   "../../projectMasters": noop(["ensureProjectMastersSchema", "syncProjectMasters"]),
   "../../workTypeHierarchyServer": noop(["saveSubworkDirectory"]),
-  "../../bitrix24Sync": noop(["compareBitrixEmployees", "fetchBitrixEmployeeSnapshot", "normalizeBitrixText", "selectBitrixEmployeesForImport", "suggestBitrixEmployeeLinks"]),
+  "../../bitrix24Sync": noop(["compareBitrixEmployees", "fetchBitrixEmployeeSnapshot", "normalizeBitrixText", "selectBitrixEmployeesForImport", "selectLinkedBitrixEmployeesForReview", "suggestBitrixEmployeeLinks"]),
   ...Object.fromEntries(["roles", "permissionModel", "projectScopedData", "readOptionalBatch", "settingsReadPolicy", "bitrix24Cooldown", "bitrixReviewSelection", "excelDirectoryImports", "personnelImportOrderServer"].map(name => [`../../${name}`, file(name)])),
 };
 let routeGraph;

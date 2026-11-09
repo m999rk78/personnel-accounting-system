@@ -25,6 +25,7 @@ const equipment = await load("../app/equipmentReportStore.ts", {
   "./equipmentReportWorkflow": new URL("../app/equipmentReportWorkflow.ts", import.meta.url).href,
   "./equipmentExcel": new URL("../app/equipmentExcel.ts", import.meta.url).href,
   "./equipmentAvailability": new URL("../app/equipmentAvailability.ts", import.meta.url).href,
+  "./personnelImportOrderServer": new URL("../app/personnelImportOrderServer.ts", import.meta.url).href,
 });
 const pool = new pg.Pool({ connectionString: address.href, ssl: false, max: 8, connectionTimeoutMillis: 5000, options: "-c statement_timeout=20000 -c lock_timeout=15000" });
 const db = new PostgresDatabase(pool);
@@ -40,6 +41,8 @@ async function verifyPersonnelTimesheetApi({ marker, siteId, otherSiteId, forema
     "../../../db/client": boundaryUrl, "../../auth": boundaryUrl, "../../auditLog": boundaryUrl,
     "../../roles": new URL("../app/roles.ts", import.meta.url).href,
     "../../permissionModel": new URL("../app/permissionModel.ts", import.meta.url).href,
+    "../../personnelTimesheetReference.server": new URL("../app/personnelTimesheetReference.server.ts", import.meta.url).href,
+    "../../personnelTimesheetValues": new URL("../app/personnelTimesheetValues.ts", import.meta.url).href,
   });
   const viewSource = await readFile(new URL("../app/TimesheetView.tsx", import.meta.url), "utf8");
   const viewFile = ts.createSourceFile("TimesheetView.tsx", viewSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -70,7 +73,7 @@ async function verifyPersonnelTimesheetApi({ marker, siteId, otherSiteId, forema
   const save = (owner, workDate, rows, project = siteId) => personnel.mutatePersonnelReport(db, owner, { action: "save", siteId: project, workDate, rows });
   const transition = (owner, report, action) => personnel.mutatePersonnelReport(db, owner, { action, reportId: report.id, revision: report.revision });
   const approve = async (owner, workDate, rows, project = siteId) => transition(engineer, await transition(owner, await save(owner, workDate, rows, project), "submit"), "approve");
-  const move = (report, workDate) => personnel.mutatePersonnelReportDate(db, engineer, { action: "change-date", reportId: report.id, revision: report.revision, workDate });
+  const move = (report, workDate, user = engineer) => personnel.mutatePersonnelReportDate(db, user, { action: "change-date", reportId: report.id, revision: report.revision, workDate });
   const legacy = (employeeId, workDate, hours) => insert(`INSERT INTO placement_entries(site_id,work_date,employee_id,shift_id,zone_id,main_work_type_id,subwork_type_id,master_id,hours,note,employee_name_snapshot,employment_type_snapshot,position_snapshot,master_name_snapshot,created_by,responsible_user_id)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'Старая запись',$10,'ОПР','Архивная должность','Архивный мастер',$10,$11) RETURNING id`, [siteId, workDate, employeeId, refs.shiftId, refs.zoneId, refs.mainWorkTypeId, refs.subworkTypeId, refs.masterId, hours, marker, foreman.id]);
 
@@ -122,7 +125,8 @@ async function verifyPersonnelTimesheetApi({ marker, siteId, otherSiteId, forema
   assert.equal(cell(await read("2032-03"), firstEmployee, "2032-03-01").report, 6);
 
   let pending = await save(foreman, "2032-04-01", [row(firstEmployee, 8)]);
-  pending = await move(pending, "2032-04-02");
+  await assert.rejects(move(pending, "2032-04-02"), rejectedCode("REPORT_FORBIDDEN"));
+  pending = await move(pending, "2032-04-02", foreman);
   assert.equal(cell(await read("2032-04"), firstEmployee, "2032-04-02").report, 0, "a moved draft is not published");
   pending = await transition(foreman, pending, "submit");
   pending = await move(pending, "2032-04-03");
@@ -305,7 +309,7 @@ try {
 
     let report = await save(foreman, date(4), rowsFor(6));
     report = await transition(foreman, report, "submit");
-    await assert.rejects(move(foreman, report, date(5)), rejectedCode("REPORT_LOCKED"));
+    await assert.rejects(move(foreman, report, date(5)), rejectedCode("REPORT_FORBIDDEN"));
     report = await move(engineer, report, date(5));
     assert.equal(report.status, "submitted"); assert.equal(await total(date(5)), 0);
     report = await transition(engineer, report, "approve");

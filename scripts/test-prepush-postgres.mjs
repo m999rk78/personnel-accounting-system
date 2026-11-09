@@ -129,10 +129,11 @@ try {
     assert.deepEqual(await loadUserProjectAccess(customUser), { projectAccess: { mode: "selected", siteIds: [] }, canViewPendingReports: false });
     let effective = await permissionStore.loadEffectivePermissions(customUser.id, customUser.role, undefined, database, readRole);
     assert.equal(effective.permissions.equipment_timesheet.view, true);
+    assert.equal(effective.permissions.equipment_timesheet.update, false, "a read-only template does not grant writes by default");
     assert.equal(effective.permissions.workers_report.view, false, "custom template cannot inherit the standard viewer's other reports");
     await permissionStore.saveUserPermissions(customUser.id, rolePermissionTemplate("superadmin"), superadmin.id);
     effective = await permissionStore.loadEffectivePermissions(customUser.id, customUser.role, undefined, database, readRole);
-    assert.equal(effective.permissions.equipment_timesheet.update, false, "custom read-only role rejects forged write overrides");
+    assert.equal(effective.permissions.equipment_timesheet.update, true, "an explicit trusted write grant is not discarded because the role template is read-only");
     await database.transaction(async tx => {
       await tx.prepare("UPDATE app_users SET role = ?, custom_role_id = ? WHERE id = ?").bind(workRole.baseRole, workRole.id, customUser.id).run();
       await permissionStore.resetUserPermissions(customUser.id, tx);
@@ -144,9 +145,20 @@ try {
     assert.equal(effective.permissionsCustomized, false);
     await migrate(drizzle(pool), { migrationsFolder: fileURLToPath(new URL("../drizzle-postgres", import.meta.url)) });
     assert.equal((await customRoles.loadCustomRole(readRole.id)).name, readRole.name);
-    console.log("PASS: 0026 custom roles, JSON permission templates, case-insensitive duplicates, assignment/default isolation, readonly ceiling, transactional role change and repeat migration on real PostgreSQL.");
+    console.log("PASS: 0026 custom roles, JSON permission templates, case-insensitive duplicates, assignment/default isolation, explicit permission overrides, transactional role change and repeat migration on real PostgreSQL.");
 
-    for (const script of ["scripts/test-personnel-report-integration.mjs", "scripts/test-equipment-report-integration.mjs", "scripts/test-report-date-integration.mjs", "scripts/test-table-order-integration.mjs"]) await run(script);
+    for (const script of [
+      "scripts/test-personnel-report-integration.mjs",
+      "scripts/test-equipment-report-integration.mjs",
+      "scripts/test-report-date-integration.mjs",
+      "scripts/test-table-order-integration.mjs",
+      "scripts/test-personnel-import-order-integration.mjs",
+      "scripts/test-equipment-import-integration.mjs",
+      "scripts/test-project-masters-integration.mjs",
+      "scripts/test-role-catalog-integration.mjs",
+      "scripts/test-work-types-integration.mjs",
+      "scripts/test-work-types-editing-integration.mjs",
+    ]) await run(script);
     console.log("PASS: all integration checks used the disposable database only.");
   }
 } catch (error) {

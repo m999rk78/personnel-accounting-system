@@ -176,7 +176,7 @@ export async function getAuthUser(request: Request): Promise<AuthUser | null> {
   const customRole = user.customRoleId === undefined || user.customRoleId === null ? null : await loadCustomRole(user.customRoleId);
   if (user.customRoleId !== undefined && user.customRoleId !== null && (!customRole || customRole.baseRole !== user.role)) return null;
   const projectSettings = await loadUserProjectAccess(user);
-  const access = await loadEffectivePermissions(user.id, user.role, projectSettings.projectAccess, undefined, customRole);
+  const access = await loadEffectivePermissions(user.id, user.role, projectSettings.projectAccess, undefined, customRole, projectSettings.canViewPendingReports);
   return { ...user, ...access, ...projectSettings, ...(customRole ? { customRoleName: customRole.name, roleTemplate: customRole.permissions } : { customRoleName: null }) };
 }
 

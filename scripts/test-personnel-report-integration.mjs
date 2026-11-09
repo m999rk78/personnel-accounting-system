@@ -88,6 +88,37 @@ try {
   const save = (user, date, rows) => mutatePersonnelReport(scoped, user, { action: "save", siteId, workDate: date, rows });
   const transition = (user, report, action, comment) => mutatePersonnelReport(scoped, user, { action, reportId: report.id, revision: report.revision, comment });
 
+  // Real SQL must show the same submitted report to every permitted observer,
+  // while private draft rows and state-changing actions stay separately guarded.
+  await connection.query("SAVEPOINT flexible_report_rights");
+  try {
+    const viewerId = await insert("INSERT INTO app_users(full_name,email,role) VALUES ($1,$2,'viewer') RETURNING id", [`${marker}-viewer`, `${marker}-viewer@invalid.test`]);
+    const superId = await insert("INSERT INTO app_users(full_name,email,role) VALUES ($1,$2,'superadmin') RETURNING id", [`${marker}-super`, `${marker}-super@invalid.test`]);
+    const viewer = { ...actor(viewerId, "viewer"), projectAccess: { mode: "selected", siteIds: [siteId] }, canViewPendingReports: false };
+    const superadmin = actor(superId, "superadmin");
+    let visibleReport = await transition(foreman, await save(foreman, "2026-10-18", [row]), "submit");
+    const privateReport = await save(secondForeman, "2026-10-18", [{ note: "Личный черновик другой бригады" }]);
+    for (const observer of [engineer, superadmin, viewer]) {
+      const result = await listPersonnelReports(scoped, observer, siteId, null, null);
+      assert.ok(result.reports.some(item => item.id === visibleReport.id && item.status === "submitted"), `${observer.role}: permitted submitted report is visible`);
+      assert.equal(result.reports.some(item => item.id === privateReport.id), false, `${observer.role}: another author's private draft stays hidden`);
+    }
+    await assert.rejects(transition(viewer, visibleReport, "approve"), error => error.code === "REPORT_FORBIDDEN");
+    await assert.rejects(listPersonnelReports(scoped, { ...viewer, projectAccess: { mode: "selected", siteIds: [] } }, siteId, null, null), error => error.code === "REPORT_FORBIDDEN");
+    const fullForeman = { ...foreman, permissions: rolePermissionTemplate("superadmin") };
+    visibleReport = await mutatePersonnelReport(scoped, fullForeman, { action: "save", siteId, workDate: visibleReport.workDate, reportId: visibleReport.id, revision: visibleReport.revision, rows: [{ ...visibleReport.rows[0], note: "Правка по выданному разрешению" }] });
+    const fullViewer = { ...viewer, permissions: rolePermissionTemplate("superadmin") };
+    visibleReport = await transition(fullViewer, visibleReport, "approve");
+    assert.equal(visibleReport.status, "approved");
+    visibleReport = await mutatePersonnelReport(scoped, fullViewer, { action: "save", siteId, workDate: visibleReport.workDate, reportId: visibleReport.id, revision: visibleReport.revision, rows: [{ ...visibleReport.rows[0], note: "Подтверждённая правка по разрешению" }] });
+    assert.equal(visibleReport.ownerUserId, foreman.id);
+    assert.equal(visibleReport.rows[0].note, "Подтверждённая правка по разрешению");
+    console.log("PASS: actual PostgreSQL submitted visibility for engineer/superadmin/viewer, private drafts, explicit foreman/viewer grants, readonly denial and project isolation.");
+  } finally {
+    await connection.query("ROLLBACK TO SAVEPOINT flexible_report_rights");
+    await connection.query("RELEASE SAVEPOINT flexible_report_rights");
+  }
+
   // Read-only preflight returns every date/employee/row issue without changing
   // drafts or accounting. Independent fixture employees keep later totals intact.
   const validationIds = [];
@@ -226,7 +257,7 @@ try {
   report = await transition(foreman, report, "submit");
   // Reviewers edit submitted reports without publishing them or changing owner/status.
   const edit = (user, current, rows) => mutatePersonnelReport(scoped, user, { action: "save", siteId: current.siteId, workDate: current.workDate, reportId: current.id, revision: current.revision, rows });
-  await assert.rejects(edit(foreman, report, report.rows), error => error.code === "REPORT_LOCKED");
+  await assert.rejects(edit(foreman, report, report.rows), error => error.code === "REPORT_FORBIDDEN");
   const oldSubmitted = report;
   report = await edit(engineer, report, [{ ...report.rows[0], note: "Исправлено инженером" }]);
   assert.equal(report.status, "submitted");
@@ -249,7 +280,7 @@ try {
   const firstEntryId = report.rows[0].approvedEntryId;
   const firstCreatedAt = report.rows[0].createdAt;
   const oldApproved = report;
-  await assert.rejects(edit(foreman, report, report.rows), error => error.code === "REPORT_LOCKED");
+  await assert.rejects(edit(foreman, report, report.rows), error => error.code === "REPORT_FORBIDDEN");
   await assert.rejects(edit(engineer, report, [{ ...report.rows[0], approvedEntryRevision: undefined }]), error => error.code === "STALE_REPORT");
   report = await edit(engineer, report, [{ ...report.rows[0], hours: 8, note: "Исправлены часы" }]);
   assert.equal(report.status, "approved");
@@ -341,8 +372,8 @@ try {
   const blocked = await save(foreman, "2026-10-26", [{ ...row, hours: 3 }]);
   await assert.rejects(transition(foreman, blocked, "submit"), (error) => error.code === "HOURS_CONFLICT");
   const scopedHistory = await listPersonnelReports(scoped, foreman, siteId, null, null);
-  assert.equal(scopedHistory.reports.some((item) => item.ownerUserId !== foreman.id), false);
-  assert.equal(scopedHistory.entries.some((item) => item.responsibleUserId !== foreman.id), false);
+  assert.equal(scopedHistory.reports.some(item => ["draft", "rejected"].includes(item.status) && item.ownerUserId !== foreman.id), false, "personal drafts never leak between authors");
+  assert.ok(scopedHistory.reports.some(item => item.status === "submitted"), "submitted reports remain visible according to the status grant");
 
   // Legacy approved entries use their own revisions and the same shared hour cap.
   const legacyId = await insert(`INSERT INTO placement_entries(site_id,work_date,employee_id,shift_id,zone_id,main_work_type_id,subwork_type_id,master_id,hours,

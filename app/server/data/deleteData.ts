@@ -1,13 +1,13 @@
 import { assertSameOrigin, getAuthUser } from "../../auth";
 import { hasRestrictedProjectAccess, accessibleProjectIds, canAccessProject } from "../../roles";
 import { projectEntitiesAllowed } from "../../projectScopedData";
-import { unauthorized, forbidden, approvalRequired, placementErrorResponse } from "./responses";
+import { unauthorized, forbidden, placementErrorResponse } from "./responses";
 import { ensureDatabaseInitialized } from "./bootstrap";
 import { canDeleteEntity } from "./access";
 import { asPositiveInteger } from "./validation";
 import { directoryTable, reconcilePositionCatalogOptions, PERSONNEL_COLUMNS } from "./catalogs";
 import { env } from "./context";
-import { existingPlacementEntriesStatement, assertPlacementOwnership, lockPlacementHours, touchForemanContribution } from "./placement";
+import { existingPlacementEntriesStatement, assertPlacementOwnership, lockPlacementHours } from "./placement";
 import { type ExistingPlacementEntry } from "./types";
 
 export async function handleDELETE(request: Request) {
@@ -15,19 +15,17 @@ export async function handleDELETE(request: Request) {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
-    if (authUser.role === "viewer") return forbidden();
     await ensureDatabaseInitialized();
     const url = new URL(request.url);
     const entity = url.searchParams.get("entity");
     if (!canDeleteEntity(authUser, entity, url.searchParams.get("kind"))) return forbidden();
     if (hasRestrictedProjectAccess(authUser)) {
-      if (!accessibleProjectIds(authUser)?.length || ["user", "site", "position"].includes(entity ?? "")) return forbidden();
+      if (!accessibleProjectIds(authUser)?.length) return forbidden();
       const requestedSiteId = url.searchParams.get("siteId");
       if (requestedSiteId !== null && !canAccessProject(authUser, asPositiveInteger(requestedSiteId))) return forbidden();
-      if (entity === "directory" && directoryTable(url.searchParams.get("kind"))?.global) return forbidden();
+      if (entity === "site" && !canAccessProject(authUser, asPositiveInteger(url.searchParams.get("id")))) return forbidden();
     }
     if (!entity) {
-      if (authUser.role === "foreman") return approvalRequired();
       const body = request.headers.get("content-type")?.includes("application/json")
         ? await request.json() as { ids?: unknown[] }
         : null;
@@ -37,18 +35,14 @@ export async function handleDELETE(request: Request) {
       const result = await env.DB.transaction(async (db) => {
         const entries = await existingPlacementEntriesStatement(db, ids, true).all<ExistingPlacementEntry>();
         if (entries.results.length !== ids.length) throw new Error("Одна или несколько строк не найдены.");
-        assertPlacementOwnership(authUser, entries.results);
+        assertPlacementOwnership(authUser, entries.results, "delete");
         await lockPlacementHours(db, [], entries.results);
         const deletion = await db.prepare(`UPDATE placement_entries
           SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
             updated_by_user_id = ?, revision = revision + 1
           WHERE id = ANY(?) AND deleted_at IS NULL RETURNING id`)
           .bind(authUser.id, ids).all();
-        const first = entries.results[0];
-        const contribution = first
-          ? await touchForemanContribution(db, authUser, first.siteId, first.workDate, false, undefined, true)
-          : null;
-        return { ok: true, count: deletion.meta.changes, contribution };
+        return { ok: true, count: deletion.meta.changes, contribution: null };
       });
       return Response.json(result);
     }

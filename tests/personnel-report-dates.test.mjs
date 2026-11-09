@@ -128,7 +128,7 @@ test("viewer writes fail before SQL and foreman ownership/status boundaries rema
   await assert.rejects(move(never, {}, actor("viewer")), error => error.status === 403);
   await assert.rejects(moveEntry(never, {}, actor("viewer")), error => error.status === 403);
   await assert.rejects(move(fixture({ status: "draft" }), {}, actor("foreman", 10)), error => error.status === 403);
-  for (const status of ["submitted", "approved"]) await assert.rejects(move(fixture({ status }), {}, actor("foreman", 9)), error => error.code === "REPORT_LOCKED");
+  for (const status of ["submitted", "approved"]) await assert.rejects(move(fixture({ status }), {}, actor("foreman", 9)), error => error.code === "REPORT_FORBIDDEN");
   await assert.rejects(move(fixture(), {}, { ...actor(), projectAccess: { mode: "none", siteIds: [] } }), error => error.status === 403);
 });
 

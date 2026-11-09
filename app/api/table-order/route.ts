@@ -8,6 +8,8 @@ import { ensureEquipmentReportSchema } from "../../equipmentReportStore";
 import { canonicalRowIds, ensureTableOrderSchema, readTableOrder, rowOrderAccess, TableOrderAccessError } from "../../tableRowOrderServer";
 import { isWorkTypesOrderId, workTypesOrderScope } from "../../workTypesRowOrder";
 import { readPersonnelImportOrder } from "../../personnelImportOrderServer";
+import { hasReportStatusPermission } from "../../permissionModel";
+import { canViewPendingReportsFor } from "../../roles";
 
 const positiveId = (value: unknown) => Number.isSafeInteger(Number(value)) && Number(value) > 0 ? Number(value) : null;
 
@@ -46,12 +48,14 @@ async function moveRows(request: Request) {
     if (!access.canRead || !access.canWrite) return Response.json({ error: "Нет права менять порядок строк." }, { status: 403 });
     const equipmentReportRows = scope === equipmentReportOrderScope;
     const reportRows = scope === personnelReportOrderScope || equipmentReportRows;
+    const mayOrderDrafts = reportRows && canViewPendingReportsFor(user) && hasReportStatusPermission(user.permissions, equipmentReportRows ? "equipment_report" : "workers_report", "draft", "view");
     const isReportOrderId = equipmentReportRows ? isEquipmentReportOrderId : isPersonnelReportOrderId;
     const isUnsavedReportOrderId = equipmentReportRows ? isUnsavedEquipmentReportOrderId : isUnsavedPersonnelReportOrderId;
     const remapReportOrder = equipmentReportRows ? remapEquipmentReportOrder : remapPersonnelReportOrder;
     const moveReportRows = equipmentReportRows ? moveEquipmentReportRows : movePersonnelReportRows;
     if (equipmentReportRows) await ensureEquipmentReportSchema(getDatabase());
     if (reportRows && input.action === "remap") {
+      if (!mayOrderDrafts) return Response.json({ error: "Нет доступа к порядку строк черновика." }, { status: 403 });
       if (!input.aliases || typeof input.aliases !== "object" || Array.isArray(input.aliases) || Object.keys(input.aliases).length > 40000) throw new Error("Некорректное сопоставление строк.");
       await ensureTableOrderSchema();
       const ids = await getDatabase().transaction(async db => {
@@ -85,7 +89,7 @@ async function moveRows(request: Request) {
       await db.prepare("INSERT INTO table_row_orders (id) VALUES (?) ON CONFLICT (id) DO NOTHING").bind(access.key).run();
       const saved = await db.prepare("SELECT row_ids AS ids FROM table_row_orders WHERE id = ? FOR UPDATE").bind(access.key).first<{ ids: RowOrderId[] }>();
       const available = await canonicalRowIds(scope, siteId, db, user);
-      if (reportRows) {
+      if (reportRows && mayOrderDrafts) {
         // Draft UUIDs have no database row yet. They only affect display order;
         // persisted record IDs still have to belong to this project and user.
         const drafts = [...(saved?.ids ?? []), ...movingIds, ...(move.displayedIds ?? []), ...(move.targetId ? [move.targetId] : [])]

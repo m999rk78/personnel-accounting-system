@@ -19,7 +19,6 @@ export async function handlePATCH(request: Request) {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return unauthorized();
-    if (authUser.role === "viewer") return forbidden();
     await ensureDatabaseInitialized();
     const payload = (await request.json()) as EntryPayload & UserPayload & {
       entries?: EntryPayload[];
@@ -41,12 +40,11 @@ export async function handlePATCH(request: Request) {
       if ((placementUpdates ?? []).some((entry) => !canManagePlacement(authUser, asPositiveInteger(entry.siteId) ?? undefined, entry.workDate, "update"))) return forbidden();
       if ((placementCreates ?? []).some((entry) => !canManagePlacement(authUser, asPositiveInteger(entry.siteId) ?? undefined, entry.workDate, "create"))) return forbidden();
       if (placementRows.some((entry) => !canManagePlacement(authUser, asPositiveInteger(entry.siteId) ?? undefined, entry.workDate, "update"))) return forbidden();
-      if (ownSubmission && (authUser.role !== "foreman" || !ownSubmissionSiteId || !validDate(ownSubmissionWorkDate) || !canManagePlacement(authUser, ownSubmissionSiteId, ownSubmissionWorkDate, "update"))) return forbidden();
-      if (finalization && authUser.role === "foreman") return forbidden();
+      if (ownSubmission && (!ownSubmissionSiteId || !validDate(ownSubmissionWorkDate) || !canManagePlacement(authUser, ownSubmissionSiteId, ownSubmissionWorkDate, "update"))) return forbidden();
       if (finalization && (!finalizationSiteId || !validDate(finalizationWorkDate) || !canManagePlacement(authUser, finalizationSiteId, finalizationWorkDate, "update"))) return forbidden();
-      // Stale tabs must not bypass the engineer by writing directly to the
-      // approved table. Engineers retain existing-history corrections only.
-      if (authUser.role === "foreman" || placementCreates || ownSubmission || finalization) return approvalRequired();
+      // Publication always goes through the report workflow, irrespective of
+      // the actor's role name. This endpoint only corrects existing history.
+      if (placementCreates || ownSubmission || finalization) return approvalRequired();
     }
     if (payload.action === "update-user") {
       const userId = asPositiveInteger(payload.userId);
@@ -197,8 +195,8 @@ export async function handlePATCH(request: Request) {
       const site = await env.DB.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(assignedSiteId).first();
       if (!site) throw new Error("Объект не найден.");
       await env.DB.transaction(async db => {
-        const result = await db.prepare("UPDATE app_users SET assigned_site_id = ? WHERE id = ? AND role IN ('foreman', 'engineer') AND active = 1").bind(assignedSiteId, userId).run();
-        if (!result.meta.changes) throw new Error("Прораб или инженер не найден.");
+        const result = await db.prepare("UPDATE app_users SET assigned_site_id = ? WHERE id = ? AND active = 1").bind(assignedSiteId, userId).run();
+        if (!result.meta.changes) throw new Error("Пользователь не найден.");
         await saveUserProjectAccess(userId, { projectAccess: { mode: "selected", siteIds: [assignedSiteId] } }, authUser.id, db);
       });
       return Response.json({ ok: true });
@@ -306,8 +304,7 @@ export async function handlePATCH(request: Request) {
               data.employeeName, data.employmentType, data.department, data.masterName, responsibleUsers[offset + index], authUser.id, entryIds[offset + index])));
           changed += results.reduce((sum, updateResult) => sum + Number(updateResult.meta.changes ?? 0), 0);
         }
-        const contribution = await touchForemanContribution(db, authUser, rows[0].siteId, rows[0].workDate, false);
-        return { ok: true, count: changed, contribution };
+        return { ok: true, count: changed, contribution: null };
       });
       return Response.json(result);
     }
@@ -331,8 +328,7 @@ export async function handlePATCH(request: Request) {
         .bind(data.siteId, data.workDate, data.employeeId, data.shiftId, data.zoneId, data.mainWorkTypeId, data.subworkTypeId, data.note, data.masterId, data.hours, data.position,
           data.employeeName, data.employmentType, data.department, data.masterName, responsibleUserId, authUser.id, id)
         .first<{ id: number; revision: number }>();
-      const contribution = await touchForemanContribution(db, authUser, data.siteId, data.workDate, false);
-      return { ok: true, revision: update?.revision, contribution };
+      return { ok: true, revision: update?.revision, contribution: null };
     });
     return Response.json(result);
   } catch (error) {

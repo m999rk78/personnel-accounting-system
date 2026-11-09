@@ -9,7 +9,7 @@ import { importEquipmentEntries } from "../../equipmentImportServer";
 import { assertUniqueEquipmentImportIdentities, equipmentRegistryProjectIndex, resolveEquipmentRegistryProject } from "../../equipmentImport";
 import { equipmentTimesheetUnitsStatement } from "../../equipmentTimesheetUnits";
 import { isLegacyEquipmentReportMutation } from "../../equipmentReportWorkflow";
-import { hasPermission, type PermissionAction, type PermissionResource } from "../../permissionModel";
+import { hasPermission, hasReportStatusPermission, type PermissionAction, type PermissionResource } from "../../permissionModel";
 
 type EquipmentInput = {
   organization?: unknown;
@@ -126,7 +126,9 @@ function equipmentPlanConflictMessage(conflict: EquipmentPlanConflict) {
 }
 
 function equipmentAccessPayload(authUser: NonNullable<Awaited<ReturnType<typeof getAuthUser>>>) {
-  const may = (resource: PermissionResource, action: PermissionAction) => authUser.role !== "viewer" && hasPermission(authUser.permissions, resource, action);
+  const may = (resource: PermissionResource, action: PermissionAction) => resource === "equipment_report"
+    ? (["draft", "submitted", "approved"] as const).some(status => hasReportStatusPermission(authUser.permissions, resource, status, action))
+    : hasPermission(authUser.permissions, resource, action);
   return {
     canEditDaily: may("equipment_report", "create")
       || may("equipment_report", "update")
@@ -428,6 +430,9 @@ async function handleGET(request: Request) {
           ? "project_equipment"
           : "equipment_report";
     if (!hasPermission(authUser.permissions, requestedResource, "view")) return errorResponse("Нет доступа к выбранному разделу учёта техники.", 403);
+    const canViewApproved = hasReportStatusPermission(authUser.permissions, "equipment_report", "approved", "view");
+    const canViewSubmitted = hasReportStatusPermission(authUser.permissions, "equipment_report", "submitted", "view");
+    if (requestedResource === "equipment_report" && !(["draft", "submitted", "approved"] as const).some(status => hasReportStatusPermission(authUser.permissions, "equipment_report", status, "view"))) return errorResponse("Нет доступа к отчётам техники.", 403);
 
     await ensureEquipmentSchema();
     const resolved = await resolveSite(requestedSiteId, authUser);
@@ -444,12 +449,13 @@ async function handleGET(request: Request) {
       currentUserName: authUser.fullName,
     };
     if (scope === "export-range") {
+      if (!canViewApproved) return errorResponse("Нет права просматривать подтверждённые отчёты техники.", 403);
       const rangeStart = requestedRangeStart ?? workDate;
       const rangeEnd = requestedRangeEnd ?? workDate;
       if (!validDate(rangeStart) || !validDate(rangeEnd) || rangeStart > rangeEnd) return errorResponse("Некорректный диапазон дат.", 400);
       const rangeDays = Math.floor((Date.parse(`${rangeEnd}T00:00:00Z`) - Date.parse(`${rangeStart}T00:00:00Z`)) / 86400000) + 1;
       if (rangeDays > 366) return errorResponse("Для выгрузки можно выбрать период не более 366 дней.", 400);
-      const responsibleUserId = authUser.role === "foreman" ? authUser.id : null;
+      const responsibleUserId = null;
       const entries = await db.prepare(`SELECT ee.id, ee.work_date AS "workDate", ee.equipment_id AS "equipmentId",
           ee.shift_id AS "shiftId", ee.zone_id AS "zoneId", ee.main_work_type_id AS "mainWorkTypeId",
           ee.subwork_type_id AS "subworkTypeId", ee.note, ee.hours,
@@ -471,10 +477,10 @@ async function handleGET(request: Request) {
       return Response.json({ entries: entries.results });
     }
     if (scope === "carryover") {
-      if (section !== "daily" || authUser.role !== "foreman") return Response.json({ sourceDate: null, entries: [] });
-      const previous = await db.prepare(`SELECT work_date AS "workDate"
-        FROM equipment_report_contributions
-        WHERE site_id = ? AND foreman_id = ? AND status = 'submitted' AND work_date < ?
+      if (!canViewApproved) return Response.json({ sourceDate: null, entries: [] });
+      if (section !== "daily") return Response.json({ sourceDate: null, entries: [] });
+      const previous = await db.prepare(`SELECT work_date AS "workDate" FROM equipment_entries
+        WHERE site_id = ? AND responsible_user_id = ? AND deleted_at IS NULL AND work_date < ?
         ORDER BY work_date DESC LIMIT 1`).bind(siteId, authUser.id, workDate).first<{ workDate: string }>();
       if (!previous) return Response.json({ sourceDate: null, entries: [] });
       const entries = await equipmentEntriesForDateStatement(siteId, previous.workDate, authUser.id).all();
@@ -575,7 +581,7 @@ async function handleGET(request: Request) {
     }
     const rangeStart = requestedRangeStart && validDate(requestedRangeStart) ? requestedRangeStart : monthStart;
     const rangeEnd = requestedRangeEnd && validDate(requestedRangeEnd) ? requestedRangeEnd : workDate;
-    const responsibleUserId = authUser.role === "foreman" && section === "daily" ? authUser.id : null;
+    const responsibleUserId = null;
     const unitsStatement = scope === "global"
       ? equipmentCatalogStatement(authUser)
       : db.prepare(`SELECT eu.id, eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
@@ -605,10 +611,7 @@ async function handleGET(request: Request) {
       WHERE site_id = ? AND work_date >= ? AND work_date <= ? AND deleted_at IS NULL
         ${responsibleUserId ? "AND responsible_user_id = ?" : ""}
       ORDER BY work_date`).bind(...(responsibleUserId ? [siteId, rangeStart, rangeEnd, responsibleUserId] : [siteId, rangeStart, rangeEnd]));
-    const reportSubmissionStatement = authUser.role === "foreman"
-      ? db.prepare(`SELECT status = 'submitted' AS submitted FROM equipment_report_contributions
-          WHERE site_id = ? AND work_date = ? AND foreman_id = ?`).bind(siteId, workDate, authUser.id)
-      : db.prepare("SELECT TRUE AS submitted FROM equipment_report_days WHERE site_id = ? AND work_date = ?").bind(siteId, workDate);
+    const reportSubmissionStatement = db.prepare("SELECT TRUE AS submitted FROM equipment_report_days WHERE site_id = ? AND work_date = ?").bind(siteId, workDate);
     const [units, entries, dailyTimesheetMarks, filledDates, shifts, zones, mainWorkTypes, subworkTypes, reportSubmission, foremanProgress] = await db.readBatch([
       unitsStatement,
       entriesStatement,
@@ -629,15 +632,15 @@ async function handleGET(request: Request) {
 
     return Response.json({
       ...responseBase,
-      reportSubmitted: (authUser.role !== "viewer" || Boolean(authUser.canViewPendingReports)) && Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
-      foremanProgress: authUser.role === "viewer" && !authUser.canViewPendingReports ? [] : foremanProgress.results,
+      reportSubmitted: canViewSubmitted && Boolean((reportSubmission.results[0] as { submitted?: boolean } | undefined)?.submitted),
+      foremanProgress: canViewSubmitted ? foremanProgress.results : [],
       units: units.results,
       availableUnits: [],
       sites: [],
-      entries: entries.results,
+      entries: canViewApproved ? entries.results : [],
       marks: [],
       dailyTimesheetMarks: dailyTimesheetMarks.results as EquipmentTimesheetMark[],
-      filledDates: filledDates.results.map((row) => String(row.workDate)),
+      filledDates: canViewApproved ? filledDates.results.map((row) => String(row.workDate)) : [],
       shifts: shifts.results,
       zones: zones.results,
       mainWorkTypes: mainWorkTypes.results,
@@ -654,13 +657,19 @@ async function handlePOST(request: Request): Promise<Response> {
     assertSameOrigin(request);
     const authUser = await getAuthUser(request);
     if (!authUser) return errorResponse("Требуется авторизация.", 401);
-    if (authUser.role === "viewer") return errorResponse("Роль «Просмотр» не может изменять данные.", 403);
     const payload = await request.json() as Record<string, unknown>;
     const requestedSiteId = positiveInteger(payload.siteId);
     if (!requestedSiteId) return errorResponse("Не указан объект.", 400);
     if (isLegacyEquipmentReportMutation(payload.action)) {
       return Response.json({ error: "Откройте обновлённый отчёт техники. Строки сохраняются в черновик и попадают в табель после подтверждения.", code: "REPORT_WORKFLOW_REQUIRED" }, { status: 409 });
     }
+    const actionResources: Record<string, PermissionResource> = {
+      "save-timesheet-mark": "equipment_timesheet", "clear-timesheet-mark": "equipment_timesheet",
+      "save-unit": "equipment_registry", "delete-unit": "equipment_registry", "import-units": "equipment_registry",
+      "assign-unit-project": "project_equipment", "remove-unit-project": "project_equipment",
+    };
+    const mutationResource = typeof payload.action === "string" ? actionResources[payload.action] : undefined;
+    if (mutationResource && !(["create", "update", "delete"] as const).some(action => hasPermission(authUser.permissions, mutationResource, action))) return errorResponse("Нет права изменять выбранный раздел учёта техники.", 403);
     await ensureEquipmentSchema();
     const resolved = await resolveSite(requestedSiteId, authUser);
     if ("error" in resolved) return resolved.error;
@@ -668,7 +677,7 @@ async function handlePOST(request: Request): Promise<Response> {
     const db = getDatabase();
 
     if (payload.action === "submit-daily-report") {
-      if (!hasPermission(authUser.permissions, "equipment_report", "update")) return errorResponse("Нет права подтверждать отчёт техники.", 403);
+      if (!hasReportStatusPermission(authUser.permissions, "equipment_report", "submitted", "update") || !hasReportStatusPermission(authUser.permissions, "equipment_report", "approved", "create")) return errorResponse("Нет права подтверждать отчёт техники.", 403);
       const reportWorkDate = payload.workDate;
       if (!validDate(reportWorkDate)) return errorResponse("Некорректная дата отчёта.", 400);
       const planConflict = await db.prepare(`SELECT eu.id AS "equipmentId", eu.equipment_type AS "equipmentType",
@@ -747,7 +756,7 @@ async function handlePOST(request: Request): Promise<Response> {
 
     if (payload.action === "save-entry") {
       const entryId = positiveInteger(payload.id);
-      if (!hasPermission(authUser.permissions, "equipment_report", entryId ? "update" : "create")) {
+      if (!hasReportStatusPermission(authUser.permissions, "equipment_report", "approved", entryId ? "update" : "create")) {
         return errorResponse(entryId ? "Нет права изменять строки отчёта техники." : "Нет права добавлять строки отчёта техники.", 403);
       }
       if (!validDate(payload.workDate)) return errorResponse("Некорректная дата записи.", 400);
@@ -767,9 +776,6 @@ async function handlePOST(request: Request): Promise<Response> {
         FROM equipment_entries WHERE id = ? AND site_id = ? AND deleted_at IS NULL`)
         .bind(entryId, siteId).first<{ workDate: string; equipmentId: number; responsibleUserId: number | null; revision: number }>() : null;
       if (entryId && !existing) return errorResponse("Строка техники не найдена.", 404);
-      if (authUser.role === "foreman" && existing && existing.responsibleUserId !== authUser.id) {
-        return errorResponse("Прораб может изменять только собственные строки отчёта назначенного проекта.", 403);
-      }
       const expectedRevision = positiveInteger(payload.revision);
       if (existing && expectedRevision && existing.revision !== expectedRevision) {
         return errorResponse("Строка уже была изменена в другой вкладке. Обновите отчёт и повторите действие.", 409);
@@ -819,15 +825,12 @@ async function handlePOST(request: Request): Promise<Response> {
     }
 
     if (payload.action === "delete-entry") {
-      if (!hasPermission(authUser.permissions, "equipment_report", "delete")) return errorResponse("Нет права удалять строки отчёта техники.", 403);
+      if (!hasReportStatusPermission(authUser.permissions, "equipment_report", "approved", "delete")) return errorResponse("Нет права удалять строки отчёта техники.", 403);
       const entryId = positiveInteger(payload.id);
       if (!entryId) return errorResponse("Не указана строка.", 400);
       const entry = await db.prepare(`SELECT work_date AS "workDate", responsible_user_id AS "responsibleUserId"
         FROM equipment_entries WHERE id = ? AND site_id = ? AND deleted_at IS NULL`).bind(entryId, siteId).first<{ workDate: string; responsibleUserId: number | null }>();
       if (!entry) return errorResponse("Строка техники не найдена.", 404);
-      if (authUser.role === "foreman" && entry.responsibleUserId !== authUser.id) {
-        return errorResponse("Прораб может удалять только собственные строки отчёта назначенного проекта.", 403);
-      }
       await db.transaction(async (transaction) => {
         await transaction.prepare("UPDATE equipment_entries SET deleted_at = CURRENT_TIMESTAMP, updated_by_user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND site_id = ?")
           .bind(authUser.id, entryId, siteId).run();
@@ -837,7 +840,7 @@ async function handlePOST(request: Request): Promise<Response> {
     }
 
     if (payload.action === "import-entries") {
-      if (!hasPermission(authUser.permissions, "equipment_report", "create")) return errorResponse("Нет права импортировать строки отчёта техники.", 403);
+      if (!hasReportStatusPermission(authUser.permissions, "equipment_report", "approved", "create")) return errorResponse("Нет права импортировать строки отчёта техники.", 403);
       const result = await importEquipmentEntries(db, siteId, payload.entries, authUser, async (transaction, dates) => {
         if (authUser.role !== "foreman") return;
         for (const workDate of dates) await touchEquipmentContribution(transaction, authUser, siteId, workDate, false);

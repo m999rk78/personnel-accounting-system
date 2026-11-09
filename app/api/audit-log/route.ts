@@ -1,7 +1,7 @@
 import { getDatabase } from "../../../db/client";
 import { ensureAuditSchema } from "../../auditLog";
 import { getAuthUser } from "../../auth";
-import { hasPermission } from "../../permissionModel";
+import { hasPermission, hasReportStatusPermission } from "../../permissionModel";
 import { accessibleProjectIds, hasRestrictedProjectAccess } from "../../roles";
 
 function positiveInteger(value: string | null, fallback: number) {
@@ -25,7 +25,7 @@ export async function GET(request: Request) {
     // A report event can contain its earlier draft, requested rows and review
     // comments even after that report has been approved. Filtering on the
     // current report status would therefore still reveal pending information.
-    const hideReportEvents = authUser.role === "viewer" && !authUser.canViewPendingReports;
+    const hideReportEvents = !(["workers_report", "equipment_report"] as const).some(resource => hasReportStatusPermission(authUser.permissions, resource, "draft", "view") || hasReportStatusPermission(authUser.permissions, resource, "submitted", "view"));
     const conditions = [
       ...(scoped ? ["site_id = ANY(?::integer[])"] : []),
       ...(beforeId ? ["id < ?"] : []),

@@ -1,3 +1,6 @@
+/* Filtering a long timesheet down to a few rows must not change page width
+   when a classic document scrollbar disappears. */
+html:has(.timesheet-page) { scrollbar-gutter:stable; }
 .page-content:has(.table-page-scroll-stage) { height:auto; min-height:100vh; overflow:visible; padding-bottom:12px; }
 .page-content.table-workspace-page:has(.table-page-scroll-stage) > .admin-section { flex:0 0 auto; height:auto; overflow:visible; }
 .page-content.table-workspace-page:has(.table-page-scroll-stage) .equipment-settings-section > .equipment-page,

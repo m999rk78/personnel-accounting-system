@@ -22,6 +22,13 @@ test("last report row and standalone legacy entry carry their independent versio
   assert.equal(plan.items[1].ownerName, "Прораб 2");
 });
 
+test("a confirmed record can be deletable while its cells remain read-only", () => {
+  const source = row(1, 10);
+  const selected = gridRow(source, { editable: false, removable: true });
+  assert.equal(personnelReportDeletionPlan(1, [selected], [report(10, [source])], [], []).payload.rows[0].entryId, 101);
+  assert.throws(() => personnelReportDeletionPlan(1, [gridRow(source, { removable: false })], [report(10, [source])], [], []), /доступные/);
+});
+
 test("unsaved changes block only a selected report or legacy entry, preserving unrelated work", () => {
   const source = row(1, 10), reports = [report(10, [source])];
   assert.doesNotThrow(() => personnelReportDeletionPlan(1, [gridRow(source)], reports, [], ["new:2026-11-09", "11"]));

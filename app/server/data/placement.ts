@@ -7,6 +7,7 @@ import { asPositiveInteger, validDate, isOprEmploymentType } from "./validation"
 import { PlacementRequestError } from "./responses";
 import { canManagePlacement } from "./access";
 import { personnelReportEmployeeRestriction } from "../../personnelReportWorkflow";
+import type { PermissionAction } from "../../permissionModel";
 
 export function placementEntriesStatement(siteId: number, workDate: string, responsibleUserId?: number) {
   const ownershipFilter = responsibleUserId ? "AND pe.responsible_user_id = ?" : "";
@@ -344,9 +345,9 @@ export function existingPlacementEntriesStatement(db: DatabaseExecutor, ids: num
     ORDER BY id ${lock ? "FOR UPDATE" : ""}`).bind(ids);
 }
 
-export function assertPlacementOwnership(user: AuthUser, entries: ExistingPlacementEntry[]) {
-  if (entries.some((entry) => !canManagePlacement(user, entry.siteId, entry.workDate) || user.role === "foreman" && entry.responsibleUserId !== user.id)) {
-    throw new PlacementRequestError("Нет доступа к строкам отчёта. Прораб изменяет свои строки, инженер — строки назначенного проекта.", 403, "ENTRY_OWNERSHIP_FORBIDDEN");
+export function assertPlacementOwnership(user: AuthUser, entries: ExistingPlacementEntry[], action: PermissionAction = "update") {
+  if (entries.some((entry) => !canManagePlacement(user, entry.siteId, entry.workDate, action))) {
+    throw new PlacementRequestError("Нет доступа к строкам отчёта или проекту.", 403, "ENTRY_OWNERSHIP_FORBIDDEN");
   }
 }
 
@@ -403,14 +404,13 @@ export async function resolveResponsibleUsers(
   payloads: EntryPayload[],
   existingRows: ExistingPlacementEntry[] = [],
 ) {
-  if (user.role === "foreman") return payloads.map(() => user.id as number | null);
   const existingById = new Map(existingRows.map((entry) => [entry.id, entry]));
   const requestedIds = [...new Set(payloads
     .filter((payload) => payload.responsibleUserId !== undefined && payload.responsibleUserId !== null)
     .map((payload) => asPositiveInteger(payload.responsibleUserId))
     .filter((id): id is number => id !== null))];
   const responsibleUsers = requestedIds.length
-    ? await db.prepare("SELECT id, role, assigned_site_id AS assignedSiteId FROM app_users WHERE id = ANY(?) AND role = 'foreman' AND active = 1")
+    ? await db.prepare("SELECT id, role, assigned_site_id AS assignedSiteId FROM app_users WHERE id = ANY(?) AND active = 1")
       .bind(requestedIds).all<{ id: number; role: UserRole; assignedSiteId: number | null }>()
     : { results: [] as Array<{ id: number; role: UserRole; assignedSiteId: number | null }> };
   const resolvedUsers = await Promise.all(responsibleUsers.results.map(async item => ({ ...item, ...await loadUserProjectAccess(item, db) })));

@@ -23,12 +23,13 @@ test("engineer actions and project scope are independent while viewing never gra
   const selected=limitPermissionsToRole("engineer",rolePermissionTemplate("superadmin"),{mode:"selected",siteIds:[7,8]});
   assert.equal(selected.workers_report.update,true);
   assert.equal(selected.project_directories.create,true);
-  assert.equal(selected.access_rights.update,false);
+  assert.equal(selected.access_rights.update,true);
   const all=limitPermissionsToRole("engineer",rolePermissionTemplate("superadmin"),{mode:"all",siteIds:[]});
   assert.equal(all.access_rights.update,true);
   for(const scope of [{mode:"all",siteIds:[]},{mode:"selected",siteIds:[7,8]}]){
     const viewer=limitPermissionsToRole("viewer",rolePermissionTemplate("superadmin"),scope);
-    for(const row of Object.values(viewer))for(const action of ["create","update","delete"])assert.equal(row[action],false);
+    assert.deepEqual(viewer,rolePermissionTemplate("superadmin"));
+    for(const row of Object.values(rolePermissionTemplate("viewer")))for(const action of ["create","update","delete"])assert.equal(row[action],false);
     assert.equal(viewer.workers_report.view,true);
     assert.equal(viewer.workers_timesheet.view,true);
   }
