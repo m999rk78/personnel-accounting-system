@@ -47,12 +47,21 @@ export function pastePersonnelCells(draft: PersonnelSpreadsheetDraft, values: Re
   const next = { ...draft, inputValues: { ...draft.inputValues } };
   if (values.employeeName !== undefined && !draft.lockedEmployee) {
     const raw = values.employeeName;
-    const matches = catalogs.employees.filter(employee => normalize(employee.fullName) === normalize(raw));
-    const employee = matches.length === 1 ? matches[0] : undefined;
-    next.employeeId = employee ? String(employee.id) : "";
-    next.employeeQuery = employee?.fullName ?? raw;
-    if (raw.trim() && !employee) next.inputValues.employeeName = raw;
-    else delete next.inputValues.employeeName;
+    const employeeId = Number(draft.employeeId);
+    const keepHistoricalEmployee = Number.isSafeInteger(employeeId) && employeeId > 0
+      && draft.referenceIds?.employeeId === employeeId && normalize(raw) === normalize(draft.employeeQuery);
+    if (keepHistoricalEmployee) {
+      // Re-pasting an approved row's unchanged name must retain its identity,
+      // even after archival or when another active employee has the same name.
+      delete next.inputValues.employeeName;
+    } else {
+      const matches = catalogs.employees.filter(employee => normalize(employee.fullName) === normalize(raw));
+      const employee = matches.length === 1 ? matches[0] : undefined;
+      next.employeeId = employee ? String(employee.id) : "";
+      next.employeeQuery = employee?.fullName ?? raw;
+      if (raw.trim() && !employee) next.inputValues.employeeName = raw;
+      else delete next.inputValues.employeeName;
+    }
   }
   for (const [field, config] of Object.entries(personnelOptionFields)) {
     if (values[field] === undefined) continue;

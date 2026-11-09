@@ -155,7 +155,7 @@ export async function projectAccessHarness() {
         "../../workTypeHierarchyServer":noop(["saveSubworkDirectory"]),
         "../../excelDirectoryImports":noop(["importProjectDirectoryExcel","importProjectEmployeesExcel","normalizeExcelDirectoryName","prepareEmployeeExcelImport"]),
         "../../personnelImportOrderServer":appUrl("personnelImportOrderServer"),
-        "../../bitrix24Sync":noop(["compareBitrixEmployees","fetchBitrixEmployeeSnapshot","normalizeBitrixText","selectBitrixEmployeesForImport","suggestBitrixEmployeeLinks"]),
+        "../../bitrix24Sync":noop(["compareBitrixEmployees","fetchBitrixEmployeeSnapshot","normalizeBitrixText","selectBitrixEmployeesForImport","selectLinkedBitrixEmployeesForReview","suggestBitrixEmployeeLinks"]),
       }));
     },
     async asUser(id,override={}){

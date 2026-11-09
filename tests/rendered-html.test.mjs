@@ -622,7 +622,7 @@ test("checks Bitrix24 read-only and links only explicitly confirmed employee mat
   assert.doesNotMatch(app, />Сравнено</);
   assert.doesNotMatch(app, /"Стадия в Битрикс24"/);
   assert.doesNotMatch(grid, /headerName: "Стадия в Битрикс24"/);
-  assert.doesNotMatch(grid, /employee\.bitrix24Stage/);
+  assert.doesNotMatch(grid, /field:\s*["']bitrix24Stage["']/);
   assert.doesNotMatch(grid, /row\.employee\?\.source === "bitrix24"/);
   assert.doesNotMatch(grid, /params\.data\.employee\?\.source !== "bitrix24"/);
   assert.match(app, /allEmployees=\{data\?\.employees \?\? \[\]\}/);

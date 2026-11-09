@@ -37,6 +37,7 @@ async function fixture(user = actor()) {
       return output(values[0].filter(id => linkedIds.has(id)).map(entryId => ({ entryId })));
     }
     if (sql.includes("pg_advisory_xact_lock")) { assert.ok(transaction); return output([]); }
+    if (sql === "SELECT e.id FROM employees e WHERE e.id = ANY(?) ORDER BY e.id FOR SHARE OF e") { assert.ok(transaction); return output(values[0].map(id => ({ id }))); }
     if (sql.startsWith("SELECT employee_id AS employeeId, site_id AS siteId")) return output(entries.has(values[0]) ? [entries.get(values[0])] : []);
     if (/SELECT id(?:, main_work_type_id AS mainWorkTypeId)? FROM (?:shifts|zones|main_work_types|subwork_types|masters)/.test(sql)) return output([{ id: 1, mainWorkTypeId: 1 }]);
     if (sql.startsWith("SELECT id, name, active FROM masters")) return output([{ id: 1, name: "Тестовый мастер", active: 1 }]);

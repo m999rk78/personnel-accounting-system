@@ -9,6 +9,8 @@
 .bitrix-review-row > button::before { position:absolute; top:8px; bottom:8px; left:4px; width:3px; border-radius:999px; background:#e5aa22; content:""; }
 .bitrix-review-row > button.missing_locally::before { background:#5da3c7; }
 .bitrix-review-row > button.missing_in_bitrix::before,.bitrix-review-row > button.dismissed_in_bitrix::before { background:#d86464; }
+.bitrix-review-row > button.blacklisted_in_bitrix::before { background:#d86464; }
+.bitrix-check-breakdown > span.blacklisted_in_bitrix { background:#fee2e2; color:#991b1b; }
 .bitrix-review-row > button:hover { background:#f7f7f8; }
 .bitrix-review-row > button.selected { background:#f1f4f2; box-shadow:inset 0 0 0 1px #ccd9d0; }
 .bitrix-review-row > button.acknowledged { opacity:.68; }

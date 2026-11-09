@@ -76,7 +76,8 @@ const TABLE_STATEMENTS = [
     fingerprint TEXT NOT NULL,
     checked_at TEXT NOT NULL,
     acknowledged_at TEXT,
-    acknowledged_by_user_id INTEGER
+    acknowledged_by_user_id INTEGER,
+    CONSTRAINT bitrix24_employee_check_status_valid CHECK (status IN ('mismatch', 'missing_in_bitrix', 'dismissed_in_bitrix', 'blacklisted_in_bitrix'))
   )`,
   `CREATE TABLE IF NOT EXISTS employee_project_assignments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -28,3 +28,6 @@
   white-space: pre-line;
   flex-shrink: 0;
 }
+.ag-employee-grid .ag-row.bitrix-blacklisted-row .ag-cell { background:#fff0f0; }
+.ag-employee-grid .ag-row.bitrix-blacklisted-row:hover .ag-cell { background:#ffe4e4; }
+.bitrix-grid-status.blacklisted { background:#fee2e2; color:#991b1b; }

@@ -6,6 +6,7 @@ import { type EntryPayload, type ExistingPlacementEntry } from "./types";
 import { asPositiveInteger, validDate, isOprEmploymentType } from "./validation";
 import { PlacementRequestError } from "./responses";
 import { canManagePlacement } from "./access";
+import { personnelReportEmployeeRestriction } from "../../personnelReportWorkflow";
 
 export function placementEntriesStatement(siteId: number, workDate: string, responsibleUserId?: number) {
   const ownershipFilter = responsibleUserId ? "AND pe.responsible_user_id = ?" : "";
@@ -152,6 +153,9 @@ export function reportEmployeesStatement(siteId: number) {
     JOIN sites s ON s.id = epa.site_id AND s.active = 1
     WHERE e.active = 1 AND epa.site_id = ? AND e.full_name <> '' AND e.position <> ''
       AND UPPER(TRIM(e.employment_type)) = 'ОПР'
+      AND COALESCE(e.availability_status, '') NOT IN ('blacklisted', 'dismissed', 'deleted')
+      AND NOT EXISTS (SELECT 1 FROM bitrix24_employee_check_states check_state
+        WHERE check_state.employee_id = e.id AND check_state.status IN ('blacklisted_in_bitrix', 'dismissed_in_bitrix'))
     ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId);
 }
 
@@ -170,6 +174,8 @@ export async function validatePayload(db: DatabaseExecutor, payload: EntryPayloa
   }
   if (hours < 1 || hours > 10) throw new Error("Количество часов должно быть от 1 до 10.");
 
+  await db.prepare("SELECT e.id FROM employees e WHERE e.id = ANY(?) ORDER BY e.id FOR SHARE OF e").bind([employeeId]).all();
+
   const existing = excludedId ? await db.prepare(`SELECT employee_id AS employeeId, site_id AS siteId, master_id AS masterId,
     position_snapshot AS positionSnapshot, employee_name_snapshot AS employeeNameSnapshot,
     employment_type_snapshot AS employmentTypeSnapshot, department_snapshot AS departmentSnapshot,
@@ -177,13 +183,21 @@ export async function validatePayload(db: DatabaseExecutor, payload: EntryPayloa
     .bind(excludedId).first<Omit<ExistingPlacementEntry, "id" | "workDate" | "hours">>() : null;
   const keepHistoricalEmployee = existing?.employeeId === employeeId && existing.siteId === siteId;
   const employee = keepHistoricalEmployee
-    ? { position: existing.positionSnapshot, fullName: existing.employeeNameSnapshot, employmentType: existing.employmentTypeSnapshot, department: existing.departmentSnapshot }
-    : await db.prepare(`SELECT e.position, e.full_name AS fullName, e.employment_type AS employmentType, e.department
+    ? { position: existing.positionSnapshot, fullName: existing.employeeNameSnapshot, employmentType: existing.employmentTypeSnapshot, department: existing.departmentSnapshot, availabilityStatus: null, bitrixCheckStatus: null }
+    : await db.prepare(`SELECT e.position, e.full_name AS fullName, e.employment_type AS employmentType, e.department,
+      e.availability_status AS availabilityStatus, check_state.status AS bitrixCheckStatus
       FROM employees e
-      JOIN employee_project_assignments assignment
+      LEFT JOIN employee_project_assignments assignment
         ON assignment.employee_id = e.id AND assignment.site_id = ? AND assignment.active = 1
-      WHERE e.id = ? AND e.active = 1`)
-      .bind(siteId, employeeId).first<{ position: string; fullName: string; employmentType: string; department: string }>();
+      LEFT JOIN bitrix24_employee_check_states check_state ON check_state.employee_id = e.id
+      WHERE e.id = ? AND (e.active = 1 AND assignment.employee_id IS NOT NULL
+        OR (e.availability_status IN ('blacklisted', 'dismissed', 'deleted')
+        OR check_state.status IN ('blacklisted_in_bitrix', 'dismissed_in_bitrix')) AND EXISTS (
+          SELECT 1 FROM employee_project_assignments membership WHERE membership.employee_id = e.id AND membership.site_id = ?
+        ))`)
+      .bind(siteId, employeeId, siteId).first<{ position: string; fullName: string; employmentType: string; department: string; availabilityStatus: string | null; bitrixCheckStatus: string | null }>();
+  const restriction = !keepHistoricalEmployee ? personnelReportEmployeeRestriction(employee) : null;
+  if (restriction) throw new PlacementRequestError(restriction.message, 400, restriction.code, { employeeId, employeeName: employee?.fullName });
   if (!employee?.position) throw new Error("Сотрудник отсутствует в справочнике или у него не заполнена должность.");
   if (!isOprEmploymentType(employee.employmentType)) throw new Error("В отчёт рабочих можно добавлять только сотрудников с типом ОПР.");
 
@@ -232,12 +246,22 @@ export async function validateBulkPayloads(db: DatabaseExecutor, payloads: Entry
     throw new Error("Все строки группы должны относиться к одному объекту и дню.");
   }
 
+  const employeeIds = [...new Set(payloads.map(payload => asPositiveInteger(payload.employeeId)).filter((id): id is number => Boolean(id)))];
+  if (employeeIds.length) await db.prepare("SELECT e.id FROM employees e WHERE e.id = ANY(?) ORDER BY e.id FOR SHARE OF e").bind(employeeIds).all();
+
   const [employeesResult, shiftsResult, zonesResult, mainWorksResult, subworksResult, mastersResult, totalsResult] = await db.batch([
-    db.prepare(`SELECT e.id, e.position, e.full_name AS fullName, e.employment_type AS employmentType, e.department
+    db.prepare(`SELECT e.id, e.position, e.full_name AS fullName, e.employment_type AS employmentType, e.department,
+      e.availability_status AS availabilityStatus, check_state.status AS bitrixCheckStatus
       FROM employees e
-      JOIN employee_project_assignments assignment
+      LEFT JOIN employee_project_assignments assignment
         ON assignment.employee_id = e.id AND assignment.site_id = ? AND assignment.active = 1
-      WHERE e.active = 1`).bind(siteId),
+      LEFT JOIN bitrix24_employee_check_states check_state ON check_state.employee_id = e.id
+      WHERE e.id = ANY(?) AND (e.active = 1 AND assignment.employee_id IS NOT NULL
+        OR (e.availability_status IN ('blacklisted', 'dismissed', 'deleted')
+        OR check_state.status IN ('blacklisted_in_bitrix', 'dismissed_in_bitrix')) AND EXISTS (
+          SELECT 1 FROM employee_project_assignments membership WHERE membership.employee_id = e.id AND membership.site_id = ?
+        ))`)
+      .bind(siteId, employeeIds, siteId),
     db.prepare("SELECT id FROM shifts WHERE site_id = ? AND active = 1").bind(siteId),
     db.prepare("SELECT id FROM zones WHERE site_id = ? AND active = 1").bind(siteId),
     db.prepare("SELECT id FROM main_work_types WHERE site_id = ? AND active = 1").bind(siteId),
@@ -246,7 +270,7 @@ export async function validateBulkPayloads(db: DatabaseExecutor, payloads: Entry
     db.prepare("SELECT employee_id AS employeeId, SUM(hours) AS used FROM placement_entries WHERE work_date = ? AND deleted_at IS NULL AND UPPER(TRIM(employment_type_snapshot)) = 'ОПР' GROUP BY employee_id").bind(workDate),
   ]);
 
-  const employees = new Map((employeesResult.results as Array<{ id: number; position: string; fullName: string; employmentType: string; department: string }>).map((employee) => [employee.id, employee]));
+  const employees = new Map((employeesResult.results as Array<{ id: number; position: string; fullName: string; employmentType: string; department: string; availabilityStatus: string | null; bitrixCheckStatus: string | null }>).map((employee) => [employee.id, employee]));
   const shifts = new Set((shiftsResult.results as Array<{ id: number }>).map((item) => item.id));
   const zones = new Set((zonesResult.results as Array<{ id: number }>).map((item) => item.id));
   const mainWorks = new Set((mainWorksResult.results as Array<{ id: number }>).map((item) => item.id));
@@ -281,6 +305,8 @@ export async function validateBulkPayloads(db: DatabaseExecutor, payloads: Entry
       throw new Error(`Строка ${index + 1}: заполните все обязательные поля.`);
     }
     if (hours < 1 || hours > 10) throw new Error(`Строка ${index + 1}: количество часов должно быть от 1 до 10.`);
+    const restriction = !keepHistoricalEmployee ? personnelReportEmployeeRestriction(currentEmployee) : null;
+    if (restriction) throw new PlacementRequestError(`Строка ${index + 1}: ${restriction.message}`, 400, restriction.code, { employeeId, employeeName: employee?.fullName, row: index + 1 });
     if (!employee?.position) throw new Error(`Строка ${index + 1}: сотрудник недоступен или у него не заполнена должность.`);
     if (!isOprEmploymentType(employee.employmentType)) throw new Error(`Строка ${index + 1}: в отчёт рабочих можно добавлять только сотрудников с типом ОПР.`);
     if (!shifts.has(shiftId) || !zones.has(zoneId) || !mainWorks.has(mainWorkTypeId) || subworks.get(subworkTypeId) !== mainWorkTypeId || !master || (!master.active && !keepHistoricalMaster)) {

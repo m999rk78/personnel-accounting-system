@@ -20,6 +20,17 @@ export class PersonnelReportError extends Error {
 type Actor = Pick<AuthUser, "id" | "role" | "assignedSiteId" | "permissions"> & Partial<Pick<AuthUser, "projectAccess" | "canViewPendingReports">>;
 type ReportIdentity = { siteId: number; ownerUserId: number; status: PersonnelReportStatus; revision: number };
 
+/** Acknowledging a Bitrix warning never makes a dismissed employee selectable. */
+export function personnelReportEmployeeRestriction(employee: { availabilityStatus?: string | null; bitrixCheckStatus?: string | null } | null | undefined) {
+  if (employee?.availabilityStatus === "blacklisted" || employee?.bitrixCheckStatus === "blacklisted_in_bitrix") {
+    return { code: "EMPLOYEE_BLACKLISTED", message: "сотрудник находится в чёрном списке Битрикс24. Его нельзя добавлять в новые строки или отправлять на проверку." };
+  }
+  if (employee?.availabilityStatus === "dismissed" || employee?.availabilityStatus === "deleted" || employee?.bitrixCheckStatus === "dismissed_in_bitrix") {
+    return { code: "EMPLOYEE_DISMISSED", message: "сотрудник уволен или удалён в Битрикс24. Его нельзя добавлять в новые строки или отправлять на проверку." };
+  }
+  return null;
+}
+
 export function validPersonnelReportDate(value: unknown): value is string {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00.000Z`);

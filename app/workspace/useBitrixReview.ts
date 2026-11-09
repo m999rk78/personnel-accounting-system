@@ -70,11 +70,11 @@ export function useBitrixReview({
   const [creatingBitrixEmployee, setCreatingBitrixEmployee] = useState(false);
   const [bitrixEmployeeAction, setBitrixEmployeeAction] = useState<{ kind: "update" | "delete"; difference: BitrixCheckDifference; } | null>(null);
   const [processingBitrixEmployee, setProcessingBitrixEmployee] = useState(false);
-  const selectedBitrixUpdatableEmployees = useMemo(() => selectedEmployeeRows.filter((employee) => employee.bitrixCheckStatus === "mismatch"
+  const selectedBitrixUpdatableEmployees = useMemo(() => selectedEmployeeRows.filter((employee) => ["mismatch", "blacklisted_in_bitrix"].includes(employee.bitrixCheckStatus ?? "")
     && !employee.bitrixCheckAcknowledged && Boolean(employee.bitrix24Id)), [selectedEmployeeRows]);
 
   const selectedBitrixWarningEmployees = useMemo(() => selectedEmployeeRows.filter((employee) => Boolean(employee.bitrixCheckStatus)
-    && !employee.bitrixCheckAcknowledged), [selectedEmployeeRows]);
+    && employee.bitrixCheckStatus !== "blacklisted_in_bitrix" && !employee.bitrixCheckAcknowledged), [selectedEmployeeRows]);
 
   const bitrixAvailableEmployeeOptions = useMemo(() => [{ value: "", label: "Выберите сотрудника" }, ...visibleEmployees.filter((employee) => !employee.bitrix24Id).map((employee) => ({
     value: String(employee.id),
@@ -197,6 +197,10 @@ export function useBitrixReview({
   async function applyBitrixEmployeeAction() {
     if (!mayInspectBitrix24 || !bitrixEmployeeAction?.difference.localEmployeeId || !bitrixEmployeeAction.difference.bitrix24Id) return;
     const { kind, difference } = bitrixEmployeeAction;
+    if (kind === "update"
+      ? !mayUpdateEmployees || !["changed", "blacklisted_in_bitrix"].includes(difference.kind)
+        || !bitrixCheckResult || !bitrixReviewUpdateIds(bitrixCheckResult).includes(difference.localEmployeeId!)
+      : !mayDeleteEmployees || !["missing_in_bitrix", "dismissed_in_bitrix"].includes(difference.kind)) return;
     setProcessingBitrixEmployee(true); setError(""); setNotice("");
     try {
       const response = await fetch("/api/data", {
@@ -213,7 +217,9 @@ export function useBitrixReview({
       await loadData();
       showBitrixCheckResult(result);
       setNotice(kind === "update"
-        ? `Данные сотрудника «${result.updatedEmployee?.name ?? difference.employeeName}» обновлены из Битрикс24.`
+        ? difference.kind === "blacklisted_in_bitrix"
+          ? `Сотрудник «${result.updatedEmployee?.name ?? difference.employeeName}» перенесён в архив со статусом «Чёрный список». История отчётов и табелей сохранена.`
+          : `Данные сотрудника «${result.updatedEmployee?.name ?? difference.employeeName}» обновлены из Битрикс24.`
         : `Сотрудник «${result.deletedEmployee?.name ?? difference.employeeName}» удалён из активного справочника. История отчётов сохранена.`);
       setBitrixEmployeeAction(null);
     } catch (actionError) {
@@ -223,7 +229,7 @@ export function useBitrixReview({
   }
 
   async function acknowledgeBitrixDifference(difference: BitrixCheckDifference) {
-    if (!mayInspectBitrix24 || !difference.localEmployeeId) return;
+    if (!mayInspectBitrix24 || !difference.localEmployeeId || difference.kind === "blacklisted_in_bitrix") return;
     setProcessingBitrixEmployee(true); setError(""); setNotice("");
     try {
       const response = await fetch("/api/data", {
@@ -235,7 +241,7 @@ export function useBitrixReview({
       if (!response.ok) throw new Error(result.error ?? "Не удалось подтвердить предупреждение.");
       setBitrixCheckResult((current) => {
         if (!current) return current;
-        const acknowledgedItems = current.differences.filter((item) => item.localEmployeeId === difference.localEmployeeId && !item.acknowledged);
+        const acknowledgedItems = current.differences.filter((item) => item.localEmployeeId === difference.localEmployeeId && item.kind !== "blacklisted_in_bitrix" && !item.acknowledged);
         const totalDifferences = Math.max(0, current.totalDifferences - acknowledgedItems.length);
         const differenceCounts = current.differenceCounts ? { ...current.differenceCounts } : undefined;
         acknowledgedItems.forEach((item) => {
@@ -249,7 +255,7 @@ export function useBitrixReview({
           differenceCounts,
           updatableEmployeeIds: bitrixReviewUpdateIds(current).filter(id => id !== difference.localEmployeeId),
           acknowledgedDifferences: (current.acknowledgedDifferences ?? 0) + acknowledgedItems.length,
-          differences: current.differences.map((item) => item.localEmployeeId === difference.localEmployeeId ? { ...item, acknowledged: true } : item),
+          differences: current.differences.map((item) => item.localEmployeeId === difference.localEmployeeId && item.kind !== "blacklisted_in_bitrix" ? { ...item, acknowledged: true } : item),
         };
       });
       setBitrixReviewSelectedIds(current => current.filter(id => id !== difference.localEmployeeId));
@@ -265,6 +271,8 @@ export function useBitrixReview({
     if (!mayInspectBitrix24 || !mayUpdateEmployees || !employeeIds.length) return;
     setProcessingBitrixEmployee(true); setError(""); setNotice("");
     try {
+      const blacklistCount = selectedBitrixUpdatableEmployees.filter(employee => employee.bitrixCheckStatus === "blacklisted_in_bitrix").length;
+      if (blacklistCount && !await confirm({ title: "Применить статус «Чёрный список»?", description: `Сотрудников в чёрном списке: ${blacklistCount}. Они будут перенесены в архив и исключены из действующих проектов. Повторный приём не разрешён. История отчётов и табелей сохранится. Остальные выбранные сотрудники будут обновлены по своим карточкам Битрикс24.`, confirmLabel: "Применить изменения", cancelLabel: "Отмена" })) return;
       const response = await fetch("/api/data", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -299,7 +307,7 @@ export function useBitrixReview({
     let updatedCount = 0;
     const failures: Array<{ id: number; name: string; error: string; }> = [];
     try {
-      if (!await confirm({ title: "Обновить выбранных сотрудников?", description: `Сотрудников: ${employeeIds.length}. Каждый будет обновлён по своей связанной карточке Битрикс24. Ранее заполненные отчёты и табели сохранят историю.\n\nНовые, уволенные и отсутствующие в Битрикс24 сотрудники не добавляются и не удаляются этим действием.`, confirmLabel: `Обновить выбранных (${employeeIds.length})`, cancelLabel: "Отмена" })) return;
+      if (!await confirm({ title: "Обновить выбранных сотрудников?", description: `Сотрудников: ${employeeIds.length}. Каждый будет обновлён по своей связанной карточке Битрикс24. Сотрудники со стадией «Чёрный список» будут перенесены в архив и исключены из действующих проектов. Ранее заполненные отчёты и табели сохранят историю.\n\nНовые карточки не добавляются. Удаление карточек этим действием не выполняется.`, confirmLabel: `Обновить выбранных (${employeeIds.length})`, cancelLabel: "Отмена" })) return;
       started = true;
       setProcessingBitrixEmployee(true); setError(""); setNotice(""); setBitrixReviewNotice("");
       setBitrixReviewProgress({ done: 0, total: employeeIds.length });
@@ -369,9 +377,9 @@ export function useBitrixReview({
 
   const canLinkSelectedBitrixEmployee = Boolean(mayInspectBitrix24 && mayUpdateEmployees && bitrixCheckResult?.autoLinkable === 0 && selectedBitrixDifference?.kind === "missing_locally" && selectedBitrixDifference.bitrix24Id);
   const canCreateSelectedBitrixEmployee = Boolean(mayInspectBitrix24 && mayCreateEmployees && selectedBitrixDifference?.kind === "missing_locally" && selectedBitrixDifference.bitrix24Id && !selectedBitrixDifference.suggestedEmployeeIds?.length);
-  const canUpdateSelectedBitrixEmployee = Boolean(mayInspectBitrix24 && mayUpdateEmployees && selectedBitrixDifference?.kind === "changed" && selectedBitrixDifference.localEmployeeId && selectedBitrixDifference.bitrix24Id);
+  const canUpdateSelectedBitrixEmployee = Boolean(mayInspectBitrix24 && mayUpdateEmployees && selectedBitrixDifference && ["changed", "blacklisted_in_bitrix"].includes(selectedBitrixDifference.kind) && selectedBitrixDifference.localEmployeeId && bitrixReviewEligibleIds.has(selectedBitrixDifference.localEmployeeId) && selectedBitrixDifference.bitrix24Id);
   const canDeleteSelectedBitrixEmployee = Boolean(mayInspectBitrix24 && mayDeleteEmployees && selectedBitrixDifference && ["missing_in_bitrix", "dismissed_in_bitrix"].includes(selectedBitrixDifference.kind) && selectedBitrixDifference.localEmployeeId && selectedBitrixDifference.bitrix24Id);
-  const canAcknowledgeSelectedBitrixEmployee = Boolean(mayInspectBitrix24 && mayUpdateEmployees && selectedBitrixDifference?.localEmployeeId && selectedBitrixDifference.kind !== "missing_locally" && !selectedBitrixDifference.acknowledged);
+  const canAcknowledgeSelectedBitrixEmployee = Boolean(mayInspectBitrix24 && mayUpdateEmployees && selectedBitrixDifference?.localEmployeeId && !["missing_locally", "blacklisted_in_bitrix"].includes(selectedBitrixDifference.kind) && !selectedBitrixDifference.acknowledged);
   const selectedBitrixDifferenceDetails = selectedBitrixDifference?.kind === "missing_locally"
     ? selectedBitrixDifference.suggestedEmployeeIds?.length ? "Выберите подходящего сотрудника из справочника." : "Такого сотрудника нет в справочнике нашей системы."
     : selectedBitrixDifference?.details ?? "";

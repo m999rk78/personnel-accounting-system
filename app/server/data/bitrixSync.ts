@@ -1,4 +1,4 @@
-import { type EmployeeAvailabilityStatus, type BitrixEmployeeSnapshot, normalizeBitrixText, fetchBitrixEmployeeSnapshot, selectBitrixEmployeesForImport } from "../../bitrix24Sync";
+import { type EmployeeAvailabilityStatus, type BitrixEmployeeSnapshot, normalizeBitrixText, fetchBitrixEmployeeSnapshot, selectLinkedBitrixEmployeesForReview } from "../../bitrix24Sync";
 import { env } from "./context";
 
 type ExistingBitrixEmployee = {
@@ -42,8 +42,6 @@ export async function synchronizeBitrixEmployees() {
   try {
     const sourceSnapshot = await fetchBitrixEmployeeSnapshot();
     if (!sourceSnapshot.length) throw new Error("Битрикс24 вернул пустой список сотрудников. Изменения не применены.");
-    const snapshot = selectBitrixEmployeesForImport(sourceSnapshot);
-    if (!snapshot.length) throw new Error("По настроенным стадиям и объектам не найдено ни одного сотрудника. Изменения не применены.");
     const sourceById = new Map(sourceSnapshot.filter((employee) => employee.bitrix24Id).map((employee) => [employee.bitrix24Id, employee]));
     return await rootDb.transaction(async (db) => {
     const lock = await db.prepare("SELECT pg_try_advisory_xact_lock(hashtext('personnel-bitrix24-employee-sync')) AS locked").first<{ locked: boolean }>();
@@ -53,7 +51,7 @@ export async function synchronizeBitrixEmployees() {
       db.prepare("SELECT employment_type AS employmentType, department, position FROM position_catalog WHERE active = 1"),
       db.prepare(`SELECT id, bitrix24_id AS bitrix24Id, full_name AS fullName, employment_type AS employmentType, department, position,
         bitrix24_stage AS bitrix24Stage, availability_status AS availabilityStatus, active, sync_miss_count AS syncMissCount, site_id AS siteId
-        FROM employees WHERE bitrix24_id IS NOT NULL`),
+        FROM employees WHERE bitrix24_id IS NOT NULL ORDER BY id FOR UPDATE`),
       db.prepare("SELECT id, full_name AS fullName FROM employees WHERE bitrix24_id IS NULL AND active = 1"),
       db.prepare("SELECT employee_id AS employeeId FROM employee_profile_versions WHERE valid_to IS NULL"),
     ]);
@@ -64,6 +62,8 @@ export async function synchronizeBitrixEmployees() {
     const positions = new Set((positionsResult.results as Array<{ employmentType: string; department: string; position: string }>).map((row) =>
       [row.employmentType, row.department, row.position].map(normalizeBitrixText).join("\u0000")));
     const existingByBitrixId = new Map((existingResult.results as ExistingBitrixEmployee[]).map((employee) => [employee.bitrix24Id, employee]));
+    const snapshot = selectLinkedBitrixEmployeesForReview(sourceSnapshot, existingByBitrixId.keys());
+    if (!snapshot.length) throw new Error("По настроенным стадиям и объектам не найдено ни одного сотрудника. Изменения не применены.");
     const profileVersionEmployeeIds = new Set((profileVersionsResult.results as Array<{ employeeId: number }>).map((version) => version.employeeId));
     const manualNames = new Set((manualEmployeesResult.results as Array<{ fullName: string }>).map((employee) => normalizeBitrixText(employee.fullName)));
     const seen = new Set<string>();
@@ -74,6 +74,19 @@ export async function synchronizeBitrixEmployees() {
       if (!employee.bitrix24Id) { issues.push({ bitrix24Id: null, code: "missing_id", message: `Карточка «${employee.fullName || "Без названия"}» не содержит ID.` }); continue; }
       if (seen.has(employee.bitrix24Id)) { issues.push({ bitrix24Id: employee.bitrix24Id, code: "duplicate_id", message: "Один ID сотрудника повторяется в ответе Битрикс24." }); continue; }
       seen.add(employee.bitrix24Id);
+      const existing = existingByBitrixId.get(employee.bitrix24Id);
+      if (existing?.availabilityStatus === "blacklisted" && employee.availabilityStatus !== "blacklisted") {
+        issues.push({ bitrix24Id: employee.bitrix24Id, code: "blacklisted_requires_review", message: `${existing.fullName}: статус чёрного списка сохранён. Возврат требует явной кадровой корректировки.` });
+        continue;
+      }
+      if (["blacklisted", "dismissed", "deleted"].includes(employee.availabilityStatus)) {
+        if (!existing) continue;
+        // A terminal status may arrive without HR fields. Preserve the existing
+        // profile and all history; only archive the linked employee and assignments.
+        prepared.push({ ...employee, fullName: existing.fullName, employmentType: existing.employmentType,
+          department: existing.department, position: existing.position, siteIds: [], syncError: null, active: 0 });
+        continue;
+      }
       const errors: string[] = [];
       if (!employee.fullName || !employee.employmentType || !employee.department || !employee.position) errors.push("не заполнены ФИО, тип, отдел или должность");
       const positionKey = [employee.employmentType, employee.department, employee.position].map(normalizeBitrixText).join("\u0000");
@@ -185,6 +198,7 @@ export async function synchronizeBitrixEmployees() {
       }
     }
     for (const employee of existingResult.results as ExistingBitrixEmployee[]) {
+      if (employee.availabilityStatus === "blacklisted") continue;
       const source = sourceById.get(employee.bitrix24Id);
       if (!source || seen.has(employee.bitrix24Id)) continue;
       const nextStatus: EmployeeAvailabilityStatus = source.availabilityStatus === "dismissed" ? "dismissed" : "out_of_scope";
@@ -202,7 +216,7 @@ export async function synchronizeBitrixEmployees() {
     for (let offset = 0; offset < historyStatements.length; offset += 100) await db.batch(historyStatements.slice(offset, offset + 100));
     for (let offset = 0; offset < assignmentStatements.length; offset += 100) await db.batch(assignmentStatements.slice(offset, offset + 100));
 
-    const missing = (existingResult.results as ExistingBitrixEmployee[]).filter((employee) => !sourceById.has(employee.bitrix24Id));
+    const missing = (existingResult.results as ExistingBitrixEmployee[]).filter((employee) => employee.availabilityStatus !== "blacklisted" && !sourceById.has(employee.bitrix24Id));
     if (missing.length) {
       const missingStatements = [];
       for (const employee of missing) {

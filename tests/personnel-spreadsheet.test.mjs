@@ -35,6 +35,28 @@ test("clearing errors, locked identities and ambiguous employees are handled per
   assert.equal(Object.keys(personnelCellErrors(blank, catalogs, true)).length, 7);
 });
 
+test("pasting an approved archived employee's same name retains its historical identity while correcting hours", () => {
+  const archived = { ...blank, employeeId: "7", employeeQuery: "Пётр Исторический", hours: "8", referenceIds: { employeeId: 7 } };
+  const result = pastePersonnelCells(archived, { employeeName: "  петр   исторический ", hours: "6" }, catalogs);
+  assert.equal(result.employeeId, "7"); assert.equal(result.employeeQuery, archived.employeeQuery); assert.equal(result.hours, "6");
+  assert.deepEqual(personnelCellErrors(result, catalogs), {});
+  assert.equal(archived.hours, "8");
+  const sameNameActive = pastePersonnelCells(archived, { employeeName: archived.employeeQuery }, { ...catalogs, employees: [{ id: 99, fullName: archived.employeeQuery }] });
+  assert.equal(sameNameActive.employeeId, "7", "an unchanged historical row cannot be reassigned by a namesake's catalog entry");
+});
+
+test("historical paste cannot introduce an archived employee to a new row or preserve a changed identity", () => {
+  for (const draft of [blank, { ...blank, employeeId: "7", employeeQuery: "Пётр Исторический" }, { ...blank, employeeId: "7", employeeQuery: "Пётр Исторический", referenceIds: { employeeId: 8 } }]) {
+    const result = pastePersonnelCells(draft, { employeeName: "Пётр Исторический", hours: "6" }, catalogs);
+    assert.equal(result.employeeId, ""); assert.ok(personnelCellErrors(result, catalogs).employeeName);
+  }
+  const archived = { ...blank, employeeId: "7", employeeQuery: "Пётр Исторический", referenceIds: { employeeId: 7 } };
+  const changed = pastePersonnelCells(archived, { employeeName: "Другой архивный сотрудник", hours: "6" }, catalogs);
+  assert.equal(changed.employeeId, ""); assert.ok(personnelCellErrors(changed, catalogs).employeeName);
+  const active = pastePersonnelCells(archived, { employeeName: "Петр Иванов" }, catalogs);
+  assert.equal(active.employeeId, "1", "choosing a different active employee still uses the ordinary catalog rules");
+});
+
 test("bulk history restores invalid text and appended rows in one undo/redo step", () => {
   const initial = { new: [blank] };
   const inserted = { new: [pastePersonnelCells(blank, { zone: "Нет такой зоны" }, catalogs), { ...blank, key: "two", hours: "5" }] };

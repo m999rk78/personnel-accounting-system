@@ -1,4 +1,4 @@
-import { type BitrixEmployeeSnapshot, selectBitrixEmployeesForImport, type BitrixLinkLocalEmployee, suggestBitrixEmployeeLinks, compareBitrixEmployees, normalizeBitrixText, type EmployeeAvailabilityStatus } from "../../bitrix24Sync";
+import { type BitrixEmployeeSnapshot, selectBitrixEmployeesForImport, selectLinkedBitrixEmployeesForReview, type BitrixLinkLocalEmployee, suggestBitrixEmployeeLinks, compareBitrixEmployees, normalizeBitrixText, type EmployeeAvailabilityStatus } from "../../bitrix24Sync";
 import { bitrixReviewUpdateIds } from "../../bitrixReviewSelection";
 import { env } from "./context";
 import { type UserPayload } from "./types";
@@ -7,27 +7,34 @@ import { validateEmployeeDirectoryValues } from "./catalogs";
 import { projectOverrides } from "./bitrixSync";
 
 export async function buildBitrixInspection(sourceSnapshot: BitrixEmployeeSnapshot[]) {
-  const snapshot = selectBitrixEmployeesForImport(sourceSnapshot);
-  const sourceById = new Map(snapshot.map((employee) => [employee.bitrix24Id, employee]));
+  const importSnapshot = selectBitrixEmployeesForImport(sourceSnapshot).filter(employee => !["dismissed", "deleted", "blacklisted"].includes(employee.availabilityStatus));
+  const sourceById = new Map(importSnapshot.map((employee) => [employee.bitrix24Id, employee]));
   const localResult = await env.DB.prepare(`SELECT e.id, e.bitrix24_id AS bitrix24Id, e.full_name AS fullName,
     e.employment_type AS employmentType, e.department, e.position, e.bitrix24_stage AS bitrix24Stage,
+    e.availability_status AS "availabilityStatus", e.active,
     STRING_AGG(DISTINCT assigned_site.name, '|||') AS "projectNames",
     STRING_AGG(DISTINCT assigned_site.code, '|||') AS "projectCodes"
     FROM employees e
     LEFT JOIN employee_project_assignments assignment ON assignment.employee_id = e.id AND assignment.active = 1
     LEFT JOIN sites assigned_site ON assigned_site.id = assignment.site_id AND assigned_site.active = 1
-    WHERE e.active = 1
-    GROUP BY e.id, e.bitrix24_id, e.full_name, e.employment_type, e.department, e.position, e.bitrix24_stage`)
-    .all<BitrixLinkLocalEmployee & { bitrix24Stage: string; projectNames: string | null; projectCodes: string | null }>();
+    WHERE e.active = 1 OR e.bitrix24_id IS NOT NULL
+    GROUP BY e.id, e.bitrix24_id, e.full_name, e.employment_type, e.department, e.position, e.bitrix24_stage, e.availability_status, e.active`)
+    .all<BitrixLinkLocalEmployee & { bitrix24Stage: string; availabilityStatus: EmployeeAvailabilityStatus; active: number; projectNames: string | null; projectCodes: string | null }>();
   const localEmployees = localResult.results;
+  const snapshot = selectLinkedBitrixEmployeesForReview(sourceSnapshot, localEmployees.flatMap(employee => employee.bitrix24Id ? [employee.bitrix24Id] : []));
+  const reviewIds = new Set(snapshot.map(employee => employee.bitrix24Id));
   const localByBitrixId = new Map(localEmployees.flatMap((employee) => employee.bitrix24Id ? [[employee.bitrix24Id, employee] as const] : []));
-  const linkedEmployees = localEmployees.flatMap((employee) => employee.bitrix24Id ? [{
+  // Keep all linked identities for duplicate prevention, but do not revive old
+  // missing/out-of-scope warnings for unrelated archived personnel.
+  const linkedEmployees = localEmployees.flatMap((employee) => employee.bitrix24Id && (employee.active === 1 || reviewIds.has(employee.bitrix24Id) || employee.availabilityStatus === "blacklisted") ? [{
     bitrix24Id: employee.bitrix24Id,
     fullName: employee.fullName,
     employmentType: employee.employmentType,
     department: employee.department,
     position: employee.position,
     bitrix24Stage: employee.bitrix24Stage,
+    availabilityStatus: employee.availabilityStatus,
+    active: employee.active,
     projectKeys: [...new Set((employee.projectNames?.split("|||") ?? [])
       .map((value) => value.trim())
       .filter(Boolean))],
@@ -36,7 +43,7 @@ export async function buildBitrixInspection(sourceSnapshot: BitrixEmployeeSnapsh
       .map((value) => value.trim())
       .filter(Boolean))],
   }] : []);
-  const suggestions = suggestBitrixEmployeeLinks(snapshot, localEmployees);
+  const suggestions = suggestBitrixEmployeeLinks(importSnapshot, localEmployees);
   const suggestionById = new Map(suggestions.map((suggestion) => [suggestion.bitrix24Id, suggestion]));
   const comparison = compareBitrixEmployees(snapshot, linkedEmployees, sourceSnapshot);
   const rawDifferences = comparison.differences.map((difference) => {
@@ -59,14 +66,15 @@ export async function buildBitrixInspection(sourceSnapshot: BitrixEmployeeSnapsh
     return { ...difference, ...sourceFields, details, suggestedEmployeeIds: suggestion.employeeIds, localEmployeeId };
   });
   const checkedAt = new Date().toISOString();
-  const stateByEmployeeId = new Map<number, { status: "mismatch" | "missing_in_bitrix" | "dismissed_in_bitrix"; details: string[] }>();
+  const stateByEmployeeId = new Map<number, { status: "mismatch" | "missing_in_bitrix" | "dismissed_in_bitrix" | "blacklisted_in_bitrix"; details: string[] }>();
   for (const difference of rawDifferences) {
-    if (!difference.localEmployeeId || !["changed", "incomplete", "unknown_stage", "outside_scope", "missing_in_bitrix", "dismissed_in_bitrix"].includes(difference.kind)) continue;
+    if (!difference.localEmployeeId || !["changed", "blacklisted_in_bitrix", "incomplete", "unknown_stage", "outside_scope", "missing_in_bitrix", "dismissed_in_bitrix"].includes(difference.kind)) continue;
     const status = difference.kind === "missing_in_bitrix" ? "missing_in_bitrix" as const
       : difference.kind === "dismissed_in_bitrix" ? "dismissed_in_bitrix" as const
+        : difference.kind === "blacklisted_in_bitrix" ? "blacklisted_in_bitrix" as const
         : "mismatch" as const;
     const current = stateByEmployeeId.get(difference.localEmployeeId);
-    if (current) current.details.push(difference.details);
+    if (current) { current.details.push(difference.details); if (status === "blacklisted_in_bitrix") current.status = status; }
     else stateByEmployeeId.set(difference.localEmployeeId, { status, details: [difference.details] });
   }
   const checkedEmployeeIds = localEmployees.flatMap((employee) => employee.bitrix24Id ? [employee.id] : []);
@@ -103,7 +111,7 @@ export async function buildBitrixInspection(sourceSnapshot: BitrixEmployeeSnapsh
   const differences = rawDifferences.map((difference) => {
     const nextState = difference.localEmployeeId ? nextStates.get(difference.localEmployeeId) : null;
     const previous = difference.localEmployeeId ? existingByEmployeeId.get(difference.localEmployeeId) : null;
-    return { ...difference, acknowledged: Boolean(nextState && previous?.fingerprint === nextState.fingerprint && previous.acknowledgedAt) };
+    return { ...difference, acknowledged: Boolean(nextState && nextState.status !== "blacklisted_in_bitrix" && previous?.fingerprint === nextState.fingerprint && previous.acknowledgedAt) };
   });
   const activeDifferences = differences.filter((difference) => !difference.acknowledged);
   const differenceCounts = activeDifferences.reduce<Record<string, number>>((counts, difference) => {
@@ -127,7 +135,8 @@ export async function buildBitrixInspection(sourceSnapshot: BitrixEmployeeSnapsh
       compared: comparison.compared,
       matched: comparison.matched,
       differences: [...activeDifferences, ...differences.filter((difference) => difference.acknowledged)].slice(0, 100),
-      updatableEmployeeIds: bitrixReviewUpdateIds({ differences: activeDifferences }),
+      updatableEmployeeIds: bitrixReviewUpdateIds({ differences: activeDifferences.filter(difference => difference.kind === "blacklisted_in_bitrix"
+        || difference.bitrix24Id && localByBitrixId.get(difference.bitrix24Id)?.active === 1) }),
       totalDifferences: activeDifferences.length,
       differenceCounts,
       acknowledgedDifferences: differences.length - activeDifferences.length,
@@ -157,7 +166,7 @@ export async function createBitrixEmployee(sourceSnapshot: BitrixEmployeeSnapsho
   const source = selectBitrixEmployeesForImport(sourceSnapshot).find((employee) => employee.bitrix24Id === bitrix24Id);
   if (!source) throw new Error("Карточка Битрикс24 не найдена среди сотрудников выбранных стадий и проектов.");
   if (!source.fullName.trim()) throw new Error("В карточке Битрикс24 не заполнено ФИО сотрудника.");
-  if (source.availabilityStatus === "dismissed" || source.availabilityStatus === "deleted") {
+  if (source.availabilityStatus === "dismissed" || source.availabilityStatus === "deleted" || source.availabilityStatus === "blacklisted") {
     throw new Error("Уволенного или удалённого сотрудника нельзя добавить в активный справочник.");
   }
 
@@ -167,7 +176,7 @@ export async function createBitrixEmployee(sourceSnapshot: BitrixEmployeeSnapsho
   await validateEmployeeDirectoryValues(position.employmentType, position.department, position.position, projectSiteId);
 
   const localEmployees = await env.DB.prepare(`SELECT id, bitrix24_id AS "bitrix24Id", full_name AS "fullName"
-    FROM employees WHERE active = 1`).all<{ id: number; bitrix24Id: string | null; fullName: string }>();
+    FROM employees WHERE active = 1 OR bitrix24_id IS NOT NULL`).all<{ id: number; bitrix24Id: string | null; fullName: string }>();
   const linked = localEmployees.results.find((employee) => employee.bitrix24Id === bitrix24Id);
   if (linked) throw new Error(`Карточка Битрикс24 уже связана с сотрудником «${linked.fullName}».`);
   const sameName = localEmployees.results.find((employee) => normalizeBitrixText(employee.fullName) === normalizeBitrixText(source.fullName));
@@ -221,9 +230,45 @@ async function resolveBitrixEmployeeSites(source: BitrixEmployeeSnapshot) {
   return siteIds;
 }
 
+/** Applying a terminal status never replaces personnel data or report history. */
+async function archiveTerminalBitrixEmployeeRecord(source: BitrixEmployeeSnapshot, employeeId: number, bitrix24Id: string) {
+  const status = source.availabilityStatus === "blacklisted" ? "blacklisted" : "dismissed";
+  return env.DB.transaction(async db => {
+    const current = await db.prepare(`SELECT id, full_name AS "fullName", employment_type AS "employmentType", department, position,
+      bitrix24_stage AS "bitrix24Stage", availability_status AS "availabilityStatus"
+      FROM employees WHERE id = ? AND bitrix24_id = ? FOR UPDATE`).bind(employeeId, bitrix24Id).first<{
+        id: number; fullName: string; employmentType: string; department: string; position: string; bitrix24Stage: string; availabilityStatus: EmployeeAvailabilityStatus;
+      }>();
+    if (!current) throw new Error("Связанная карточка сотрудника изменилась. Выполните проверку ещё раз.");
+    if (current.availabilityStatus === "blacklisted" && status !== "blacklisted") {
+      throw new Error("Сотрудник находится в чёрном списке. Снять запрет на повторный приём можно только отдельной кадровой корректировкой.");
+    }
+    const updatedAt = new Date().toISOString();
+    await db.prepare(`UPDATE employees SET bitrix24_stage = ?, availability_status = ?, active = 0, site_id = NULL,
+      bitrix24_updated_at = ?, last_synced_at = ?, sync_error = NULL, sync_miss_count = 0
+      WHERE id = ? AND bitrix24_id = ?`).bind(source.stageName, status, source.sourceUpdatedAt, updatedAt, employeeId, bitrix24Id).run();
+    const statements = [db.prepare(`UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, CURRENT_DATE)
+      WHERE employee_id = ? AND active = 1`).bind(employeeId)];
+    if (current.bitrix24Stage !== source.stageName) {
+      statements.push(db.prepare("UPDATE employee_profile_versions SET valid_to = ? WHERE employee_id = ? AND valid_to IS NULL").bind(updatedAt, employeeId));
+      statements.push(db.prepare(`INSERT INTO employee_profile_versions
+        (employee_id, full_name, employment_type, department, position, bitrix24_stage, valid_from, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'bitrix24')`).bind(employeeId, current.fullName, current.employmentType, current.department, current.position, source.stageName, updatedAt));
+    }
+    if (current.availabilityStatus !== status) {
+      statements.push(db.prepare("UPDATE employee_availability_periods SET valid_to = ? WHERE employee_id = ? AND valid_to IS NULL").bind(updatedAt, employeeId));
+      statements.push(db.prepare("INSERT INTO employee_availability_periods (employee_id, status, valid_from, source) VALUES (?, ?, ?, 'bitrix24')").bind(employeeId, status, updatedAt));
+    }
+    statements.push(db.prepare("DELETE FROM bitrix24_employee_check_states WHERE employee_id = ?").bind(employeeId));
+    for (let offset = 0; offset < statements.length; offset += 100) await db.batch(statements.slice(offset, offset + 100));
+    return { id: employeeId, name: current.fullName };
+  });
+}
+
 async function updateBitrixEmployeeRecord(sourceSnapshot: BitrixEmployeeSnapshot[], employeeId: number, bitrix24Id: string) {
   const source = sourceSnapshot.find((employee) => employee.bitrix24Id === bitrix24Id);
   if (!source) throw new Error("Карточка сотрудника больше не найдена в Битрикс24.");
+  if (source.availabilityStatus === "blacklisted") return archiveTerminalBitrixEmployeeRecord(source, employeeId, bitrix24Id);
   if (!source.fullName || !source.employmentType || !source.department || !source.position) {
     throw new Error("В Битрикс24 не заполнены ФИО, тип, отдел или должность. Сначала заполните карточку Битрикс24.");
   }
@@ -233,12 +278,13 @@ async function updateBitrixEmployeeRecord(sourceSnapshot: BitrixEmployeeSnapshot
   }
   const current = await env.DB.prepare(`SELECT id, bitrix24_id AS "bitrix24Id", full_name AS "fullName",
       employment_type AS "employmentType", department, position, bitrix24_stage AS "bitrix24Stage",
-      availability_status AS "availabilityStatus"
-    FROM employees WHERE id = ? AND active = 1`).bind(employeeId).first<{
+      availability_status AS "availabilityStatus", active
+    FROM employees WHERE id = ?`).bind(employeeId).first<{
       id: number; bitrix24Id: string | null; fullName: string; employmentType: string; department: string; position: string;
-      bitrix24Stage: string; availabilityStatus: EmployeeAvailabilityStatus;
+      bitrix24Stage: string; availabilityStatus: EmployeeAvailabilityStatus; active: number;
     }>();
   if (!current || current.bitrix24Id !== bitrix24Id) throw new Error("Связанная карточка сотрудника изменилась. Выполните проверку ещё раз.");
+  if (!current.active) throw new Error("Сотрудник архивирован. Повторный приём требует отдельной кадровой корректировки.");
   await validateEmployeeDirectoryValues(source.employmentType, source.department, source.position, null);
   const duplicate = await env.DB.prepare("SELECT id FROM employees WHERE full_name = ? AND id <> ? AND active = 1").bind(source.fullName, employeeId).first();
   if (duplicate) throw new Error(`Сотрудник с ФИО «${source.fullName}» уже существует. Обновление остановлено, чтобы не создать дубль.`);
@@ -302,7 +348,7 @@ export async function updateSelectedBitrixEmployees(sourceSnapshot: BitrixEmploy
       check_state.status AS "checkStatus", check_state.acknowledged_at AS "acknowledgedAt"
     FROM employees e
     LEFT JOIN bitrix24_employee_check_states check_state ON check_state.employee_id = e.id
-    WHERE e.id = ANY(?) AND e.active = 1`).bind(employeeIds).all<{
+    WHERE e.id = ANY(?) AND (e.active = 1 OR check_state.status = 'blacklisted_in_bitrix')`).bind(employeeIds).all<{
       id: number; fullName: string; bitrix24Id: string | null; checkStatus: string | null; acknowledgedAt: string | null;
     }>();
   const rowById = new Map(rows.results.map((row) => [row.id, row]));
@@ -318,7 +364,8 @@ export async function updateSelectedBitrixEmployees(sourceSnapshot: BitrixEmploy
       failedEmployees.push({ id: employeeId, name: row.fullName, error: "Нет связи с карточкой Битрикс24." });
       continue;
     }
-    if (row.checkStatus !== "mismatch" || row.acknowledgedAt) {
+    const canArchiveBlacklist = row.checkStatus === "blacklisted_in_bitrix";
+    if (!canArchiveBlacklist && (row.checkStatus !== "mismatch" || row.acknowledgedAt)) {
       failedEmployees.push({ id: employeeId, name: row.fullName, error: "Нет активного расхождения, которое можно актуализировать." });
       continue;
     }
@@ -341,7 +388,12 @@ export async function deleteBitrixEmployee(sourceSnapshot: BitrixEmployeeSnapsho
   const bitrix24Id = payload.bitrix24Id?.trim() ?? "";
   if (!employeeId || !bitrix24Id) throw new Error("Сотрудник для удаления не указан.");
   const source = sourceSnapshot.find((employee) => employee.bitrix24Id === bitrix24Id);
-  if (source && source.availabilityStatus !== "dismissed" && source.availabilityStatus !== "deleted") {
+  if (source?.availabilityStatus === "dismissed") {
+    const deletedEmployee = await archiveTerminalBitrixEmployeeRecord(source, employeeId, bitrix24Id);
+    const updated = await buildBitrixInspection(sourceSnapshot);
+    return { ...updated.response, deletedEmployee };
+  }
+  if (source && source.availabilityStatus !== "deleted") {
     throw new Error("Карточка снова найдена среди действующих сотрудников Битрикс24. Удаление отменено — выполните проверку ещё раз.");
   }
   const current = await env.DB.prepare("SELECT full_name AS \"fullName\" FROM employees WHERE id = ? AND bitrix24_id = ? AND active = 1")
@@ -364,7 +416,7 @@ export async function deleteBitrixEmployee(sourceSnapshot: BitrixEmployeeSnapsho
 export async function linkBitrixEmployees(sourceSnapshot: BitrixEmployeeSnapshot[], requestedLinks: UserPayload["links"]) {
   const inspection = await buildBitrixInspection(sourceSnapshot);
   const sourceById = new Map(inspection.snapshot.map((employee) => [employee.bitrix24Id, employee]));
-  const localById = new Map(inspection.localEmployees.map((employee) => [employee.id, employee]));
+  const localById = new Map(inspection.localEmployees.filter(employee => employee.active === 1).map((employee) => [employee.id, employee]));
   const linkedByBitrixId = new Map(inspection.localEmployees.flatMap((employee) => employee.bitrix24Id ? [[employee.bitrix24Id, employee] as const] : []));
   const links = requestedLinks?.length
     ? requestedLinks.map((link) => ({ bitrix24Id: link.bitrix24Id?.trim() ?? "", employeeId: asPositiveInteger(link.employeeId) }))
@@ -376,6 +428,7 @@ export async function linkBitrixEmployees(sourceSnapshot: BitrixEmployeeSnapshot
     const source = sourceById.get(link.bitrix24Id);
     const local = link.employeeId ? localById.get(link.employeeId) : null;
     if (!source) throw new Error("Карточка Битрикс24 не найдена среди сотрудников выбранных стадий и проектов.");
+    if (["dismissed", "deleted", "blacklisted"].includes(source.availabilityStatus)) throw new Error("Уволенную или находящуюся в чёрном списке карточку нельзя связывать с активным сотрудником.");
     if (!local) throw new Error("Сотрудник для сопоставления не найден.");
     const alreadyLinked = linkedByBitrixId.get(source.bitrix24Id);
     if (alreadyLinked && alreadyLinked.id !== local.id) throw new Error(`Карточка Битрикс24 уже связана с сотрудником «${alreadyLinked.fullName}».`);

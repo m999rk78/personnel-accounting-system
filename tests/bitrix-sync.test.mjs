@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { BITRIX24_READ_ONLY_METHODS, classifyBitrixStage, compareBitrixEmployees, isBitrixEmployeeInImportScope, normalizeBitrixText, resolveBitrixFieldValues, suggestBitrixEmployeeLinks } from "../app/bitrix24Sync.ts";
+import { BITRIX24_READ_ONLY_METHODS, classifyBitrixStage, compareBitrixEmployees, fetchBitrixEmployeeSnapshot, isAvailabilityStatus, isBitrixEmployeeInImportScope, normalizeBitrixText, resolveBitrixFieldValues, selectLinkedBitrixEmployeesForReview, suggestBitrixEmployeeLinks } from "../app/bitrix24Sync.ts";
 
 test("Bitrix24 integration exposes only read methods", () => {
   assert.deepEqual(BITRIX24_READ_ONLY_METHODS, ["crm.item.fields", "crm.item.list", "crm.status.list"]);
@@ -20,11 +20,107 @@ test("classifyBitrixStage recognizes employee availability stages", () => {
   assert.equal(classifyBitrixStage("", "Ежегодный отпуск"), "vacation");
   assert.equal(classifyBitrixStage("", "На больничном"), "sick_leave");
   assert.equal(classifyBitrixStage("", "Уволен"), "dismissed");
+  assert.equal(classifyBitrixStage("", "Увольнение"), "dismissed");
+  assert.equal(classifyBitrixStage("", "Увольнения"), "dismissed");
+  assert.equal(classifyBitrixStage("", "Черный список"), "blacklisted");
+  assert.equal(classifyBitrixStage("", "  ЧЁРНЫЙ   СПИСОК  "), "blacklisted");
+  assert.equal(classifyBitrixStage("", "Черный список / уволенные"), "blacklisted");
+  assert.equal(classifyBitrixStage("", "Не в черном списке"), "unknown");
+  assert.equal(isAvailabilityStatus("blacklisted"), true);
   assert.equal(classifyBitrixStage("", "Проверка документов"), "unknown");
 });
 
 test("configured stage mapping takes priority and accepts an ID", () => {
   assert.equal(classifyBitrixStage("DT182_1:NEW", "На объекте", { "dt182_1:new": "intershift" }), "intershift");
+  assert.equal(classifyBitrixStage("DT182_1:BLACKLIST", "Завершённые", { "dt182_1:blacklist": "blacklisted" }), "blacklisted");
+});
+
+test("review follows linked employees into both termination stages without importing unrelated former employees", () => {
+  const scope = { stageKeys: ["Объекты и офисы"], projectKeys: ["НЗНП"] };
+  const item = (id, stageName, availabilityStatus, projectKeys = []) => ({
+    bitrix24Id: id, fullName: `Сотрудник ${id}`, employmentType: "ОПР", department: "УСР", position: "Монтажник",
+    stageId: id, stageName, availabilityStatus, projectKeys, sourceUpdatedAt: null,
+  });
+  const source = [
+    item("101", "Объекты и офисы", "on_site", ["НЗНП"]),
+    item("102", "Черный список", "blacklisted"),
+    item("103", "Увольнения", "dismissed"),
+    item("104", "Черный список", "blacklisted"),
+    item("105", "Увольнения", "dismissed"),
+    item("106", "Кандидаты", "unknown"),
+    item("107", "Объекты и офисы", "on_site", ["Другой проект"]),
+  ];
+  assert.deepEqual(selectLinkedBitrixEmployeesForReview(source, ["102", "103", "106", "107"], scope).map(item => item.bitrix24Id), ["101", "102", "103"]);
+  const terminalAllowlisted = { ...scope, stageKeys: [...scope.stageKeys, "Черный список", "Увольнения"] };
+  assert.deepEqual(selectLinkedBitrixEmployeesForReview(source, ["102", "103"], terminalAllowlisted).map(item => item.bitrix24Id), ["101", "102", "103"]);
+  assert.deepEqual(selectLinkedBitrixEmployeesForReview(source, [], terminalAllowlisted).map(item => item.bitrix24Id), ["101"]);
+});
+
+test("termination review is status-only, distinguishes blacklist and becomes matched after safe archival", () => {
+  const old = { bitrix24Id: "101", fullName: "Историческое ФИО", employmentType: "ОПР", department: "УСР", position: "Монтажник", bitrix24Stage: "Объекты и офисы", availabilityStatus: "on_site", active: 1, projectKeys: ["НЗНП"] };
+  for (const [availabilityStatus, stageName, kind] of [["blacklisted", "Черный список", "blacklisted_in_bitrix"], ["dismissed", "Увольнения", "dismissed_in_bitrix"]]) {
+    // HR fields may be cleared in a terminal Bitrix stage; this must not erase the local profile or block archiving.
+    const remote = { bitrix24Id: "101", fullName: "", employmentType: "", department: "", position: "", stageId: "FINAL", stageName, availabilityStatus, projectKeys: [], sourceUpdatedAt: null };
+    const review = compareBitrixEmployees([remote], [old], [remote]);
+    assert.deepEqual(review.differences.map(item => item.kind), [kind]);
+    assert.equal(review.differences[0].employeeName, old.fullName);
+    assert.match(review.differences[0].details, /уволен/i);
+    assert.equal(review.matched, 0);
+    assert.deepEqual(compareBitrixEmployees([remote], [{ ...old, availabilityStatus, bitrix24Stage: stageName, active: 0 }]), { compared: 1, matched: 1, differences: [] });
+    assert.deepEqual(compareBitrixEmployees([remote], [{ ...old, availabilityStatus, bitrix24Stage: stageName, active: 1 }]).differences.map(item => item.kind), [kind]);
+    assert.deepEqual(compareBitrixEmployees([], [old], [remote]).differences.map(item => item.kind), [kind]);
+    assert.equal(compareBitrixEmployees([remote], [], [remote]).differences.some(item => item.kind === "missing_locally"), false);
+  }
+});
+
+test("terminated Bitrix cards are never suggested for automatic or manual first linking", () => {
+  const employee = { bitrix24Id: "101", fullName: "Иванов Иван", employmentType: "ОПР", department: "УСР", position: "Монтажник", stageId: "FINAL", stageName: "Черный список", availabilityStatus: "blacklisted", projectKeys: [], sourceUpdatedAt: null };
+  const local = [{ id: 1, bitrix24Id: null, fullName: employee.fullName, employmentType: employee.employmentType, department: employee.department, position: employee.position }];
+  for (const availabilityStatus of ["blacklisted", "dismissed", "deleted"]) assert.deepEqual(suggestBitrixEmployeeLinks([{ ...employee, availabilityStatus }], local), []);
+});
+
+test("review does not offer implicit rehire when an archived blacklisted identity changes stage or disappears", () => {
+  const archived = { bitrix24Id: "101", fullName: "Тестовый сотрудник", employmentType: "ОПР", department: "УСР", position: "Монтажник", bitrix24Stage: "Черный список", availabilityStatus: "blacklisted", active: 0 };
+  const remote = { ...archived, stageId: "ON_SITE", stageName: "Объекты и офисы", availabilityStatus: "on_site", projectKeys: ["НЗНП"], sourceUpdatedAt: null };
+  assert.deepEqual(compareBitrixEmployees([remote], [archived]), { compared: 1, matched: 1, differences: [] });
+  assert.deepEqual(compareBitrixEmployees([], [archived], [remote]).differences, []);
+  assert.deepEqual(compareBitrixEmployees([], [archived], []).differences, []);
+  assert.deepEqual(suggestBitrixEmployeeLinks([remote], [archived]), []);
+});
+
+test("the actual read-only snapshot resolves both termination stages from crm.status.list", async t => {
+  const settings = {
+    BITRIX24_WEBHOOK_URL: "https://bitrix-fixture.invalid/rest/1/synthetic/",
+    BITRIX24_EMPLOYEE_ENTITY_TYPE_ID: "182", BITRIX24_EMPLOYEE_NAME_FIELD: "title",
+    BITRIX24_EMPLOYEE_TYPE_FIELD: "ufType", BITRIX24_EMPLOYEE_DEPARTMENT_FIELD: "ufDepartment",
+    BITRIX24_EMPLOYEE_POSITION_FIELD: "ufPosition", BITRIX24_EMPLOYEE_PROJECT_FIELD: "ufProject", BITRIX24_STAGE_STATUS_MAP: "{}",
+  };
+  const previous = new Map(Object.keys(settings).map(key => [key, process.env[key]]));
+  Object.assign(process.env, settings);
+  t.after(() => { for (const [key, value] of previous) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, request) => {
+    assert.equal(url.origin, "https://bitrix-fixture.invalid");
+    const method = url.pathname.split("/").at(-1).replace(/\.json$/, "");
+    calls.push(method); assert.ok(BITRIX24_READ_ONLY_METHODS.includes(method));
+    const params = JSON.parse(request.body);
+    let result;
+    if (method === "crm.item.fields") result = { fields: {} };
+    else if (method === "crm.item.list") result = { items: [
+      { id: 101, title: "Тестовый уволенный", stageId: "DT182_0:DISMISSED", categoryId: 0 },
+      { id: 102, title: "Тестовый чёрный список", stageId: "DT182_0:BLACKLIST", categoryId: 0 },
+    ] };
+    else { assert.equal(params.filter.ENTITY_ID, "DYNAMIC_182_STAGE_0"); result = [
+      { STATUS_ID: "DT182_0:DISMISSED", NAME: "Увольнения" },
+      { STATUS_ID: "DT182_0:BLACKLIST", NAME: "Чёрный список" },
+    ]; }
+    return Response.json({ result });
+  });
+  const snapshot = await fetchBitrixEmployeeSnapshot();
+  assert.deepEqual(snapshot.map(item => [item.bitrix24Id, item.stageName, item.availabilityStatus]), [
+    ["101", "Увольнения", "dismissed"], ["102", "Чёрный список", "blacklisted"],
+  ]);
+  assert.deepEqual(calls, ["crm.item.fields", "crm.item.list", "crm.status.list"]);
 });
 
 test("empty Bitrix enum value zero is not treated as a project", () => {

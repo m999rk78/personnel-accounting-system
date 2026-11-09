@@ -38,9 +38,11 @@ export type GridEmployee = {
   department: string;
   position: string;
   source: string;
+  availabilityStatus?: string;
+  bitrix24Stage?: string;
   siteId: number | null;
   siteName: string | null;
-  bitrixCheckStatus?: "mismatch" | "missing_in_bitrix" | "dismissed_in_bitrix" | null;
+  bitrixCheckStatus?: "mismatch" | "missing_in_bitrix" | "dismissed_in_bitrix" | "blacklisted_in_bitrix" | null;
   bitrixCheckDetails?: string | null;
   bitrixCheckAcknowledged?: number | boolean;
 };

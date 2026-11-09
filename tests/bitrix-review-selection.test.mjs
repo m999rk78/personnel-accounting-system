@@ -8,6 +8,10 @@ const changed = id => ({ kind: "changed", employeeName: `Сотрудник ${id
 test("review selection excludes creation, dismissal, missing cards and accepted warnings", () => {
   assert.deepEqual(bitrixReviewUpdateIds({ differences: [changed(1), changed(1), { ...changed(2), acknowledged: true }, { ...changed(3), kind: "dismissed_in_bitrix" }, { ...changed(4), kind: "missing_in_bitrix" }, { ...changed(5), kind: "missing_locally" }, { ...changed(6), bitrix24Id: undefined }, { ...changed(7), localEmployeeId: undefined }] }), [1]);
 });
+test("review selection includes blacklist status application without creating or deleting a card", () => {
+  const blacklisted = { ...changed(8), kind: "blacklisted_in_bitrix" };
+  assert.deepEqual(bitrixReviewUpdateIds({ differences: [changed(1), blacklisted, { ...blacklisted, acknowledged: true, localEmployeeId: 9 }, { ...blacklisted, bitrix24Id: undefined, localEmployeeId: 10 }] }), [1, 8]);
+});
 test("select all uses the full server ID set, not the 100-row preview", () => {
   const ids = Array.from({ length: 451 }, (_, index) => index + 1);
   assert.deepEqual(bitrixReviewUpdateIds({ differences: ids.slice(0, 100).map(changed), updatableEmployeeIds: [...ids, 1, -1, 0, 1.5] }), ids);

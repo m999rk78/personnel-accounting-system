@@ -67,7 +67,7 @@ export async function handlePOST(request: Request) {
       const employeeId = asPositiveInteger(payload.employeeId);
       if (!employeeId) throw new Error("Сотрудник не указан.");
       const result = await env.DB.prepare(`UPDATE bitrix24_employee_check_states SET acknowledged_at = CURRENT_TIMESTAMP,
-        acknowledged_by_user_id = ? WHERE employee_id = ?`).bind(authUser.id, employeeId).run();
+        acknowledged_by_user_id = ? WHERE employee_id = ? AND status <> 'blacklisted_in_bitrix'`).bind(authUser.id, employeeId).run();
       if (!result.meta.changes) throw new Error("Предупреждение уже неактуально. Выполните проверку ещё раз.");
       return Response.json({ ok: true, employeeId });
     }
@@ -78,7 +78,7 @@ export async function handlePOST(request: Request) {
       if (employeeIds.length > 200) throw new Error("За один раз можно подтвердить не более 200 предупреждений.");
       const acknowledged = await env.DB.prepare(`UPDATE bitrix24_employee_check_states
         SET acknowledged_at = CURRENT_TIMESTAMP, acknowledged_by_user_id = ?
-        WHERE employee_id = ANY(?) AND acknowledged_at IS NULL
+        WHERE employee_id = ANY(?) AND acknowledged_at IS NULL AND status <> 'blacklisted_in_bitrix'
           AND EXISTS (SELECT 1 FROM employees e WHERE e.id = bitrix24_employee_check_states.employee_id AND e.active = 1)
         RETURNING employee_id AS "employeeId"`).bind(authUser.id, employeeIds).all<{ employeeId: number }>();
       if (!acknowledged.results.length) throw new Error("Выбранные предупреждения уже неактуальны или уже подтверждены.");

@@ -14,6 +14,7 @@ import { useEmployeeGridPreferences } from "./useEmployeeGridPreferences";
 import { useWorkspaceTableOrder } from "./TableRowMoves";
 import { gridTheme } from "./gridTheme";
 import { AgTablePageScroll } from "./TablePageScroll";
+import { employeeBitrixStatus } from "./bitrixEmployeeStatus";
 import "./employeeSpreadsheet.css";
 
 type EmployeeTableRow = { rowKey: string; kind: "entry" | "edit" | "draft"; employee?: GridEmployee; draft?: GridEmployeeDraft } & Partial<Record<"fullName" | "employmentType" | "department" | "position" | "siteName" | "bitrixCheckLabel", string>>;
@@ -169,10 +170,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
   const valueFor = useCallback((row: EmployeeTableRow, field: string): string => {
     const draft = row.employee ? latest.current.draftsById.get(row.employee.id) : latest.current.draftsByKey.get(row.draft?.key ?? "");
     if (field === "bitrixCheckLabel") {
-      const employee = row.employee;
-      if (!employee?.bitrixCheckStatus) return "Нет предупреждений";
-      if (employee.bitrixCheckAcknowledged) return "Предупреждение подтверждено";
-      return employee.bitrixCheckStatus === "dismissed_in_bitrix" ? "Уволен в Битрикс24" : employee.bitrixCheckStatus === "missing_in_bitrix" ? "Отсутствует в Битрикс24" : "Не совпадает с Битрикс24";
+      return employeeBitrixStatus(row.employee).label;
     }
     if (field === "siteName") return draft ? latest.current.sites.find(site => site.id === Number(draft.projectSiteId))?.name ?? "Без объекта" : row.employee?.siteName ?? "Без объекта";
     return draft?.[field as keyof GridEmployeeDraft]?.toString() ?? row.employee?.[field as keyof GridEmployee]?.toString() ?? "";
@@ -194,10 +192,8 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     return <span className="ag-editable-cell-display" title={value}><span>{value}</span>{field !== "fullName" && canWrite(row, field) && <button type="button" className="ag-editable-cell-menu" aria-label={`Открыть список: ${params.colDef?.headerName}`} onClick={event => { event.stopPropagation(); openEditor(row, field); }}><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" /></svg></button>}</span>;
   }, [activeEditor, applyBatch, canWrite, openEditor]);
   const bitrixRenderer = useCallback((params: CustomCellRendererProps<EmployeeTableRow>) => {
-    const employee = params.data?.employee, label = String(params.value ?? "");
-    if (!employee?.bitrixCheckStatus) return <span className="bitrix-grid-status neutral">{label}</span>;
-    const status = employee.bitrixCheckAcknowledged ? "acknowledged" : employee.bitrixCheckStatus === "dismissed_in_bitrix" ? "dismissed" : employee.bitrixCheckStatus === "missing_in_bitrix" ? "missing" : "mismatch";
-    return <div className="bitrix-grid-check" title={employee.bitrixCheckDetails || label}><span className={`bitrix-grid-status ${status}`}>{label}</span>{employee.bitrixCheckDetails && <span className="bitrix-grid-details">{employee.bitrixCheckDetails}</span>}</div>;
+    const { label, tone, details } = employeeBitrixStatus(params.data?.employee);
+    return <div className="bitrix-grid-check" title={details || label}><span className={`bitrix-grid-status ${tone}`}>{label}</span>{details && <span className="bitrix-grid-details">{details}</span>}</div>;
   }, []);
   const columns = useMemo<ColDef<EmployeeTableRow>[]>(() => [
     { field: "fullName", headerName: "ФИО", pinned: "left", lockPinned: true, initialWidth: 250, minWidth: 180, cellRenderer: editableRenderer },
@@ -228,7 +224,7 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     rowHeight={44} headerHeight={46} animateRows={false} postSortRows={keepNewRowsFirst} loading={props.loading}
     suppressHorizontalScroll scrollbarWidth={0}
     spreadsheetToolbar={false} showSortSummary={false} rowOrderAutoSwitchSort preserveSavedSort={preferences.hasSavedSort} rowOrderBlocked={Boolean(activeEditor) || props.drafts.length > 0}
-    rowClassRules={{ "editable-row": params => Boolean(params.data?.draft), "bitrix-mismatch-row": params => params.data?.employee?.bitrixCheckStatus === "mismatch" && !params.data.employee.bitrixCheckAcknowledged, "bitrix-missing-row": params => params.data?.employee?.bitrixCheckStatus === "missing_in_bitrix" && !params.data.employee.bitrixCheckAcknowledged, "bitrix-dismissed-row": params => params.data?.employee?.bitrixCheckStatus === "dismissed_in_bitrix" && !params.data.employee.bitrixCheckAcknowledged }}
+    rowClassRules={{ "editable-row": params => Boolean(params.data?.draft), "bitrix-mismatch-row": params => params.data?.employee?.bitrixCheckStatus === "mismatch" && !params.data.employee.bitrixCheckAcknowledged, "bitrix-missing-row": params => params.data?.employee?.bitrixCheckStatus === "missing_in_bitrix" && !params.data.employee.bitrixCheckAcknowledged, "bitrix-dismissed-row": params => params.data?.employee?.bitrixCheckStatus === "dismissed_in_bitrix" && !params.data.employee.bitrixCheckAcknowledged, "bitrix-blacklisted-row": params => params.data?.employee?.bitrixCheckStatus === "blacklisted_in_bitrix" && !params.data.employee.bitrixCheckAcknowledged }}
     rowSelection={rowSelection} selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true }}
     onGridReady={event => { gridApi.current = event.api; setPageApi(event.api); preferences.attach(event.api); reportVisibleRows(event.api); }} onColumnResized={preferences.onColumnResized}
     onModelUpdated={event => reportVisibleRows(event.api)} onFilterChanged={event => reportVisibleRows(event.api)} onSortChanged={event => { preferences.onSortChanged(); reportVisibleRows(event.api); }}

@@ -1,4 +1,4 @@
-export const EMPLOYEE_AVAILABILITY_STATUSES = ["on_site", "unassigned", "transfer", "intershift", "vacation", "sick_leave", "dismissed", "out_of_scope", "deleted", "unknown"] as const;
+export const EMPLOYEE_AVAILABILITY_STATUSES = ["on_site", "unassigned", "transfer", "intershift", "vacation", "sick_leave", "dismissed", "blacklisted", "out_of_scope", "deleted", "unknown"] as const;
 export type EmployeeAvailabilityStatus = typeof EMPLOYEE_AVAILABILITY_STATUSES[number];
 
 export type BitrixEmployeeSnapshot = {
@@ -39,7 +39,8 @@ export function classifyBitrixStage(stageId: string, stageName: string, configur
   const normalizedName = normalizeBitrixText(stageName);
   const configuredStatus = configured[normalizedId] ?? configured[normalizedName];
   if (configuredStatus) return configuredStatus;
-  if (/уволен|увольнен|увольнение/.test(normalizedName)) return "dismissed";
+  if (/^черный список(?:\s|$)/.test(normalizedName)) return "blacklisted";
+  if (/уволен|увольнен|увольнени/.test(normalizedName)) return "dismissed";
   if (/перемещ/.test(normalizedName)) return "transfer";
   if (/^мо\s*\/\s*о$|межобъект|ожидани.*объект|без объект/.test(normalizedName)) return "intershift";
   if (/межвахт/.test(normalizedName)) return "intershift";
@@ -79,6 +80,16 @@ export function selectBitrixEmployeesForImport(employees: BitrixEmployeeSnapshot
   return employees.filter((employee) => isBitrixEmployeeInImportScope(employee, scope));
 }
 
+export function selectLinkedBitrixEmployeesForReview(employees: BitrixEmployeeSnapshot[], linkedBitrixIds: Iterable<string>, scope = configuredBitrixEmployeeImportScope()) {
+  const linkedIds = new Set(linkedBitrixIds);
+  return employees.filter((employee) => {
+    // First-import scope must not hide a later dismissal of an already linked employee.
+    // Unlinked former employees are never offered as new hires, even if a terminal stage is allowlisted.
+    if (["dismissed", "blacklisted", "deleted"].includes(employee.availabilityStatus)) return linkedIds.has(employee.bitrix24Id);
+    return isBitrixEmployeeInImportScope(employee, scope);
+  });
+}
+
 export type LocalBitrixEmployeeSnapshot = {
   bitrix24Id: string;
   fullName: string;
@@ -86,12 +97,14 @@ export type LocalBitrixEmployeeSnapshot = {
   department: string;
   position: string;
   bitrix24Stage: string;
+  availabilityStatus?: EmployeeAvailabilityStatus;
+  active?: number | boolean;
   projectKeys?: string[];
   projectAliases?: string[];
 };
 
 export type BitrixEmployeeDifference = {
-  kind: "missing_locally" | "changed" | "outside_scope" | "missing_in_bitrix" | "dismissed_in_bitrix" | "incomplete" | "unknown_stage";
+  kind: "missing_locally" | "changed" | "outside_scope" | "missing_in_bitrix" | "dismissed_in_bitrix" | "blacklisted_in_bitrix" | "incomplete" | "unknown_stage";
   employeeName: string;
   details: string;
   bitrix24Id?: string;
@@ -128,16 +141,42 @@ function projectsMatch(sourceKeys: string[], localKeys: string[]) {
   return [...source].some((key) => local.has(key));
 }
 
+function terminatedEmployeeDifference(employee: BitrixEmployeeSnapshot, name: string): BitrixEmployeeDifference {
+  return employee.availabilityStatus === "blacklisted"
+    ? { kind: "blacklisted_in_bitrix", employeeName: name, details: `Сотрудник уволен и находится в чёрном списке Битрикс24${employee.stageName ? ` — стадия «${employee.stageName}»` : ""}. Добавление в новые отчёты и повторный приём запрещены. История отчётов сохранится.`, bitrix24Id: employee.bitrix24Id }
+    : { kind: "dismissed_in_bitrix", employeeName: name, details: `В Битрикс24 сотрудник отмечен как уволенный${employee.stageName ? ` — стадия «${employee.stageName}»` : ""}.`, bitrix24Id: employee.bitrix24Id };
+}
+
+function terminatedEmployeeMatches(source: BitrixEmployeeSnapshot, local: LocalBitrixEmployeeSnapshot) {
+  return local.availabilityStatus === source.availabilityStatus && !local.active
+    && normalizeBitrixText(local.bitrix24Stage) === normalizeBitrixText(source.stageName);
+}
+
 export function compareBitrixEmployees(source: BitrixEmployeeSnapshot[], local: LocalBitrixEmployeeSnapshot[], fullSource = source) {
   const localById = new Map(local.map((employee) => [employee.bitrix24Id, employee]));
   const selectedIds = new Set(source.map((employee) => employee.bitrix24Id).filter(Boolean));
   const sourceIds = new Set(fullSource.map((employee) => employee.bitrix24Id).filter(Boolean));
   const fullSourceById = new Map(fullSource.map((employee) => [employee.bitrix24Id, employee]));
   const differences: BitrixEmployeeDifference[] = [];
+  let compared = source.length;
   let matched = 0;
 
   for (const employee of source) {
     const name = employee.fullName || `ID ${employee.bitrix24Id || "не указан"}`;
+    const existing = localById.get(employee.bitrix24Id);
+    if (existing?.availabilityStatus === "blacklisted" && (existing.active === 0 || existing.active === false)
+      && employee.availabilityStatus !== "blacklisted") {
+      // A later source-stage change cannot implicitly rehire an employee from the blacklist.
+      matched += 1;
+      continue;
+    }
+    if (["dismissed", "blacklisted", "deleted"].includes(employee.availabilityStatus)) {
+      if (!existing) continue;
+      // Termination is a status-only reconciliation: incomplete or changed HR fields must not erase the historical profile.
+      if (terminatedEmployeeMatches(employee, existing)) matched += 1;
+      else differences.push(terminatedEmployeeDifference(employee, existing.fullName || name));
+      continue;
+    }
     const missingFields = [
       [employee.fullName, "ФИО"],
       [employee.employmentType, "тип"],
@@ -153,7 +192,6 @@ export function compareBitrixEmployees(source: BitrixEmployeeSnapshot[], local: 
       differences.push({ kind: "unknown_stage", employeeName: name, details: `Стадия «${employee.stageName || employee.stageId || "не указана"}» не распознана.`, bitrix24Id: employee.bitrix24Id });
       hasDifference = true;
     }
-    const existing = localById.get(employee.bitrix24Id);
     if (!existing) {
       differences.push({ kind: "missing_locally", employeeName: name, details: "Связанной карточки нет в справочнике системы.", bitrix24Id: employee.bitrix24Id });
       continue;
@@ -179,15 +217,20 @@ export function compareBitrixEmployees(source: BitrixEmployeeSnapshot[], local: 
 
   for (const employee of local) {
     if (selectedIds.has(employee.bitrix24Id)) continue;
+    if (employee.availabilityStatus === "blacklisted" && (employee.active === 0 || employee.active === false)) continue;
     const sourceEmployee = fullSourceById.get(employee.bitrix24Id);
-    differences.push(sourceEmployee?.availabilityStatus === "dismissed" || sourceEmployee?.availabilityStatus === "deleted"
-      ? { kind: "dismissed_in_bitrix", employeeName: employee.fullName || `ID ${employee.bitrix24Id}`, details: `В Битрикс24 сотрудник отмечен как уволенный${sourceEmployee.stageName ? ` — стадия «${sourceEmployee.stageName}»` : ""}.`, bitrix24Id: employee.bitrix24Id }
-      : sourceIds.has(employee.bitrix24Id)
+    if (sourceEmployee && ["dismissed", "blacklisted", "deleted"].includes(sourceEmployee.availabilityStatus)) {
+      compared += 1;
+      if (terminatedEmployeeMatches(sourceEmployee, employee)) matched += 1;
+      else differences.push(terminatedEmployeeDifference(sourceEmployee, employee.fullName || `ID ${employee.bitrix24Id}`));
+      continue;
+    }
+    differences.push(sourceIds.has(employee.bitrix24Id)
         ? { kind: "outside_scope", employeeName: employee.fullName || `ID ${employee.bitrix24Id}`, details: "Карточка есть в Битрикс24, но больше не входит в выбранные стадии или проекты.", bitrix24Id: employee.bitrix24Id }
         : { kind: "missing_in_bitrix", employeeName: employee.fullName || `ID ${employee.bitrix24Id}`, details: "Связанная карточка больше не найдена в Битрикс24.", bitrix24Id: employee.bitrix24Id });
   }
 
-  return { compared: source.length, matched, differences };
+  return { compared, matched, differences };
 }
 
 export function suggestBitrixEmployeeLinks(source: BitrixEmployeeSnapshot[], local: BitrixLinkLocalEmployee[]) {
@@ -201,6 +244,7 @@ export function suggestBitrixEmployeeLinks(source: BitrixEmployeeSnapshot[], loc
   }
   const suggestions: BitrixEmployeeLinkSuggestion[] = [];
   for (const employee of source) {
+    if (["dismissed", "blacklisted", "deleted"].includes(employee.availabilityStatus)) continue;
     if (!employee.bitrix24Id || linkedBitrixIds.has(employee.bitrix24Id)) continue;
     const candidates = unlinkedByName.get(normalizeBitrixText(employee.fullName)) ?? [];
     const exactCandidates = candidates.filter((candidate) =>

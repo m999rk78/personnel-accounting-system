@@ -6,13 +6,13 @@ import {
   assertCanSavePersonnelReport, assertPersonnelReportHours, assertPersonnelReportOwner,
   assertPersonnelReportRevision, assertPersonnelReportSiteAccess, canReviewPersonnelReport, canViewPendingReportsFor,
   completePersonnelReportRows, nextPersonnelReportStatus, normalizePersonnelReportRows,
-  PersonnelReportError, validPersonnelReportDate, personnelReportRowChanged, inspectPersonnelReportRows,
+  PersonnelReportError, validPersonnelReportDate, personnelReportRowChanged, inspectPersonnelReportRows, personnelReportEmployeeRestriction,
   collectPersonnelReportHourIssues, type NormalizedPersonnelReportRow,
 } from "./personnelReportWorkflow";
 
 type Executor = Pick<PostgresDatabase, "prepare" | "batch" | "readBatch">;
 type Header = Omit<PersonnelReport, "rows">;
-type Employee = { id: number; fullName: string; position: string; employmentType: string; department: string };
+type Employee = { id: number; fullName: string; position: string; employmentType: string; department: string; availabilityStatus: string | null; bitrixCheckStatus: string | null };
 type RowSnapshots = { position: string; employeeName: string; employmentType: string; department: string; masterName: string };
 
 // The same additive tables are created by migration 0019 in production. Keeping
@@ -164,10 +164,15 @@ export async function listPersonnelReports(db: Executor, user: AuthUser, siteId:
 async function inspectReferences(db: Executor, siteId: number, rows: NormalizedPersonnelReportRow[], historical: ReadonlyMap<number, PersonnelReportRow> = new Map()) {
   const employeeIds = [...new Set(rows.flatMap((row) => row.employeeId ? [row.employeeId] : []))];
   const employees = await db.prepare(`SELECT employee.id, employee.full_name AS fullName, employee.position,
-    employee.employment_type AS employmentType, employee.department FROM employees employee
-    WHERE employee.id = ANY(?) AND employee.active = 1 AND EXISTS (
+    employee.employment_type AS employmentType, employee.department, employee.availability_status AS availabilityStatus,
+    check_state.status AS bitrixCheckStatus FROM employees employee
+    LEFT JOIN bitrix24_employee_check_states check_state ON check_state.employee_id = employee.id
+    WHERE employee.id = ANY(?) AND (employee.active = 1 AND EXISTS (
       SELECT 1 FROM employee_project_assignments assignment WHERE assignment.employee_id = employee.id AND assignment.site_id = ? AND assignment.active = 1
-    )`).bind(employeeIds, siteId).all<Employee>();
+    ) OR (employee.availability_status IN ('blacklisted', 'dismissed', 'deleted')
+      OR check_state.status IN ('blacklisted_in_bitrix', 'dismissed_in_bitrix')) AND EXISTS (
+        SELECT 1 FROM employee_project_assignments membership WHERE membership.employee_id = employee.id AND membership.site_id = ?
+      ))`).bind(employeeIds, siteId, siteId).all<Employee>();
   const byEmployee = new Map(employees.results.map((employee) => [employee.id, employee]));
   const fields = ["shiftId", "zoneId", "mainWorkTypeId", "subworkTypeId", "masterId"] as const;
   const tables = ["shifts", "zones", "main_work_types", "subwork_types", "masters"] as const;
@@ -182,9 +187,11 @@ async function inspectReferences(db: Executor, siteId: number, rows: NormalizedP
     const sameMaster = Boolean(previous?.masterId && previous.masterId === row.masterId);
     const sameWorkPair = Boolean(previous?.mainWorkTypeId && previous.mainWorkTypeId === row.mainWorkTypeId && previous.subworkTypeId === row.subworkTypeId);
     const employee = row.employeeId ? byEmployee.get(row.employeeId) : null;
+    const restriction = !sameEmployee ? personnelReportEmployeeRestriction(employee) : null;
     const add = (code: string, message: string) => issues.push({ code, message: `Строка ${index + 1}: ${message}`, rowNumbers: [index + 1], ...(row.employeeId ? { employeeId: row.employeeId } : {}), ...(employee ? { employeeName: employee.fullName } : {}) });
     if (row.subworkTypeId && !sameWorkPair && (!row.mainWorkTypeId || subworkParents.get(row.subworkTypeId) !== row.mainWorkTypeId)) add("INVALID_WORK_HIERARCHY", "подвид не относится к выбранному виду работы.");
-    if (row.employeeId && !sameEmployee && (!employee || !employee.position || employee.employmentType.trim().toLocaleUpperCase("ru-RU") !== "ОПР")) {
+    if (restriction) add(restriction.code, restriction.message);
+    if (row.employeeId && !sameEmployee && !restriction && (!employee || !employee.position || employee.employmentType.trim().toLocaleUpperCase("ru-RU") !== "ОПР")) {
       add("INVALID_EMPLOYEE", "выберите действующего сотрудника ОПР с должностью, назначенного на проект.");
     }
     const labels = ["Смена", "Зона", "Вид работы", "Подвид работы", "Мастер"];
@@ -201,6 +208,12 @@ async function inspectReferences(db: Executor, siteId: number, rows: NormalizedP
 }
 
 async function validateReferences(db: Executor, siteId: number, rows: NormalizedPersonnelReportRow[], historical: ReadonlyMap<number, PersonnelReportRow> = new Map()): Promise<RowSnapshots[]> {
+  const employeeIds = [...new Set(rows.flatMap(row => row.employeeId ? [row.employeeId] : []))];
+  if (employeeIds.length) {
+    // Lock before the reference query so a preceding archive commits before its
+    // fresh READ COMMITTED snapshot, and a later archive waits for this save.
+    await db.prepare("SELECT employee.id FROM employees employee WHERE employee.id = ANY(?) ORDER BY employee.id FOR SHARE OF employee").bind(employeeIds).all();
+  }
   const result = await inspectReferences(db, siteId, rows, historical);
   if (result.issues.length) throw new PersonnelReportError(result.issues[0].message, 400, result.issues[0].code, { issues: result.issues });
   return result.snapshots;

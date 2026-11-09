@@ -7,7 +7,7 @@ export type Option = { id: number; name: string; mainWorkTypeId?: number | null;
 
 export type Site = Option & { code: string; timezone: string; };
 
-export type Employee = { id: number; sortOrder?: number; bitrix24Id?: string | null; fullName: string; employmentType: string; department: string; position: string; source: string; bitrix24Stage: string; availabilityStatus: string; syncError: string | null; lastSyncedAt?: string | null; siteId: number | null; siteName: string | null; projectCodes?: string | null; bitrixCheckStatus?: "mismatch" | "missing_in_bitrix" | "dismissed_in_bitrix" | null; bitrixCheckDetails?: string | null; bitrixCheckAcknowledged?: number | boolean; };
+export type Employee = { id: number; sortOrder?: number; bitrix24Id?: string | null; fullName: string; employmentType: string; department: string; position: string; source: string; bitrix24Stage: string; availabilityStatus: string; syncError: string | null; lastSyncedAt?: string | null; siteId: number | null; siteName: string | null; projectCodes?: string | null; bitrixCheckStatus?: "mismatch" | "missing_in_bitrix" | "dismissed_in_bitrix" | "blacklisted_in_bitrix" | null; bitrixCheckDetails?: string | null; bitrixCheckAcknowledged?: number | boolean; };
 
 export type PositionRecord = { id: number; employmentType: string; department: string; position: string; };
 
@@ -23,7 +23,7 @@ export type DataSet = {
   bitrix24Cooldowns?: Bitrix24Cooldowns;
 };
 
-export type BitrixCheckDifference = { kind: "missing_locally" | "changed" | "outside_scope" | "missing_in_bitrix" | "dismissed_in_bitrix" | "incomplete" | "unknown_stage"; employeeName: string; details: string; bitrix24Id?: string; localEmployeeId?: number; acknowledged?: boolean; suggestedEmployeeIds?: number[]; sourceEmploymentType?: string; sourceDepartment?: string; sourcePosition?: string; sourceProjectKeys?: string[]; };
+export type BitrixCheckDifference = { kind: "missing_locally" | "changed" | "outside_scope" | "missing_in_bitrix" | "dismissed_in_bitrix" | "blacklisted_in_bitrix" | "incomplete" | "unknown_stage"; employeeName: string; details: string; bitrix24Id?: string; localEmployeeId?: number; acknowledged?: boolean; suggestedEmployeeIds?: number[]; sourceEmploymentType?: string; sourceDepartment?: string; sourcePosition?: string; sourceProjectKeys?: string[]; };
 
 export type BitrixDifferenceCounts = Partial<Record<BitrixCheckDifference["kind"], number>>;
 
