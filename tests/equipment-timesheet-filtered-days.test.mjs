@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
+import { equipmentDisplayName as unitTitle } from "../app/equipmentDisplayName.ts";
 
 const source = await readFile(new URL("../app/EquipmentAccountingView.tsx", import.meta.url), "utf8");
 const ast = ts.createSourceFile("EquipmentAccountingView.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -17,7 +18,7 @@ function bind(code, result, environment = {}) {
   const compiled = ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
   return new Function(...Object.keys(environment), `${compiled}\nreturn ${result};`)(...Object.values(environment));
 }
-const helpers = bind(["equipmentCellKey", "formatEquipmentHours", "parseEquipmentClipboardHours", "unitTitle"].map(declaration).join("\n"), "{equipmentCellKey,formatEquipmentHours,parseEquipmentClipboardHours,unitTitle}");
+const helpers = bind(["equipmentCellKey", "formatEquipmentHours", "parseEquipmentClipboardHours"].map(declaration).join("\n"), "{equipmentCellKey,formatEquipmentHours,parseEquipmentClipboardHours,unitTitle}", { unitTitle });
 const clipboard = nodes.find(node => ts.isCallExpression(node) && node.expression.getText(ast) === "useTimesheetClipboard").arguments[0];
 function clipboardCallback(name, environment) {
   const property = clipboard.properties.find(property => property.name?.getText(ast) === name);

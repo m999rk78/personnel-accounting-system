@@ -17,6 +17,7 @@ import { openExcelExportPreview } from "./excelExportPreviewStore";
 import { createEquipmentPlacementTemplateXlsx, createTableXlsx, parseEquipmentEntriesXlsx, parseEquipmentRegistryXlsx, type EquipmentPlacementExportRow } from "./placementXlsx";
 import { downloadExcelFile, excelFileName, excelRowsInOrder } from "./excelFiles";
 import { equipmentExcelName } from "./equipmentExcel";
+import { equipmentDisplayName as unitTitle } from "./equipmentDisplayName";
 import { TimesheetFilterableHeading, TimesheetFiltersProvider } from "./TimesheetColumnFilter";
 import { useTimesheetFilters, type TimesheetFilterColumn } from "./useTimesheetFilters";
 import { equipmentTimesheetDayPresets, equipmentTimesheetFilterValue, matchesEquipmentTimesheetDayPreset } from "./equipmentTimesheetFilters";
@@ -358,10 +359,6 @@ function normalize(value: string) {
 
 function isDowntime(entry: Pick<EquipmentEntry, "subworkTypeName">) {
   return normalize(entry.subworkTypeName).includes("простой");
-}
-
-function unitTitle(unit: Pick<EquipmentUnit, "equipmentType" | "brand" | "model" | "registrationNumber">) {
-  return [unit.equipmentType, unit.brand, unit.model, unit.registrationNumber && unit.registrationNumber !== "-" ? `• ${unit.registrationNumber}` : ""].filter(Boolean).join(" ");
 }
 
 function equipmentCellKey(equipmentId: number, workDate: string) {
@@ -1719,7 +1716,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         </tr><tr>{visibleMonthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; const dateObject = new Date(`${date}T00:00:00Z`); const weekend = [0, 6].includes(dateObject.getUTCDay()); const weekday = WEEKDAY_FORMATTER.format(dateObject).replace(".", ""); return <th key={day} className={[weekend ? "weekend" : "", date === today ? "today" : "", date > today ? "future" : ""].filter(Boolean).join(" ")}><TimesheetFilterableHeading columnId={date} compact label={`${day} ${weekday}`}><span>{day}</span><small>{weekday}</small></TimesheetFilterableHeading>{monthColumnResize.handle(`day-${day}`, `${day} ${weekday}`)}</th>; })}</tr></thead>
         <tbody>{monthViewport.top > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} style={{ height: monthViewport.top }} /></tr>}{monthRows.length ? monthRows.slice(monthViewport.start, monthViewport.end).map((row, offset) => { const index = monthViewport.start + offset; return <tr key={row.unit.id} {...monthRowMoves.rowProps(row.unit.id)} data-virtual-row={index} aria-rowindex={index + 3}>
           <td className={`timesheet-sticky equipment-number-column ${timesheetClipboardCellClass(index, -3)}`} {...timesheetClipboardCellHandlers(index, -3)}>{monthRowMoves.handle(row.unit.id, unitTitle(row.unit), index + 1)}</td>
-          <th scope="row" className={`timesheet-sticky equipment-machine-column ${timesheetClipboardCellClass(index, -2)}`} {...timesheetClipboardCellHandlers(index, -2)} title={unitTitle(row.unit)}><span>{unitTitle(row.unit)}</span><small>{row.unit.registrationNumber || "Номер не указан"}</small></th>
+          <th scope="row" className={`timesheet-sticky equipment-machine-column ${timesheetClipboardCellClass(index, -2)}`} {...timesheetClipboardCellHandlers(index, -2)} title={unitTitle(row.unit)}><span>{unitTitle(row.unit)}</span></th>
           <td className={`timesheet-sticky equipment-organization-column ${timesheetClipboardCellClass(index, -1)}`} {...timesheetClipboardCellHandlers(index, -1)} title={row.unit.organization}>{row.unit.organization}</td>{visibleMonthDays.map((day, columnIndex) => {
           const date = `${month}-${String(day).padStart(2, "0")}`;
           const value = row.byDate.get(date);

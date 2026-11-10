@@ -912,12 +912,26 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
           body.current?.focus({ preventScroll: true });
         }
       }
+    }} onClickCapture={(event) => {
+      const target = event.target;
       if (!(target instanceof Element) || !target.closest(".ag-editable-cell-menu")) return;
       const cell = target.closest<HTMLElement>(".ag-cell[col-id]");
       const row = cell?.closest<HTMLElement>(".ag-row[row-index]");
       const columnId = cell?.getAttribute("col-id");
       const rowIndex = Number(row?.getAttribute("row-index"));
-      if (columnId && Number.isInteger(rowIndex)) rememberCellUndo(rowIndex, columnId);
+      if (api && row && columnId && Number.isInteger(rowIndex) && !isStructuralSpreadsheetRow(api.getDisplayedRowAtIndex(rowIndex))) {
+        // Opening a cell's menu is an edit of that cell, even though the button
+        // is interactive. Restore this origin when its portal editor closes.
+        const point = { rowIndex, columnId, rowId: api.getDisplayedRowAtIndex(rowIndex)?.id };
+        const next = { start: point, end: point };
+        dragging.current = false;
+        selectionIncludesHeaders.current = false;
+        setIncludeSelectedHeaders(false);
+        selectionRef.current = next;
+        lastSelectionRef.current = next;
+        setSelection(next);
+        rememberCellUndo(rowIndex, columnId);
+      }
     }} onPointerDown={clearSelectionOnEmptySpace} onCopy={copySelection} onCut={onSpreadsheetBatch ? event => {
       if (isInteractiveTarget(event.nativeEvent)) return;
       const text = selectedText();

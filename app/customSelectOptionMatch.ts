@@ -1,5 +1,11 @@
-type SearchableOption = { value: string; label: string; disabled?: boolean };
+type SearchableOption = { value: string; label: string; searchText?: string; disabled?: boolean };
 const normalize = (value: string) => value.trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/g, " ");
+
+/** Extra search terms need not be included in the displayed option label. */
+export function matchesCustomSelectSearch(option: SearchableOption, query: string): boolean {
+  const normalized = normalize(query);
+  return !normalized || normalize(`${option.label} ${option.searchText ?? ""}`).includes(normalized);
+}
 
 /** Accept an exact displayed label or stored value only when it identifies one enabled option. */
 export function exactCustomSelectOption<T extends SearchableOption>(options: readonly T[], query: string): T | undefined {

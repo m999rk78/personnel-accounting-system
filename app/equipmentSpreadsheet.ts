@@ -1,7 +1,10 @@
 import type { GridEquipmentDraft, GridEquipmentUnit, GridOption } from "./AgDataGrids";
 import { equipmentUnavailableReason, isEquipmentUnavailable } from "./equipmentAvailability.ts";
 import { equipmentExcelName } from "./equipmentExcel.ts";
+import { equipmentDisplayName as equipmentSpreadsheetName } from "./equipmentDisplayName.ts";
 import { subworkOptions, workTypeChanges } from "./workTypeHierarchy.ts";
+
+export { equipmentSpreadsheetName };
 
 export const equipmentEditableFields = ["equipment", "shift", "zone", "mainWork", "subwork", "hours", "note"] as const;
 export type EquipmentCellField = typeof equipmentEditableFields[number];
@@ -44,7 +47,8 @@ export const equipmentOptionFields = {
 } as const;
 const normalize = (value: string) => value.trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/g, " ");
 
-export function equipmentSpreadsheetName(unit: Pick<GridEquipmentUnit, "equipmentType" | "brand" | "model" | "registrationNumber"> | undefined) {
+/** Previously copied report labels remain valid after shortening the display name. */
+function legacyEquipmentSpreadsheetName(unit: GridEquipmentUnit) {
   return unit ? [unit.equipmentType, unit.brand, unit.model, unit.registrationNumber && unit.registrationNumber !== "-" && unit.registrationNumber !== "—" ? `• ${unit.registrationNumber}` : ""].filter(Boolean).join(" ") : "";
 }
 
@@ -68,7 +72,7 @@ export function pasteEquipmentCells(draft: EquipmentSpreadsheetDraft, values: Re
   if (values.equipment !== undefined && !draft.lockedEquipment) {
     const raw = values.equipment;
     const normalized = normalize(raw);
-    const matches = catalogs.units.filter(unit => [equipmentSpreadsheetName(unit), `${equipmentSpreadsheetName(unit)} · ${unit.organization}`, equipmentExcelName(unit), String(unit.id)].some(name => normalize(name) === normalized));
+    const matches = catalogs.units.filter(unit => [equipmentSpreadsheetName(unit), `${equipmentSpreadsheetName(unit)} · ${unit.organization}`, legacyEquipmentSpreadsheetName(unit), `${legacyEquipmentSpreadsheetName(unit)} · ${unit.organization}`, equipmentExcelName(unit), String(unit.id)].some(name => normalize(name) === normalized));
     const unit = matches.length === 1 ? matches[0] : undefined;
     next.equipmentId = unit ? String(unit.id) : "";
     next.equipmentQuery = unit ? equipmentSpreadsheetName(unit) : raw;

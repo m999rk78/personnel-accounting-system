@@ -10,15 +10,19 @@
 .timesheet-resizable .equipment-organization-column { left:var(--timesheet-left-organization)!important; }
 .timesheet-grid-shell .timesheet-table.timesheet-resizable .timesheet-summary-label { width:var(--timesheet-sticky-width)!important; min-width:var(--timesheet-sticky-width)!important; max-width:var(--timesheet-sticky-width)!important; }
 .timesheet-resizable thead th { isolation:isolate; }
-.timesheet-resizable thead .timesheet-filterable-heading { width:100%; padding:0; }
+.timesheet-resizable thead th.timesheet-sticky { z-index:9; }
+/* Keep the filter inside its own track and leave the right edge for resizing. */
+.timesheet-grid-shell .timesheet-table.timesheet-resizable thead th:has(> .timesheet-filterable-heading) { padding-left:2px; padding-right:8px; }
+.timesheet-resizable thead .timesheet-filterable-heading { box-sizing:border-box; width:100%; padding:0; grid-template-columns:minmax(0,1fr) 20px; column-gap:2px; overflow:visible; }
 .timesheet-resizable thead .timesheet-filterable-heading-label { box-sizing:border-box; width:100%; padding:0; text-align:center; }
-/* The filter shares the caption's vertical center without covering its text. */
-.timesheet-resizable thead .timesheet-filterable-heading:not(.compact) .timesheet-header-filter { top:50%; right:-8px; width:16px; height:24px; transform:translateY(-50%); }
-.timesheet-resizable thead .timesheet-filterable-heading:not(.compact) .timesheet-header-filter-icon svg { width:11px; height:11px; }
+.timesheet-resizable thead .timesheet-header-filter { position:relative; top:auto; right:auto; bottom:auto; width:20px; height:28px; transform:none; }
+.timesheet-resizable thead .timesheet-header-filter .timesheet-header-filter-icon,.timesheet-resizable thead .timesheet-header-filter .timesheet-header-filter-icon svg { width:14px; height:14px; color:inherit; }
+.timesheet-resizable thead .timesheet-header-filter .timesheet-sort-indicator { top:-4px; right:0; left:auto; color:#8a5b00; font-size:8px; line-height:8px; }
 .timesheet-resizable thead .timesheet-total-column .timesheet-filterable-heading-label { font-size:9px; }
-.timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-filterable-heading-label { padding:0; }
-.timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-header-filter { top:50%; right:0; bottom:auto; width:14px; height:22px; transform:translateY(-50%); }
-.timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-header-filter-icon,.timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-header-filter-icon svg { width:11px; height:11px; }
+.timesheet-grid-shell .timesheet-table.timesheet-resizable thead th:has(> .timesheet-filterable-heading.compact) { padding-left:0; }
+.timesheet-resizable thead .timesheet-filterable-heading.compact { grid-template-columns:minmax(0,1fr) 16px; column-gap:2px; }
+.timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-header-filter { width:16px; height:24px; }
+.timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-header-filter-icon,.timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-header-filter-icon svg { width:12px; height:12px; }
 .timesheet-resizable .timesheet-total-column { text-align:center; }
 .timesheet-resizable .timesheet-column-resize-handle { position:absolute; z-index:12; inset:0 0 0 auto; width:8px; min-width:0; height:100%; margin:0; padding:0; border:0; border-radius:0; background:transparent; cursor:col-resize; touch-action:none; }
 .timesheet-resizable .timesheet-column-resize-handle-left { right:auto; left:0; width:7px; }

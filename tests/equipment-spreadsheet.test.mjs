@@ -41,6 +41,20 @@ test("equipment paste accepts the full exported identity, but never guesses ambi
   assert.equal(pasteEquipmentCells(blank, { equipment: "1" }, references).equipmentId, "1");
 });
 
+test("short equipment labels reject collisions while previously copied full labels still identify the unit", () => {
+  const sameShortLabel = { ...unit, id: 2, equipmentType: "Автокран", brand: "Другая марка" };
+  const references = { ...catalogs, units: [unit, sameShortLabel] };
+  const ambiguous = pasteEquipmentCells(blank, { equipment: "КС-45717 // А123АА" }, references);
+  assert.equal(ambiguous.equipmentId, "");
+  assert.ok(equipmentCellErrors(ambiguous, references).equipment);
+  for (const equipment of ["Кран Ивановец КС-45717 • А123АА", "Кран Ивановец КС-45717 • А123АА · Подрядчик"]) {
+    const pasted = pasteEquipmentCells(blank, { equipment }, references);
+    assert.equal(pasted.equipmentId, "1");
+    assert.equal(pasted.equipmentQuery, "КС-45717 // А123АА");
+    assert.equal(pasted.inputValues.equipment, undefined);
+  }
+});
+
 test("a mixed paste preserves invalid text without dropping valid neighbouring values", () => {
   const pasted = pasteEquipmentCells(blank, { equipment: "Неизвестный кран", shift: "день", zone: "Нет такой зоны", hours: "15", note: "Сохранить примечание" }, catalogs);
   assert.equal(pasted.shiftId, "1");

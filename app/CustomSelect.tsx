@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { choiceMenuPosition, choiceMenuWidth, type ChoiceMenuPosition } from "./choiceMenuLayout";
-import { exactCustomSelectOption } from "./customSelectOptionMatch";
+import { exactCustomSelectOption, matchesCustomSelectSearch } from "./customSelectOptionMatch";
 
 export type CustomSelectOption = {
   value: string;
   label: string;
+  searchText?: string;
+  title?: string;
   disabled?: boolean;
 };
 
@@ -25,8 +27,6 @@ type CustomSelectProps = {
   onInvalidQuery?: (query: string) => void;
 };
 
-const normalizeSearch = (value: string) => value.trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/g, " ");
-
 export function CustomSelect({ value, options, onChange, ariaLabel, className = "", disabled = false, autoOpen = false, searchable = false, initialQuery = "", requireExactQueryOnEnter = false, onInvalidQuery }: CustomSelectProps) {
   const listboxId = useId();
   const root = useRef<HTMLDivElement>(null);
@@ -43,8 +43,7 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
   const selectedIndex = options.findIndex((option) => option.value === value);
   const selectedOption = selectedIndex >= 0 ? options[selectedIndex] : options[0];
   const filteredOptions = useMemo(() => {
-    const normalizedQuery = normalizeSearch(query);
-    return options.map((option, index) => ({ option, index })).filter(({ option }) => !normalizedQuery || normalizeSearch(option.label).includes(normalizedQuery));
+    return options.map((option, index) => ({ option, index })).filter(({ option }) => matchesCustomSelectSearch(option, query));
   }, [options, query]);
   const enabledIndexes = useMemo(() => filteredOptions.map(({ option, index }) => option.disabled ? -1 : index).filter((index) => index >= 0), [filteredOptions]);
 
@@ -64,8 +63,7 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
   const openMenu = useCallback((preferredIndex?: number, initialQuery = "") => {
     if (disabled || options.every((option) => option.disabled)) return;
     setPortalHost(root.current?.closest("dialog[open]") ?? document.body);
-    const normalizedInitialQuery = normalizeSearch(initialQuery);
-    const initialEnabledIndexes = options.map((option, index) => option.disabled || (normalizedInitialQuery && !normalizeSearch(option.label).includes(normalizedInitialQuery)) ? -1 : index).filter((index) => index >= 0);
+    const initialEnabledIndexes = options.map((option, index) => option.disabled || !matchesCustomSelectSearch(option, initialQuery) ? -1 : index).filter((index) => index >= 0);
     const nextIndex = preferredIndex ?? (initialQuery ? initialEnabledIndexes[0] : selectedIndex >= 0 && !options[selectedIndex]?.disabled ? selectedIndex : initialEnabledIndexes[0]);
     setQuery(initialQuery);
     setActiveIndex(nextIndex ?? -1);
@@ -176,8 +174,12 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
     <div
       ref={menu}
       className="custom-select-menu ag-custom-component-popup"
+      role="presentation"
       data-placement={position.placement}
       style={{ top: position.top, bottom: position.bottom, left: position.left, width: position.width, maxHeight: position.maxHeight }}
+      onPointerDown={event => event.stopPropagation()}
+      onMouseDown={event => event.stopPropagation()}
+      onClick={event => event.stopPropagation()}
     >
       {searchable && <label className="custom-select-search">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
@@ -190,8 +192,7 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
           value={query}
           onChange={(event) => {
             const nextQuery = event.target.value;
-            const normalizedQuery = normalizeSearch(nextQuery);
-            const firstMatch = options.findIndex((option) => !option.disabled && (!normalizedQuery || normalizeSearch(option.label).includes(normalizedQuery)));
+            const firstMatch = options.findIndex((option) => !option.disabled && matchesCustomSelectSearch(option, nextQuery));
             setQuery(nextQuery);
             setActiveIndex(firstMatch);
           }}
@@ -207,6 +208,7 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
           type="button"
           className={["custom-select-option", selected ? "selected" : "", activeIndex === index ? "active" : ""].filter(Boolean).join(" ")}
           role="option"
+          title={option.title}
           aria-selected={selected}
           disabled={option.disabled}
           tabIndex={!searchable && activeIndex === index ? 0 : -1}

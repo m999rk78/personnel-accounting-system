@@ -8,7 +8,8 @@ import { build, preview } from "vite";
 import react from "@vitejs/plugin-react";
 
 const menusOnly = process.argv.includes("--menus-only");
-const args = process.argv.slice(2).filter(argument => argument !== "--menus-only");
+const headersOnly = process.argv.includes("--headers-only");
+const args = process.argv.slice(2).filter(argument => !["--menus-only", "--headers-only"].includes(argument));
 const { chromium } = await import(args[0] ? `${args[0]}/index.mjs` : "playwright");
 const port = Number(args[1] ?? 3171);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Укажите корректный порт стенда.");
@@ -33,7 +34,7 @@ try {
     position: "Руководитель монтажного участка", source: "manual", siteId: 1, siteName: sites[0].name,
     availabilityStatus: "active", bitrix24Stage: "", syncError: null }));
   const units = () => employees().map(({ id }) => ({ id, name: `Кран ${id}`, equipmentType: "Кран", brand: "Учебная марка",
-    model: `Модель ${id}`, registrationNumber: `ТЕСТ${id}`, inventoryNumber: `TEST-${id}`, organization: "Учебная организация",
+    model: `Модель ${id} с длинным наименованием для проверки подбора ширины`, registrationNumber: `ТЕСТ${id}`, inventoryNumber: `TEST-${id}`, organization: "Учебная организация",
     siteId: 1, siteName: sites[0].name, availabilityStatus: "active", unavailableFrom: null, note: "" }));
   const options = { shifts: [{ id: 1, name: "день" }], zones: [], mainWorkTypes: [], subworkTypes: [], masters: [] };
   await page.route("**/api/**", async route => {
@@ -150,7 +151,59 @@ try {
     for (const edge of result.paintedEdges) assert.ok(result.expectedEdges.some(actual => Math.abs(actual - edge) <= 1.6), `${label}: no stale decorative line at ${edge}`);
     assert.ok(result.scrollWidth <= Math.ceil(result.table.width) + 2, `${label}: no extra scrollable blank area`);
     if (checkTail) near(result.table.right, result.right, `${label}: maximum scroll ends at the actual table edge`);
+    await headerFilters(label);
     return result;
+  }
+
+  async function headerFilters(label) {
+    const results = await table().evaluate(table => {
+      const rect = element => element.getBoundingClientRect();
+      const inside = (child, parent) => child.left >= parent.left - 1 && child.right <= parent.right + 1 && child.top >= parent.top - 1 && child.bottom <= parent.bottom + 1;
+      const overlaps = (left, right) => Math.min(left.right, right.right) - Math.max(left.left, right.left) > .5 && Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > .5;
+      const textRect = element => { const range = document.createRange(); range.selectNodeContents(element); return range.getBoundingClientRect(); };
+      const shell = table.closest(".timesheet-grid-shell"), shellBox = rect(shell);
+      const pinnedRight = Math.max(shellBox.left, ...[...table.querySelectorAll("thead .timesheet-sticky")].map(cell => rect(cell).right));
+      return [...table.querySelectorAll("thead th")].filter(cell => getComputedStyle(cell).display !== "none").flatMap(cell => {
+        const label = cell.querySelector(".timesheet-filterable-heading-label"), button = cell.querySelector(".timesheet-header-filter"), svg = button?.querySelector("svg");
+        if (!label || !button || !svg) return [];
+        const cellBox = rect(cell), labelBox = rect(label), buttonBox = rect(button), iconBox = rect(svg);
+        const texts = label.children.length ? [...label.children] : [label];
+        const captions = texts.map(text => {
+          const box = textRect(text);
+          const visibleBox = { left: Math.max(box.left, labelBox.left), right: Math.min(box.right, labelBox.right), top: box.top, bottom: box.bottom };
+          return { text: text.textContent, fits: box.width <= labelBox.width + 1, offset: (box.left + box.right - labelBox.left - labelBox.right) / 2, overlap: overlaps(visibleBox, iconBox) };
+        });
+        const clippedBy = [];
+        for (let ancestor = svg.parentElement; ancestor; ancestor = ancestor.parentElement) {
+          const style = getComputedStyle(ancestor), box = rect(ancestor);
+          if (/hidden|clip|auto|scroll/.test(style.overflowX) && (iconBox.left < box.left - 1 || iconBox.right > box.right + 1)
+            || /hidden|clip|auto|scroll/.test(style.overflowY) && (iconBox.top < box.top - 1 || iconBox.bottom > box.bottom + 1)) clippedBy.push(ancestor.className);
+          if (ancestor === cell) break;
+        }
+        const x = iconBox.left + iconBox.width / 2, y = iconBox.top + iconBox.height / 2;
+        const onScreen = x >= shellBox.left && x < Math.min(shellBox.right, innerWidth) && y >= 0 && y < innerHeight && (cell.classList.contains("timesheet-sticky") || x > pinnedRight);
+        const hitTarget = onScreen ? document.elementFromPoint(x, y) : null;
+        const hit = !onScreen || hitTarget?.closest(".timesheet-header-filter") === button;
+        const grips = [...cell.querySelectorAll(".timesheet-column-resize-handle")].map(rect);
+        const badge = button.querySelector(".timesheet-sort-indicator"), badgeBox = badge && rect(badge);
+        return [{ name: button.getAttribute("aria-label"), captions, inside: inside(buttonBox, cellBox), iconInside: inside(iconBox, buttonBox), clippedBy, hit, hitTarget: hitTarget && `${hitTarget.tagName}.${String(hitTarget.className)} ${hitTarget.textContent}`,
+          resizeOverlap: grips.some(grip => overlaps(buttonBox, grip)), badgeInside: !badgeBox || inside(badgeBox, cellBox), badgeResizeOverlap: Boolean(badgeBox && grips.some(grip => overlaps(badgeBox, grip))) }];
+      });
+    });
+    for (const result of results) {
+      for (const caption of result.captions) {
+        if (caption.fits) near(caption.offset, 0, `${label}: caption ${caption.text} centered in its label slot`, 1);
+        assert.equal(caption.overlap, false, `${label}: ${result.name} icon does not cover its caption`);
+      }
+      assert.equal(result.inside, true, `${label}: ${result.name} button stays wholly inside the header`);
+      assert.equal(result.iconInside, true, `${label}: ${result.name} icon stays inside its button`);
+      assert.deepEqual(result.clippedBy, [], `${label}: ${result.name} icon is not clipped by an ancestor`);
+      if (!result.hit) await page.screenshot({ path: "/tmp/timesheet-filter-headers-failure.png" });
+      assert.equal(result.hit, true, `${label}: ${result.name} icon remains clickable (hit ${result.hitTarget})`);
+      assert.equal(result.resizeOverlap, false, `${label}: ${result.name} button is separate from resize handles`);
+      assert.equal(result.badgeInside, true, `${label}: ${result.name} sort badge stays inside the header`);
+      assert.equal(result.badgeResizeOverlap, false, `${label}: ${result.name} sort badge is separate from resize handles`);
+    }
   }
 
   async function settleLayout() {
@@ -197,6 +250,34 @@ try {
       return event.defaultPrevented;
     }, keyboard);
   }
+  for (const kind of ["equipment", "workers"]) {
+    for (const viewport of [939, 1440]) {
+      await page.setViewportSize({ width: viewport, height: 954 });
+      await open(kind);
+      for (const state of ["default", "minimum", "resized"]) {
+        const widths = state === "default" ? {} : kind === "workers"
+          ? state === "minimum" ? { employmentType: 50, department: 60, fullName: 140, position: 100, "day-1": 40, timesheet: 64, reports: 64, difference: 64 }
+            : { employmentType: 78, department: 104, fullName: 340, position: 220, "day-1": 88, timesheet: 110, reports: 110, difference: 110 }
+          : state === "minimum" ? { equipment: 160, organization: 100, "day-1": 40, productive: 64, downtime: 64, total: 64 }
+            : { equipment: 420, organization: 240, "day-1": 88, productive: 110, downtime: 110, total: 110 };
+        await page.evaluate(({ kind, widths }) => localStorage.setItem(`resource-report.timesheet-column-widths.${kind}.v1`, JSON.stringify(widths)), { kind, widths });
+        await open(kind);
+        await geometry(`${kind} ${viewport}px ${state}: filter headers at start`);
+        if (kind === "equipment" && viewport === 939 && state === "default") {
+          await page.screenshot({ path: "/tmp/timesheet-filter-headers-equipment-939.png" });
+          console.log("SCREENSHOT /tmp/timesheet-filter-headers-equipment-939.png");
+        }
+        await maxScroll(`${kind} ${viewport}px ${state}: filter headers at end`);
+      }
+      await shell().evaluate(element => { element.scrollLeft = 0; });
+      await openColumnMenu(kind);
+      await columnMenu().getByRole("menuitem", { name: "По возрастанию", exact: true }).click();
+      await headerFilters(`${kind} ${viewport}px sorted badge`);
+      await page.evaluate(kind => localStorage.removeItem(`resource-report.timesheet-column-widths.${kind}.v1`), kind);
+      console.log(`PASS: ${kind} ${viewport}px: default/minimum/resized filter buttons, clipping, click targets and sorted badge`);
+    }
+  }
+  if (!headersOnly) {
   for (const kind of ["workers", "equipment"]) {
     await page.setViewportSize({ width: 1440, height: 953 });
     await open(kind);
@@ -291,6 +372,7 @@ try {
     await page.setViewportSize({ width: 831, height: 954 });
     await open(kind);
     for (const month of ["2026-10", "2026-11", "2027-02"]) {
+      await page.setViewportSize({ width: 831, height: 954 });
       await page.evaluate(kind => localStorage.removeItem(`resource-report.timesheet-column-widths.${kind}.v1`), kind);
       await open(kind, month);
       await maxScroll(`${kind} ${month}: left total divider`);
@@ -299,6 +381,25 @@ try {
       const lastDay = await table().locator("thead tr:nth-child(2) th").count();
       assert.equal(await leftGrip.getAttribute("data-column-id"), `day-${lastDay}`);
       assert.equal(await leftGrip.getAttribute("tabindex"), "-1", "Proxy dividers must not duplicate keyboard tab stops");
+      const covered = await leftGrip.evaluate(element => {
+        const cell = element.closest("th"), table = cell.closest("table"), left = cell.getBoundingClientRect().left + 3;
+        return left < Math.max(...[...table.querySelectorAll("thead th.timesheet-sticky")].map(header => header.getBoundingClientRect().right));
+      });
+      if (covered) {
+        // At a narrow viewport the first total can scroll behind pinned metadata.
+        // Its hidden divider must not steal pointer events from that header.
+        for (const lowerHalf of [false, true]) {
+          const hit = await leftGrip.evaluate((element, lowerHalf) => {
+            const box = element.closest("th").getBoundingClientRect();
+            const target = document.elementFromPoint(box.left + 3, box.top + (lowerHalf ? box.height - 13 : 13));
+            return { pinned: Boolean(target?.closest("th.timesheet-sticky")), resizeOwner: target?.closest("[data-resize-edge]")?.getAttribute("data-resize-owner") };
+          }, lowerHalf);
+          assert.equal(hit.pinned, true, `${kind}: covered total divider stays behind the pinned header`);
+          assert.notEqual(hit.resizeOwner, totalId, `${kind}: a hidden divider cannot intercept pinned-header clicks`);
+        }
+        await page.setViewportSize({ width: 1440, height: 954 });
+        await maxScroll(`${kind}: reveal total divider without pinned-header overlap`);
+      }
       for (const lowerHalf of [false, true]) {
         await maxScroll(`${kind}: before left-edge drag`);
         const cell = await leftGrip.evaluate(element => { const box = element.closest("th").getBoundingClientRect(); return { left: box.left, top: box.top, height: box.height }; });
@@ -313,25 +414,7 @@ try {
         near(await width(grip(kind === "workers" ? ".timesheet-tabell-total" : ".equipment-work-total")), beforeTotal, `${kind}: either side of a divider addresses the same preceding column`);
         await geometry(`${kind}: left edge keeps the entire grid aligned`);
       }
-      const centered = await table().evaluate(table => {
-        const rect = element => element.getBoundingClientRect();
-        const textRect = element => { const range = document.createRange(); range.selectNodeContents(element); return range.getBoundingClientRect(); };
-        return [...table.querySelectorAll("thead th")].filter(cell => getComputedStyle(cell).display !== "none").flatMap(cell => {
-          const label = cell.querySelector(".timesheet-filterable-heading-label");
-          if (!label) return [];
-          const texts = label.children.length ? [...label.children] : [label];
-          const cellBox = rect(cell), icon = rect(cell.querySelector(".timesheet-header-filter svg"));
-          return texts.map(text => {
-            const box = textRect(text);
-            return { text: text.textContent, offset: (box.left + box.right - cellBox.left - cellBox.right) / 2,
-              overlap: Math.min(box.right, icon.right) - Math.max(box.left, icon.left) > .5 && Math.min(box.bottom, icon.bottom) - Math.max(box.top, icon.top) > .5 };
-          });
-        });
-      });
-      centered.forEach(result => {
-        near(result.offset, 0, `${kind}: caption ${result.text} is centered`, 1);
-        assert.equal(result.overlap, false, `${kind}: filter icon must not cover caption ${result.text}`);
-      });
+      await headerFilters(`${kind}: readable captions and filter controls`);
       await maxScroll(`${kind}: centered headers at right edge`);
       if (month === "2026-10") await page.screenshot({ path: `/tmp/timesheet-left-divider-${kind}.png` });
     }
@@ -445,9 +528,10 @@ try {
     console.log(`PASS: ${kind}: coherent column/sticky/footer geometry, drag/keyboard/reset/cancel, persistence, narrow/empty/virtualised tables`);
   }
   }
+  }
   assert.deepEqual(writes, [], "Column resizing is a browser preference, never a business-data write");
   assert.deepEqual(errors, [], "No browser runtime errors");
-  console.log(JSON.stringify({ checks: menusOnly
+  console.log(JSON.stringify({ checks: headersOnly ? "workers + equipment: filter header layout at default/minimum/resized widths, clipped icons, hit targets and sorted badges" : menusOnly
     ? "workers + equipment: scoped header menus, sorting, filter, autosize/reset, clipboard menu isolation, month invalidation"
     : "workers + equipment: header menus, widths, sticky offsets, footer, empty grid, no blank tail, keyboard/pointer, persistence, responsive/virtualised rows", writes: writes.length }));
 } finally {

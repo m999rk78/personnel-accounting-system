@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { exactCustomSelectOption } from "../app/customSelectOptionMatch.ts";
+import { exactCustomSelectOption, matchesCustomSelectSearch } from "../app/customSelectOptionMatch.ts";
+
+test("short labels remain searchable by hidden equipment metadata without changing exact selection", () => {
+  const option = { value: "1", label: "30 т // А123АА", searchText: "Кран TADANO Учёт техники РХИ" };
+  for (const query of ["30 т", "а123аа", "КРАН", "tadano", " учет   техники ", "РХИ", ""]) {
+    assert.equal(matchesCustomSelectSearch(option, query), true, query);
+  }
+  assert.equal(matchesCustomSelectSearch(option, "Экскаватор"), false);
+  assert.equal(exactCustomSelectOption([option], "TADANO"), undefined);
+  assert.equal(exactCustomSelectOption([option], option.label), option);
+  assert.equal(matchesCustomSelectSearch({ value: "2", label: "Другой объект" }, "объект"), true);
+});
 
 test("project names and stored IDs select the same option", () => {
   const project = Object.freeze({ value: "10", label: "Усть-Луга ГПЗ" });

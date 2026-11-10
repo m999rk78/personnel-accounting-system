@@ -4,6 +4,7 @@ import test from "node:test";
 import ts from "typescript";
 import { createIdlePageRefresh } from "../app/idlePageRefresh.ts";
 import { createTimesheetBatchSave } from "../app/timesheetBatchSave.ts";
+import { equipmentDisplayName as unitTitle } from "../app/equipmentDisplayName.ts";
 
 const file = new URL("../app/EquipmentAccountingView.tsx", import.meta.url);
 const source = ts.createSourceFile(file.pathname, await readFile(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -18,7 +19,7 @@ const effect = nodes.find(node => ts.isCallExpression(node) && node.expression.g
 const options = nodes.find(node => ts.isCallExpression(node) && node.expression.getText(source) === "useTimesheetBatchSave")?.arguments[0];
 assert.ok(effect && options, "Equipment month uses actual idle refresh and shared save lifecycle");
 function bind(code, result, env) { return new Function(...Object.keys(env), `${js(code)}\nreturn ${result};`)(...Object.values(env)); }
-const helpers = bind(["equipmentCellKey", "formatEquipmentHours", "parseEquipmentClipboardHours", "unitTitle"].map(declaration).join("\n"), "{equipmentCellKey,formatEquipmentHours,parseEquipmentClipboardHours,unitTitle}", {});
+const helpers = bind(["equipmentCellKey", "formatEquipmentHours", "parseEquipmentClipboardHours"].map(declaration).join("\n"), "{equipmentCellKey,formatEquipmentHours,parseEquipmentClipboardHours,unitTitle}", { unitTitle });
 
 function page() {
   const pageWindow = new EventTarget(), pageDocument = new EventTarget(); pageDocument.visibilityState = "visible";

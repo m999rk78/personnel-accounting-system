@@ -235,14 +235,16 @@ test("personnel timesheet copies the actual descriptor/day/total values and reta
   assert.equal(value(0, -2), "Тестовый сотрудник · Инженер");
 });
 
-test("equipment timesheet copies full equipment titles, organization, work/downtime and totals without editing-coordinate changes", async () => {
+test("equipment timesheet copies model and registration, organization, work/downtime and totals without editing-coordinate changes", async () => {
   const organization = "Учебная организация с длинным названием, которое выходит за ширину закреплённого столбца";
-  const value = await valueCallback("../app/EquipmentAccountingView.tsx", ["formatEquipmentHours", "unitTitle"], {
+  const { equipmentDisplayName: unitTitle } = await import("../app/equipmentDisplayName.ts");
+  const value = await valueCallback("../app/EquipmentAccountingView.tsx", ["formatEquipmentHours"], {
+    unitTitle,
     monthRows: [{ unit: { equipmentType: "Кран", brand: "Тест", model: "М1", registrationNumber: "QA-001", organization },
       byDate: new Map([["2026-11-03", { productive: 8, downtime: 2 }], ["2026-11-09", { productive: 0, downtime: 3 }]]), productive: 8, downtime: 5, total: 13 }],
     visibleMonthDays: [3, 9], month: "2026-11",
   });
-  assert.deepEqual([-3, -2, -1, 0, 1, 2, 3, 4].map(col => value(0, col)), ["1", "Кран Тест М1 • QA-001", organization, "8/2", "П 3", "8", "5", "13"]);
+  assert.deepEqual([-3, -2, -1, 0, 1, 2, 3, 4].map(col => value(0, col)), ["1", "М1 // QA-001", organization, "8/2", "П 3", "8", "5", "13"]);
 });
 
 test("selected readonly descriptors keep long text clipped and available in full without covering adjacent day editors", async () => {

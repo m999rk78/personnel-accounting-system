@@ -24,6 +24,22 @@ try {
   await page.goto("http://127.0.0.1:3146/report-column-widths.html");
   const header = columnId => page.locator(`.ag-header-cell[col-id="${columnId}"]`);
   const width = async columnId => Math.round((await header(columnId).boundingBox()).width);
+  async function settleInitialLayout() {
+    await page.evaluate(async () => { await document.fonts.ready; window.__reportColumnWidthLayout = { key: "", stable: 0 }; });
+    await page.waitForFunction(() => {
+      const root = document.querySelector(".ag-grid-shell"), viewport = document.querySelector(".ag-grid-viewport");
+      if (!root || !viewport) return false;
+      const key = JSON.stringify([viewport.scrollLeft, viewport.scrollTop, ...[root, viewport, ...root.querySelectorAll(".ag-header-cell[col-id]")].map(element => {
+        const rect = element.getBoundingClientRect();
+        return [element.getAttribute("col-id"), rect.x, rect.y, rect.width, rect.height];
+      })]);
+      const state = window.__reportColumnWidthLayout;
+      state.stable = state.key === key ? state.stable + 1 : 0;
+      state.key = key;
+      return state.stable >= 8;
+    }, undefined, { polling: "raf" });
+    await page.evaluate(() => { delete window.__reportColumnWidthLayout; });
+  }
   async function resize(columnId, delta) {
     const handle = await header(columnId).locator(".ag-header-cell-resize").boundingBox();
     const before = await width(columnId);
@@ -41,6 +57,7 @@ try {
   for (const kind of ["personnel", "equipment"]) {
     await page.getByRole("button", { name: kind === "personnel" ? "Персонал" : "Техника", exact: true }).click();
     await header("zone").waitFor();
+    await settleInitialLayout();
     const rowId = `${kind}-1`, expected = {};
     expected.zone = await resize("zone", 200);
     expected.mainWork = await resize("mainWork", 130);

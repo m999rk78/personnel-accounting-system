@@ -398,7 +398,6 @@ button,input,select { font:inherit; } button { cursor:pointer; }
 .timesheet-filterable-heading.compact .timesheet-filterable-heading-label { display:block; overflow:visible; }
 .timesheet-filterable-heading.compact .timesheet-header-filter { width:16px; height:22px; }
 .timesheet-filterable-heading.compact .timesheet-header-filter-icon,.timesheet-filterable-heading.compact .timesheet-header-filter-icon svg { width:11px; height:11px; }
-.equipment-timesheet-shell .equipment-organization-column .timesheet-header-filter { right:5px; }
 .equipment-timesheet-page { gap:10px; }
 .equipment-timesheet-summary,.personnel-timesheet-summary { min-height:42px; display:grid; align-items:stretch; gap:5px; padding:4px; border:1px solid #e1e1e5; border-radius:10px; background:#f6f6f7; color:#71717a; font-size:9px; }
 .equipment-timesheet-summary { grid-template-columns:minmax(184px,1.2fr) repeat(4,minmax(0,1fr)); }
@@ -430,9 +429,9 @@ button,input,select { font:inherit; } button { cursor:pointer; }
 .equipment-timesheet-shell .equipment-month-table .equipment-machine-column { width:288px; min-width:288px; max-width:288px; left:44px; padding:0 12px; text-align:left; }
 .equipment-timesheet-shell .equipment-month-table .equipment-organization-column { width:170px; min-width:170px; max-width:170px; left:332px; padding:0 12px; text-align:left; box-shadow:5px 0 8px -8px rgba(24,24,27,.65); }
 .equipment-timesheet-shell .equipment-month-table .timesheet-total-column { width:72px; min-width:72px; max-width:72px; padding:0 8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.equipment-timesheet-shell .equipment-machine-column span,
-.equipment-timesheet-shell .equipment-machine-column small { display:block; overflow:hidden; text-overflow:ellipsis; }
-.equipment-timesheet-shell .equipment-machine-column small { margin-top:3px; color:#92929b; font-size:8px; font-weight:500; }
+.equipment-timesheet-shell tbody .equipment-machine-column span,
+.equipment-timesheet-shell tbody .equipment-machine-column small { display:block; overflow:hidden; text-overflow:ellipsis; }
+.equipment-timesheet-shell tbody .equipment-machine-column small { margin-top:3px; color:#92929b; font-size:8px; font-weight:500; }
 .equipment-timesheet-shell .equipment-month-table .timesheet-summary-label { width:502px!important; min-width:502px!important; max-width:502px!important; }
 .equipment-timesheet-shell .equipment-month-table .weekend:not(.filled) { background:#fffaf0; }
 .equipment-timesheet-shell .equipment-month-table thead .weekend { background:#fff5dc; }
