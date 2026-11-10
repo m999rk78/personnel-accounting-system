@@ -313,7 +313,6 @@ button,input,select { font:inherit; } button { cursor:pointer; }
 /* Equipment screens reuse the same grid and timesheet language as personnel. */
 .equipment-report-card { overflow:visible; border-radius:8px; }
 .ag-equipment-grid { height:calc(100vh - 295px); min-height:430px; }
-.ag-equipment-grid .equipment-downtime-row .ag-cell { background:#fff1ed; color:#9f2d20; }
 .equipment-report-footer { border-top:1px solid #dedede; }
 .equipment-settings-section { display:grid; gap:14px; }
 .equipment-settings-section > .equipment-page { gap:12px; }

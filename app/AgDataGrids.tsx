@@ -633,7 +633,7 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
     loading={props.loading}
     loadingOverlayComponent={() => <span className="ag-overlay-message">Загружаем отчёт техники…</span>}
     noRowsOverlayComponent={() => <span className="ag-overlay-message">За выбранный день записей нет</span>}
-    rowClassRules={{ "editable-row": (params) => params.data?.kind === "edit" || params.data?.kind === "draft", "carried-row": (params) => Boolean(params.data?.draft?.carriedFromPreviousDay), "equipment-downtime-row": (params) => normalizeSearch(String(valueGetter("subwork")(params))).includes("простой"), "timesheet-conflict-row": (params) => Boolean(params.data?.timesheetConflict) }}
+    rowClassRules={{ "editable-row": (params) => params.data?.kind === "edit" || params.data?.kind === "draft", "carried-row": (params) => Boolean(params.data?.draft?.carriedFromPreviousDay), "timesheet-conflict-row": (params) => Boolean(params.data?.timesheetConflict) }}
     rowSelection={!(props.canCreate || props.canUpdate || props.canDelete) ? undefined : { mode: "multiRow", checkboxes: (params) => {
       const current = propsRef.current;
       return Boolean(current.drafts.length
