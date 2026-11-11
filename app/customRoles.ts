@@ -1,8 +1,8 @@
-import { PERMISSION_ACTIONS, PERMISSION_CATALOG, emptyPermissionSet, normalizePermissionSet, rolePermissionTemplate, type PermissionResource, type PermissionSet } from "./permissionModel.ts";
+import { PERMISSION_ACTIONS, PERMISSION_CATALOG, STATISTICS_REPORT_RESOURCES, normalizePermissionSet, rolePermissionTemplate, type PermissionResource, type PermissionSet } from "./permissionModel.ts";
 import { ROLE_LABELS, type UserRole } from "./roles.ts";
 
 export type CustomRoleBaseRole = "foreman" | "engineer" | "viewer";
-export type CustomRole = { id: number; name: string; baseRole: CustomRoleBaseRole; permissions: PermissionSet; revision: number; legacyRoleKey?: "foreman" | "engineer" | "viewer"; inheritedStatusPermissions?: PermissionResource[] };
+export type CustomRole = { id: number; name: string; baseRole: CustomRoleBaseRole; permissions: PermissionSet; revision: number; legacyRoleKey?: "foreman" | "engineer" | "viewer"; inheritedStatusPermissions?: PermissionResource[]; inheritedStatisticsPermissions?: PermissionResource[] };
 export const managedDefaultRoleSeeds = () => (["foreman", "engineer", "viewer"] as const).map(key => ({ key, name: ROLE_LABELS[key], permissions: rolePermissionTemplate(key) }));
 export type CustomRoleInput = { name?: unknown; permissions?: unknown };
 
@@ -41,7 +41,7 @@ export function normalizeCustomRolePermissions(value: unknown, legacyRole?: User
   }
   // Existing JSON templates predate status rows. Migrate only those new rows
   // from the base role; unrelated resources stay exactly as configured.
-  const legacyFallback = legacyRole ? emptyPermissionSet() : undefined;
+  const legacyFallback: Partial<PermissionSet> | undefined = legacyRole ? {} : undefined;
   if (legacyFallback && legacyRole) {
     const template = rolePermissionTemplate(legacyRole);
     for (const definition of PERMISSION_CATALOG) if (definition.parent) legacyFallback[definition.key] = template[definition.key];
@@ -51,6 +51,10 @@ export function normalizeCustomRolePermissions(value: unknown, legacyRole?: User
 
 export function inheritedCustomRoleStatusPermissions(input: Record<string, unknown>): PermissionResource[] {
   return PERMISSION_CATALOG.filter(item => item.parent && !Object.hasOwn(input, item.key)).map(item => item.key);
+}
+
+export function inheritedCustomRoleStatisticsPermissions(input: Record<string, unknown>): PermissionResource[] {
+  return (Object.keys(STATISTICS_REPORT_RESOURCES) as (keyof typeof STATISTICS_REPORT_RESOURCES)[]).filter(key => !Object.hasOwn(input, key));
 }
 
 export function inferCustomRoleBaseRole(permissions: PermissionSet): CustomRoleBaseRole {

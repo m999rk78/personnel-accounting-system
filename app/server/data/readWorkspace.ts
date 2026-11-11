@@ -31,7 +31,7 @@ export async function handleGET(request: Request) {
       return Response.json({ sites: sites.results.filter(site => canAccessProject(authUser, Number(site.id))) });
     }
     if (!canAccessProject(authUser, siteId)) return forbidden();
-    const responsibleUserId = undefined;
+    const responsibleUserId = authUser.role === "foreman" ? authUser.id : undefined;
     const workDate = url.searchParams.get("date") ?? todayInMoscow();
     if (!validDate(workDate)) throw new Error("Некорректная дата отчёта.");
     const rangeStart = url.searchParams.get("rangeStart") ?? workDate;
@@ -53,7 +53,7 @@ export async function handleGET(request: Request) {
         filledDatesStatement(siteId, rangeStart, rangeEnd, responsibleUserId),
         reportSubmissionStatement(siteId, workDate, responsibleUserId),
         employeeUsageStatement(workDate, siteId, authUser),
-        foremanProgressStatement(siteId, workDate),
+        foremanProgressStatement(siteId, workDate, responsibleUserId),
         reportTimesheetMarksStatement(siteId, workDate),
       ]);
       return Response.json({
@@ -94,7 +94,7 @@ export async function handleGET(request: Request) {
         filledDatesStatement(siteId, rangeStart, rangeEnd, responsibleUserId),
         reportSubmissionStatement(siteId, workDate, responsibleUserId),
         employeeUsageStatement(workDate, siteId, authUser),
-        foremanProgressStatement(siteId, workDate),
+        foremanProgressStatement(siteId, workDate, responsibleUserId),
         reportTimesheetMarksStatement(siteId, workDate),
       ]);
       return Response.json({
@@ -231,7 +231,7 @@ export async function handleGET(request: Request) {
       env.DB.prepare("SELECT id, status, started_at AS startedAt, completed_at AS completedAt, summary, error_text AS errorText FROM employee_sync_runs ORDER BY id DESC LIMIT 1"),
       env.DB.prepare("SELECT action_key AS actionKey, last_started_at AS lastStartedAt FROM bitrix24_action_limits WHERE action_key IN ('inspect-bitrix24', 'sync-bitrix24')"),
       employeeUsageStatement(workDate, siteId, authUser),
-      foremanProgressStatement(siteId, workDate),
+      foremanProgressStatement(siteId, workDate, responsibleUserId),
       reportTimesheetMarksStatement(siteId, workDate),
     ]);
     const canViewWorkerReports = canViewReports;

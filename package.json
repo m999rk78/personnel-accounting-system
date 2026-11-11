@@ -26,6 +26,7 @@
     "db:sync-positions": "node scripts/sync-position-catalog.mjs"
   },
   "dependencies": {
+    "ag-charts-community": "14.2.0",
     "ag-grid-enterprise": "36.2.0",
     "ag-grid-react": "36.2.0",
     "drizzle-orm": "0.45.2",

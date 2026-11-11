@@ -11,6 +11,10 @@ const VIEW_RESOURCES: Partial<Record<WorkspaceView, PermissionResource>> = {
 };
 
 export function workspaceViewAllowed(permissions: PermissionSet, view: WorkspaceView) {
+  if (view === "personnelStatistics" || view === "equipmentStatistics") {
+    const resource = view === "personnelStatistics" ? "workers_statistics" : "equipment_statistics";
+    return hasPermission(permissions, resource, "view");
+  }
   if (view === "placement" || view === "equipment") {
     const resource = view === "placement" ? "workers_report" : "equipment_report";
     return (["draft", "submitted", "approved"] as const).some(status => hasReportStatusPermission(permissions, resource, status, "view"));

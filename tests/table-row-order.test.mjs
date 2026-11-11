@@ -142,17 +142,20 @@ test("approved personnel report ordering retains the saved workbook row rank", a
   assert.match(sql, /records ORDER BY day DESC, created DESC, rank, id DESC/);
 });
 
-test("equipment report ordering keeps private drafts and includes project-wide submitted and approved records", async () => {
+test("equipment report ordering scopes all foreman rows to their author while preserving project-wide review", async () => {
   const { canonicalRowIds } = await serverModule();
   let sql;
   let bound;
   const executor = { prepare: statement => { sql = statement; return { bind: (...values) => { bound = values; return { all: async () => ({ results: [{ id: "2026-10-30/report-8-10" }, { id: "2026-10-29/approved-44" }] }) }; } }; } };
   assert.deepEqual(await canonicalRowIds("equipment-report-rows", 9, executor, { id: 7, role: "foreman", assignedSiteId: 9, permissions: rolePermissionTemplate("foreman") }), ["2026-10-30/report-8-10", "2026-10-29/approved-44"]);
-  assert.deepEqual(bound, [9, 7, 9]);
+  assert.deepEqual(bound, [9, 7, 9, 7]);
   assert.match(sql, /FROM equipment_report_rows row JOIN equipment_reports/);
   assert.match(sql, /origin\.approved_entry_id = entry\.id/);
-  assert.match(sql, /report\.owner_user_id = \?/);
-  assert.doesNotMatch(sql, /entry\.responsible_user_id = \?/);
+  const [foremanPendingSql, foremanPublishedSql] = sql.split("UNION ALL");
+  assert.match(foremanPendingSql, /AND report\.owner_user_id = \?/);
+  assert.doesNotMatch(foremanPendingSql, /OR report\.owner_user_id/);
+  assert.match(foremanPublishedSql, /AND entry\.responsible_user_id = \?/);
+  assert.equal((sql.match(/\?/g) ?? []).length, bound.length);
   assert.deepEqual(await canonicalRowIds("equipment-report-rows", 9, executor, { id: 8, role: "engineer", assignedSiteId: 9, permissions: rolePermissionTemplate("engineer") }), ["2026-10-30/report-8-10", "2026-10-29/approved-44"]);
   assert.deepEqual(bound, [9, 8, 9]);
   const [pendingSql, publishedSql] = sql.split("UNION ALL");

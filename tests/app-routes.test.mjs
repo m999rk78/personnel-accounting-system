@@ -9,6 +9,8 @@ test("maps every workspace section to a stable address", () => {
   assert.equal(workspaceUrl("equipment", "all", "2026-09-30", "2026-09"), "/reports/equipment?date=2026-09-30");
   assert.equal(workspaceUrl("timesheet", "all", "2026-10-01", "2026-10"), "/timesheets/workers?month=2026-10");
   assert.equal(workspaceUrl("equipmentTimesheet", "all", "2026-10-01", "2026-10"), "/timesheets/equipment?month=2026-10");
+  assert.equal(workspacePath("personnelStatistics"), "/statistics/workers");
+  assert.equal(workspacePath("equipmentStatistics"), "/statistics/equipment");
   assert.equal(workspacePath("employees"), "/settings/general/employees");
   assert.equal(workspacePath("auditLog"), "/settings/general/activity");
   assert.equal(workspacePath("accessRights"), "/settings/general/access");
@@ -35,6 +37,8 @@ test("restores a section and its period from the browser address", () => {
     recognized: true,
   });
   assert.equal(parseWorkspaceLocation("/unknown", "?date=not-a-date", "2026-10-01").recognized, false);
+  assert.equal(parseWorkspaceLocation("/statistics/workers/", "", "2026-10-01").view, "personnelStatistics");
+  assert.equal(parseWorkspaceLocation("/statistics/equipment", "", "2026-10-01").view, "equipmentStatistics");
   assert.equal(validDate("2026-02-29"), false);
   assert.equal(validDate("2026-02-28"), true);
   assert.equal(validMonth("2026-13"), false);

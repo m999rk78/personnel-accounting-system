@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
 import type { GridDirectoryDraft, GridEmployee, GridOption, GridPosition, GridPositionDraft, GridProjectEmployeeDraft } from "./AgDataGrids";
 import { CatalogSpreadsheetGrid, type CatalogColumn, type CatalogDraftSelectionActions } from "./CatalogSpreadsheetGrid";
 import { exactCustomSelectOption } from "./customSelectOptionMatch";
@@ -15,6 +15,7 @@ type AdapterProps<D> = {
   renderFooter?: (selection: CatalogDraftSelectionActions) => ReactNode;
 };
 type KeyedDraft = { key: string; id?: number };
+const emptyEmployees: GridEmployee[] = [];
 const normalize = (value: string) => value.trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/g, " ");
 
 function findEmployee(employees: GridEmployee[], value: string) {
@@ -68,29 +69,32 @@ type DirectoryGridProps = AdapterProps<GridDirectoryDraft> & {
 };
 
 export function DirectoryAgGrid(props: DirectoryGridProps) {
-  const employees = props.employees ?? [];
-  const employeeFor = (draft?: GridDirectoryDraft, item?: GridOption & { employeeId?: number }) => {
+  const employees = props.employees ?? emptyEmployees;
+  const employeeFor = useCallback((draft?: GridDirectoryDraft, item?: GridOption & { employeeId?: number }) => {
     const employeeId = draft?.employeeId || item?.employeeId;
     return employeeId ? employees.find(employee => employee.id === Number(employeeId)) : findEmployee(employees, draft?.name ?? item?.name ?? "");
-  };
+  }, [employees]);
   const toDraft = (item: GridOption & { employeeId?: number }): GridDirectoryDraft => {
     const employee = props.selectEmployee ? employeeFor(undefined, item) : undefined;
     return { key: `directory-${item.id}`, id: item.id, name: employee?.fullName ?? item.name, ...(employee ? { employeeId: String(employee.id) } : {}), ...(props.directoryEntity ? { entity: props.directoryEntity } : {}) };
   };
-  const columns: CatalogColumn<GridOption, GridDirectoryDraft>[] = [{
-    field: "name", headerName: props.selectEmployee ? "ФИО" : props.title,
-    minWidth: props.selectEmployee ? 250 : 260, initialFlex: props.selectEmployee ? 1.5 : 1, pinned: props.selectEmployee ? "left" : undefined,
-    value: (item, draft) => draft?.name ?? item?.name ?? "",
-    ...(props.selectEmployee ? {
-      editValue: (draft: GridDirectoryDraft) => draft.employeeId ?? "",
-      options: () => employees.map(employee => ({ value: String(employee.id), label: employee.fullName })),
-    } : {}),
-  }];
-  if (props.selectEmployee) {
-    for (const [field, headerName, minWidth, initialFlex] of [["employmentType", "Тип", 110, .65], ["department", "Отдел", 125, .75], ["position", "Должность", 210, 1.35]] as const) {
-      columns.push({ field, headerName, minWidth, initialFlex, editable: false, value: (item, draft) => employeeFor(draft, item)?.[field] ?? "—" });
+  const columns = useMemo(() => {
+    const result: CatalogColumn<GridOption, GridDirectoryDraft>[] = [{
+      field: "name", headerName: props.selectEmployee ? "ФИО" : props.title,
+      minWidth: props.selectEmployee ? 250 : 260, initialFlex: props.selectEmployee ? 1.5 : 1, pinned: props.selectEmployee ? "left" : undefined,
+      value: (item, draft) => draft?.name ?? item?.name ?? "",
+      ...(props.selectEmployee ? {
+        editValue: (draft: GridDirectoryDraft) => draft.employeeId ?? "",
+        options: () => employees.map(employee => ({ value: String(employee.id), label: employee.fullName })),
+      } : {}),
+    }];
+    if (props.selectEmployee) {
+      for (const [field, headerName, minWidth, initialFlex] of [["employmentType", "Тип", 110, .65], ["department", "Отдел", 125, .75], ["position", "Должность", 210, 1.35]] as const) {
+        result.push({ field, headerName, minWidth, initialFlex, editable: false, value: (item, draft) => employeeFor(draft, item)?.[field] ?? "—" });
+      }
     }
-  }
+    return result;
+  }, [props.selectEmployee, props.title, employees, employeeFor]);
   const patchDraft = (draft: GridDirectoryDraft, values: Record<string, string>) => {
     if (values.name === undefined) return draft;
     const name = values.name.trim();
@@ -126,11 +130,11 @@ type PositionGridProps = AdapterProps<GridPositionDraft> & {
 };
 
 export function PositionAgGrid(props: PositionGridProps) {
-  const columns: CatalogColumn<GridPosition, GridPositionDraft>[] = [
+  const columns = useMemo<CatalogColumn<GridPosition, GridPositionDraft>[]>(() => [
     { field: "employmentType", headerName: "Тип", minWidth: 110, initialFlex: .7, value: (record, draft) => draft?.employmentType ?? record?.employmentType ?? "", options: () => props.employmentTypes.map(option => ({ value: option.name, label: option.name })) },
     { field: "department", headerName: "Отдел", minWidth: 125, initialFlex: 1, value: (record, draft) => draft?.department ?? record?.department ?? "", options: () => props.departments.map(option => ({ value: option.name, label: option.name })) },
     { field: "position", headerName: "Должность", minWidth: 210, initialFlex: 2.2, value: (record, draft) => draft?.position ?? record?.position ?? "" },
-  ];
+  ], [props.employmentTypes, props.departments]);
   const patchDraft = (draft: GridPositionDraft, values: Record<string, string>) => {
     const next = { ...draft };
     for (const field of ["employmentType", "department"] as const) {
@@ -169,18 +173,21 @@ type ProjectEmployeeGridProps = AdapterProps<GridProjectEmployeeDraft> & {
 };
 
 export function ProjectEmployeeAgGrid(props: ProjectEmployeeGridProps) {
-  const employeeFor = (record?: GridEmployee, draft?: GridProjectEmployeeDraft) => draft ? props.allEmployees.find(employee => employee.id === Number(draft.employeeId)) : record;
-  const columns: CatalogColumn<GridEmployee, ProjectEmployeeDraft>[] = [{
-    field: "fullName", headerName: "ФИО", minWidth: 250, initialFlex: 1.5, pinned: "left", editable: record => !record,
-    value: (record, draft) => draft?.employeeQuery ?? record?.fullName ?? "", editValue: draft => draft.employeeId,
-    options: (draft, drafts) => {
-      const unavailable = new Set([...props.rows.map(employee => employee.id), ...drafts.filter(candidate => candidate.key !== draft.key).map(candidate => Number(candidate.employeeId))]);
-      return props.allEmployees.filter(employee => !unavailable.has(employee.id)).map(employee => ({ value: String(employee.id), label: employee.fullName }));
-    },
-  }];
-  for (const [field, headerName, minWidth, initialFlex] of [["employmentType", "Тип", 110, .6], ["department", "Отдел", 125, .75], ["position", "Должность", 210, 1.35]] as const) {
-    columns.push({ field, headerName, minWidth, initialFlex, editable: false, value: (record, draft) => employeeFor(record, draft)?.[field] ?? "—" });
-  }
+  const columns = useMemo(() => {
+    const employeeFor = (record?: GridEmployee, draft?: GridProjectEmployeeDraft) => draft ? props.allEmployees.find(employee => employee.id === Number(draft.employeeId)) : record;
+    const result: CatalogColumn<GridEmployee, ProjectEmployeeDraft>[] = [{
+      field: "fullName", headerName: "ФИО", minWidth: 250, initialFlex: 1.5, pinned: "left", editable: record => !record,
+      value: (record, draft) => draft?.employeeQuery ?? record?.fullName ?? "", editValue: draft => draft.employeeId,
+      options: (draft, drafts) => {
+        const unavailable = new Set([...props.rows.map(employee => employee.id), ...drafts.filter(candidate => candidate.key !== draft.key).map(candidate => Number(candidate.employeeId))]);
+        return props.allEmployees.filter(employee => !unavailable.has(employee.id)).map(employee => ({ value: String(employee.id), label: employee.fullName }));
+      },
+    }];
+    for (const [field, headerName, minWidth, initialFlex] of [["employmentType", "Тип", 110, .6], ["department", "Отдел", 125, .75], ["position", "Должность", 210, 1.35]] as const) {
+      result.push({ field, headerName, minWidth, initialFlex, editable: false, value: (record, draft) => employeeFor(record, draft)?.[field] ?? "—" });
+    }
+    return result;
+  }, [props.allEmployees, props.rows]);
   const patchDraft = (draft: ProjectEmployeeDraft, values: Record<string, string>) => {
     if (values.fullName === undefined) return draft;
     const value = values.fullName.trim();

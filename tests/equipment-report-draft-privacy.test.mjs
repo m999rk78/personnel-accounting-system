@@ -39,7 +39,7 @@ function database() {
         }
         if (sql.includes("FROM equipment_report_rows draft_row JOIN")) return rows.filter(row => values[0].includes(row.reportId));
         if (sql.includes("FROM equipment_timesheet_marks")) return [];
-        if (sql.includes("FROM equipment_entries entry") && sql.includes("FOR UPDATE OF entry")) return [];
+        if (sql.includes("FROM equipment_entries entry") && sql.includes("FOR UPDATE OF entry")) return entries.filter(entry => entry.id === values[0]).map(entry => ({ ...entry, revision: 1, reportId: null }));
         if (sql.includes("FROM equipment_entries entry")) return entries.filter(entry => !sql.includes("entry.responsible_user_id = ?") || entry.responsibleUserId === values.at(-1));
         throw new Error(`Unexpected query: ${sql}`);
       };
@@ -70,17 +70,34 @@ for (const role of ["engineer", "superadmin", "viewer"]) test(`${role}: own draf
   assert.deepEqual(rowQuery.values, [result.reports.map(report => report.id)]);
 });
 
-test("foremen see published project records while every private draft stays with its author", async () => {
+test("foremen see only their own reports and published entries, including in a date range", async () => {
   for (const id of [7, 8, 9]) {
     const db = database();
-    const result = await store.listEquipmentReports(db, actor("foreman", id), 7, null, null);
-    assert.equal(result.reports.length, 8);
-    assert.ok(result.reports.filter(report => ["draft", "rejected"].includes(report.status)).every(report => report.ownerUserId === id));
-    assert.equal(result.reports.filter(report => report.status === "submitted").length, 3);
-    assert.equal(result.reports.filter(report => report.status === "approved").length, 3);
-    assert.deepEqual(result.entries.map(entry => entry.responsibleUserId), [7, 8, 9]);
-    assert.match(db.queries.find(query => query.sql.includes("JOIN app_users owner")).sql, /report\.status IN \('approved', 'submitted'\) OR report\.owner_user_id = \?/);
+    const from = "2026-11-01", to = "2026-11-30";
+    const result = await store.listEquipmentReports(db, actor("foreman", id), 7, from, to);
+    const expectedIds = headers.filter(header => header.ownerUserId === id).map(header => header.id);
+    assert.deepEqual(result.reports.map(report => report.id), expectedIds);
+    assert.deepEqual(result.reports.flatMap(report => report.rows.map(row => row.reportId)), expectedIds);
+    assert.deepEqual(result.entries.map(entry => entry.responsibleUserId), [id]);
+    const headerQuery = db.queries.find(query => query.sql.includes("JOIN app_users owner"));
+    assert.match(headerQuery.sql, /AND report\.owner_user_id = \?\s+AND report\.status = ANY/);
+    assert.deepEqual(headerQuery.values, [7, from, to, id, ["draft", "rejected", "submitted", "approved"]]);
+    const entryQuery = db.queries.find(query => query.sql.includes("FROM equipment_entries entry"));
+    assert.match(entryQuery.sql, /AND entry\.responsible_user_id = \?/);
+    assert.deepEqual(entryQuery.values, [7, from, to, id]);
   }
+});
+
+test("foreman ownership restrictions remain when only approved reports may be viewed", async () => {
+  const user = actor("foreman");
+  for (const resource of ["workers_report", "equipment_report"]) for (const status of ["draft", "submitted"]) user.permissions[`${resource}_${status}`].view = false;
+  const db = database();
+  const result = await store.listEquipmentReports(db, user, 7, null, null);
+  assert.deepEqual(result.reports.map(report => report.id), [83]);
+  assert.deepEqual(result.entries.map(entry => entry.responsibleUserId), [user.id]);
+  const headerQuery = db.queries.find(query => query.sql.includes("JOIN app_users owner"));
+  assert.match(headerQuery.sql, /AND report\.owner_user_id = \?\s+AND report\.status = 'approved'/);
+  assert.deepEqual(headerQuery.values, [7, user.id, ["approved"]]);
 });
 
 test("viewer without pending permission receives no drafts, even their own", async () => {
@@ -102,4 +119,20 @@ test("foreign drafts cannot be saved, submitted, moved or prevalidated even by e
       reports: [{ ...base, key: "foreign-draft", rows: [] }] }), denied);
     assert.equal(db.queries.some(query => query.sql.includes("FROM equipment_report_rows")), false, "prevalidation must deny before reading private draft rows");
   }
+});
+
+test("foremen cannot alter another author's submitted or approved equipment reports, even with explicit edit grants", async () => {
+  const user = { ...actor("foreman"), permissions: rolePermissionTemplate("superadmin") };
+  const denied = error => error.status === 403 && error.code === "REPORT_FORBIDDEN";
+  for (const status of ["submitted", "approved"]) {
+    const header = headers.find(report => report.ownerUserId === 9 && report.status === status);
+    const base = { siteId: header.siteId, reportId: header.id, revision: header.revision, workDate: header.workDate };
+    await assert.rejects(store.mutateEquipmentReport(database(), user, { ...base, action: "save", rows: [] }), denied);
+    await assert.rejects(store.mutateEquipmentReport(database(), user, { ...base, action: "change-date", workDate: "2026-11-06" }), denied);
+    if (status === "submitted") await assert.rejects(store.mutateEquipmentReport(database(), user, { ...base, action: "approve" }), denied);
+  }
+  const entry = entries.find(row => row.responsibleUserId === 9);
+  const base = { siteId: entry.siteId, entryId: entry.id, revision: 1, workDate: entry.workDate };
+  await assert.rejects(store.mutateEquipmentReportEntry(database(), user, { ...base, action: "save-approved-entry", row: {} }), denied);
+  await assert.rejects(store.changeEquipmentReportEntryDate(database(), user, { ...base, action: "change-entry-date", workDate: "2026-11-06" }), denied);
 });

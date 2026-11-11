@@ -6,7 +6,7 @@ import { userRoleLabel } from "../userAccessModel";
 import { SidebarToggleButton } from "../SidebarToggleButton";
 import type { Site, CurrentUser, View, DirectoryFocus } from "./types";
 
-type AppIconName = "user" | "workersReport" | "equipmentReport" | "workersTimesheet" | "equipmentTimesheet" | "settings" | "generalSettings" | "projectSettings";
+type AppIconName = "user" | "workersReport" | "equipmentReport" | "workersTimesheet" | "equipmentTimesheet" | "statistics" | "settings" | "generalSettings" | "projectSettings";
 
 export function AppIcon({ name }: { name: AppIconName; }) {
   return <svg className="app-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -23,6 +23,7 @@ export function AppIcon({ name }: { name: AppIconName; }) {
     {name === "equipmentReport" && <><path d="M5 21h9M8 21V7h3v14M8 9l3 3-3 3 3 3-3 3" /><path d="M3 7h18M8 7l4-4h3l3 4M3 5v4" /><path d="M19 7v7M19 14v2.5a2 2 0 0 1-4 0" /></>}
     {name === "workersTimesheet" && <><rect x="3" y="4" width="18" height="17" rx="2" /><path d="M8 2v4M16 2v4M3 9h18" /><circle cx="9" cy="13" r="2" /><path d="M6 19c.4-2 1.4-3 3-3s2.6 1 3 3M15 15l1.5 1.5L20 13" /></>}
     {name === "equipmentTimesheet" && <><rect x="3" y="4" width="18" height="17" rx="2" /><path d="M8 2v4M16 2v4M3 9h18" /><circle cx="10" cy="15" r="3" /><path d="M10 11v1M10 18v1M6 15h1M13 15h1M7.2 12.2l.7.7M12.1 17.1l.7.7M12.8 12.2l-.7.7M7.9 17.1l-.7.7M16 16l1.5 1.5L21 14" /></>}
+    {name === "statistics" && <path d="M4 4v16h16M8 16v-4m5 4V8m5 8V5" />}
     {name === "settings" && <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.55v-.1A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.1 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H2.3V9.55h.1A1.7 1.7 0 0 0 4.1 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.56 3.7l.06.06A1.7 1.7 0 0 0 8.5 4.1a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1v-.1h4.05v.1A1.7 1.7 0 0 0 15 4.1a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.4 8.5a1.7 1.7 0 0 0 .6 1 1.7 1.7 0 0 0 1.1.4h.1v4.05h-.1A1.7 1.7 0 0 0 19.4 15Z" /></>}
     {name === "generalSettings" && <><path d="M4 7h9M17 7h3M4 17h3M11 17h9M4 12h4M12 12h8" /><circle cx="15" cy="7" r="2" /><circle cx="9" cy="17" r="2" /><circle cx="10" cy="12" r="2" /></>}
     {name === "projectSettings" && <><path d="M4 21h16M6 21V7l6-3 6 3v14M9 10h2M13 10h2M9 14h2M13 14h2M10 21v-3h4v3" /></>}
@@ -65,6 +66,7 @@ type WorkspaceSidebarProps = {
   mayViewWorkersTimesheet: boolean;
   mayViewEquipmentReport: boolean;
   mayViewEquipmentTimesheet: boolean;
+  statisticsView: "personnelStatistics" | "equipmentStatistics" | null;
   mayAccessGeneralSettings: boolean;
   mayAccessProjectSettings: boolean;
   view: View;
@@ -75,10 +77,11 @@ type WorkspaceSidebarProps = {
   openProfile: () => void;
 };
 
-export function WorkspaceSidebar({ sidebarOpen, toggleSidebar, sidebarToggleRef, visibleSites, siteId, activeSite, mayViewAllProjects, mayViewWorkersReport, mayViewWorkersTimesheet, mayViewEquipmentReport, mayViewEquipmentTimesheet, mayAccessGeneralSettings, mayAccessProjectSettings, view, navigateTo, fallbackView, changeSite, currentUser, openProfile }: WorkspaceSidebarProps) {
+export function WorkspaceSidebar({ sidebarOpen, toggleSidebar, sidebarToggleRef, visibleSites, siteId, activeSite, mayViewAllProjects, mayViewWorkersReport, mayViewWorkersTimesheet, mayViewEquipmentReport, mayViewEquipmentTimesheet, statisticsView, mayAccessGeneralSettings, mayAccessProjectSettings, view, navigateTo, fallbackView, changeSite, currentUser, openProfile }: WorkspaceSidebarProps) {
   const [equipmentOpen, setEquipmentOpen] = useState(true);
   const [personnelOpen, setPersonnelOpen] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(true);
+  const statisticsActive = view === "personnelStatistics" || view === "equipmentStatistics";
   return <aside className="sidebar" id="primary-sidebar">
     <div className="brand-project-row"><button type="button" className="brand" onClick={() => { setEquipmentOpen(true); setPersonnelOpen(true); navigateTo(fallbackView); }} aria-label="Открыть доступный раздел" title="Открыть доступный раздел"><img src="/tps-logo.svg" alt="" /></button>{mayViewAllProjects ? <ProjectSwitcher sites={visibleSites} value={siteId} onChange={changeSite} /> : <div className="project-fixed-card top-project-select" title={activeSite?.name ?? "Нет доступа к проектам"}>{activeSite?.name ?? "Нет доступа к проектам"}</div>}</div>
     <div className="sidebar-product-title"><span>Ресурсный отчёт</span><SidebarToggleButton expanded={sidebarOpen} onToggle={toggleSidebar} buttonRef={sidebarToggleRef} /></div>
@@ -90,6 +93,11 @@ export function WorkspaceSidebar({ sidebarOpen, toggleSidebar, sidebarToggleRef,
       {(mayViewEquipmentReport || mayViewEquipmentTimesheet) && <div className="nav-group">
         <button type="button" className="nav-heading" onClick={() => setEquipmentOpen((open) => !open)} aria-expanded={equipmentOpen} aria-controls="equipment-navigation" aria-label={equipmentOpen ? "Свернуть раздел «Техника»" : "Развернуть раздел «Техника»"}><span className="nav-heading-icon"><AppIcon name="equipmentReport" /></span><span>Техника</span><SidebarChevron open={equipmentOpen} /></button>
         {(equipmentOpen || !sidebarOpen) && <div className="nav-sub" id="equipment-navigation">{mayViewEquipmentReport && <button className={view === "equipment" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("equipment")} aria-label="Отчёт техники" title="Отчёт техники"><span className="nav-item-icon"><AppIcon name="equipmentReport" /></span>Отчёт техники</button>}{mayViewEquipmentTimesheet && <button className={view === "equipmentTimesheet" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("equipmentTimesheet")} aria-label="Табель техники" title="Табель техники"><span className="nav-item-icon"><AppIcon name="equipmentTimesheet" /></span>Табель техники</button>}</div>}
+      </div>}
+      {statisticsView && <div className="nav-group">
+        <button type="button" className={statisticsActive ? "nav-heading nav-section-link active" : "nav-heading nav-section-link"} onClick={() => { void navigateTo(statisticsActive ? view : statisticsView); }} aria-current={statisticsActive ? "page" : undefined} aria-label="Статистика" title="Статистика">
+          <span className="nav-heading-icon"><AppIcon name="statistics" /></span>Статистика
+        </button>
       </div>}
     </nav>
     <div className="sidebar-bottom">{(mayAccessGeneralSettings || mayAccessProjectSettings) && <div className="nav-group settings-group">

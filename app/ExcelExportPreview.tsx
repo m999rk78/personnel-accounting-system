@@ -200,14 +200,26 @@ export function ExcelExportPreviewPage() {
           selected = selectPersonnelTimesheetRange(originalTimesheet.workbook.dates, originalTimesheet.workbook.rows, originalTimesheet.workbook.dayTotals, start, end);
         } else {
           if (originalTimesheet.source?.kind !== "personnel-timesheet") throw new Error("Не удалось определить объект для загрузки другого месяца.");
-          const monthPayloads = await Promise.all(monthKeysInRange(start, end).map(async (month) => {
-            const query = new URLSearchParams({ siteId: String(originalTimesheet.source!.siteId), month });
-            const response = await fetch(`/api/timesheet?${query.toString()}`, { cache: "no-store" });
-            const result = await response.json() as PersonnelTimesheetMonthData & { error?: string };
-            if (!response.ok) throw new Error(result.error ?? `Не удалось загрузить табель за ${month}.`);
-            return result;
-          }));
-          selected = buildPersonnelTimesheetRange(monthPayloads, start, end);
+          const siteId = originalTimesheet.source.siteId;
+          const [monthPayloads, savedOrderIds] = await Promise.all([
+            Promise.all(monthKeysInRange(start, end).map(async (month) => {
+              const query = new URLSearchParams({ siteId: String(siteId), month });
+              const response = await fetch(`/api/timesheet?${query.toString()}`, { cache: "no-store" });
+              const result = await response.json() as PersonnelTimesheetMonthData & { error?: string };
+              if (!response.ok) throw new Error(result.error ?? `Не удалось загрузить табель за ${month}.`);
+              return result;
+            })),
+            (async () => {
+              const query = new URLSearchParams({ scope: "project-personnel", siteId: String(siteId) });
+              const response = await fetch(`/api/table-order?${query.toString()}`, { cache: "no-store" });
+              const result = await response.json() as { ids?: unknown; hasSavedOrder?: boolean; error?: string };
+              if (!response.ok) throw new Error(result.error ?? "Не удалось загрузить порядок сотрудников.");
+              if (!result.hasSavedOrder) return undefined;
+              if (!Array.isArray(result.ids)) throw new Error("Не удалось загрузить сохранённый порядок сотрудников.");
+              return result.ids.filter((id): id is number => Number.isSafeInteger(id) && id > 0);
+            })(),
+          ]);
+          selected = buildPersonnelTimesheetRange(monthPayloads, start, end, savedOrderIds);
         }
         const rows = selected.rows.map((row) => [
           row.employmentType,

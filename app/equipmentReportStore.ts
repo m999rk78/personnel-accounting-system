@@ -110,21 +110,23 @@ export async function listEquipmentReports(db: Executor, user: AuthUser, siteId:
     throw new EquipmentReportError("Укажите корректный период отчёта.");
   }
   const rangeFilter = `${from ? " AND report.work_date >= ?" : ""}${to ? " AND report.work_date <= ?" : ""}`;
+  const ownOnly = user.role === "foreman";
   const hidePending = !canViewPendingReportsFor(user);
-  const privateDrafts = !hidePending;
   const visibleStatuses = (["draft", "rejected", "submitted", "approved"] as const).filter(status => (!hidePending || status === "approved") && hasReportStatusPermission(user.permissions, "equipment_report", status, "view"));
-  const statusFilter = hidePending ? " AND report.status = 'approved'"
-    : privateDrafts ? " AND (report.status IN ('approved', 'submitted') OR report.owner_user_id = ?)" : "";
+  const ownerFilter = ownOnly ? " AND report.owner_user_id = ?" : "";
+  const statusFilter = hidePending ? " AND report.status = 'approved'" : ownOnly ? ""
+    : " AND (report.status IN ('approved', 'submitted') OR report.owner_user_id = ?)";
   const parameters = [siteId, ...(from ? [from] : []), ...(to ? [to] : [])];
-  const headers = await db.prepare(`${HEADER_SELECT} WHERE report.site_id = ? ${rangeFilter} ${statusFilter} AND report.status = ANY(?)
-    ORDER BY report.work_date DESC, report.id DESC LIMIT 5001`).bind(...parameters, ...(privateDrafts ? [user.id] : []), visibleStatuses).all<Header>();
+  const headers = await db.prepare(`${HEADER_SELECT} WHERE report.site_id = ? ${rangeFilter} ${ownerFilter} ${statusFilter} AND report.status = ANY(?)
+    ORDER BY report.work_date DESC, report.id DESC LIMIT 5001`).bind(...parameters, ...(ownOnly || !hidePending ? [user.id] : []), visibleStatuses).all<Header>();
   const visibleHeaders = headers.results.filter(report => {
     if (!visibleStatuses.includes(report.status)) return false;
+    if (ownOnly) return report.ownerUserId === user.id;
     if (hidePending) return report.status === "approved";
     return report.status === "approved" || report.status === "submitted" || report.ownerUserId === user.id;
   });
   if (visibleHeaders.length > 5000) throw new EquipmentReportError("В выбранном периоде слишком много отчётов. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
-  const entryFilter = `${from ? " AND entry.work_date >= ?" : ""}${to ? " AND entry.work_date <= ?" : ""}`;
+  const entryFilter = `${from ? " AND entry.work_date >= ?" : ""}${to ? " AND entry.work_date <= ?" : ""}${ownOnly ? " AND entry.responsible_user_id = ?" : ""}`;
   const entries = hasReportStatusPermission(user.permissions, "equipment_report", "approved", "view") ? await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
     entry.equipment_id AS equipmentId, entry.shift_id AS shiftId, entry.zone_id AS zoneId,
     entry.main_work_type_id AS mainWorkTypeId, entry.subwork_type_id AS subworkTypeId,
@@ -146,7 +148,7 @@ export async function listEquipmentReports(db: Executor, user: AuthUser, siteId:
     LEFT JOIN equipment_report_rows origin ON origin.approved_entry_id = entry.id
     WHERE entry.site_id = ? AND entry.deleted_at IS NULL ${entryFilter}
     ORDER BY entry.created_at DESC, origin.row_order, entry.id DESC LIMIT 20001`)
-    .bind(...parameters).all<EquipmentReportApprovedEntry>() : { results: [] as EquipmentReportApprovedEntry[] };
+    .bind(...parameters, ...(ownOnly ? [user.id] : [])).all<EquipmentReportApprovedEntry>() : { results: [] as EquipmentReportApprovedEntry[] };
   for (const entry of entries.results) if (!entry.equipmentName) entry.equipmentName = equipmentExcelName(entry);
   if (entries.results.length > 20000) throw new EquipmentReportError("В выбранном периоде больше 20 000 строк. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
   const rows = visibleHeaders.length ? await reportRowsStatement(db, visibleHeaders.map((report) => report.id)).all<EquipmentReportRow>() : { results: [] as EquipmentReportRow[] };
@@ -398,12 +400,13 @@ export async function mutateEquipmentReportEntry(database: PostgresDatabase, use
     if (!positiveId(payload.entryId) || !positiveId(payload.siteId) || !validEquipmentReportDate(payload.workDate)) throw new EquipmentReportError("Укажите запись, проект и дату отчёта.");
     await assertActiveSite(db, user, payload.siteId);
     const previous = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate, entry.equipment_id AS equipmentId,
-      entry.revision, source.report_id AS reportId FROM equipment_entries entry
+      entry.revision, source.report_id AS reportId, entry.responsible_user_id AS responsibleUserId FROM equipment_entries entry
       LEFT JOIN equipment_report_rows source ON source.approved_entry_id = entry.id
       WHERE entry.id = ? AND entry.deleted_at IS NULL
       ORDER BY entry.id FOR UPDATE OF entry`).bind(payload.entryId)
-      .first<{ id: number; siteId: number; workDate: string; equipmentId: number; revision: number; reportId: number | null }>();
+      .first<{ id: number; siteId: number; workDate: string; equipmentId: number; revision: number; reportId: number | null; responsibleUserId: number | null }>();
     if (!previous) throw new EquipmentReportError("Запись уже удалена. Обновите таблицу.", 409, "STALE_REPORT");
+    if (user.role === "foreman" && previous.responsibleUserId !== user.id) throw new EquipmentReportError("Прораб может изменять только свои отчёты.", 403, "REPORT_FORBIDDEN");
     if (previous.siteId !== payload.siteId || previous.workDate !== payload.workDate) throw new EquipmentReportError("Нельзя изменить проект или дату существующей записи.");
     if (previous.reportId) throw new EquipmentReportError("Запись относится к отчёту. Обновите таблицу и исправьте отчёт целиком.", 409, "STALE_REPORT");
     assertEquipmentReportRevision(previous.revision, payload.revision);
@@ -513,11 +516,12 @@ export async function changeEquipmentReportEntryDate(database: PostgresDatabase,
   return database.transaction(async db => {
     await assertActiveSite(db, user, payload.siteId);
     const previous = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
-      entry.equipment_id AS equipmentId, entry.revision, source.report_id AS reportId FROM equipment_entries entry
+      entry.equipment_id AS equipmentId, entry.revision, source.report_id AS reportId, entry.responsible_user_id AS responsibleUserId FROM equipment_entries entry
       LEFT JOIN equipment_report_rows source ON source.approved_entry_id = entry.id
       WHERE entry.id = ? AND entry.deleted_at IS NULL ORDER BY entry.id FOR UPDATE OF entry`).bind(payload.entryId)
-      .first<{ id: number; siteId: number; workDate: string; equipmentId: number; revision: number; reportId: number | null }>();
+      .first<{ id: number; siteId: number; workDate: string; equipmentId: number; revision: number; reportId: number | null; responsibleUserId: number | null }>();
     if (!previous || previous.siteId !== payload.siteId) throw new EquipmentReportError("Запись уже изменена. Обновите таблицу.", 409, "STALE_REPORT");
+    if (user.role === "foreman" && previous.responsibleUserId !== user.id) throw new EquipmentReportError("Прораб может изменять только свои отчёты.", 403, "REPORT_FORBIDDEN");
     if (previous.reportId) throw new EquipmentReportError("Запись относится к отчёту. Измените дату отчёта целиком.", 409, "STALE_REPORT");
     assertEquipmentReportRevision(previous.revision, payload.revision);
     const original = (await listEquipmentReports(db, user, payload.siteId, previous.workDate, previous.workDate)).entries.find(entry => entry.id === previous.id);

@@ -361,11 +361,12 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
   const orderedRowData = useMemo(() => rowOrder ? rowOrder.order(props.rowData ?? [], getRowOrderId) : props.rowData, [props.rowData, rowOrder, getRowOrderId]);
   const sourceColumns = props.columnDefs;
   const importedScope = importOrderScopes.has(rowOrder?.scope ?? "");
-  const importRank = useMemo(() => createImportOrderRank(props.rowData ?? [], rowOrder?.importIds ?? [], getRowOrderId), [props.rowData, rowOrder?.importIds, getRowOrderId]);
+  const importRank = useMemo(() => importedScope ? createImportOrderRank(props.rowData ?? [], rowOrder?.importIds ?? [], getRowOrderId) : null, [importedScope, props.rowData, rowOrder?.importIds, getRowOrderId]);
   const baseFilter = props.defaultColDef?.filter;
   const baseFilterParams = props.defaultColDef?.filterParams;
   const nativeFilters = Boolean(enterpriseFilters && api?.isModuleRegistered("MultiFilterModule") && api.isModuleRegistered("SetFilterModule"));
-  const orderedColumns = useMemo(() => {
+  // Refreshing the hidden import sort column must leave the filter components mounted.
+  const filterColumns = useMemo(() => {
     const enhanceColumn = (definition: ColDef<TData> | ColGroupDef<TData>): ColDef<TData> | ColGroupDef<TData> => {
       if ("children" in definition) return { ...definition, children: definition.children.map(enhanceColumn) };
       let column = definition;
@@ -381,22 +382,25 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       }
       return column.colId === "number" || column.field === "number" ? { ...column, valueGetter: (params: { node?: { rowIndex: number | null } | null }) => typeof params.node?.rowIndex === "number" ? params.node.rowIndex + 1 : "" } : column;
     };
-    const columns = (sourceColumns ?? []).map(enhanceColumn);
-    if (importedScope && !columns.some(column => !("children" in column) && column.colId === IMPORT_ORDER_COLUMN)) columns.push({
+    return (sourceColumns ?? []).map(enhanceColumn);
+  }, [sourceColumns, baseFilter, baseFilterParams, nativeFilters]);
+  const orderedColumns = useMemo(() => {
+    if (!importRank || filterColumns.some(column => !("children" in column) && column.colId === IMPORT_ORDER_COLUMN)) return filterColumns;
+    return [...filterColumns, {
       colId: IMPORT_ORDER_COLUMN, headerName: "Порядок импорта", hide: true, lockVisible: true, suppressColumnsToolPanel: true,
       filter: false, sortable: true, valueGetter: params => params.data ? importRank(params.data) : null,
       comparator: (left: number, right: number) => left - right,
-    });
-    return columns;
-  }, [sourceColumns, baseFilter, baseFilterParams, nativeFilters, importedScope, importRank]);
-  const lastImportActivation = useRef(0);
-  const importDefaultApplied = useRef<GridApi<TData> | null>(null);
+    } satisfies ColDef<TData>];
+  }, [filterColumns, importRank]);
   const importActivation = rowOrder?.importOrderRevision ?? 0;
+  // Opening a second view of the same project must not replay an earlier import.
+  const lastImportActivation = useRef(importActivation);
+  const importDefaultApplied = useRef<GridApi<TData> | null>(null);
   const importReady = rowOrder?.ready ?? false;
   const defaultImportSort = importedScope && Boolean(rowOrder?.hasImportOrder && !rowOrder.hasSavedOrder);
   useEffect(() => {
     if (!api || api.isDestroyed() || !api.getColumn(IMPORT_ORDER_COLUMN)) return;
-    const activated = lastImportActivation.current !== importActivation;
+    const activated = lastImportActivation.current < importActivation;
     lastImportActivation.current = importActivation;
     const firstLoad = importReady && importDefaultApplied.current !== api;
     if (firstLoad) importDefaultApplied.current = api;

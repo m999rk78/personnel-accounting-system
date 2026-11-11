@@ -364,7 +364,7 @@ test("separates the daily equipment report into foreman contributions", async ()
   assert.match(api, /hasReportStatusPermission\(authUser\.permissions, "equipment_report", "approved", entryId \? "update" : "create"\)/);
   assert.match(api, /payload\.action === "delete-entry"[\s\S]*hasReportStatusPermission\(authUser\.permissions, "equipment_report", "approved", "delete"\)/);
   assert.doesNotMatch(api, /Прораб[^\n]*(?:сегодняшн|только сегодня)/i);
-  assert.match(api, /const responsibleUserId = null/);
+  assert.match(api, /const responsibleUserId = authUser\.role === "foreman" \? authUser\.id : null/);
   assert.match(api, /ee\.responsible_user_id = \?/);
   assert.doesNotMatch(api, /Прораб может изменять только собственные строки отчёта назначенного проекта/);
   assert.doesNotMatch(api, /Прораб может удалять только собственные строки отчёта назначенного проекта/);

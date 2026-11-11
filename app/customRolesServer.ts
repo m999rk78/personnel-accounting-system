@@ -1,6 +1,7 @@
 import { getDatabase, type PostgresDatabase } from "../db/client";
 import { randomUUID } from "node:crypto";
-import { CustomRoleError, customRoleNameKey, inferCustomRoleBaseRole, inheritedCustomRoleStatusPermissions, managedDefaultRoleSeeds, normalizeCustomRoleInput, normalizeCustomRoleName, normalizeCustomRolePermissions, type CustomRole, type CustomRoleInput } from "./customRoles.ts";
+import { hasReportStatusPermission, STATISTICS_REPORT_RESOURCES } from "./permissionModel.ts";
+import { CustomRoleError, customRoleNameKey, inferCustomRoleBaseRole, inheritedCustomRoleStatusPermissions, inheritedCustomRoleStatisticsPermissions, managedDefaultRoleSeeds, normalizeCustomRoleInput, normalizeCustomRoleName, normalizeCustomRolePermissions, type CustomRole, type CustomRoleInput } from "./customRoles.ts";
 
 type Executor = Pick<PostgresDatabase, "prepare">;
 const schemaTasks = new WeakMap<PostgresDatabase, Promise<void>>();
@@ -57,9 +58,10 @@ function customRoleFromRow(row: CustomRoleRow): CustomRole | null {
     const original = typeof row.permissions === "string" ? JSON.parse(row.permissions) : row.permissions;
     const permissions = normalizeCustomRolePermissions(original, row.baseRole === "foreman" || row.baseRole === "engineer" || row.baseRole === "viewer" ? row.baseRole : undefined);
     const inheritedStatusPermissions = inheritedCustomRoleStatusPermissions(original);
+    const inheritedStatisticsPermissions = inheritedCustomRoleStatisticsPermissions(original);
     const baseRole = row.baseRole === "foreman" ? "foreman" : inferCustomRoleBaseRole(permissions);
     if (baseRole !== row.baseRole || !Number.isSafeInteger(row.id) || row.id < 1 || !Number.isSafeInteger(row.revision) || row.revision < 1) return null;
-    return { id: row.id, name: normalizeCustomRoleName(row.name), baseRole, permissions, revision: row.revision, ...(row.legacyRoleKey ? { legacyRoleKey: row.legacyRoleKey } : {}), ...(inheritedStatusPermissions.length ? { inheritedStatusPermissions } : {}) };
+    return { id: row.id, name: normalizeCustomRoleName(row.name), baseRole, permissions, revision: row.revision, ...(row.legacyRoleKey ? { legacyRoleKey: row.legacyRoleKey } : {}), ...(inheritedStatusPermissions.length ? { inheritedStatusPermissions } : {}), ...(inheritedStatisticsPermissions.length ? { inheritedStatisticsPermissions } : {}) };
   } catch { return null; }
 }
 const columns = "id, name, base_role AS baseRole, permissions, revision, legacy_role_key AS legacyRoleKey";
@@ -111,9 +113,20 @@ export async function updateCustomRole(input: CustomRoleInput & { id?: unknown; 
       if (!current) throw new CustomRoleError("Роль не найдена.", 404, "ROLE_NOT_FOUND");
       if (current.revision !== identity.revision) throw new CustomRoleError("Роль уже изменена другим пользователем. Обновите справочник.", 409, "ROLE_REVISION_CONFLICT");
       const baseRole = current.baseRole === "foreman" ? "foreman" : normalized.baseRole;
+      const permissions: Partial<CustomRole["permissions"]> = { ...normalized.permissions };
+      const previousRole = customRoleFromRow(current);
+      // A name or unrelated permission edit must not turn inherited statistics
+      // into an explicit grant that bypasses a user's legacy report restriction.
+      // If report access changes, preserve the statistics checkbox independently.
+      if (previousRole) for (const resource of previousRole.inheritedStatisticsPermissions ?? []) {
+        const report = STATISTICS_REPORT_RESOURCES[resource as keyof typeof STATISTICS_REPORT_RESOURCES];
+        const nextView = normalized.permissions[resource].view;
+        if (report && nextView === previousRole.permissions[resource].view
+          && nextView === hasReportStatusPermission(normalized.permissions, report, "approved", "view")) delete permissions[resource];
+      }
       const row = await db.prepare(`UPDATE custom_roles SET name = ?, name_key = ?, base_role = ?, permissions = ?::jsonb,
         revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND revision = ? AND active = 1 RETURNING ${columns}`)
-        .bind(normalized.name, normalized.nameKey, baseRole, JSON.stringify(normalized.permissions), identity.id, identity.revision).first<CustomRoleRow>();
+        .bind(normalized.name, normalized.nameKey, baseRole, JSON.stringify(permissions), identity.id, identity.revision).first<CustomRoleRow>();
       const role = row ? customRoleFromRow(row) : null;
       if (!role) throw new CustomRoleError("Не удалось сохранить роль.", 409, "ROLE_REVISION_CONFLICT");
       // Auth checks that a user's base role agrees with their custom template.

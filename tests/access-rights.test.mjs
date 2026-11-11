@@ -21,7 +21,7 @@ test("role templates provide safe defaults and allow granular overrides", () => 
   assert.equal(hasPermission(engineer, "access_rights", "view"), true);
   assert.equal(hasPermission(engineer, "access_rights", "update"), false);
   assert.equal(hasPermission(admin, "access_rights", "update"), true);
-  assert.equal(PERMISSION_CATALOG.filter(resource => !resource.parent).length, 14);
+  assert.equal(PERMISSION_CATALOG.filter(resource => !resource.parent).length, 16);
   assert.deepEqual(PERMISSION_CATALOG.filter(resource => resource.parent).map(resource => resource.key), ["workers_report_draft", "workers_report_submitted", "workers_report_approved", "equipment_report_draft", "equipment_report_submitted", "equipment_report_approved"]);
 
   const custom = normalizePermissionSet({ workers_report: { view: true, create: false, update: false, delete: false } });

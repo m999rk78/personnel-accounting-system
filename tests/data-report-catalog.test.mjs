@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { rolePermissionTemplate } from "../app/permissionModel.ts";
+import { emptyPermissionSet, normalizePermissionSet, rolePermissionTemplate } from "../app/permissionModel.ts";
 import { compileModuleGraph } from "./fixtures/compile-module-graph.mjs";
 
 const moduleUrl = code => `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
@@ -105,5 +105,21 @@ test("viewers can load authorized report references without synchronizing or wri
   assert.equal(response.status, 200);
   assert.deepEqual((await response.json()).sites.map(site => site.id), [7]);
   assert.equal(state.executed.length, 8);
+  assert.deepEqual(boundary.syncs, []);
+});
+
+test("statistics-only navigation exposes authorized projects without reports or directory access", async () => {
+  const user = actor("viewer");
+  user.permissions = normalizePermissionSet({ ...emptyPermissionSet(), workers_statistics: { view: true }, equipment_statistics: { view: true } });
+  const state = fixture(user);
+  const response = await handleGET(request("navigation"));
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { sites: [{ id: 7, name: "Доступный проект" }] });
+  assert.equal(state.executed.length, 1);
+  assert.equal(state.batches.length, 0);
+  for (const scope of ["report-catalog", "workspace", "entries", "carryover", "export-range", "settings"]) {
+    assert.equal((await handleGET(request(scope))).status, 403, scope);
+  }
+  assert.equal(state.executed.length, 1, "A statistics grant must not query reports or their reference datasets");
   assert.deepEqual(boundary.syncs, []);
 });

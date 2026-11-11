@@ -1,5 +1,5 @@
 import { getDatabase } from "../db/client";
-import { limitPermissionsToRole, normalizePermissionSet, rolePermissionTemplate, type PermissionResource, type PermissionSet, type ResourcePermission } from "./permissionModel";
+import { hasReportStatusPermission, limitPermissionsToRole, normalizePermissionSet, rolePermissionTemplate, STATISTICS_REPORT_RESOURCES, type PermissionResource, type PermissionSet, type ResourcePermission } from "./permissionModel";
 import type { ProjectAccess, UserRole } from "./roles";
 import type { CustomRole } from "./customRoles";
 
@@ -43,7 +43,7 @@ type PermissionRow = {
   canDelete: number | boolean;
 };
 
-export async function loadEffectivePermissions(userId: number, role: UserRole, projectAccess?: ProjectAccess, executor: PermissionExecutor = getDatabase(), customRole?: Pick<CustomRole, "id" | "baseRole" | "permissions" | "inheritedStatusPermissions"> | null, legacyPendingReports = false): Promise<{ permissions: PermissionSet; permissionsCustomized: boolean }> {
+export async function loadEffectivePermissions(userId: number, role: UserRole, projectAccess?: ProjectAccess, executor: PermissionExecutor = getDatabase(), customRole?: Pick<CustomRole, "id" | "baseRole" | "permissions" | "inheritedStatusPermissions" | "inheritedStatisticsPermissions"> | null, legacyPendingReports = false): Promise<{ permissions: PermissionSet; permissionsCustomized: boolean }> {
   if (customRole && customRole.baseRole !== role) throw new Error("Пользовательская роль не соответствует учётной записи.");
   await ensurePermissionSchema();
   const result = await executor.prepare(`SELECT resource, can_view AS "canView", can_create AS "canCreate",
@@ -58,7 +58,16 @@ export async function loadEffectivePermissions(userId: number, role: UserRole, p
     // explicitly configured on the user or their role.
     if (!overrides[resource] && (!customRole || customRole.inheritedStatusPermissions?.includes(resource))) fallback[resource].view = true;
   }
-  return { permissions: limitPermissionsToRole(role, normalizePermissionSet(overrides, fallback), projectAccess), permissionsCustomized: result.results.length > 0 };
+  const permissions = normalizePermissionSet(overrides, fallback);
+  // Legacy user/role records inherit the access they had before statistics
+  // gained its own permissions. Explicit grants and denials are independent.
+  for (const [key, report] of Object.entries(STATISTICS_REPORT_RESOURCES)) {
+    const resource = key as keyof typeof STATISTICS_REPORT_RESOURCES;
+    if (!overrides[resource] && (!customRole || customRole.inheritedStatisticsPermissions?.includes(resource))) {
+      permissions[resource].view = hasReportStatusPermission(permissions, report, "approved", "view");
+    }
+  }
+  return { permissions: limitPermissionsToRole(role, permissions, projectAccess), permissionsCustomized: result.results.length > 0 };
 }
 
 export async function saveUserPermissions(userId: number, permissions: PermissionSet, updatedByUserId: number, executor?: PermissionExecutor) {

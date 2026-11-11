@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
-import { emptyPermissionSet, rolePermissionTemplate } from "../app/permissionModel.ts";
+import { emptyPermissionSet, patchPermissionSet, rolePermissionTemplate } from "../app/permissionModel.ts";
 
 const sourceUrl = source => `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const fileUrl = path => new URL(path, import.meta.url).href;
@@ -13,9 +13,9 @@ async function compile(path, replacements) {
 }
 let fixtureNumber = 0;
 async function harness() {
-  const rows = [], queries = [], users = [];
+  const rows = [], queries = [], users = [], permissionRows = [];
   const db = {
-    rows, queries, users,
+    rows, queries, users, permissionRows,
     async transaction(callback) {
       const before = structuredClone({ rows, users });
       try { return await callback(db); }
@@ -33,6 +33,7 @@ async function harness() {
           rows.push(row); result = [row];
         } else if (sql.includes("FROM custom_roles")) result = rows.filter(row => row.active === 1 && (!values.length || row.id === values[0])).sort((a,b) => a.nameKey.localeCompare(b.nameKey));
         else if (sql.includes("pg_advisory_xact_lock")) result = [];
+        else if (sql.includes("FROM user_permissions WHERE user_id")) result = permissionRows.filter(row => row.userId === values[0]);
         else if (sql.startsWith("UPDATE custom_roles SET name")) {
           if (rows.some(row => row.nameKey === values[1] && row.id !== values[4])) throw Object.assign(new Error("unique violation"), { code: "23505" });
           const row = rows.find(row => row.id === values[4] && row.revision === values[5] && row.active === 1);
@@ -53,13 +54,16 @@ async function harness() {
     export function assertSameOrigin(request){if(request.headers.get('origin')!==new URL(request.url).origin)throw new Error('Invalid origin');}`);
   const boundary = await import(boundaryUrl);
   const modelUrl = fileUrl("../app/customRoles.ts");
-  const serverUrl = await compile("../app/customRolesServer.ts", { "../db/client": boundaryUrl, "./customRoles.ts": modelUrl });
+  const serverUrl = await compile("../app/customRolesServer.ts", { "../db/client": boundaryUrl, "./customRoles.ts": modelUrl, "./permissionModel.ts": fileUrl("../app/permissionModel.ts") });
   const route = await import(await compile("../app/api/roles/route.ts", {
     "../../../db/client": boundaryUrl, "../../auth": boundaryUrl, "../../customRoles": modelUrl,
     "../../customRolesServer": serverUrl, "../../permissionModel": fileUrl("../app/permissionModel.ts"), "../../roles": fileUrl("../app/roles.ts"),
     "../../auditLog": sourceUrl("export async function withAuditTrail(request,handler){return handler(request);}"),
   }));
-  return { db, route, as(user) { boundary.configure(user,db); } };
+  const { loadEffectivePermissions } = await import(await compile("../app/permissions.ts", {
+    "../db/client": boundaryUrl, "./permissionModel": fileUrl("../app/permissionModel.ts"),
+  }));
+  return { db, route, loadEffectivePermissions, as(user) { boundary.configure(user,db); } };
 }
 const actor = (overrides = {}) => ({ id: 4, fullName: "Тестовый администратор", role: "superadmin", assignedSiteId: null,
   projectAccess: { mode: "all", siteIds: [] }, permissions: rolePermissionTemplate("superadmin"), ...overrides });
@@ -125,6 +129,90 @@ test("role rename uniqueness and malformed mutations fail without altering exist
   assert.equal(response.status, 409); assert.equal((await response.json()).code, "ROLE_NAME_EXISTS");
   assert.equal(h.db.rows[0].name, "Первый шаблон"); assert.equal(h.db.rows[0].revision, 1);
   for (const method of ["PATCH", "DELETE"]) for (const payload of [null, [], {}, { roleId: 1, revision: 0 }, { roleId: "1", revision: 1 }]) assert.equal((await h.route[method](changeRequest(method, payload))).status, 400);
+});
+
+test("renaming a legacy role and changing unrelated rights preserve individual statistics restrictions", async () => {
+  const h = await harness(); h.as(actor());
+  const permissions = rolePermissionTemplate("engineer");
+  delete permissions.workers_statistics; delete permissions.equipment_statistics;
+  h.db.rows.push({ id: 1, name: "Прежний инженер", nameKey: "прежний инженер", baseRole: "engineer", permissions, revision: 1, active: 1 });
+  h.db.permissionRows.push({ userId: 8, resource: "workers_report_approved", canView: 0, canCreate: 0, canUpdate: 0, canDelete: 0 });
+  let [role] = (await (await h.route.GET(new Request("http://localhost/api/roles"))).json()).roles;
+  for (const changeOtherRight of [false, true]) {
+    const next = structuredClone(role.permissions);
+    if (changeOtherRight) next.positions.update = true;
+    const response = await h.route.PATCH(changeRequest("PATCH", { roleId: role.id, revision: role.revision, name: "Переименованный инженер", permissions: next }));
+    assert.equal(response.status, 200);
+    ({ role } = await response.json());
+    assert.deepEqual(role.inheritedStatisticsPermissions, ["workers_statistics", "equipment_statistics"]);
+    assert.equal(Object.hasOwn(h.db.rows[0].permissions, "workers_statistics"), false);
+    assert.equal(Object.hasOwn(h.db.rows[0].permissions, "equipment_statistics"), false);
+    const effective = await h.loadEffectivePermissions(8, "engineer", undefined, h.db, role);
+    assert.equal(effective.permissions.workers_report_approved.view, false);
+    assert.equal(effective.permissions.workers_statistics.view, false);
+    assert.equal(effective.permissions.equipment_statistics.view, true);
+    assert.equal(effective.permissions.positions.update, changeOtherRight);
+  }
+});
+
+test("changing a legacy statistics checkbox persists an explicit independent choice", async () => {
+  for (const [resource, approvedReport] of [["workers_statistics", "workers_report_approved"], ["equipment_statistics", "equipment_report_approved"]]) {
+    const h = await harness(); h.as(actor());
+    const permissions = rolePermissionTemplate("engineer");
+    delete permissions.workers_statistics; delete permissions.equipment_statistics;
+    h.db.rows.push({ id: 1, name: "Прежний инженер", nameKey: "прежний инженер", baseRole: "engineer", permissions, revision: 1, active: 1 });
+    h.db.permissionRows.push({ userId: 8, resource: approvedReport, canView: 0, canCreate: 0, canUpdate: 0, canDelete: 0 });
+    let [role] = (await (await h.route.GET(new Request("http://localhost/api/roles"))).json()).roles;
+    for (const enabled of [false, true, true]) {
+      const next = structuredClone(role.permissions);
+      next[resource].view = enabled;
+      const response = await h.route.PATCH(changeRequest("PATCH", { roleId: role.id, revision: role.revision, name: `Статистика ${role.revision}`, permissions: next }));
+      assert.equal(response.status, 200);
+      ({ role } = await response.json());
+      assert.equal(h.db.rows[0].permissions[resource].view, enabled);
+      assert.equal(role.inheritedStatisticsPermissions.includes(resource), false);
+      const effective = await h.loadEffectivePermissions(8, "engineer", undefined, h.db, role);
+      assert.equal(effective.permissions[approvedReport].view, false);
+      assert.equal(effective.permissions[resource].view, enabled);
+    }
+  }
+});
+
+test("changing legacy report visibility preserves the unchanged independent statistics checkbox", async () => {
+  for (const [resource, report] of [["workers_statistics", "workers_report"], ["equipment_statistics", "equipment_report"]]) {
+    for (const initiallyAllowed of [false, true]) {
+      const h = await harness(); h.as(actor());
+      const permissions = patchPermissionSet(rolePermissionTemplate("engineer"), report, "view", initiallyAllowed);
+      delete permissions.workers_statistics; delete permissions.equipment_statistics;
+      h.db.rows.push({ id: 1, name: "Прежний инженер", nameKey: "прежний инженер", baseRole: "engineer", permissions, revision: 1, active: 1 });
+      const [role] = (await (await h.route.GET(new Request("http://localhost/api/roles"))).json()).roles;
+      assert.equal(role.permissions[resource].view, initiallyAllowed);
+      const next = patchPermissionSet(role.permissions, report, "view", !initiallyAllowed);
+      assert.equal(next[resource].view, initiallyAllowed, "The report checkbox must leave statistics unchanged");
+      const response = await h.route.PATCH(changeRequest("PATCH", { roleId: role.id, revision: role.revision, name: role.name, permissions: next }));
+      assert.equal(response.status, 200);
+      const { role: saved } = await response.json();
+      assert.equal(h.db.rows[0].permissions[resource].view, initiallyAllowed);
+      assert.equal(saved.inheritedStatisticsPermissions.includes(resource), false);
+      const effective = await h.loadEffectivePermissions(8, "engineer", undefined, h.db, saved);
+      assert.equal(effective.permissions[resource].view, initiallyAllowed);
+      assert.equal(effective.permissions[report].view, !initiallyAllowed);
+    }
+  }
+});
+
+test("new role statistics choices are explicit even when they match report visibility", async () => {
+  const h = await harness(); h.as(actor());
+  const permissions = rolePermissionTemplate("engineer");
+  const response = await h.route.POST(request({ name: "Новый инженер", permissions }));
+  assert.equal(response.status, 201);
+  const { role } = await response.json();
+  assert.equal(role.inheritedStatisticsPermissions, undefined);
+  for (const resource of ["workers_statistics", "equipment_statistics"]) assert.equal(h.db.rows[0].permissions[resource].view, true);
+  h.db.permissionRows.push({ userId: 8, resource: "workers_report_approved", canView: 0, canCreate: 0, canUpdate: 0, canDelete: 0 });
+  const effective = await h.loadEffectivePermissions(8, "engineer", undefined, h.db, role);
+  assert.equal(effective.permissions.workers_statistics.view, true);
+  assert.equal(effective.permissions.workers_report_approved.view, false);
 });
 
 test("role endpoints require authentication and default viewers cannot list or create roles", async () => {

@@ -79,16 +79,41 @@ for (const role of ["engineer", "superadmin", "viewer"]) test(`${role}: own draf
   assert.deepEqual(rowQuery.values, [result.reports.map(report => report.id)]);
 });
 
-test("foremen see published project records while every private draft stays with its author", async () => {
+test("foremen see only their own personnel reports and published records in every status", async () => {
   for (const id of [7, 8, 9]) {
     const db = database();
-    const result = await store.listPersonnelReports(db, actor("foreman", id), 7, null, null);
-    assert.equal(result.reports.length, 8);
-    assert.ok(result.reports.filter(report => ["draft", "rejected"].includes(report.status)).every(report => report.ownerUserId === id));
-    assert.equal(result.reports.filter(report => report.status === "submitted").length, 3);
-    assert.equal(result.reports.filter(report => report.status === "approved").length, 3);
-    assert.deepEqual(result.entries.map(entry => entry.responsibleUserId), [7, 8, 9]);
-    assert.match(db.queries.find(query => query.sql.includes("JOIN app_users owner")).sql, /report\.status IN \('approved', 'submitted'\) OR report\.owner_user_id = \?/);
+    const result = await store.listPersonnelReports(db, actor("foreman", id), 7, "2026-11-01", "2026-11-30");
+    const own = headers.filter(report => report.ownerUserId === id);
+    assert.deepEqual(result.reports.map(report => report.id), own.map(report => report.id));
+    assert.ok(result.reports.every(report => report.rows.every(row => row.employeeId === id * 100)));
+    assert.deepEqual(result.entries.map(entry => entry.responsibleUserId), [id]);
+    const headerQuery = db.queries.find(query => query.sql.includes("JOIN app_users owner"));
+    assert.match(headerQuery.sql, /AND report\.owner_user_id = \?/);
+    assert.deepEqual(headerQuery.values, [7, "2026-11-01", "2026-11-30", id, ["draft", "rejected", "submitted", "approved"]]);
+    const entryQuery = db.queries.find(query => query.sql.includes("FROM placement_entries entry"));
+    assert.match(entryQuery.sql, /AND entry\.responsible_user_id = \?/);
+    assert.deepEqual(entryQuery.values, [7, "2026-11-01", "2026-11-30", id]);
+  }
+});
+
+test("a foreman with only approved view still sees just their own approved report", async () => {
+  const user = actor("foreman");
+  for (const resource of ["workers_report_draft", "workers_report_submitted", "equipment_report_draft", "equipment_report_submitted"]) user.permissions[resource].view = false;
+  const result = await store.listPersonnelReports(database(), user, 7, null, null);
+  assert.deepEqual(result.reports.map(report => report.id), [83]);
+  assert.deepEqual(result.entries.map(entry => entry.responsibleUserId), [user.id]);
+});
+
+test("a foreman cannot edit or review foreign submitted or approved reports with an expanded status grant", async () => {
+  const user = actor("foreman");
+  user.permissions = rolePermissionTemplate("superadmin");
+  const denied = error => error.status === 403 && error.code === "REPORT_FORBIDDEN";
+  for (const status of ["submitted", "approved"]) {
+    const header = headers.find(report => report.ownerUserId === 9 && report.status === status);
+    const base = { siteId: 7, reportId: header.id, workDate: header.workDate, revision: header.revision };
+    await assert.rejects(store.mutatePersonnelReport(database(), user, { ...base, action: "save", rows: [] }), denied);
+    await assert.rejects(store.mutatePersonnelReportDate(database(), user, { ...base, action: "change-date", workDate: "2026-11-06" }), denied);
+    if (status === "submitted") await assert.rejects(store.mutatePersonnelReport(database(), user, { ...base, action: "approve" }), denied);
   }
 });
 
@@ -113,14 +138,24 @@ test("foreign drafts cannot be saved, submitted, moved or prevalidated even by e
   }
 });
 
-test("both report row-order APIs filter private draft identities for every role label", async () => {
+test("both report row-order APIs keep drafts private and scope every foreman row to its owner", async () => {
   for (const user of [actor("engineer"), actor("superadmin"), actor("viewer"), actor("foreman")]) {
     for (const scope of ["personnel-report-rows", "equipment-report-rows"]) {
       const queries = [];
       const db = { prepare(sql) { return { bind(...values) { return { async all() { queries.push({ sql, values }); return { results: [] }; } }; } }; } };
       await order.canonicalRowIds(scope, 7, db, user);
-      assert.match(queries[0].sql, /AND \(report\.status = 'submitted' OR report\.owner_user_id = \?\)/);
-      assert.deepEqual(queries[0].values, [7, user.id, 7]);
+      const { sql, values } = queries[0];
+      const [pending, approved] = sql.split("UNION ALL");
+      if (user.role === "foreman") {
+        assert.match(pending, /AND report\.owner_user_id = \?/);
+        assert.doesNotMatch(pending, /OR report\.owner_user_id/);
+        assert.match(approved, /AND entry\.responsible_user_id = \?/);
+        assert.deepEqual(values, [7, user.id, 7, user.id]);
+      } else {
+        assert.match(pending, /AND \(report\.status = 'submitted' OR report\.owner_user_id = \?\)/);
+        assert.doesNotMatch(approved, /entry\.responsible_user_id/);
+        assert.deepEqual(values, [7, user.id, 7]);
+      }
     }
   }
 });

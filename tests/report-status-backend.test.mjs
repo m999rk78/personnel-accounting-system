@@ -63,18 +63,24 @@ for (const [label, resource, workflow, store, buffer] of [
     assert.throws(() => next(user, identity("submitted"), "reopen"), denied);
   });
 
-  test(`${label}: explicit status rights allow every role to edit published reports, but never foreign drafts`, () => {
+  test(`${label}: status grants preserve ownership boundaries for foremen and for private drafts`, () => {
     for (const role of ["foreman", "viewer", "engineer", "superadmin"]) {
       const user = actor(role);
       user.permissions = rolePermissionTemplate("superadmin");
-      assert.doesNotThrow(() => save(user, identity("approved", 9)));
-      assert.doesNotThrow(() => save(user, identity("submitted", 9)));
-      assert.equal(next(user, identity("submitted", 9), "approve"), "approved");
+      const accessibleOwner = role === "foreman" ? user.id : 9;
+      assert.doesNotThrow(() => save(user, identity("approved", accessibleOwner)));
+      assert.doesNotThrow(() => save(user, identity("submitted", accessibleOwner)));
+      assert.equal(next(user, identity("submitted", accessibleOwner), "approve"), "approved");
+      if (role === "foreman") {
+        assert.throws(() => save(user, identity("approved", 9)), denied);
+        assert.throws(() => save(user, identity("submitted", 9)), denied);
+        assert.throws(() => next(user, identity("submitted", 9), "approve"), denied);
+      }
       assert.throws(() => save(user, identity("draft", 9)), denied);
       assert.throws(() => next(user, identity("draft", 9), "submit"), denied);
       assert.doesNotThrow(() => buffer[`assert${label}ReportDraftBufferAccess`](user, 7));
       user.permissions[`${resource}_approved`].update = false;
-      assert.throws(() => save(user, identity("approved", 9)), denied);
+      assert.throws(() => save(user, identity("approved", accessibleOwner)), denied);
     }
   });
 

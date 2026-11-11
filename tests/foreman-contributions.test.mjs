@@ -69,11 +69,12 @@ test("returns ownership, revision, shared usage, and foreman progress with repor
   ]);
 
   assert.match(api, /pe\.responsible_user_id AS responsibleUserId, responsible\.full_name AS responsibleUserName, pe\.revision/);
-  assert.match(reads, /const responsibleUserId = undefined/);
+  assert.match(reads, /const responsibleUserId = authUser\.role === "foreman" \? authUser\.id : undefined/);
   assert.match(api, /function employeeUsageStatement\(workDate: string, siteId: number, user: AuthUser\)/);
   assert.match(reads, /employeeUsageStatement\(workDate, siteId, authUser\)/);
   assert.match(api, /assignment\.site_id = \? AND assignment\.active = 1[\s\S]*UNION[\s\S]*historical\.site_id = \?/);
-  assert.match(api, /function foremanProgressStatement\(siteId: number, workDate: string\)/);
+  assert.match(api, /function foremanProgressStatement\(siteId: number, workDate: string, responsibleUserId\?: number\)/);
+  assert.match(reads, /foremanProgressStatement\(siteId, workDate, responsibleUserId\)/);
   assert.match(api, /contribution\.status = 'submitted' THEN 'submitted'[\s\S]*contribution\.status = 'draft' THEN 'draft' ELSE 'not_started'/);
   assert.match(reads, /employeeUsage: canViewApproved \? employeeUsage\.results : \[\]/);
   assert.match(reads, /foremanProgress:.*foremanProgress\.results/);
@@ -82,7 +83,9 @@ test("returns ownership, revision, shared usage, and foreman progress with repor
   assert.throws(() => placement.assertPlacementOwnership(owner, [entry]), error => error.status === 403);
   owner.permissions.workers_report_approved.update = true;
   placement.assertPlacementOwnership(owner, [entry]);
-  placement.assertPlacementOwnership(owner, [{ ...entry, responsibleUserId: 18 }]);
+  assert.throws(() => placement.assertPlacementOwnership(owner, [{ ...entry, responsibleUserId: 18 }]), error => error.status === 403 && error.code === "ENTRY_OWNERSHIP_FORBIDDEN");
+  const engineer = { ...owner, role: "engineer", permissions: rolePermissionTemplate("engineer") };
+  placement.assertPlacementOwnership(engineer, [{ ...entry, responsibleUserId: 18 }]);
   assert.throws(() => placement.assertPlacementOwnership(owner, [{ ...entry, siteId: 2 }]), error => error.status === 403 && error.code === "ENTRY_OWNERSHIP_FORBIDDEN");
   placement.assertEntryRevisions([{ id: 1, revision: 2 }], [entry]);
   assert.throws(() => placement.assertEntryRevisions([{ id: 1, revision: 1 }], [entry]), error => error.status === 409 && error.code === "STALE_ENTRY");

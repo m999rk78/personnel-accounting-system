@@ -163,11 +163,23 @@ for (const role of ["foreman", "viewer"]) test(`${role} cannot delete approved r
 
 for (const role of ["foreman", "viewer"]) test(`${role} can delete approved rows when that permission is explicitly granted`, async () => {
   const db = fixture(), user = actor(role);
+  if (role === "foreman") user.id = 9;
   user.permissions = rolePermissionTemplate("superadmin");
   user.permissions.workers_report.update = false;
   user.permissions.workers_report_approved.update = false;
   assert.deepEqual(await deletePersonnelReportApprovedRows(db, user, request(target(501))), { deletedEntryIds: [501] });
   assert.equal(db.state().entries.find(row => row.id === 501).deletedAt, changedAt);
+});
+
+test("a foreman with the deletion grant cannot delete another author's approved rows", async () => {
+  const user = actor("foreman");
+  user.permissions = rolePermissionTemplate("superadmin");
+  for (const row of [target(501), target(504)]) {
+    const db = fixture(), before = db.state();
+    await assert.rejects(deletePersonnelReportApprovedRows(db, user, request(row)), rejectCode("REPORT_FORBIDDEN", 403));
+    assert.deepEqual(db.writes, []);
+    assert.deepEqual(db.state(), before);
+  }
 });
 
 for (const permission of ["delete", "view"]) test(`engineer without ${permission} permission cannot delete approved rows`, async () => {

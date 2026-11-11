@@ -123,7 +123,7 @@ export function reportTimesheetMarksStatement(siteId: number, workDate: string) 
     ORDER BY employee_id`).bind(siteId, workDate);
 }
 
-export function foremanProgressStatement(siteId: number, workDate: string) {
+export function foremanProgressStatement(siteId: number, workDate: string, responsibleUserId?: number) {
   return env.DB.prepare(`SELECT foreman.id AS foremanId, foreman.full_name AS foremanName,
     CASE WHEN contribution.status = 'submitted' THEN 'submitted'
       WHEN COUNT(entry.id) > 0 OR contribution.status = 'draft' THEN 'draft' ELSE 'not_started' END AS status,
@@ -136,13 +136,13 @@ export function foremanProgressStatement(siteId: number, workDate: string) {
     LEFT JOIN placement_entries entry
       ON entry.responsible_user_id = foreman.id AND entry.site_id = ? AND entry.work_date = ? AND entry.deleted_at IS NULL
       AND UPPER(TRIM(entry.employment_type_snapshot)) = 'ОПР'
-    WHERE (foreman.active = 1 AND foreman.role = 'foreman' AND (
+    WHERE ((foreman.active = 1 AND foreman.role = 'foreman' AND (
       EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = foreman.id AND access.all_projects = 1)
       OR EXISTS (SELECT 1 FROM user_project_access_sites grant_site WHERE grant_site.user_id = foreman.id AND grant_site.site_id = ?)
       OR (NOT EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = foreman.id) AND foreman.assigned_site_id = ?)))
-      OR contribution.foreman_id IS NOT NULL
+      OR contribution.foreman_id IS NOT NULL) ${responsibleUserId ? "AND foreman.id = ?" : ""}
     GROUP BY foreman.id, foreman.full_name, contribution.status, contribution.submitted_at
-    ORDER BY foreman.full_name`).bind(siteId, workDate, siteId, workDate, siteId, siteId);
+    ORDER BY foreman.full_name`).bind(siteId, workDate, siteId, workDate, siteId, siteId, ...(responsibleUserId ? [responsibleUserId] : []));
 }
 
 export function reportEmployeesStatement(siteId: number) {
@@ -346,7 +346,8 @@ export function existingPlacementEntriesStatement(db: DatabaseExecutor, ids: num
 }
 
 export function assertPlacementOwnership(user: AuthUser, entries: ExistingPlacementEntry[], action: PermissionAction = "update") {
-  if (entries.some((entry) => !canManagePlacement(user, entry.siteId, entry.workDate, action))) {
+  if (entries.some((entry) => !canManagePlacement(user, entry.siteId, entry.workDate, action)
+    || (user.role === "foreman" && entry.responsibleUserId !== user.id))) {
     throw new PlacementRequestError("Нет доступа к строкам отчёта или проекту.", 403, "ENTRY_OWNERSHIP_FORBIDDEN");
   }
 }

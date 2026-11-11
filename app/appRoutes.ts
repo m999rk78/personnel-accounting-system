@@ -1,4 +1,4 @@
-export type WorkspaceView = "placement" | "equipment" | "timesheet" | "equipmentTimesheet" | "equipmentRegistry" | "projectEquipment" | "employees" | "positions" | "projects" | "auditLog" | "accessRights" | "directories" | "settings" | "projectSettings" | "projectEmployees" | "users";
+export type WorkspaceView = "placement" | "equipment" | "timesheet" | "equipmentTimesheet" | "personnelStatistics" | "equipmentStatistics" | "equipmentRegistry" | "projectEquipment" | "employees" | "positions" | "projects" | "auditLog" | "accessRights" | "directories" | "settings" | "projectSettings" | "projectEmployees" | "users";
 
 export type WorkspaceDirectoryFocus = "all" | "sites" | "employmentType" | "department" | "position" | "shift" | "zone" | "mainWorkType" | "subworkType" | "master";
 
@@ -17,6 +17,8 @@ const ROUTES: Array<{ path: string; view: WorkspaceView; directoryFocus?: Worksp
   { path: "/reports/equipment", view: "equipment" },
   { path: "/timesheets/workers", view: "timesheet" },
   { path: "/timesheets/equipment", view: "equipmentTimesheet" },
+  { path: "/statistics/workers", view: "personnelStatistics" },
+  { path: "/statistics/equipment", view: "equipmentStatistics" },
   { path: "/settings/general", view: "settings" },
   { path: "/settings/general/employees", view: "employees" },
   { path: "/settings/general/equipment", view: "equipmentRegistry" },
@@ -86,6 +88,8 @@ export function workspaceTitle(view: WorkspaceView, directoryFocus: WorkspaceDir
   if (view === "equipment") return "Отчёт техники";
   if (view === "timesheet") return "Табель рабочих";
   if (view === "equipmentTimesheet") return "Табель техники";
+  if (view === "personnelStatistics") return "Статистика персонала";
+  if (view === "equipmentStatistics") return "Статистика техники";
   if (view === "settings") return "Общие настройки";
   if (view === "projectSettings") return "Настройки проекта";
   if (view === "employees") return "Сотрудники";

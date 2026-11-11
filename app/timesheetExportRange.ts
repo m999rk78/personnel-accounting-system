@@ -1,5 +1,6 @@
 import type { EquipmentTimesheetExportRow, PersonnelTimesheetExportRow } from "./placementXlsx";
 import { orderPersonnelTimesheetEmployees } from "./personnelTimesheetOrder.ts";
+import { orderRowsByIds } from "./tableRowOrder.ts";
 
 export type PersonnelTimesheetMonthData = {
   employees: Array<{ id: number; fullName: string; employmentType: string; department: string; position: string; timesheetOrder?: number | null }>;
@@ -85,7 +86,7 @@ function isEquipmentDowntime(entry: EquipmentTimesheetMonthData["entries"][numbe
   return entry.subworkTypeName.trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/g, " ").includes("простой");
 }
 
-export function buildPersonnelTimesheetRange(months: PersonnelTimesheetMonthData[], start: string, end: string) {
+export function buildPersonnelTimesheetRange(months: PersonnelTimesheetMonthData[], start: string, end: string, savedOrderIds?: readonly number[]) {
   const dates = dateKeysInRange(start, end);
   const employees = new Map<number, PersonnelTimesheetMonthData["employees"][number]>();
   const entries = new Map<string, PersonnelTimesheetMonthData["entries"][number]>();
@@ -95,7 +96,11 @@ export function buildPersonnelTimesheetRange(months: PersonnelTimesheetMonthData
     for (const entry of month.entries) entries.set(personnelCellKey(entry.employeeId, entry.workDate), entry);
     for (const mark of month.marks) marks.set(personnelCellKey(mark.employeeId, mark.workDate), mark);
   }
-  const rows = orderPersonnelTimesheetEmployees(Array.from(employees.values()))
+  const roster = Array.from(employees.values());
+  const orderedEmployees = savedOrderIds === undefined
+    ? orderPersonnelTimesheetEmployees(roster)
+    : orderRowsByIds(roster, savedOrderIds, employee => employee.id);
+  const rows = orderedEmployees
     .map((employee): PersonnelTimesheetExportRow => {
       const reportTracked = employee.employmentType.trim().toLocaleUpperCase("ru-RU") === "ОПР";
       const dailyTimesheetHours: number[] = [];

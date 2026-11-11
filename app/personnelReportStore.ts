@@ -114,21 +114,23 @@ export async function listPersonnelReports(db: Executor, user: AuthUser, siteId:
     throw new PersonnelReportError("Укажите корректный период отчёта.");
   }
   const rangeFilter = `${from ? " AND report.work_date >= ?" : ""}${to ? " AND report.work_date <= ?" : ""}`;
+  const ownOnly = user.role === "foreman";
   const hidePending = !canViewPendingReportsFor(user);
-  const privateDrafts = !hidePending;
+  const privateDrafts = !ownOnly && !hidePending;
   const visibleStatuses = (["draft", "rejected", "submitted", "approved"] as const).filter(status => (!hidePending || status === "approved") && hasReportStatusPermission(user.permissions, "workers_report", status, "view"));
-  const statusFilter = hidePending ? " AND report.status = 'approved'"
+  const statusFilter = ownOnly ? " AND report.owner_user_id = ?" : hidePending ? " AND report.status = 'approved'"
     : privateDrafts ? " AND (report.status IN ('approved', 'submitted') OR report.owner_user_id = ?)" : "";
   const entryParameters = [siteId, ...(from ? [from] : []), ...(to ? [to] : [])];
   const headers = await db.prepare(`${HEADER_SELECT} WHERE report.site_id = ? ${rangeFilter} ${statusFilter} AND report.status = ANY(?)
-    ORDER BY report.work_date DESC, report.id DESC LIMIT 5001`).bind(...entryParameters, ...(privateDrafts ? [user.id] : []), visibleStatuses).all<Header>();
+    ORDER BY report.work_date DESC, report.id DESC LIMIT 5001`).bind(...entryParameters, ...(ownOnly || privateDrafts ? [user.id] : []), visibleStatuses).all<Header>();
   const visibleHeaders = headers.results.filter(report => {
     if (!visibleStatuses.includes(report.status)) return false;
+    if (ownOnly) return report.ownerUserId === user.id;
     if (hidePending) return report.status === "approved";
     return report.status === "approved" || report.status === "submitted" || report.ownerUserId === user.id;
   });
   if (visibleHeaders.length > 5000) throw new PersonnelReportError("В выбранном периоде слишком много отчётов. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
-  const entryFilter = `${from ? " AND entry.work_date >= ?" : ""}${to ? " AND entry.work_date <= ?" : ""}`;
+  const entryFilter = `${from ? " AND entry.work_date >= ?" : ""}${to ? " AND entry.work_date <= ?" : ""}${ownOnly ? " AND entry.responsible_user_id = ?" : ""}`;
   const entries = hasReportStatusPermission(user.permissions, "workers_report", "approved", "view") ? await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
     entry.employee_id AS employeeId, entry.shift_id AS shiftId, entry.zone_id AS zoneId,
     entry.main_work_type_id AS mainWorkTypeId, entry.subwork_type_id AS subworkTypeId, entry.master_id AS masterId,
@@ -149,7 +151,7 @@ export async function listPersonnelReports(db: Executor, user: AuthUser, siteId:
     WHERE entry.site_id = ? AND entry.deleted_at IS NULL
       AND UPPER(TRIM(COALESCE(NULLIF(entry.employment_type_snapshot, ''), employee.employment_type))) = 'ОПР' ${entryFilter}
     ORDER BY entry.created_at DESC, origin.row_order, entry.id DESC LIMIT 20001`)
-    .bind(...entryParameters).all<PersonnelReportApprovedEntry>() : { results: [] as PersonnelReportApprovedEntry[] };
+    .bind(...entryParameters, ...(ownOnly ? [user.id] : [])).all<PersonnelReportApprovedEntry>() : { results: [] as PersonnelReportApprovedEntry[] };
   if (entries.results.length > 20000) throw new PersonnelReportError("В выбранном периоде больше 20 000 строк. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
   const rows = visibleHeaders.length ? await reportRowsStatement(db, visibleHeaders.map((report) => report.id)).all<PersonnelReportRow>() : { results: [] as PersonnelReportRow[] };
   if (rows.results.length > 20000) throw new PersonnelReportError("В выбранном периоде больше 20 000 строк черновиков. Сузьте период.", 413, "REPORT_RANGE_TOO_LARGE");
@@ -496,15 +498,17 @@ export async function mutatePersonnelReportEntryDate(database: PostgresDatabase,
     await assertActiveSite(db, user, payload.siteId);
     const previous = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
       entry.employee_id AS employeeId, entry.hours, entry.revision, source.report_id AS reportId,
+      entry.responsible_user_id AS responsibleUserId,
       COALESCE(NULLIF(entry.employee_name_snapshot, ''), employee.full_name) AS employeeName
       FROM placement_entries entry JOIN employees employee ON employee.id = entry.employee_id
       LEFT JOIN personnel_report_rows source ON source.approved_entry_id = entry.id
       WHERE entry.id = ? AND entry.deleted_at IS NULL
         AND UPPER(TRIM(COALESCE(NULLIF(entry.employment_type_snapshot, ''), employee.employment_type))) = 'ОПР'
       ORDER BY entry.id FOR UPDATE OF entry`).bind(payload.entryId)
-      .first<{ id: number; siteId: number; workDate: string; employeeId: number; hours: number; revision: number; reportId: number | null; employeeName: string }>();
+      .first<{ id: number; siteId: number; workDate: string; employeeId: number; hours: number; revision: number; reportId: number | null; employeeName: string; responsibleUserId: number | null }>();
     if (!previous) throw new PersonnelReportError("Запись уже удалена. Обновите таблицу.", 409, "STALE_REPORT");
     if (previous.siteId !== payload.siteId) throw new PersonnelReportError("Нельзя изменить проект существующей записи.", 403, "REPORT_FORBIDDEN");
+    if (user.role === "foreman" && previous.responsibleUserId !== user.id) throw new PersonnelReportError("Прорабу доступны только свои записи.", 403, "REPORT_FORBIDDEN");
     if (previous.reportId) throw new PersonnelReportError("Запись относится к отчёту. Обновите таблицу и измените дату отчёта целиком.", 409, "STALE_REPORT");
     assertPersonnelReportRevision(previous.revision, payload.revision);
     if (previous.workDate !== payload.workDate) {
@@ -531,15 +535,16 @@ export async function mutatePersonnelReportEntry(database: PostgresDatabase, use
     if (!positiveId(payload.entryId) || !positiveId(payload.siteId) || !validPersonnelReportDate(payload.workDate)) throw new PersonnelReportError("Укажите запись, проект и дату отчёта.");
     await assertActiveSite(db, user, payload.siteId);
     const previous = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate, entry.employee_id AS employeeId,
-      entry.revision, source.report_id AS reportId FROM placement_entries entry
+      entry.revision, entry.responsible_user_id AS responsibleUserId, source.report_id AS reportId FROM placement_entries entry
       JOIN employees employee ON employee.id = entry.employee_id
       LEFT JOIN personnel_report_rows source ON source.approved_entry_id = entry.id
       WHERE entry.id = ? AND entry.deleted_at IS NULL
         AND UPPER(TRIM(COALESCE(NULLIF(entry.employment_type_snapshot, ''), employee.employment_type))) = 'ОПР'
       ORDER BY entry.id FOR UPDATE OF entry`).bind(payload.entryId)
-      .first<{ id: number; siteId: number; workDate: string; employeeId: number; revision: number; reportId: number | null }>();
+      .first<{ id: number; siteId: number; workDate: string; employeeId: number; revision: number; reportId: number | null; responsibleUserId: number | null }>();
     if (!previous) throw new PersonnelReportError("Запись уже удалена. Обновите таблицу.", 409, "STALE_REPORT");
     if (previous.siteId !== payload.siteId || previous.workDate !== payload.workDate) throw new PersonnelReportError("Нельзя изменить проект или дату существующей записи.");
+    if (user.role === "foreman" && previous.responsibleUserId !== user.id) throw new PersonnelReportError("Прорабу доступны только свои записи.", 403, "REPORT_FORBIDDEN");
     if (previous.reportId) throw new PersonnelReportError("Запись относится к отчёту. Обновите таблицу и исправьте отчёт целиком.", 409, "STALE_REPORT");
     assertPersonnelReportRevision(previous.revision, payload.revision);
     const rows = normalizePersonnelReportRows([payload.row]);
@@ -584,27 +589,29 @@ export async function deletePersonnelReportApprovedRows(database: PostgresDataba
   return database.transaction(async db => {
     await assertActiveSite(db, user, payload.siteId);
     // Match save/date-change lock order, and acquire every report before any entry.
-    const reports = reportIds.length ? await db.prepare(`SELECT id, site_id AS siteId, work_date AS workDate, status, revision
+    const reports = reportIds.length ? await db.prepare(`SELECT id, site_id AS siteId, work_date AS workDate, status, revision, owner_user_id AS ownerUserId
       FROM personnel_reports WHERE id = ANY(?) ORDER BY id FOR UPDATE`).bind(reportIds)
-      .all<Pick<PersonnelReport, "id" | "siteId" | "workDate" | "status" | "revision">>() : { results: [] };
+      .all<Pick<PersonnelReport, "id" | "siteId" | "workDate" | "status" | "revision" | "ownerUserId">>() : { results: [] };
     if (reports.results.length !== reportIds.length) throw new PersonnelReportError("Один из отчётов уже изменён. Обновите таблицу.", 409, "STALE_REPORT");
     const reportsById = new Map(reports.results.map(report => [report.id, report]));
     for (const report of reports.results) {
       if (report.siteId !== payload.siteId) throw new PersonnelReportError("Нет доступа к строкам другого проекта.", 403, "REPORT_FORBIDDEN");
+      if (user.role === "foreman" && report.ownerUserId !== user.id) throw new PersonnelReportError("Прорабу доступны только свои отчёты.", 403, "REPORT_FORBIDDEN");
       if (report.status !== "approved") throw new PersonnelReportError("Состояние отчёта изменилось. Обновите таблицу.", 409, "STALE_REPORT");
       assertPersonnelReportRevision(report.revision, expectedReports.get(report.id));
     }
     const entries = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
-      entry.employee_id AS employeeId, entry.revision, source.id AS reportRowId, source.report_id AS reportId
+      entry.employee_id AS employeeId, entry.revision, entry.responsible_user_id AS responsibleUserId, source.id AS reportRowId, source.report_id AS reportId
       FROM placement_entries entry JOIN employees employee ON employee.id = entry.employee_id
       LEFT JOIN personnel_report_rows source ON source.approved_entry_id = entry.id
       WHERE entry.id = ANY(?) AND entry.deleted_at IS NULL
         AND UPPER(TRIM(COALESCE(NULLIF(entry.employment_type_snapshot, ''), employee.employment_type))) = 'ОПР'
       ORDER BY entry.id FOR UPDATE OF entry`).bind(entryIds)
-      .all<{ id: number; siteId: number; workDate: string; employeeId: number; revision: number; reportRowId: number | null; reportId: number | null }>();
+      .all<{ id: number; siteId: number; workDate: string; employeeId: number; revision: number; responsibleUserId: number | null; reportRowId: number | null; reportId: number | null }>();
     if (entries.results.length !== entryIds.length) throw new PersonnelReportError("Одна из записей уже удалена или изменена. Обновите таблицу.", 409, "STALE_REPORT");
     for (const entry of entries.results) {
       if (entry.siteId !== payload.siteId) throw new PersonnelReportError("Нет доступа к строкам другого проекта.", 403, "REPORT_FORBIDDEN");
+      if (user.role === "foreman" && entry.responsibleUserId !== user.id) throw new PersonnelReportError("Прорабу доступны только свои записи.", 403, "REPORT_FORBIDDEN");
       const requested = selected.get(entry.id)!;
       assertPersonnelReportRevision(entry.revision, requested.revision);
       if ((entry.reportId ?? undefined) !== requested.reportId) throw new PersonnelReportError("Запись относится к другому отчёту. Обновите таблицу.", 409, "STALE_REPORT");

@@ -1,4 +1,4 @@
-import type { ProjectAccess, UserRole } from "./roles.ts";
+import { isUserRole, type ProjectAccess, type UserRole } from "./roles.ts";
 
 export const PERMISSION_ACTIONS = ["view", "create", "update", "delete"] as const;
 export type PermissionAction = typeof PERMISSION_ACTIONS[number];
@@ -14,6 +14,8 @@ export const PERMISSION_RESOURCES = [
   "equipment_report_approved",
   "workers_timesheet",
   "equipment_timesheet",
+  "workers_statistics",
+  "equipment_statistics",
   "employees",
   "equipment_registry",
   "positions",
@@ -32,13 +34,17 @@ export type PermissionSet = Record<PermissionResource, ResourcePermission>;
 export type ReportPermissionResource = "workers_report" | "equipment_report";
 export type ReportPermissionStatus = "draft" | "rejected" | "submitted" | "approved";
 export const REPORT_PERMISSION_RESOURCES: readonly ReportPermissionResource[] = ["workers_report", "equipment_report"];
+export const STATISTICS_REPORT_RESOURCES = {
+  workers_statistics: "workers_report",
+  equipment_statistics: "equipment_report",
+} as const;
 export function reportStatusPermissionResource(resource: ReportPermissionResource, status: ReportPermissionStatus): PermissionResource {
   return `${resource}_${status === "rejected" ? "draft" : status}`;
 }
 
 export type PermissionResourceDefinition = {
   key: PermissionResource;
-  group: "reports" | "timesheets" | "general" | "project";
+  group: "reports" | "timesheets" | "statistics" | "general" | "project";
   title: string;
   description: string;
   actions: PermissionAction[];
@@ -49,6 +55,7 @@ export type PermissionResourceDefinition = {
 export const PERMISSION_GROUP_LABELS: Record<PermissionResourceDefinition["group"], string> = {
   reports: "Отчёты",
   timesheets: "Табели",
+  statistics: "Статистика",
   general: "Общие настройки",
   project: "Настройки проекта",
 };
@@ -71,6 +78,8 @@ export const PERMISSION_CATALOG: PermissionResourceDefinition[] = [
   { key: "equipment_report_approved", parent: "equipment_report", shortTitle: "Подтверждённые", group: "reports", title: "Отчёт техники — Подтверждённые", description: "Добавление — подтверждение новых отчётов. Редактирование и удаление — исправление учтённых записей.", actions: [...PERMISSION_ACTIONS] },
   { key: "workers_timesheet", group: "timesheets", title: "Табель рабочих", description: "Месячные отметки и часы сотрудников.", actions: [...PERMISSION_ACTIONS] },
   { key: "equipment_timesheet", group: "timesheets", title: "Табель техники", description: "Рабочие часы и простой техники.", actions: [...PERMISSION_ACTIONS] },
+  { key: "workers_statistics", group: "statistics", title: "Статистика персонала", description: "Сводные часы по зонам из подтверждённых отчётов персонала в доступных проектах.", actions: ["view"] },
+  { key: "equipment_statistics", group: "statistics", title: "Статистика техники", description: "Рабочие часы и простой по зонам из подтверждённых отчётов техники в доступных проектах.", actions: ["view"] },
   { key: "employees", group: "general", title: "Сотрудники", description: "Общий кадровый справочник и проверка Битрикс24.", actions: [...PERMISSION_ACTIONS] },
   { key: "equipment_registry", group: "general", title: "Реестр техники", description: "Единый реестр техники всех проектов.", actions: [...PERMISSION_ACTIONS] },
   { key: "positions", group: "general", title: "Список должностей", description: "Типы, отделы и должности сотрудников.", actions: [...PERMISSION_ACTIONS] },
@@ -96,6 +105,9 @@ function grant(set: PermissionSet, resource: PermissionResource, actions: Permis
 
 export function rolePermissionTemplate(role: UserRole): PermissionSet {
   const set = emptyPermissionSet();
+  if (!isUserRole(role)) return set;
+  grant(set, "workers_statistics", ["view"]);
+  grant(set, "equipment_statistics", ["view"]);
   if (role === "foreman") {
     grant(set, "workers_report");
     grant(set, "equipment_report");
@@ -124,13 +136,16 @@ export function rolePermissionTemplate(role: UserRole): PermissionSet {
   return set;
 }
 
-export function normalizePermissionSet(input: Partial<Record<PermissionResource, Partial<ResourcePermission>>>, fallback?: PermissionSet): PermissionSet {
+export function normalizePermissionSet(input: Partial<Record<PermissionResource, Partial<ResourcePermission>>>, fallback?: Partial<PermissionSet>): PermissionSet {
   const normalized = emptyPermissionSet();
   for (const definition of PERMISSION_CATALOG) {
     const source = input[definition.key];
     // A legacy matrix has only the report's general row. Prefer the role's
     // status defaults when supplied, otherwise preserve that legacy grant.
-    const fallbackRow = fallback?.[definition.key] ?? (definition.parent ? normalized[definition.parent] : undefined);
+    const statisticsReport = STATISTICS_REPORT_RESOURCES[definition.key as keyof typeof STATISTICS_REPORT_RESOURCES];
+    const fallbackRow = fallback?.[definition.key] ?? (definition.parent ? normalized[definition.parent]
+      : statisticsReport ? { view: hasReportStatusPermission(normalized, statisticsReport, "approved", "view"), create: false, update: false, delete: false }
+      : undefined);
     for (const action of PERMISSION_ACTIONS) normalized[definition.key][action] = source?.[action] ?? fallbackRow?.[action] ?? false;
     for (const action of PERMISSION_ACTIONS) if (!definition.actions.includes(action)) normalized[definition.key][action] = false;
     if (PERMISSION_ACTIONS.some((action) => action !== "view" && normalized[definition.key][action])) normalized[definition.key].view = true;

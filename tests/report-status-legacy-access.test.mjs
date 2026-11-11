@@ -75,6 +75,34 @@ test("legacy personnel reads and exports cannot disclose hidden approved rows or
   assert.deepEqual(db.writes, []);
 });
 
+test("legacy personnel report reads, progress and exports bind only the current foreman as owner", async () => {
+  const queries = [], db = database(), date = "2026-11-09";
+  const user = { ...actor(), role: "foreman", permissions: permissions.rolePermissionTemplate("foreman") };
+  const statements = await functions("../app/server/data/placement.ts", ["placementEntriesStatement", "placementEntriesForRangeStatement", "foremanProgressStatement"], {
+    env: { DB: { prepare(sql) {
+      const statement = { bind(...values) { queries.push({ sql, values }); return statement; }, async all() { return { results: [] }; } };
+      return statement;
+    } } },
+  });
+  const { handleGET } = await functions("../app/server/data/readWorkspace.ts", ["handleGET"], {
+    ...roles, ...permissions, ...statements, getAuthUser: async () => user, ensureDatabaseInitialized: async () => {}, asPositiveInteger: value => Number(value) || null,
+    todayInMoscow: () => date, validDate: value => /^\d{4}-\d{2}-\d{2}$/.test(value), forbidden: () => Response.json({}, { status: 403 }), env: { DB: db },
+    syncProjectMasters: async () => {}, reportCatalogStatements: () => Array.from({ length: 8 }, () => db.prepare("catalog")),
+    ...Object.fromEntries(["filledDatesStatement", "reportSubmissionStatement", "employeeUsageStatement", "reportTimesheetMarksStatement"].map(name => [name, () => db.prepare(name)])),
+  });
+  for (const scope of ["entries", "workspace", "export-range"]) {
+    queries.length = 0;
+    const response = await handleGET(new Request(`http://localhost/api/data?siteId=7&scope=${scope}&date=${date}`));
+    assert.equal(response.status, 200);
+    assert.match(queries[0].sql, /AND pe\.responsible_user_id = \?/);
+    assert.deepEqual(queries[0].values, scope === "export-range" ? [7, date, date, user.id] : [7, date, user.id]);
+    if (scope !== "export-range") {
+      assert.match(queries[1].sql, /AND foreman\.id = \?/);
+      assert.equal(queries[1].values.at(-1), user.id);
+    }
+  }
+});
+
 test("equipment daily reads hide approved rows while the separately authorized month still aggregates them", async () => {
   const user = actor(), db = database(); disableStatus(user, "equipment_report", "approved"); disableStatus(user, "equipment_report", "submitted");
   const { handleGET } = await functions("../app/api/equipment/route.ts", ["handleGET", "positiveInteger", "validDate", "validMonth", "nextMonthStart", "errorResponse", "equipmentAccessPayload"], {
@@ -93,6 +121,63 @@ test("equipment daily reads hide approved rows while the separately authorized m
   assert.equal(response.status, 200); body = await response.json();
   assert.equal(body.entries[0].hours, 8, "Timesheet grant remains an independent accounting view");
   assert.deepEqual(db.writes, []);
+});
+
+test("legacy equipment daily reads and exports are own-only for foremen without narrowing timesheets", async () => {
+  let user;
+  const queries = [];
+  const entries = [{ id: 101, responsibleUserId: 17, workDate: "2026-11-09" }, { id: 102, responsibleUserId: 18, workDate: "2026-11-08" }];
+  const progress = entries.map(entry => ({ foremanId: entry.responsibleUserId }));
+  const db = {
+    prepare(sql) {
+      let values = [];
+      const own = id => values.at(-1) === id;
+      const statement = { bind(...params) { values = params; return statement; }, async all() {
+        queries.push({ sql, values });
+        if (sql.includes("FROM equipment_entries ee")) return { results: entries.filter(entry => !sql.includes("AND ee.responsible_user_id = ?") || own(entry.responsibleUserId)) };
+        if (sql.includes("SELECT DISTINCT work_date")) return { results: entries.filter(entry => !sql.includes("AND responsible_user_id = ?") || own(entry.responsibleUserId)) };
+        if (sql.includes("FROM app_users foreman")) return { results: progress.filter(item => !sql.includes("AND foreman.id = ?") || own(item.foremanId)) };
+        if (sql.includes("SELECT status = 'submitted' AS submitted")) return { results: [{ submitted: false }] };
+        if (sql.includes("SELECT TRUE AS submitted")) return { results: [{ submitted: true }] };
+        return { results: [] };
+      } };
+      return statement;
+    },
+    async readBatch(statements) { return Promise.all(statements.map(statement => statement.all())); },
+  };
+  const { handleGET } = await functions("../app/api/equipment/route.ts", ["handleGET", "positiveInteger", "validDate", "validMonth", "nextMonthStart", "errorResponse", "equipmentAccessPayload", "equipmentForemanProgressStatement"], {
+    ...roles, ...permissions, getAuthUser: async () => user, getDatabase: () => db, ensureEquipmentSchema: async () => {}, resolveSite: async () => ({ siteId: 7, site: { name: "Учебный проект" } }),
+    equipmentTimesheetUnitsStatement: () => db.prepare("month units"),
+  });
+  const base = "http://localhost/api/equipment?siteId=7&date=2026-11-09&month=2026-11";
+  async function get(query) {
+    queries.length = 0;
+    const response = await handleGET(new Request(`${base}&${query}`));
+    assert.equal(response.status, 200);
+    return response.json();
+  }
+  for (const role of ["foreman", "engineer"]) {
+    user = { ...actor(), role, permissions: permissions.rolePermissionTemplate(role) };
+    user.permissions.equipment_timesheet.view = true;
+    const ownOnly = role === "foreman";
+    const expectedOwners = ownOnly ? [17] : [17, 18];
+    const daily = await get("scope=project&view=daily&section=daily");
+    assert.deepEqual(daily.entries.map(entry => entry.responsibleUserId), expectedOwners);
+    assert.deepEqual(daily.filledDates, ownOnly ? ["2026-11-09"] : ["2026-11-09", "2026-11-08"]);
+    assert.deepEqual(daily.foremanProgress.map(item => item.foremanId), expectedOwners);
+    assert.equal(daily.reportSubmitted, !ownOnly);
+    const published = queries.find(query => query.sql.includes("FROM equipment_entries ee"));
+    assert.deepEqual(published.values, [7, "2026-11-09", ...(ownOnly ? [17] : [])]);
+    if (ownOnly) assert.deepEqual(queries.find(query => query.sql.includes("SELECT status = 'submitted' AS submitted")).values, [7, "2026-11-09", 17]);
+
+    const exported = await get("scope=export-range&view=daily&section=daily&rangeStart=2026-11-01&rangeEnd=2026-11-30");
+    assert.deepEqual(exported.entries.map(entry => entry.responsibleUserId), expectedOwners);
+    assert.deepEqual(queries.find(query => query.sql.includes("FROM equipment_entries ee")).values, [7, "2026-11-01", "2026-11-30", ...(ownOnly ? [17] : [])]);
+
+    const timesheet = await get("scope=project&view=timesheet&section=month");
+    assert.deepEqual(timesheet.entries.map(entry => entry.responsibleUserId), [17, 18]);
+    assert.deepEqual(queries.find(query => query.sql.includes("FROM equipment_entries ee")).values, [7, "2026-11-01", "2026-12-01"]);
+  }
 });
 
 test("personal report row-order APIs filter hidden statuses before reconciling saved IDs", async () => {

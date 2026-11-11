@@ -336,7 +336,7 @@ async function touchEquipmentContribution(database: EquipmentDatabase, user: Equ
     .bind(siteId, workDate, user.id, submitted ? "submitted" : "draft", submitted ? new Date().toISOString() : null).first();
 }
 
-function equipmentForemanProgressStatement(siteId: number, workDate: string) {
+function equipmentForemanProgressStatement(siteId: number, workDate: string, responsibleUserId: number | null) {
   return getDatabase().prepare(`SELECT foreman.id AS "foremanId", foreman.full_name AS "foremanName",
     CASE WHEN contribution.status = 'submitted' THEN 'submitted'
       WHEN COUNT(entry.id) > 0 OR contribution.status = 'draft' THEN 'draft' ELSE 'not_started' END AS status,
@@ -348,13 +348,14 @@ function equipmentForemanProgressStatement(siteId: number, workDate: string) {
       ON contribution.foreman_id = foreman.id AND contribution.site_id = ? AND contribution.work_date = ?
     LEFT JOIN equipment_entries entry
       ON entry.responsible_user_id = foreman.id AND entry.site_id = ? AND entry.work_date = ? AND entry.deleted_at IS NULL
-    WHERE (foreman.active = 1 AND foreman.role = 'foreman' AND (
+    WHERE ((foreman.active = 1 AND foreman.role = 'foreman' AND (
       EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = foreman.id AND access.all_projects = 1)
       OR EXISTS (SELECT 1 FROM user_project_access_sites grant_site WHERE grant_site.user_id = foreman.id AND grant_site.site_id = ?)
       OR (NOT EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = foreman.id) AND foreman.assigned_site_id = ?)))
-      OR contribution.foreman_id IS NOT NULL
+      OR contribution.foreman_id IS NOT NULL)
+      ${responsibleUserId ? "AND foreman.id = ?" : ""}
     GROUP BY foreman.id, foreman.full_name, contribution.status, contribution.submitted_at
-    ORDER BY foreman.full_name`).bind(siteId, workDate, siteId, workDate, siteId, siteId);
+    ORDER BY foreman.full_name`).bind(siteId, workDate, siteId, workDate, siteId, siteId, ...(responsibleUserId ? [responsibleUserId] : []));
 }
 
 function equipmentEntriesForDateStatement(siteId: number, workDate: string, responsibleUserId: number) {
@@ -455,7 +456,7 @@ async function handleGET(request: Request) {
       if (!validDate(rangeStart) || !validDate(rangeEnd) || rangeStart > rangeEnd) return errorResponse("Некорректный диапазон дат.", 400);
       const rangeDays = Math.floor((Date.parse(`${rangeEnd}T00:00:00Z`) - Date.parse(`${rangeStart}T00:00:00Z`)) / 86400000) + 1;
       if (rangeDays > 366) return errorResponse("Для выгрузки можно выбрать период не более 366 дней.", 400);
-      const responsibleUserId = null;
+      const responsibleUserId = authUser.role === "foreman" ? authUser.id : null;
       const entries = await db.prepare(`SELECT ee.id, ee.work_date AS "workDate", ee.equipment_id AS "equipmentId",
           ee.shift_id AS "shiftId", ee.zone_id AS "zoneId", ee.main_work_type_id AS "mainWorkTypeId",
           ee.subwork_type_id AS "subworkTypeId", ee.note, ee.hours,
@@ -581,7 +582,7 @@ async function handleGET(request: Request) {
     }
     const rangeStart = requestedRangeStart && validDate(requestedRangeStart) ? requestedRangeStart : monthStart;
     const rangeEnd = requestedRangeEnd && validDate(requestedRangeEnd) ? requestedRangeEnd : workDate;
-    const responsibleUserId = null;
+    const responsibleUserId = authUser.role === "foreman" ? authUser.id : null;
     const unitsStatement = scope === "global"
       ? equipmentCatalogStatement(authUser)
       : db.prepare(`SELECT eu.id, eu.organization, eu.equipment_type AS "equipmentType", eu.brand, eu.model,
@@ -611,7 +612,9 @@ async function handleGET(request: Request) {
       WHERE site_id = ? AND work_date >= ? AND work_date <= ? AND deleted_at IS NULL
         ${responsibleUserId ? "AND responsible_user_id = ?" : ""}
       ORDER BY work_date`).bind(...(responsibleUserId ? [siteId, rangeStart, rangeEnd, responsibleUserId] : [siteId, rangeStart, rangeEnd]));
-    const reportSubmissionStatement = db.prepare("SELECT TRUE AS submitted FROM equipment_report_days WHERE site_id = ? AND work_date = ?").bind(siteId, workDate);
+    const reportSubmissionStatement = responsibleUserId
+      ? db.prepare("SELECT status = 'submitted' AS submitted FROM equipment_report_contributions WHERE site_id = ? AND work_date = ? AND foreman_id = ?").bind(siteId, workDate, responsibleUserId)
+      : db.prepare("SELECT TRUE AS submitted FROM equipment_report_days WHERE site_id = ? AND work_date = ?").bind(siteId, workDate);
     const [units, entries, dailyTimesheetMarks, filledDates, shifts, zones, mainWorkTypes, subworkTypes, reportSubmission, foremanProgress] = await db.readBatch([
       unitsStatement,
       entriesStatement,
@@ -627,7 +630,7 @@ async function handleGET(request: Request) {
       db.prepare("SELECT id, name FROM main_work_types WHERE site_id = ? AND active = 1 ORDER BY name").bind(siteId),
       db.prepare("SELECT id, name, main_work_type_id AS mainWorkTypeId FROM subwork_types WHERE site_id = ? AND active = 1 ORDER BY name").bind(siteId),
       reportSubmissionStatement,
-      equipmentForemanProgressStatement(siteId, workDate),
+      equipmentForemanProgressStatement(siteId, workDate, responsibleUserId),
     ]);
 
     return Response.json({

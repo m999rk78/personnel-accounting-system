@@ -140,6 +140,7 @@ function CatalogGridWorkspace<R extends { id: number }, D extends CatalogDraft>(
   }, [editor, resolveDraft, applyRange, canWrite, open]);
   const columns = useMemo<ColDef<Row>[]>(() => props.columns.map(column => ({ colId: column.field, headerName: column.headerName, minWidth: column.minWidth ?? 140, initialWidth: column.initialWidth, initialFlex: column.initialFlex, pinned: column.pinned, lockPinned: Boolean(column.pinned), cellRenderer: renderer })), [props.columns, renderer]);
   const defaults = useMemo<ColDef<Row>>(() => ({ headerComponentParams: { innerHeaderComponent: SpreadsheetFilterHeader }, valueGetter: params => { const row = params.data; return row ? current.current.fields.get(params.column.getColId())?.value(row.record, resolveDraft(row)) ?? "" : ""; }, filter: personnelColumnFilter, filterParams: { ...personnelFilterParams, presentation: "checklist" }, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), [resolveDraft]);
+  const getRowOrderId = useCallback((row: Row) => row.record?.id, []);
   const visible = useCallback((grid: GridApi<Row>) => { const ids: number[] = []; grid.forEachNodeAfterFilterAndSort(node => { if (node.data?.record) ids.push(node.data.record.id); }); current.current.onVisibleIdsChange?.(ids); }, []);
   const newFirst = useCallback(({ nodes }: PostSortRowsParams<Row>) => { const ranks = new Map(current.current.drafts.filter(draft => draft.id === undefined).map((draft, index) => [`catalog-new-${draft.key}`, index])); const newRows = nodes.filter(node => ranks.has(node.data?.rowKey ?? "")).sort((a, b) => ranks.get(a.data!.rowKey)! - ranks.get(b.data!.rowKey)!); if (newRows.length) nodes.splice(0, nodes.length, ...newRows, ...nodes.filter(node => !ranks.has(node.data?.rowKey ?? ""))); }, []);
   const selection = useMemo(() => {
@@ -148,7 +149,7 @@ function CatalogGridWorkspace<R extends { id: number }, D extends CatalogDraft>(
     return { mode: "multiRow" as const, checkboxes: (params: { data?: Row }) => selectable(params.data), headerCheckbox: true, selectAll: "filtered" as const, enableClickSelection: false as const, hideDisabledCheckboxes: true, isRowSelectable: (node: { data?: Row }) => selectable(node.data) };
   }, [props.canCreate, props.canSelect]);
   return <AgTablePageScroll gridRoot={shell} api={pageApi} label="Горизонтальная прокрутка справочника" footer={props.renderFooter && <CatalogFooter render={props.renderFooter} selection={{ selectedDraftCount: selectedDraftKeys.length, removeSelectedDrafts, clearSelection }} />}><div ref={shell} className="ag-grid-shell ag-admin-grid ag-reference-grid ag-catalog-grid"><LocalizedGrid<Row>
-    theme={gridTheme} rowData={rows} columnDefs={columns} defaultColDef={defaults} getRowId={params => params.data.rowKey} getRowOrderId={row => row.record?.id}
+    theme={gridTheme} rowData={rows} columnDefs={columns} defaultColDef={defaults} getRowId={params => params.data.rowKey} getRowOrderId={getRowOrderId}
     rowHeight={44} headerHeight={46} animateRows={false} postSortRows={newFirst} loading={props.loading}
     suppressHorizontalScroll scrollbarWidth={0}
     rowOrderBlocked={editorHasDraft || props.drafts.length > 0} rowOrderAutoSwitchSort preserveSavedSort={preferences.hasSavedSort} spreadsheetToolbar={false} showSortSummary={false}

@@ -41,8 +41,8 @@ export function PermissionMatrix({ label, value, disabled = false, onChange, cel
   const { ref: selectionRef, className: selectionClass, handlers: selectionHandlers } = useNativeTableSelectAll({ rows: clipboardRows, headers: PERMISSION_TABLE_CLIPBOARD_HEADERS, resetKey: `${label}:${query}` });
   return <div ref={selectionRef} className={`permission-matrix${compact ? " compact" : ""} ${selectionClass}`} role="grid" aria-label={label} tabIndex={0} {...selectionHandlers}>
     <div className="permission-matrix-header" role="row"><span role="columnheader">Раздел системы</span>{PERMISSION_ACTIONS.map(action => <span role="columnheader" data-compact-label={COMPACT_ACTION_LABELS[action]} key={action}>{PERMISSION_ACTION_LABELS[action]}</span>)}</div>
-    {(["reports", "timesheets", "general", "project"] as const).filter(group => definitions.some(item => item.group === group)).map(group => <section className="permission-group" key={group}>
-      <h3>{PERMISSION_GROUP_LABELS[group]}</h3>
+    {Object.entries(PERMISSION_GROUP_LABELS).filter(([group]) => definitions.some(item => item.group === group)).map(([group, title]) => <section className="permission-group" key={group}>
+      <h3>{title}</h3>
       {group === "reports" && <p className="permission-report-help">Общие права ограничивают весь отчёт. Для каждой вкладки можно отдельно разрешить просмотр, добавление, изменение и удаление.</p>}
       {definitions.filter(item => item.group === group).map(definition => <div className={`permission-row${definition.parent ? " permission-status-row" : definition.group === "reports" ? " permission-report-row" : ""}`} role="row" key={definition.key} data-permission-resource={definition.key}>
         <div role="cell" title={definition.description}><strong>{definition.shortTitle ?? definition.title}</strong>{(!compact || definition.parent) && <span>{definition.description}</span>}</div>

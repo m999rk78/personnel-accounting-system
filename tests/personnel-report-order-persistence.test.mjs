@@ -12,15 +12,24 @@ const draft = "2026-11-06/d0471ab9-d379-46f2-af6e-51ed0be6cfbf", persisted = "20
 function database() {
   const saved = new Map();
   const records = [first, second, third].map(id => ({ id, siteId: 7, ownerUserId: 10, status: "draft" }));
-  records.push({ id: "2026-11-06/report-2-21", siteId: 7, ownerUserId: 11 }, { id: "2026-11-06/report-3-31", siteId: 8, ownerUserId: 10 });
+  records.push({ id: "2026-11-06/report-2-21", siteId: 7, ownerUserId: 11, status: "draft" }, { id: "2026-11-06/report-3-31", siteId: 8, ownerUserId: 10, status: "draft" });
   const db = { saved, records,
     prepare(sql) {
       let values = [];
       const execute = () => {
         if (sql.startsWith("CREATE TABLE IF NOT EXISTS table_row_orders")) return null;
         if (sql.includes("FROM personnel_report_rows row JOIN personnel_reports")) {
-          assert.match(sql, /AND \(report\.status = 'submitted' OR report\.owner_user_id = \?\)/);
-          return records.filter(row => row.siteId === values[0] && (["approved", "submitted"].includes(row.status) || row.ownerUserId === values[1])).map(row => ({ id: row.id }));
+          const [pending, published] = sql.split("UNION ALL");
+          const ownReports = /AND report\.owner_user_id = \?/.test(pending);
+          if (ownReports) {
+            assert.match(published, /AND entry\.responsible_user_id = \?/);
+            assert.deepEqual(values, [values[0], values[1], values[0], values[1]]);
+          } else {
+            assert.match(pending, /AND \(report\.status = 'submitted' OR report\.owner_user_id = \?\)/);
+            assert.doesNotMatch(published, /entry\.responsible_user_id/);
+            assert.deepEqual(values, [values[0], values[1], values[0]]);
+          }
+          return records.filter(row => row.siteId === values[0] && (row.ownerUserId === values[1] || !ownReports && ["approved", "submitted"].includes(row.status))).map(row => ({ id: row.id }));
         }
         if (sql.startsWith("SELECT row_ids AS ids FROM table_row_orders")) return saved.has(values[0]) ? { ids: [...saved.get(values[0])] } : null;
         if (sql.startsWith("SELECT id FROM table_row_orders")) return saved.has(values[0]) ? { id: values[0] } : null;
@@ -78,18 +87,32 @@ test("manual report order survives a fresh GET, including unsaved UUID rows, wit
 test("saving a reordered local row retains its exact position when UUID becomes a record ID", async () => {
   context.user = actor(); context.db = database();
   await move({ movingIds: [draft], placement: "before", targetId: second, displayedIds: [first, second, third, draft] });
-  context.db.records.push({ id: persisted, siteId: 7, ownerUserId: 10 });
+  context.db.records.push({ id: persisted, siteId: 7, ownerUserId: 10, status: "draft" });
   await move({ action: "remap", aliases: { [draft]: persisted } });
   const afterSave = await read();
   assert.deepEqual(afterSave.ids, [first, persisted, second, third]);
   assert.equal(afterSave.ids.includes(draft), false);
 });
 
-test("project-wide submitted rows remain visible without exposing another user's private draft order", async () => {
+test("foreman order drops stale foreign IDs and disallows moving foreign submitted or approved rows", async () => {
   context.user = actor(); context.db = database();
-  const submitted = "2026-11-06/report-4-41";
-  context.db.records.push({ id: submitted, siteId: 7, ownerUserId: 11, status: "submitted" });
-  const ids = (await read()).ids;
-  assert.ok(ids.includes(submitted));
-  assert.equal(ids.includes("2026-11-06/report-2-21"), false);
+  const ownSubmitted = "2026-11-06/report-4-41", ownApproved = "2026-11-06/approved-42";
+  const foreignSubmitted = "2026-11-06/report-5-51", foreignApproved = "2026-11-06/approved-52";
+  const foreignDraft = "2026-11-06/report-2-21";
+  for (const [id, ownerUserId, status] of [[ownSubmitted, 10, "submitted"], [ownApproved, 10, "approved"], [foreignSubmitted, 11, "submitted"], [foreignApproved, 11, "approved"]]) {
+    context.db.records.push({ id, siteId: 7, ownerUserId, status });
+  }
+  const key = "personnel-report-rows:7:10", storedOrder = [foreignDraft, foreignSubmitted, foreignApproved, ownApproved];
+  context.db.saved.set(key, storedOrder);
+  assert.deepEqual((await read()).ids, [ownApproved, first, second, third, ownSubmitted]);
+  for (const id of [foreignSubmitted, foreignApproved]) {
+    const response = await route.POST(request("POST", { movingIds: [id], placement: "start" }));
+    assert.equal(response.status, 400);
+    assert.deepEqual(context.db.saved.get(key), storedOrder);
+  }
+  context.user = { ...actor(), role: "engineer", permissions: rolePermissionTemplate("engineer") };
+  const reviewerRows = (await read()).ids;
+  assert.ok(reviewerRows.includes(foreignSubmitted));
+  assert.ok(reviewerRows.includes(foreignApproved));
+  assert.ok(!reviewerRows.includes(foreignDraft));
 });

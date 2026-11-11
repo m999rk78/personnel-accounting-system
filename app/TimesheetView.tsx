@@ -258,9 +258,6 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDi
   const [reloadKey, setReloadKey] = useState(0);
   const rowOrder = useWorkspaceTableOrder();
   const rowOrderScopeKey = `${siteId}:${month}`;
-  const [rowOrderMode, setRowOrderMode] = useState({ key: rowOrderScopeKey, manual: false });
-  if (rowOrderMode.key !== rowOrderScopeKey) setRowOrderMode({ key: rowOrderScopeKey, manual: false });
-  const useManualRowOrder = rowOrderMode.key === rowOrderScopeKey && rowOrderMode.manual;
   const [headerActionsTarget, setHeaderActionsTarget] = useState<HTMLElement | null>(null);
   const [codesOpen, setCodesOpen] = useState(false);
   const [editor, setEditor] = useState<EditorCell | null>(null);
@@ -286,7 +283,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDi
   });
   const savingBulkMarks = batchSave.busy;
   const navigationDirty = Boolean(editor || inlineEditor || batchSave.hasFailures);
-  const navigationBusy = savingMark || savingBulkMarks;
+  const navigationBusy = savingMark || savingBulkMarks || Boolean(rowOrder?.busy);
   useLayoutEffect(() => { onDirtyChange?.(navigationDirty); return () => onDirtyChange?.(false); }, [navigationDirty, onDirtyChange]);
   useLayoutEffect(() => { onBusyChange?.(navigationBusy); return () => onBusyChange?.(false); }, [navigationBusy, onBusyChange]);
   const [editorError, setEditorError] = useState("");
@@ -445,9 +442,8 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDi
   ], [days, entriesByCell, marksByCell, month, rowMetricsByEmployee]);
   const filterRows = useMemo(() => {
     const employees = payload?.employees ?? [];
-    const ordered = rowOrder && (useManualRowOrder || rowOrder.hasSavedOrder) ? rowOrder.order(employees, employee => employee.id) : employees;
-    return useManualRowOrder ? ordered : orderPersonnelTimesheetEmployees(ordered);
-  }, [payload?.employees, rowOrder, useManualRowOrder]);
+    return rowOrder?.hasSavedOrder ? rowOrder.order(employees, employee => employee.id) : orderPersonnelTimesheetEmployees(employees);
+  }, [payload?.employees, rowOrder]);
   const importRank = useMemo(() => createImportOrderRank(payload?.employees ?? [], rowOrder?.importIds ?? [], employee => employee.id), [payload?.employees, rowOrder?.importIds]);
   const filters = useTimesheetFilters({ rows: filterRows, columns: filterColumns, getRowId: employeeFilterRowId, resetKey: `${siteId}:${month}`, presentation: "checklist", includeConditions: false, importOrder: {
     rank: importRank, activation: 0, ready: rowOrder?.ready ?? false, defaultSort: false,
@@ -499,14 +495,9 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDi
   const editingEmployee = editor ? employeeById.get(editor.employeeId) : undefined;
   const editingMark = editor ? marksByCell.get(cellKey(editor.employeeId, editor.workDate)) : undefined;
   const displayedRowIds = useMemo(() => visibleEmployees.map(employee => employee.id), [visibleEmployees]);
-  const manualRowOrder = useMemo(() => rowOrder ? { ...rowOrder, move: async (operation: Parameters<NonNullable<typeof rowOrder>["move"]>[0]) => {
-    const scopeVersion = activeScopeVersion.current;
-    const saved = await rowOrder.move({ ...operation, displayedIds: displayedRowIds });
-    // A successful explicit move changes this open tab only. Reopening a month
-    // starts with its organizational order; late writes cannot change another view.
-    if (saved && activeScope.current === rowOrderScopeKey && activeScopeVersion.current === scopeVersion) setRowOrderMode({ key: rowOrderScopeKey, manual: true });
-    return saved;
-  } } : null, [rowOrder, displayedRowIds, rowOrderScopeKey]);
+  const manualRowOrder = useMemo(() => rowOrder ? { ...rowOrder, move: (operation: Parameters<NonNullable<typeof rowOrder>["move"]>[0]) =>
+    rowOrder.move(rowOrder.hasSavedOrder ? operation : { ...operation, displayedIds: displayedRowIds, displayedIdsOnlyIfUnsaved: true })
+  } : null, [rowOrder, displayedRowIds]);
   const rowMoves = useNativeRowMoves(manualRowOrder, filters.isActive, Boolean(editor || inlineEditor || savingMark || savingBulkMarks || loading), { key: rowOrderScopeKey, ids: displayedRowIds });
   const rowOrderKey = useMemo(() => `${siteId}:${month}:${visibleEmployees.map((employee) => employee.id).join("|")}:days=${visibleDaysKey}`, [siteId, month, visibleEmployees, visibleDaysKey]);
   const clipboardViewScope = useRef(rowOrderKey);

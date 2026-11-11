@@ -33,9 +33,12 @@ import { WorkspaceSidebar, AppIcon } from "./workspace/WorkspaceSidebar";
 import { useWorkspaceData } from "./workspace/useWorkspaceData";
 import { workspaceNavigationDiscards, pendingWorkspaceGridInput, normalize, newKey } from "./workspace/model";
 import type { Option, Site, PositionRecord, AppUser, CurrentUser, View, UserDraft, EmployeeDraft, EmployeeBulkChanges, ProjectEmployeeDraft, PositionDraft, DirectoryEntity, DirectoryFocus, DirectoryDraft, SiteDraft } from "./workspace/types";
+import type { StatisticsKind } from "./statisticsTypes";
 
 const PersonnelReportWorkspace = lazy(() => import("./PersonnelReportWorkspace").then(module => ({ default: module.PersonnelReportWorkspace })));
 const EquipmentReportPage = lazy(() => import("./EquipmentReportPage").then(module => ({ default: module.EquipmentReportPage })));
+const StatisticsView = lazy(() => import("./StatisticsView").then(module => ({ default: module.StatisticsView })));
+const statisticsViews = { personnel: "personnelStatistics", equipment: "equipmentStatistics" } as const satisfies Record<StatisticsKind, View>;
 
 function AdminDeleteConfirmation({ title, text: description, saving, onCancel, onConfirm }: { title: string; text: string; saving: boolean; onCancel: () => void; onConfirm: () => void }) {
   return <div className="confirmation-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onCancel(); }}><section className="confirmation-dialog" role="dialog" aria-modal="true" aria-label={title}><h2>{title}</h2><p>{description}</p><div><button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>Отмена</button><button type="button" className="delete-rows-button" onClick={onConfirm} disabled={saving}>{saving ? "Удаляем…" : "Удалить"}</button></div></section></div>;
@@ -88,7 +91,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     initialToday,
   ));
   const viewAllowed = useCallback((candidate: View) => candidate === "placement" ? mayViewWorkersReport : candidate === "equipment" ? mayViewEquipmentReport : !missingAssignedProject && workspaceViewAllowed(effectivePermissions, candidate), [effectivePermissions, missingAssignedProject, mayViewWorkersReport, mayViewEquipmentReport]);
-  const fallbackView = useMemo(() => (["placement", "equipment", "timesheet", "equipmentTimesheet", "projectSettings", "settings"] as View[]).find(viewAllowed) ?? "placement", [viewAllowed]);
+  const availableStatisticsKinds = useMemo(() => (["personnel", "equipment"] as const).filter(kind => viewAllowed(statisticsViews[kind])), [viewAllowed]);
+  const firstStatisticsKind = availableStatisticsKinds[0];
+  const fallbackView = useMemo(() => (["placement", "equipment", "timesheet", "equipmentTimesheet", "personnelStatistics", "equipmentStatistics", "projectSettings", "settings"] as View[]).find(viewAllowed) ?? "placement", [viewAllowed]);
   const [initialView] = useState(() => viewAllowed(initialLocation.view) ? initialLocation.view : fallbackView);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const sidebarToggleRef = useRef<HTMLButtonElement>(null);
@@ -101,6 +106,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     }
   };
   const [view, setView] = useState<View>(initialView);
+  const statisticsKind = view === statisticsViews.personnel ? "personnel" : view === statisticsViews.equipment ? "equipment" : null;
   const tableAccess = useMemo(() => workspaceTableAccess(effectivePermissions, view), [effectivePermissions, view]);
   const [selectedSiteId, setSiteId] = useState(() => currentUser.assignedSiteId && canAccessProject(currentUser, currentUser.assignedSiteId) ? currentUser.assignedSiteId : projectIds?.[0] ?? (projectIds === null ? 1 : 0));
   const siteId = canAccessProject(currentUser, selectedSiteId) ? selectedSiteId : projectIds?.[0] ?? (projectIds === null ? selectedSiteId : 0);
@@ -924,9 +930,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const currentTableOrderScope = viewAllowed(view) ? tableOrderScope(view, directoryFocus) : null;
   return <WorkspaceAccessProvider access={tableAccess}><TableOrderProvider key={`${currentTableOrderScope}:${siteId}:${currentUser.id}`} scope={currentTableOrderScope} siteId={siteId}><main className={sidebarOpen ? "app-shell" : "app-shell sidebar-collapsed"}>
     <SidebarToggleButton expanded={sidebarOpen} onToggle={toggleSidebar} buttonRef={mobileSidebarToggleRef} className="sidebar-mobile-toggle" />
-    <WorkspaceSidebar sidebarOpen={sidebarOpen} toggleSidebar={toggleSidebar} sidebarToggleRef={sidebarToggleRef} visibleSites={visibleSites} siteId={siteId} activeSite={activeSite} mayViewAllProjects={mayViewAllProjects} mayViewWorkersReport={mayViewWorkersReport} mayViewWorkersTimesheet={mayViewWorkersTimesheet} mayViewEquipmentReport={mayViewEquipmentReport} mayViewEquipmentTimesheet={mayViewEquipmentTimesheet} mayAccessGeneralSettings={mayAccessGeneralSettings} mayAccessProjectSettings={mayAccessProjectSettings} view={view} navigateTo={navigateTo} fallbackView={fallbackView} changeSite={changeSite} currentUser={currentUser} openProfile={openProfile} />
+    <WorkspaceSidebar sidebarOpen={sidebarOpen} toggleSidebar={toggleSidebar} sidebarToggleRef={sidebarToggleRef} visibleSites={visibleSites} siteId={siteId} activeSite={activeSite} mayViewAllProjects={mayViewAllProjects} mayViewWorkersReport={mayViewWorkersReport} mayViewWorkersTimesheet={mayViewWorkersTimesheet} mayViewEquipmentReport={mayViewEquipmentReport} mayViewEquipmentTimesheet={mayViewEquipmentTimesheet} statisticsView={firstStatisticsKind ? statisticsViews[firstStatisticsKind] : null} mayAccessGeneralSettings={mayAccessGeneralSettings} mayAccessProjectSettings={mayAccessProjectSettings} view={view} navigateTo={navigateTo} fallbackView={fallbackView} changeSite={changeSite} currentUser={currentUser} openProfile={openProfile} />
     <section className="workspace">
-      {viewAllowed(view) ? <div className={pageContentClassName}><div className={["page-heading", "workspace-page-heading", view === "placement" || view === "equipment" ? "report-page-heading" : "", view === "placement" || view === "equipment" ? "personnel-report-heading" : "", view === "timesheet" || view === "equipmentTimesheet" ? "timesheet-page-heading" : "", settingsBackTarget ? "settings-page-heading" : "", view === "employees" ? "employees-page-heading" : "", view === "users" || view === "accessRights" ? "users-rights-page-heading" : ""].filter(Boolean).join(" ")}>
+      {viewAllowed(view) ? <div className={pageContentClassName}>{!statisticsKind && <div className={["page-heading", "workspace-page-heading", view === "placement" || view === "equipment" ? "report-page-heading" : "", view === "placement" || view === "equipment" ? "personnel-report-heading" : "", view === "timesheet" || view === "equipmentTimesheet" ? "timesheet-page-heading" : "", settingsBackTarget ? "settings-page-heading" : "", view === "employees" ? "employees-page-heading" : "", view === "users" || view === "accessRights" ? "users-rights-page-heading" : ""].filter(Boolean).join(" ")}>
         {usersRightsPage && settingsBackButton}
         <div className="page-heading-title">
           {!usersRightsPage && settingsBackButton}
@@ -976,7 +982,12 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         {view === "equipment" && <div id="equipment-report-actions" className="report-heading-portal" />}
         {view === "timesheet" && <div id="personnel-timesheet-actions" className="timesheet-heading-portal" />}
         {view === "equipmentTimesheet" && <div id="equipment-timesheet-actions" className="timesheet-heading-portal" />}
-      </div>
+      </div>}
+
+      {statisticsKind && <Suspense fallback={<p role="status">Загружаем статистику…</p>}>
+        <StatisticsView key={`${siteId}:${currentUser.id}`} siteId={siteId} today={initialToday}
+          kind={statisticsKind} availableKinds={availableStatisticsKinds} onSelectKind={kind => { void navigateTo(statisticsViews[kind]); }} />
+      </Suspense>}
 
       {mayViewWorkersReport && view === "placement" && <>
         {error && <div className="message error" role="alert"><strong>Не удалось загрузить справочники</strong><span>{error}</span></div>}

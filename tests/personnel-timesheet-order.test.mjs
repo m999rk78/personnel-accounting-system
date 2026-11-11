@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { orderPersonnelTimesheetEmployees, personnelTimesheetReferenceKey } from "../app/personnelTimesheetOrder.ts";
-import { buildPersonnelTimesheetRange, selectPersonnelTimesheetRange } from "../app/timesheetExportRange.ts";
+import { buildPersonnelTimesheetRange, monthKeysInRange, selectPersonnelTimesheetRange } from "../app/timesheetExportRange.ts";
 
 const expectedDepartments = [
   ["АУП", "Дирекция"], ["АУП", "УП"], ["АУП", "ОК"],
@@ -191,4 +191,75 @@ test("multi-month Excel data follows the same department order and retains all h
   assert.deepEqual(selected.rows[4].dailyReportHours, [8]);
   assert.deepEqual(selected.dayTotals, [35]);
   assert.equal(selected.totalHours, 35);
+});
+
+test("multi-month Excel uses a saved project order without adding employees outside the loaded monthly rosters", () => {
+  const months = [{
+    employees: [
+      { ...employee(1, "ОПР", "МУТТ", "Первый"), position: "Рабочий" },
+      { ...employee(2, "ИТР", "ПТО", "Второй"), position: "Инженер" },
+    ],
+    entries: [], marks: [],
+  }, {
+    employees: [
+      { ...employee(2, "ИТР", "ПТО", "Второй"), position: "Старший инженер" },
+      { ...employee(3, "АУП", "Дирекция", "Третий"), position: "Руководитель" },
+    ],
+    entries: [], marks: [],
+  }];
+
+  const fallback = buildPersonnelTimesheetRange(months, "2026-10-31", "2026-11-01");
+  assert.deepEqual(fallback.rows.map(row => row.fullName), ["Третий", "Второй", "Первый"]);
+
+  const ordered = buildPersonnelTimesheetRange(months, "2026-10-31", "2026-11-01", [2, 999, 1]);
+  assert.deepEqual(ordered.rows.map(row => row.fullName), ["Второй", "Первый", "Третий"]);
+  assert.equal(ordered.rows.length, 3);
+  assert.equal(ordered.rows[0].position, "Старший инженер");
+  assert.doesNotMatch(ordered.rows.map(row => row.fullName).join("|"), /999/);
+});
+
+test("the multi-month preview loads the project's order and reports a failed order read without replacing the preview", async () => {
+  const preview = await readFile(new URL("../app/ExcelExportPreview.tsx", import.meta.url), "utf8");
+  const source = ts.createSourceFile("ExcelExportPreview.tsx", preview, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let loadRange;
+  const visit = node => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "loadExportRange") loadRange = node;
+    else ts.forEachChild(node, visit);
+  };
+  visit(source); assert.ok(loadRange);
+  const code = ts.transpileModule(loadRange.getText(source), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const employees = [
+    { ...employee(1, "ОПР", "МУТТ", "Рабочий"), position: "Монтажник" },
+    { ...employee(2, "АУП", "Дирекция", "Директор"), position: "Руководитель" },
+  ];
+  for (const failed of [false, true]) {
+    const requests = [], replacements = [], errors = [];
+    const payload = { source: { kind: "personnel-timesheet", siteId: 7 }, workbook: { kind: "personnel-timesheet", siteName: "Проект", dates: ["2026-10-31"] } };
+    const noop = () => {};
+    const environment = { payload, baseTimesheetPayload: payload, monthKeysInRange, buildPersonnelTimesheetRange,
+      rangeInsideDates: () => false, dateHeaders: dates => dates, periodText: () => "Период", excelFileName: () => "Табель.xlsx",
+      setPayload: value => replacements.push(value), setRangeError: value => errors.push(value), setRangeLoading: noop,
+      setDownloadError: noop, setDownloaded: noop, setWaitingForEnd: noop, setCalendarOpen: noop,
+      fetch: async path => {
+        const url = new URL(path, "http://localhost");
+        requests.push(url);
+        assert.equal(url.searchParams.get("siteId"), "7");
+        if (url.pathname === "/api/table-order") return failed
+          ? Response.json({ error: "Порядок временно недоступен." }, { status: 503 })
+          : Response.json({ ids: [1, 2], hasSavedOrder: true });
+        assert.equal(url.pathname, "/api/timesheet");
+        return Response.json({ employees, entries: [], marks: [] });
+      },
+    };
+    const load = new Function(...Object.keys(environment), `${code}\nreturn loadExportRange;`)(...Object.values(environment));
+    await load("2026-10-31", "2026-11-01");
+    assert.equal(requests.find(url => url.pathname === "/api/table-order")?.searchParams.get("scope"), "project-personnel");
+    if (failed) {
+      assert.deepEqual(replacements, []);
+      assert.equal(errors.at(-1), "Порядок временно недоступен.");
+    } else {
+      assert.deepEqual(replacements[0].workbook.rows.map(row => row.fullName), ["Рабочий", "Директор"]);
+      assert.equal(errors.at(-1), "");
+    }
+  }
 });

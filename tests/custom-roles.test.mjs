@@ -48,7 +48,7 @@ async function harness() {
   };
   const boundaryUrl = sourceUrl(`// ${++harnessNumber}\nexport let database; export function configure(value){database=value;} export function getDatabase(){return database;}`);
   const boundary = await import(boundaryUrl); boundary.configure(db);
-  const serverUrl = await compile("../app/customRolesServer.ts", { "../db/client": boundaryUrl, "./customRoles.ts": fileUrl("../app/customRoles.ts"), "./projectAccessServer.ts": sourceUrl("export async function ensureUserProjectAccessSchema(){}") });
+  const serverUrl = await compile("../app/customRolesServer.ts", { "../db/client": boundaryUrl, "./customRoles.ts": fileUrl("../app/customRoles.ts"), "./permissionModel.ts": fileUrl("../app/permissionModel.ts"), "./projectAccessServer.ts": sourceUrl("export async function ensureUserProjectAccessSchema(){}") });
   const permissionsUrl = await compile("../app/permissions.ts", { "../db/client": boundaryUrl, "./permissionModel": fileUrl("../app/permissionModel.ts") });
   const accessUrl = await compile("../app/projectAccessServer.ts", { "../db/client": boundaryUrl, "./roles.ts": fileUrl("../app/roles.ts") });
   const authUrl = await compile("../app/auth.ts", {

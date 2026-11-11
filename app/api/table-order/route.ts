@@ -23,14 +23,11 @@ export async function GET(request: Request) {
     const access = rowOrderAccess(user, scope, siteId);
     if (!access.canRead) return Response.json({ error: "Нет права просмотра таблицы." }, { status: 403 });
     if (scope === equipmentReportOrderScope) await ensureEquipmentReportSchema(getDatabase());
-    const [ids, saved] = await Promise.all([
-      readTableOrder(scope, siteId, user),
-      ensureTableOrderSchema().then(() => getDatabase().prepare("SELECT id FROM table_row_orders WHERE id = ?").bind(access.key).first()),
-    ]);
+    const order = await readTableOrder(scope, siteId, user);
     const importOrder = scope === "employees" || scope === "project-personnel" || scope === "project-equipment"
-      ? await readPersonnelImportOrder(getDatabase(), scope, siteId, (await canonicalRowIds(scope, siteId, getDatabase(), user)).filter((id): id is number => typeof id === "number"))
+      ? await readPersonnelImportOrder(getDatabase(), scope, siteId, order.canonicalIds.filter((id): id is number => typeof id === "number"))
       : { importIds: [], hasImportOrder: false };
-    return Response.json({ ids, canWrite: access.canWrite, hasSavedOrder: Boolean(saved), ...importOrder }, { headers: { "Cache-Control": "no-store" } });
+    return Response.json({ ids: order.ids, canWrite: access.canWrite, hasSavedOrder: order.hasSavedOrder, ...importOrder }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Не удалось загрузить порядок строк." }, { status: error instanceof TableOrderAccessError ? error.status : 400 });
   }
@@ -83,6 +80,9 @@ async function moveRows(request: Request) {
       move.displayedIds = stringIds ? input.displayedIds : input.displayedIds.map(Number);
       if (new Set(move.displayedIds).size !== move.displayedIds!.length) throw new Error("Видимый порядок содержит повторяющиеся строки.");
     }
+    if (input.displayedIdsOnlyIfUnsaved !== undefined && (input.displayedIdsOnlyIfUnsaved !== true || scope !== "project-personnel" || !move.displayedIds)) {
+      throw new Error("Условный видимый порядок доступен только для первого переноса строк табеля рабочих.");
+    }
     await ensureTableOrderSchema();
     const ids = await getDatabase().transaction(async (db) => {
       // Serialize moves within one table; concurrent requests apply to the latest saved order.
@@ -96,10 +96,13 @@ async function moveRows(request: Request) {
           .filter((id): id is string => typeof id === "string" && isUnsavedReportOrderId(id));
         available.push(...new Set(drafts.slice(-limit)));
       }
+      const effectiveMove = input.displayedIdsOnlyIfUnsaved === true && (saved?.ids.length ?? 0) > 0
+        ? { ...move, displayedIds: undefined }
+        : move;
       const allowed = new Set(available);
-      if (movingIds.some((id) => !allowed.has(id)) || move.displayedIds?.some((id) => !allowed.has(id)) || (move.targetId && !allowed.has(move.targetId))) throw new Error("Состав таблицы изменился. Обновите страницу и повторите перенос.");
+      if (movingIds.some((id) => !allowed.has(id)) || effectiveMove.displayedIds?.some((id) => !allowed.has(id)) || (move.targetId && !allowed.has(move.targetId))) throw new Error("Состав таблицы изменился. Обновите страницу и повторите перенос.");
       const current = reconcileRowOrder(available, saved?.ids ?? []);
-      const ordered = reportRows ? moveReportRows(current as string[], move as RowMove<string>) : moveRowBlock(current, move);
+      const ordered = reportRows ? moveReportRows(current as string[], effectiveMove as RowMove<string>) : moveRowBlock(current, effectiveMove);
       await db.prepare("UPDATE table_row_orders SET row_ids = ?::jsonb, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(JSON.stringify(ordered), access.key).run();
       return ordered;
     });

@@ -1,0 +1,20 @@
+.statistics-period-picker { width:max-content; max-width:100%; }
+
+.statistics-period-calendar.excel-preview-range-calendar {
+  position:fixed;
+  z-index:10020;
+  visibility:hidden;
+  width:min(326px, calc(100vw - 16px));
+  max-height:calc(100dvh - 16px);
+  overflow:auto;
+  animation:none;
+}
+
+.statistics-period-calendar .excel-preview-calendar-days + .excel-preview-calendar-days { margin-top:3px; }
+.statistics-period-calendar .excel-preview-calendar-days button { width:100%; }
+.statistics-period-calendar .excel-preview-calendar-days button.other-month:not(.in-range, .range-start, .range-end) { color:#71717a; }
+.statistics-period-calendar .excel-preview-calendar-days button[aria-current="date"] { box-shadow:inset 0 0 0 1px #ab8655; }
+.statistics-period-calendar .excel-preview-calendar-heading button:disabled { color:#a1a1aa; cursor:default; }
+.statistics-period-calendar .excel-preview-calendar-selection { font-size:11px; }
+.statistics-period-calendar .excel-preview-period-error { margin:8px 0 0; font-size:11px; }
+.statistics-period-calendar button:focus-visible { z-index:3; outline:2px solid #a66a00; outline-offset:-2px; }

@@ -1,6 +1,13 @@
 export type RowMovePlacement = "start" | "end" | "before" | "after";
 export type RowOrderId = number | string;
-export type RowMove<Id extends RowOrderId = RowOrderId> = { movingIds: Id[]; placement: RowMovePlacement; targetId?: Id; displayedIds?: Id[] };
+export type RowMove<Id extends RowOrderId = RowOrderId> = {
+  movingIds: Id[];
+  placement: RowMovePlacement;
+  targetId?: Id;
+  displayedIds?: Id[];
+  /** Seed the first manual order from the displayed default without replaying it over a later save. */
+  displayedIdsOnlyIfUnsaved?: true;
+};
 
 export function rowMoveIsBlocked({ editing, loading, filtered, sorted, switchSort, hasDraftRows }: {
   editing: boolean; loading: boolean; filtered: boolean; sorted: boolean; switchSort: boolean; hasDraftRows: boolean;

@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { orderPersonnelTimesheetEmployees } from "../app/personnelTimesheetOrder.ts";
-import { orderRowsByIds } from "../app/tableRowOrder.ts";
+import { moveRowBlock, orderRowsByIds, reconcileRowOrder, tableOrderScope } from "../app/tableRowOrder.ts";
 
 const source = await readFile(new URL("../app/TimesheetView.tsx", import.meta.url), "utf8");
 const ast = ts.createSourceFile("TimesheetView.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -24,20 +24,26 @@ function memo(name, environment) {
   return bind(`const value = ${node.initializer.arguments[0].getText(ast)};`, "value", environment)();
 }
 
-test("opening a timesheet groups even an existing saved order without renaming or losing employees", () => {
-  const employees = [
-    { id: 10, fullName: "А Рабочий", employmentType: "ОПР", department: "МУТТ" },
-    { id: 20, fullName: "Я Директор", employmentType: "АУП", department: "Дирекция" },
-    { id: 30, fullName: "Я Инженер", employmentType: "ИТР", department: "ПТО" },
-    { id: 40, fullName: "А Инженер", employmentType: "ИТР", department: "ПТО" },
-  ];
-  const rowOrder = { hasSavedOrder: true, order: rows => orderRowsByIds(rows, [10, 40, 20, 30], row => row.id) };
-  const grouped = memo("filterRows", { payload: { employees }, rowOrder, useManualRowOrder: false, orderPersonnelTimesheetEmployees });
-  assert.deepEqual(grouped.map(row => row.id), [20, 40, 30, 10]);
-  assert.equal(grouped[0], employees[1]);
-  assert.deepEqual(employees.map(row => row.id), [10, 20, 30, 40]);
-  const manual = memo("filterRows", { payload: { employees }, rowOrder, useManualRowOrder: true, orderPersonnelTimesheetEmployees });
-  assert.deepEqual(manual.map(row => row.id), [10, 40, 20, 30]);
+const employees = [
+  { id: 10, fullName: "А Рабочий", employmentType: "ОПР", department: "МУТТ" },
+  { id: 20, fullName: "Я Директор", employmentType: "АУП", department: "Дирекция" },
+  { id: 30, fullName: "Я Инженер", employmentType: "ИТР", department: "ПТО", timesheetOrder: 0 },
+  { id: 40, fullName: "А Инженер", employmentType: "ИТР", department: "ПТО", timesheetOrder: 1 },
+];
+const ids = rows => rows.map(row => row.id);
+const displayed = (rowOrder, roster = employees) => memo("filterRows", { payload: { employees: roster }, rowOrder, orderPersonnelTimesheetEmployees });
+const loadedOrder = (saved, available = ids(employees)) => ({
+  hasSavedOrder: saved !== undefined,
+  order: rows => orderRowsByIds(rows, reconcileRowOrder(available, saved ?? []), row => row.id),
+});
+
+test("opening a timesheet applies a saved order across departments and within Excel reference ranks", () => {
+  assert.deepEqual(ids(displayed(null)), [20, 30, 40, 10]);
+  const saved = [10, 40, 20, 30];
+  const manual = displayed(loadedOrder(saved));
+  assert.deepEqual(ids(manual), saved);
+  assert.strictEqual(manual[1], employees[3]);
+  assert.deepEqual(ids(employees), [10, 20, 30, 40]);
 });
 
 test("a late unsaved canonical order cannot alphabetize employees missing from the Excel reference", () => {
@@ -46,72 +52,50 @@ test("a late unsaved canonical order cannot alphabetize employees missing from t
     { id: 20, fullName: "А Новый инженер", employmentType: "ИТР", department: "ПТО" },
     { id: 30, fullName: "Директор", employmentType: "АУП", department: "Дирекция", timesheetOrder: 0 },
   ];
-  const environment = { payload: { employees }, useManualRowOrder: false, orderPersonnelTimesheetEmployees };
-  assert.deepEqual(memo("filterRows", { ...environment, rowOrder: null }).map(row => row.id), [30, 10, 20]);
-  const rowOrder = { hasSavedOrder: false, order: rows => orderRowsByIds(rows, [20, 30, 10], row => row.id) };
-  assert.deepEqual(memo("filterRows", { ...environment, rowOrder }).map(row => row.id), [30, 10, 20]);
-  assert.deepEqual(memo("filterRows", { ...environment, rowOrder, useManualRowOrder: true }).map(row => row.id), [20, 30, 10]);
-  assert.deepEqual(employees.map(row => row.id), [10, 20, 30]);
+  assert.deepEqual(ids(displayed(null, employees)), [30, 10, 20]);
+  assert.deepEqual(ids(displayed(loadedOrder(undefined, [20, 30, 10]), employees)), [30, 10, 20]);
+  assert.deepEqual(ids(employees), [10, 20, 30]);
 });
 
-function moveHarness() {
-  const calls = [], modes = [];
-  let answer;
-  const activeScope = { current: "7:2026-11" };
-  const activeScopeVersion = { current: 1 };
-  const rowOrder = {
-    canWrite: true,
-    move: operation => { calls.push(operation); return new Promise(resolve => { answer = resolve; }); },
+test("the first successful timesheet move seeds the displayed order; subsequent moves do not replay it", async () => {
+  let saved, rejected = true;
+  const requests = [];
+  const operation = { movingIds: [10], placement: "before", targetId: 20 };
+  const move = async change => {
+    requests.push(change);
+    if (rejected) return false;
+    saved = moveRowBlock(reconcileRowOrder(ids(employees), saved ?? []), change);
+    return true;
   };
-  const order = memo("manualRowOrder", { rowOrder, displayedRowIds: [20, 40, 30, 10], rowOrderScopeKey: activeScope.current,
-    activeScope, activeScopeVersion, setRowOrderMode: mode => modes.push(mode) });
-  return { order, calls, modes, activeScope, activeScopeVersion, finish: saved => answer(saved) };
-}
-
-for (const saved of [true, false]) test(`a manual move uses visible order and ${saved ? "switches mode only after saving" : "keeps the organizational default on failure"}`, async () => {
-  const ui = moveHarness();
-  const moving = ui.order.move({ movingIds: [10], placement: "before", targetId: 20 });
-  assert.deepEqual(ui.calls, [{ movingIds: [10], placement: "before", targetId: 20, displayedIds: [20, 40, 30, 10] }]);
-  assert.deepEqual(ui.modes, [], "A pending write must not reorder the displayed baseline");
-  ui.finish(saved);
-  assert.equal(await moving, saved);
-  assert.deepEqual(ui.modes, saved ? [{ key: "7:2026-11", manual: true }] : []);
-});
-
-test("a late row move cannot activate manual order after changing month or leaving and returning", async () => {
-  for (const returnToOriginalScope of [false, true]) {
-    const ui = moveHarness();
-    const moving = ui.order.move({ movingIds: [10], placement: "start" });
-    ui.activeScope.current = returnToOriginalScope ? "7:2026-11" : "7:2026-12";
-    ui.activeScopeVersion.current += returnToOriginalScope ? 2 : 1;
-    ui.finish(true);
-    assert.equal(await moving, true);
-    assert.deepEqual(ui.modes, []);
-  }
-});
-
-test("each project or month visit starts with the organizational order, including returning to an earlier month", () => {
-  const first = statements.findIndex(node => ts.isVariableStatement(node) && node.declarationList.declarations.some(item => item.name.getText(ast) === "rowOrderScopeKey"));
-  const last = statements.findIndex(node => ts.isVariableStatement(node) && node.declarationList.declarations.some(item => item.name.getText(ast) === "useManualRowOrder"));
-  assert.ok(first >= 0 && last >= first);
-  const code = statements.slice(first, last + 1).map(node => node.getText(ast)).join("\n");
   const open = () => {
-    let state;
-    const render = (siteId, month) => bind(code, "{rowOrderScopeKey,useManualRowOrder}", {
-      siteId, month, useState: initial => [state ??= initial, next => { state = next; }],
-    });
-    return { render, move: key => { state = { key, manual: true }; } };
+    const rowOrder = { ...loadedOrder(saved), move };
+    return memo("manualRowOrder", { rowOrder, displayedRowIds: ids(displayed(rowOrder)) });
   };
-  const page = open();
-  assert.equal(page.render(7, "2026-11").useManualRowOrder, false);
-  page.move("7:2026-11");
-  assert.equal(page.render(7, "2026-11").useManualRowOrder, true);
-  assert.equal(page.render(7, "2026-12").useManualRowOrder, false);
-  assert.equal(page.render(7, "2026-11").useManualRowOrder, false);
-  page.move("7:2026-11");
-  assert.equal(page.render(8, "2026-11").useManualRowOrder, false);
-  assert.equal(page.render(7, "2026-11").useManualRowOrder, false);
-  assert.equal(open().render(7, "2026-11").useManualRowOrder, false);
+  assert.equal(await open().move(operation), false);
+  assert.deepEqual(ids(displayed(loadedOrder(saved))), [20, 30, 40, 10]);
+  const firstRequest = { ...operation, displayedIds: [20, 30, 40, 10], displayedIdsOnlyIfUnsaved: true };
+  assert.deepEqual(requests[0], firstRequest);
+  rejected = false;
+  assert.equal(await open().move(operation), true);
+  assert.deepEqual(requests[1], firstRequest);
+  assert.deepEqual(ids(displayed(loadedOrder(saved))), [10, 20, 30, 40]);
+  const next = { movingIds: [40], placement: "before", targetId: 30 };
+  assert.equal(await open().move(next), true);
+  assert.deepEqual(requests[2], next);
+  assert.deepEqual(ids(displayed(loadedOrder(saved))), [10, 20, 40, 30]);
+});
+
+test("a move from project settings survives reopening and changing months without leaking into a different project", () => {
+  const key = view => `${tableOrderScope(view, "all")}:7`;
+  const stored = new Map([[key("projectEmployees"), moveRowBlock(ids(employees), { movingIds: [40, 30], placement: "start" })]]);
+  assert.equal(key("timesheet"), key("projectEmployees"));
+  const november = displayed(loadedOrder(stored.get(key("timesheet"))));
+  assert.deepEqual(ids(november), [30, 40, 10, 20]);
+  const roster = [...employees.filter(row => row.id !== 40), { id: 50, fullName: "Новый сотрудник", employmentType: "АУП", department: "Дирекция" }];
+  const december = displayed(loadedOrder(stored.get(key("timesheet")), ids(roster)), roster);
+  assert.deepEqual(ids(december), [30, 10, 20, 50]);
+  assert.deepEqual(ids(displayed(loadedOrder(stored.get(key("timesheet"))))), ids(november));
+  assert.deepEqual(ids(displayed(loadedOrder(stored.get("project-personnel:8")))), [20, 30, 40, 10]);
 });
 
 test("the personnel timesheet retains explicit filters but never automatically replaces the default with import sorting", () => {
