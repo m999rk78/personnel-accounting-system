@@ -1,4 +1,4 @@
-import { type EmployeeAvailabilityStatus, type BitrixEmployeeSnapshot, normalizeBitrixText, fetchBitrixEmployeeSnapshot, selectLinkedBitrixEmployeesForReview } from "../../bitrix24Sync";
+import { type EmployeeAvailabilityStatus, type BitrixEmployeeSnapshot, normalizeBitrixText, fetchBitrixEmployeeSnapshot, isBitrixCentralOfficeEmployee, selectLinkedBitrixEmployeesForReview } from "../../bitrix24Sync";
 import { env } from "./context";
 
 type ExistingBitrixEmployee = {
@@ -43,6 +43,8 @@ export async function synchronizeBitrixEmployees() {
     const sourceSnapshot = await fetchBitrixEmployeeSnapshot();
     if (!sourceSnapshot.length) throw new Error("Битрикс24 вернул пустой список сотрудников. Изменения не применены.");
     const sourceById = new Map(sourceSnapshot.filter((employee) => employee.bitrix24Id).map((employee) => [employee.bitrix24Id, employee]));
+    const officeIds = new Set(sourceSnapshot.filter(isBitrixCentralOfficeEmployee).map(employee => employee.bitrix24Id).filter(Boolean));
+    const nonOfficeSource = sourceSnapshot.filter(employee => !isBitrixCentralOfficeEmployee(employee) && !officeIds.has(employee.bitrix24Id));
     return await rootDb.transaction(async (db) => {
     const lock = await db.prepare("SELECT pg_try_advisory_xact_lock(hashtext('personnel-bitrix24-employee-sync')) AS locked").first<{ locked: boolean }>();
     if (!lock?.locked) throw new Error("Актуализация из Битрикс24 уже выполняется. Дождитесь её завершения.");
@@ -62,7 +64,12 @@ export async function synchronizeBitrixEmployees() {
     const positions = new Set((positionsResult.results as Array<{ employmentType: string; department: string; position: string }>).map((row) =>
       [row.employmentType, row.department, row.position].map(normalizeBitrixText).join("\u0000")));
     const existingByBitrixId = new Map((existingResult.results as ExistingBitrixEmployee[]).map((employee) => [employee.bitrix24Id, employee]));
-    const snapshot = selectLinkedBitrixEmployeesForReview(sourceSnapshot, existingByBitrixId.keys());
+    // Moving out of a confirmed office assignment is an explicit review action,
+    // not an ordinary bulk upsert, stage exclusion, or missed-card archival.
+    const awaitingOfficeReturnIds = new Set([...existingByBitrixId.values()].filter(employee => employee.availabilityStatus === "central_office")
+      .map(employee => employee.bitrix24Id));
+    const ordinarySource = nonOfficeSource.filter(employee => !awaitingOfficeReturnIds.has(employee.bitrix24Id));
+    const snapshot = selectLinkedBitrixEmployeesForReview(ordinarySource, existingByBitrixId.keys());
     if (!snapshot.length) throw new Error("По настроенным стадиям и объектам не найдено ни одного сотрудника. Изменения не применены.");
     const profileVersionEmployeeIds = new Set((profileVersionsResult.results as Array<{ employeeId: number }>).map((version) => version.employeeId));
     const manualNames = new Set((manualEmployeesResult.results as Array<{ fullName: string }>).map((employee) => normalizeBitrixText(employee.fullName)));
@@ -198,7 +205,7 @@ export async function synchronizeBitrixEmployees() {
       }
     }
     for (const employee of existingResult.results as ExistingBitrixEmployee[]) {
-      if (employee.availabilityStatus === "blacklisted") continue;
+      if (employee.availabilityStatus === "blacklisted" || officeIds.has(employee.bitrix24Id) || awaitingOfficeReturnIds.has(employee.bitrix24Id)) continue;
       const source = sourceById.get(employee.bitrix24Id);
       if (!source || seen.has(employee.bitrix24Id)) continue;
       const nextStatus: EmployeeAvailabilityStatus = source.availabilityStatus === "dismissed" ? "dismissed" : "out_of_scope";
@@ -216,7 +223,8 @@ export async function synchronizeBitrixEmployees() {
     for (let offset = 0; offset < historyStatements.length; offset += 100) await db.batch(historyStatements.slice(offset, offset + 100));
     for (let offset = 0; offset < assignmentStatements.length; offset += 100) await db.batch(assignmentStatements.slice(offset, offset + 100));
 
-    const missing = (existingResult.results as ExistingBitrixEmployee[]).filter((employee) => employee.availabilityStatus !== "blacklisted" && !sourceById.has(employee.bitrix24Id));
+    const missing = (existingResult.results as ExistingBitrixEmployee[]).filter((employee) => employee.availabilityStatus !== "blacklisted"
+      && !awaitingOfficeReturnIds.has(employee.bitrix24Id) && !sourceById.has(employee.bitrix24Id));
     if (missing.length) {
       const missingStatements = [];
       for (const employee of missing) {
@@ -236,7 +244,7 @@ export async function synchronizeBitrixEmployees() {
       const issueStatements = issues.map((issue) => db.prepare("INSERT INTO employee_sync_issues (run_id, bitrix24_id, code, message) VALUES (?, ?, ?, ?)").bind(runId, issue.bitrix24Id, issue.code, issue.message));
       for (let offset = 0; offset < issueStatements.length; offset += 100) await db.batch(issueStatements.slice(offset, offset + 100));
     }
-    const summary = { sourceReceived: sourceSnapshot.length, received: snapshot.length, excluded: sourceSnapshot.length - snapshot.length, added, updated, moved, unavailable, archived, issues: issues.length };
+    const summary = { sourceReceived: ordinarySource.length, received: snapshot.length, excluded: ordinarySource.length - snapshot.length, added, updated, moved, unavailable, archived, issues: issues.length };
     await db.prepare("UPDATE employee_sync_runs SET status = 'success', completed_at = CURRENT_TIMESTAMP, summary = ? WHERE id = ?").bind(JSON.stringify(summary), runId).run();
     return { runId, ...summary, issueMessages: issues.slice(0, 10).map((issue) => issue.message) };
     });

@@ -325,8 +325,9 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
     appendOnDate(source.map(row => {
       const entry = row.entry;
       const seed = row.draft ?? (entry ? { employeeId: String(entry.employeeId), employeeQuery: entry.employeeName, shiftId: String(entry.shiftId), zoneId: String(entry.zoneId), mainWorkTypeId: String(entry.mainWorkTypeId), subworkTypeId: String(entry.subworkTypeId), masterId: String(entry.masterId), hours: String(entry.hours), note: entry.note } : {});
+      const employee = props.employees.find(option => String(option.id) === seed.employeeId);
       const time = new Date().toISOString();
-      return makeDraft({ ...seed, key: crypto.randomUUID(), reportRowId: undefined, importBatchId: undefined, referenceIds: undefined, lockedEmployee: false, createdAt: time, updatedAt: time, employeeId: props.employees.some(employee => String(employee.id) === seed.employeeId) ? seed.employeeId : "", shiftId: available(props.shifts, seed.shiftId ?? ""), zoneId: available(props.zones, seed.zoneId ?? ""), mainWorkTypeId: available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), subworkTypeId: compatibleSubworkId(props.subworkTypes, available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), seed.subworkTypeId), masterId: available(props.masters, seed.masterId ?? "") });
+      return makeDraft({ ...seed, key: crypto.randomUUID(), reportRowId: undefined, importBatchId: undefined, referenceIds: undefined, lockedEmployee: false, createdAt: time, updatedAt: time, employeeId: employee ? String(employee.id) : "", employeeQuery: employee?.fullName ?? "", shiftId: available(props.shifts, seed.shiftId ?? ""), zoneId: available(props.zones, seed.zoneId ?? ""), mainWorkTypeId: available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), subworkTypeId: compatibleSubworkId(props.subworkTypes, available(props.mainWorkTypes, seed.mainWorkTypeId ?? ""), seed.subworkTypeId), masterId: available(props.masters, seed.masterId ?? "") });
     }));
   };
   const removeDrafts = (keys: string[]) => {

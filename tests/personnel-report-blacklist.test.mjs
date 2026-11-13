@@ -12,6 +12,10 @@ const placement = await import(await compileModuleGraph(new URL("../app/server/d
   "./context": boundaryUrl,
   "../../../db/client": moduleUrl("export function getDatabase(){throw new Error('No real database in blacklist tests');}"),
 }));
+const catalogs = await import(await compileModuleGraph(new URL("../app/server/data/catalogs.ts", import.meta.url), {
+  "./context": boundaryUrl,
+  "../../../db/client": moduleUrl("export function getDatabase(){throw new Error('No real database in blacklist tests');}"),
+}));
 const store = await import(await compileModuleGraph(new URL("../app/personnelReportStore.ts", import.meta.url)));
 const actor = (role = "engineer") => ({ id: 8, role, fullName: "Тестовый пользователь", assignedSiteId: 7,
   projectAccess: { mode: "selected", siteIds: [7] }, permissions: rolePermissionTemplate(role) });
@@ -31,30 +35,31 @@ const aliases = { employee_name_snapshot: "employeeName", employment_type_snapsh
 
 /** The real reference/catalog SQL runs only in SQLite memory. Report mutations
  * use a strict synthetic boundary, so neither env files nor cloud DBs are read. */
-function fixture({ availabilityStatus = "on_site", bitrixCheckStatus = null, acknowledged = false, active = true, assigned = true, employeeSiteId = 7, status = "draft", employeeId = 55, onEmployeeLock } = {}) {
+function fixture({ availabilityStatus = "on_site", bitrixCheckStatus = null, acknowledged = false, active = true, assigned = true, employeeSiteId = 7, status = "draft", employeeId = 55, masterEmployeeId = null, onEmployeeLock } = {}) {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec(`CREATE TABLE employees (id INTEGER PRIMARY KEY, full_name TEXT, employment_type TEXT, department TEXT, position TEXT,
-    source TEXT, sort_order INTEGER, bitrix24_stage TEXT, availability_status TEXT, sync_error TEXT, active INTEGER);
-    CREATE TABLE sites (id INTEGER PRIMARY KEY, name TEXT, active INTEGER);
+    source TEXT, sort_order INTEGER, bitrix24_stage TEXT, availability_status TEXT, sync_error TEXT, active INTEGER, bitrix24_id TEXT, last_synced_at TEXT);
+    CREATE TABLE sites (id INTEGER PRIMARY KEY, name TEXT, active INTEGER, code TEXT);
     CREATE TABLE employee_project_assignments (employee_id INTEGER, site_id INTEGER, active INTEGER);
-    CREATE TABLE bitrix24_employee_check_states (employee_id INTEGER PRIMARY KEY, status TEXT, acknowledged_at TEXT, checked_at TEXT);
+    CREATE TABLE bitrix24_employee_check_states (employee_id INTEGER PRIMARY KEY, status TEXT, acknowledged_at TEXT, checked_at TEXT, details TEXT, fingerprint TEXT);
     CREATE TABLE shifts (id INTEGER, site_id INTEGER, name TEXT, active INTEGER);
     CREATE TABLE zones (id INTEGER, site_id INTEGER, name TEXT, active INTEGER);
     CREATE TABLE main_work_types (id INTEGER, site_id INTEGER, name TEXT, active INTEGER);
     CREATE TABLE subwork_types (id INTEGER, site_id INTEGER, name TEXT, active INTEGER, main_work_type_id INTEGER);
-    CREATE TABLE masters (id INTEGER, site_id INTEGER, name TEXT, active INTEGER);
+    CREATE TABLE masters (id INTEGER, site_id INTEGER, name TEXT, active INTEGER, employee_id INTEGER);
     CREATE TABLE placement_entries (id INTEGER PRIMARY KEY, site_id INTEGER, work_date TEXT, employee_id INTEGER,
       master_id INTEGER, hours INTEGER, deleted_at TEXT, position_snapshot TEXT, employee_name_snapshot TEXT,
       employment_type_snapshot TEXT, department_snapshot TEXT, master_name_snapshot TEXT);
-    INSERT INTO sites VALUES (7,'Тестовый проект',1),(8,'Другой проект',1);
+    INSERT INTO sites VALUES (7,'Тестовый проект',1,'QA7'),(8,'Другой проект',1,'QA8');
     INSERT INTO shifts VALUES (1,7,'День',1); INSERT INTO zones VALUES (1,7,'Зона',1);
     INSERT INTO main_work_types VALUES (1,7,'Монтаж',1); INSERT INTO subwork_types VALUES (1,7,'Подготовка',1,1);
-    INSERT INTO masters VALUES (1,7,'Текущий мастер',1);`);
-  const insertEmployee = sqlite.prepare("INSERT INTO employees VALUES (?,?,?,?,?,'bitrix24',0,'Стадия',?,NULL,?)");
+    `);
+  sqlite.prepare("INSERT INTO masters VALUES (1,7,'Текущий мастер',1,?)").run(masterEmployeeId);
+  const insertEmployee = sqlite.prepare("INSERT INTO employees VALUES (?,?,?,?,?,'bitrix24',0,'Стадия',?,NULL,?,NULL,NULL)");
   insertEmployee.run(55, "Текущее ФИО", "ОПР", "Текущий отдел", "Монтажник", availabilityStatus, Number(active));
   insertEmployee.run(56, "Разрешённый сотрудник", "ОПР", "УСР", "Сварщик", null, 1);
   sqlite.prepare("INSERT INTO employee_project_assignments VALUES (55,?,?),(56,7,1)").run(employeeSiteId, Number(assigned));
-  if (bitrixCheckStatus) sqlite.prepare("INSERT INTO bitrix24_employee_check_states VALUES (55,?,?,?)")
+  if (bitrixCheckStatus) sqlite.prepare("INSERT INTO bitrix24_employee_check_states VALUES (55,?,?,?,NULL,'synthetic')")
     .run(bitrixCheckStatus, acknowledged ? "2020-01-02" : null, "2020-01-01");
   sqlite.prepare("INSERT INTO placement_entries VALUES (500,7,?,55,1,6,NULL,?,?,?,?,?)")
     .run(original.workDate, original.positionSnapshot, original.employeeName, original.employmentType, original.department, original.masterName);
@@ -65,7 +70,7 @@ function fixture({ availabilityStatus = "on_site", bitrixCheckStatus = null, ack
   function sqlSelect(sql, values) {
     const expanded = [];
     let offset = 0;
-    const text = sql.replace(/\?/g, () => {
+    const text = sql.replaceAll("::integer[]", "").replace(/\?/g, () => {
       const value = values[offset++];
       if (Array.isArray(value)) { expanded.push(...value); return value.length ? value.map(() => "?").join(",") : "SELECT NULL WHERE 0"; }
       expanded.push(value); return "?";
@@ -125,12 +130,35 @@ for (const sample of blockedCases) for (const acknowledged of [false, true]) tes
   const db = fixture({ ...sample, acknowledged }); t.after(db.close);
   boundary.configure(db);
   assert.deepEqual((await placement.reportEmployeesStatement(7).all()).results.map(employee => employee.id), [56]);
+  assert.deepEqual((await catalogs.projectEmployeeCatalogStatement(7).all()).results.map(employee => employee.id), [56]);
+  assert.deepEqual((await catalogs.employeeCatalogStatement(actor()).all()).results.map(employee => employee.id), [56]);
   for (const role of ["engineer", "foreman"]) {
     await assert.rejects(store.mutatePersonnelReport(db, actor(role), draftPayload()), error => error.code === sample.code && error.details.issues[0].employeeId === 55);
   }
   await assert.rejects(placement.validatePayload(db, legacyPayload()), error => error.code === sample.code);
   await assert.rejects(placement.validateBulkPayloads(db, [legacyPayload({ employeeId: 56 }), legacyPayload()]), error => error.code === sample.code && error.details.row === 2);
   assert.equal(db.writes.length, 0, "Blocked batch must not publish or mutate history");
+});
+
+for (const sample of blockedCases) test(`hides a blocked employee's linked master in current lists, retaining saved references: ${JSON.stringify(sample)}`, async t => {
+  const db = fixture({ ...sample, masterEmployeeId: 55 }); t.after(db.close);
+  boundary.configure(db);
+  assert.deepEqual((await catalogs.projectMasterCatalogStatement(7).all()).results, []);
+  const newRow = { ...legacyPayload(), employeeId: 56 };
+  await assert.rejects(store.mutatePersonnelReport(db, actor(), draftPayload({ rows: [newRow] })), /Мастер/);
+  await assert.rejects(placement.validatePayload(db, newRow), /не относится/);
+  await assert.rejects(placement.validateBulkPayloads(db, [newRow]), /не относится/);
+  assert.equal((await placement.validatePayload(db, { ...newRow, id: 500 }, 500)).masterName, original.masterName);
+  assert.equal((await placement.validateBulkPayloads(db, [{ ...newRow, id: 500 }], [legacyExisting]))[0].masterName, original.masterName);
+  assert.equal(db.writes.length, 0);
+});
+
+test("keeps manual masters and masters of eligible employees available", async t => {
+  for (const masterEmployeeId of [null, 56]) {
+    const db = fixture({ masterEmployeeId }); t.after(db.close);
+    boundary.configure(db);
+    assert.deepEqual((await catalogs.projectMasterCatalogStatement(7).all()).results.map(master => master.id), [1]);
+  }
 });
 
 test("archived/unassigned blacklisted employees still produce a clear restriction, not an accidental eligibility bypass", async t => {

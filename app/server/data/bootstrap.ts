@@ -348,6 +348,7 @@ async function initializeDatabase() {
         WHERE active = 0
           AND bitrix24_id IS NULL
           AND NOT EXISTS (SELECT 1 FROM placement_entries WHERE employee_id = employees.id)
+          AND NOT EXISTS (SELECT 1 FROM timesheet_marks WHERE employee_id = employees.id)
           AND NOT EXISTS (SELECT 1 FROM employee_project_assignments WHERE employee_id = employees.id)
           AND NOT EXISTS (SELECT 1 FROM masters WHERE employee_id = employees.id)`),
     ]);

@@ -45,6 +45,7 @@ export type UserPayload = {
   employeeIds?: number[];
   names?: string[];
   bitrix24Id?: string;
+  officeTransferFingerprints?: Record<number, string>;
   positionId?: number;
   directoryId?: number;
   mainWorkTypeId?: number | null;
@@ -67,6 +68,11 @@ export type UserPayload = {
   positions?: Array<{ employmentType?: string; department?: string; position?: string }>;
   directories?: Array<{ directoryId?: number; name?: string; employeeId?: number; mainWorkTypeId?: number | null }>;
   links?: Array<{ bitrix24Id?: string; employeeId?: number }>;
+  autoLinkBitrixIds?: string[];
+  archiveTransferLinks?: Array<{ bitrix24Id: string; employeeId: number }>;
+  warningFingerprints?: Record<number, string>;
+  allowArchivedLink?: boolean;
+  archiveLinkRevision?: string;
 };
 
 export type DirectoryEntity = "employmentType" | "department" | "position" | "shift" | "zone" | "mainWorkType" | "subworkType" | "master";

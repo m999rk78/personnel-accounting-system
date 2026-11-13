@@ -2,10 +2,14 @@
 .bitrix-review-select-all input,.bitrix-review-row-check input { flex:0 0 16px; width:16px; height:16px; margin:0; accent-color:#d99a13; cursor:pointer; }
 .bitrix-review-select-all input:disabled,.bitrix-review-row-check input:disabled { cursor:default; opacity:.45; }
 .bitrix-review-items { min-height:0; overflow:auto; padding:5px; }
+.bitrix-review-list-footer { flex:0 0 auto; display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:6px; padding:7px 10px; border-top:1px solid #ececef; background:#fafafa; color:#71717a; font-size:9px; }
+.bitrix-review-list-footer button { min-height:26px; padding:3px 8px; border:1px solid #d4d4d8; border-radius:6px; background:#fff; color:#3f3f46; font:inherit; font-weight:650; cursor:pointer; }
+.bitrix-review-list-footer button:focus-visible { outline:2px solid #b77a00; outline-offset:2px; }
 .bitrix-review-row { display:flex; align-items:stretch; border-radius:8px; }
 .bitrix-review-row.checked { background:#fff8e7; }
-.bitrix-review-row-check { display:grid; flex:0 0 30px; place-items:center; cursor:pointer; }
-.bitrix-review-row > button { position:relative; min-width:0; flex:1 1 auto; min-height:52px; display:grid; gap:4px; padding:8px 10px 8px 13px; overflow:hidden; border:0; border-radius:8px; background:transparent; color:#27272a; text-align:left; }
+.bitrix-review-row-check,.bitrix-review-row-spacer { flex:0 0 30px; }
+.bitrix-review-row-check { display:grid; place-items:center; cursor:pointer; }
+.bitrix-review-row > button { position:relative; min-width:0; flex:1 1 auto; min-height:52px; display:grid; gap:4px; padding:8px 10px 8px 13px; overflow:hidden; border:0; border-radius:8px; background:transparent; color:#27272a; text-align:left; cursor:pointer; }
 .bitrix-review-row > button::before { position:absolute; top:8px; bottom:8px; left:4px; width:3px; border-radius:999px; background:#e5aa22; content:""; }
 .bitrix-review-row > button.missing_locally::before { background:#5da3c7; }
 .bitrix-review-row > button.missing_in_bitrix::before,.bitrix-review-row > button.dismissed_in_bitrix::before { background:#d86464; }
@@ -20,8 +24,11 @@
 .bitrix-review-selection-copy span { color:#7b7467; font-size:9px; line-height:1.5; }
 .bitrix-review-selection-actions { display:flex; align-items:center; flex-wrap:wrap; gap:7px; }
 .bitrix-review-selection-actions button { min-height:34px; padding:7px 11px; border:1px solid #d9a130; border-radius:7px; background:#fff; color:#875800; font-family:inherit; font-size:10px; font-weight:700; cursor:pointer; }
+.bitrix-review-selection-mode { display:flex; flex:0 0 auto; align-items:center; gap:2px; padding:2px; border:1px solid #e6d7b6; border-radius:8px; background:#f6edda; }
+.bitrix-review-selection-mode button { min-height:28px; padding:4px 8px; border:1px solid transparent; border-radius:5px; background:transparent; color:#6a5832; white-space:nowrap; }
+.bitrix-review-selection-mode button[aria-pressed="true"] { border-color:#dfc58c; background:#fff; color:#4e3400; box-shadow:0 1px 2px rgb(78 52 0 / .12); }
 .bitrix-review-selection-actions .bitrix-review-bulk-update { border-color:#18181b; background:#18181b; color:#fff; }
 .bitrix-review-selection-actions button:disabled { cursor:default; opacity:.5; }
 .bitrix-review-selection-actions button:focus-visible,.bitrix-review-row button:focus-visible,.bitrix-review-select-all input:focus-visible,.bitrix-review-row-check input:focus-visible { outline:2px solid #b77a00; outline-offset:2px; }
 .bitrix-review-notice { flex:0 0 auto; margin:0 20px 10px; padding:10px 12px; border:1px solid #cfe8d7; border-radius:8px; background:#f3faf5; color:#17603b; font-size:11px; line-height:1.5; }
-@media(max-width:680px) { .bitrix-review-selection-bar { margin:0 15px 10px; }.bitrix-review-selection-actions { width:100%; }.bitrix-review-selection-actions button { flex:1; }.bitrix-review-notice { margin-right:15px; margin-left:15px; } }
+@media(max-width:680px) { .bitrix-review-selection-bar { margin:0 15px 10px; }.bitrix-review-selection-actions { width:100%; }.bitrix-review-selection-actions button { flex:1; }.bitrix-review-selection-mode { flex-basis:100%; }.bitrix-review-notice { margin-right:15px; margin-left:15px; } }

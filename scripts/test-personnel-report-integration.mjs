@@ -21,6 +21,7 @@ const { PostgresDatabase, PostgresStatement } = await loadTypeScript("../db/clie
 const { mutatePersonnelReport, mutatePersonnelReportEntry, listPersonnelReports, validatePersonnelReportSubmissions } = await loadTypeScript("../app/personnelReportStore.ts", {
   "./personnelReportWorkflow": new URL("../app/personnelReportWorkflow.ts", import.meta.url).href,
   "./personnelImportOrderServer": new URL("../app/personnelImportOrderServer.ts", import.meta.url).href,
+  "./employeeDirectoryEligibility": new URL("../app/employeeDirectoryEligibility.ts", import.meta.url).href,
 });
 const pool = new pg.Pool({
   ...(process.env.DATABASE_URL ? { connectionString: process.env.DATABASE_URL } : {}),

@@ -30,9 +30,15 @@ test("keeps daily personnel reports limited to OPR employees", async () => {
   assert.match(report, /выберите действующего сотрудника ОПР с должностью, назначенного на проект/);
 
   assert.match(timesheetApi, /UPPER\(TRIM\(pe\.employment_type_snapshot\)\) = 'ОПР'/);
-  assert.match(timesheetApi, /EXISTS \(SELECT 1 FROM employee_project_assignments epa[\s\S]*epa\.active = 1/);
-  assert.match(timesheetApi, /OR EXISTS \([\s\S]*FROM placement_entries pe[\s\S]*pe\.work_date >= \? AND pe\.work_date < \?/);
-  assert.match(timesheetApi, /OR EXISTS \([\s\S]*FROM timesheet_marks tm[\s\S]*tm\.work_date >= \? AND tm\.work_date < \?/);
+  const history = timesheetApi.match(/report_history AS \(([\s\S]*?)\n {2}\)\n {2}SELECT/)?.[1];
+  assert.ok(history, "A published report or manual mark must retain the employee's row");
+  assert.match(history, /FROM placement_entries\s+WHERE site_id = \? AND work_date >= \? AND work_date < \? AND deleted_at IS NULL/);
+  assert.match(history, /FROM timesheet_marks\s+WHERE site_id = \? AND work_date >= \? AND work_date < \?/);
+  assert.doesNotMatch(history, /personnel_report_rows/, "Draft and pending report rows are never a source of timesheet membership");
+  assert.match(history, /BOOL_OR\(UPPER\(TRIM\(employment_type_snapshot\)\) = 'ОПР'\) AS report_tracked/, "Published types describe daily reconciliation without filtering people");
+  const membershipPredicates = [...history.matchAll(/\bWHERE\b([\s\S]*?)(?=\bGROUP BY\b)/g)].map(match => match[1]);
+  assert.equal(membershipPredicates.length, 2, "Both published report and manual mark membership predicates are checked");
+  for (const predicate of membershipPredicates) assert.doesNotMatch(predicate, /employment_type_snapshot|ОПР/, "Non-OPR published records must still retain the employee in this month");
 });
 
 test("keeps project assignment history instead of rewriting past assignments", async () => {

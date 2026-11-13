@@ -9,3 +9,37 @@
   overflow-wrap:anywhere;
   text-align:left;
 }
+.personnel-timesheet-table tbody td.published-report-without-hours {
+  position:relative;
+}
+.personnel-timesheet-report-indicator {
+  position:absolute;
+  bottom:5px;
+  left:5px;
+  width:5px;
+  height:5px;
+  border-radius:50%;
+  background:#4e7397;
+  pointer-events:none;
+}
+.personnel-timesheet-roster-help p {
+  margin:0;
+  color:#52525b;
+  font-size:11px;
+  line-height:1.5;
+}
+.personnel-timesheet-roster-help p + p {
+  margin-top:7px;
+}
+.personnel-timesheet-roster-notice {
+  margin:0;
+  padding:8px 12px;
+  border:1px solid #e4e4e7;
+  border-radius:8px;
+  background:#fafafa;
+  color:#52525b;
+  font-size:11px;
+}
+.equipment-reference-colors i.published-report-without-hours {
+  background:radial-gradient(circle, #4e7397 0 2px, transparent 3px);
+}

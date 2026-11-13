@@ -13,11 +13,16 @@ export type TimesheetClipboardChange = {
   columnIndex: number;
   value: string;
   note?: string;
+  expectedRevision?: string | null;
+  previousRevision?: string | null;
 };
 
 export type TimesheetClipboardSaveResult = {
   savedChanges: TimesheetClipboardChange[];
   failedChanges: TimesheetClipboardChange[];
+  undoableChanges?: TimesheetClipboardChange[];
+  revisions?: Array<Pick<TimesheetClipboardChange, "rowIndex" | "columnIndex" | "expectedRevision" | "previousRevision">>;
+  cancelled?: boolean;
 };
 
 export type TimesheetClipboardSaveContext = { operation: "paste" | "delete" | "undo"; historyId: string };
@@ -28,11 +33,35 @@ function matchingClipboardChanges(changes: TimesheetClipboardChange[], matching:
 }
 
 function clipboardSaveResult(result: number | TimesheetClipboardSaveResult, changes: TimesheetClipboardChange[]) {
-  if (typeof result === "number") return { savedChanges: result > 0 ? changes : [], failedChanges: [], count: result };
+  if (typeof result === "number") return { undoableChanges: result > 0 ? changes : [], failedChanges: [], count: result, cancelled: false };
   const savedChanges = matchingClipboardChanges(changes, result.savedChanges);
   const savedKeys = new Set(savedChanges.map(change => `${change.rowIndex}:${change.columnIndex}`));
   const failedChanges = matchingClipboardChanges(changes, result.failedChanges).filter(change => !savedKeys.has(`${change.rowIndex}:${change.columnIndex}`));
-  return { savedChanges, failedChanges, count: savedChanges.length };
+  const undoableChanges = result.undoableChanges ? matchingClipboardChanges(savedChanges, result.undoableChanges) : savedChanges;
+  return { undoableChanges, failedChanges, count: savedChanges.length, cancelled: result.cancelled ?? false, revisions: result.revisions };
+}
+
+function clipboardUndoChanges(previous: TimesheetClipboardChange[], result: ReturnType<typeof clipboardSaveResult>) {
+  const revisions = new Map(result.revisions?.map(change => [`${change.rowIndex}:${change.columnIndex}`, change]));
+  return matchingClipboardChanges(previous, result.undoableChanges).map(change => {
+    const revision = revisions.get(`${change.rowIndex}:${change.columnIndex}`);
+    return revision ? { ...change, expectedRevision: revision.expectedRevision, previousRevision: revision.previousRevision } : change;
+  });
+}
+
+function rebaseClipboardUndoHistory(history: ClipboardUndoEntry[], undone: TimesheetClipboardChange[], revisions: TimesheetClipboardSaveResult["revisions"]) {
+  if (!revisions?.length) return;
+  const originals = new Map(undone.map(change => [`${change.rowIndex}:${change.columnIndex}`, change]));
+  for (const { rowIndex, columnIndex, expectedRevision } of revisions) {
+    const original = originals.get(`${rowIndex}:${columnIndex}`);
+    if (original?.previousRevision === undefined) continue;
+    for (let index = history.length - 1; index >= 0; index--) {
+      const change = history[index].changes.find(item => item.rowIndex === rowIndex && item.columnIndex === columnIndex);
+      if (!change) continue;
+      if (change.expectedRevision === original.previousRevision) change.expectedRevision = expectedRevision;
+      break;
+    }
+  }
 }
 
 function partialClipboardStatus(saved: number, failed: number) {
@@ -144,6 +173,9 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
   }, [createHistoryId]);
 
   const forgetUndo = useCallback((historyId: string, changes: TimesheetClipboardChange[]) => {
+    const entry = undoStack.current.find(item => item.id === historyId);
+    const revisions = changes.filter(change => change.expectedRevision !== undefined);
+    if (entry && revisions.length) rebaseClipboardUndoHistory(undoStack.current.filter(item => item !== entry), entry.changes, revisions);
     const keys = new Set(changes.map(change => `${change.rowIndex}:${change.columnIndex}`));
     undoStack.current = undoStack.current.flatMap(entry => {
       if (entry.id !== historyId) return [entry];
@@ -187,7 +219,7 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
   useEffect(() => {
     const clearOutside = (event: PointerEvent) => {
       const target = event.target;
-      if (target instanceof Element && target.closest(".timesheet-cell-popover, .custom-select-menu, .table-context-menu")) return;
+      if (target instanceof Element && target.closest(".timesheet-cell-popover, .custom-select-menu, .table-context-menu, .app-confirmation-dialog")) return;
       if (target instanceof Element && target.closest("[data-table-page-horizontal]") && target.closest(".table-page-scroll-stage") === shellRef.current?.closest(".table-page-scroll-stage")) return;
       if (!selectionRef.current || !(target instanceof Node) || shellRef.current?.contains(target)) return;
       clearSelection();
@@ -339,10 +371,12 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
       for (let columnOffset = 0; columnOffset < targetColumns; columnOffset++) {
         const columnIndex = selectionColumns[targetColumnStart + columnOffset];
         if (columnIndex === undefined || columnIndex < 0 || columnIndex >= columnCount || !canPaste(rowIndex, columnIndex)) continue;
+        const value = matrix[rowOffset % sourceRows]?.[columnOffset % sourceColumns];
+        if (value === undefined) continue;
         changes.push({
           rowIndex,
           columnIndex,
-          value: matrix[rowOffset % sourceRows]?.[columnOffset % sourceColumns] ?? "",
+          value,
         });
       }
     }
@@ -360,7 +394,8 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     try {
       const result = clipboardSaveResult(await onPaste(changes, { operation: "paste", historyId }), changes);
       if (scopeVersion.current !== version) return 0;
-      if (result.count > 0) rememberUndo(matchingClipboardChanges(undoChanges, result.savedChanges), historyId);
+      if (result.cancelled) { setStatus(""); return null; }
+      rememberUndo(clipboardUndoChanges(undoChanges, result), historyId);
       setStatus(result.failedChanges.length ? partialClipboardStatus(result.count, result.failedChanges.length) : `Вставлено ячеек: ${result.count}`);
       return result.count;
     } catch (pasteError) {
@@ -404,7 +439,8 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     try {
       const result = clipboardSaveResult(await onDelete(changes, { operation: "delete", historyId }), changes);
       if (scopeVersion.current !== version) return 0;
-      if (result.count > 0) rememberUndo(matchingClipboardChanges(undoChanges, result.savedChanges), historyId);
+      if (result.cancelled) { setStatus(""); return null; }
+      rememberUndo(clipboardUndoChanges(undoChanges, result), historyId);
       setStatus(result.failedChanges.length ? partialClipboardStatus(result.count, result.failedChanges.length) : `Удалено ручных значений: ${result.count}`);
       return result.count;
     } catch (deleteError) {
@@ -453,6 +489,8 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     try {
       const result = clipboardSaveResult(await onPaste(changes, { operation: "undo", historyId: entry.id }), changes);
       if (scopeVersion.current !== version) return;
+      if (result.cancelled) { undoStack.current.push(entry); setStatus(""); return; }
+      rebaseClipboardUndoHistory(undoStack.current, changes, result.revisions);
       if (result.failedChanges.length) undoStack.current.push({ id: entry.id, changes: result.failedChanges });
       setStatus(result.failedChanges.length ? `Отменено изменений: ${result.count}. Не удалось отменить: ${result.failedChanges.length}.` : `Отменено изменений: ${result.count}`);
     } catch (undoError) {
@@ -578,9 +616,9 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
       actions: [
         ...(getContextActions?.(contextMenu.rowIndex, () => setContextMenu(null)) ?? []),
         { label: "Копировать ячейку", shortcut: "Ctrl+C", onSelect: async () => { try { const text = selectedText() ?? ""; await navigator.clipboard.writeText(text); lastHeaderCopy.current = selectionRef.current?.includeHeaders && getHeader ? text : null; setStatus("Ячейка скопирована"); setContextMenu(null); } catch { setContextMenu((current) => current ? { ...current, error: "Не удалось скопировать. Разрешите доступ к буферу обмена." } : current); } } },
-        ...(access?.edit !== false ? [{ label: "Вставить в ячейку", shortcut: "Ctrl+V", disabled: !canPaste(contextMenu.rowIndex, contextMenu.columnIndex), title: canPaste(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Нет права редактирования этой ячейки", onSelect: async () => { try { const changed = await pasteText(await navigator.clipboard.readText()); if (changed) setContextMenu(null); else setContextMenu((current) => current ? { ...current, error: "Значение не вставлено." } : current); } catch { setContextMenu((current) => current ? { ...current, error: "Не удалось прочитать буфер обмена. Разрешите доступ в браузере." } : current); } } }] satisfies TableContextMenuAction[] : []),
+        ...(access?.edit !== false ? [{ label: "Вставить в ячейку", shortcut: "Ctrl+V", disabled: !canPaste(contextMenu.rowIndex, contextMenu.columnIndex), title: canPaste(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Нет права редактирования этой ячейки", onSelect: async () => { try { const changed = await pasteText(await navigator.clipboard.readText()); if (changed) setContextMenu(null); else if (changed !== null) setContextMenu((current) => current ? { ...current, error: "Значение не вставлено." } : current); } catch { setContextMenu((current) => current ? { ...current, error: "Не удалось прочитать буфер обмена. Разрешите доступ в браузере." } : current); } } }] satisfies TableContextMenuAction[] : []),
         ...(access?.edit !== false ? [{ label: "Редактировать ячейку", shortcut: "Enter", separatorBefore: true, disabled: !onActivate || !canPaste(contextMenu.rowIndex, contextMenu.columnIndex), title: onActivate && canPaste(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Нет права редактирования этой ячейки", onSelect: () => { const anchor = document.querySelector<HTMLElement>(`[data-timesheet-row="${contextMenu.rowIndex}"][data-timesheet-column="${contextMenu.columnIndex}"]`); if (anchor) onActivate?.(contextMenu.rowIndex, contextMenu.columnIndex, anchor); setContextMenu(null); } }] satisfies TableContextMenuAction[] : []),
-        ...(access?.delete !== false ? [{ label: "Удалить ручное значение", shortcut: "Delete", danger: true, separatorBefore: true, disabled: !canDelete?.(contextMenu.rowIndex, contextMenu.columnIndex), title: canDelete?.(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Удалить можно только ручное значение при наличии права", onSelect: async () => { const changed = await deleteSelection(); if (changed) setContextMenu(null); else setContextMenu((current) => current ? { ...current, error: "В ячейке нет доступного для удаления ручного значения." } : current); } }] satisfies TableContextMenuAction[] : []),
+        ...(access?.delete !== false ? [{ label: "Удалить ручное значение", shortcut: "Delete", danger: true, separatorBefore: true, disabled: !canDelete?.(contextMenu.rowIndex, contextMenu.columnIndex), title: canDelete?.(contextMenu.rowIndex, contextMenu.columnIndex) ? undefined : "Удалить можно только ручное значение при наличии права", onSelect: async () => { const changed = await deleteSelection(); if (changed) setContextMenu(null); else if (changed !== null) setContextMenu((current) => current ? { ...current, error: "В ячейке нет доступного для удаления ручного значения." } : current); } }] satisfies TableContextMenuAction[] : []),
       ],
     }) : null,
     rememberUndo,

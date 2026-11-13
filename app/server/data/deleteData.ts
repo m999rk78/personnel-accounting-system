@@ -100,22 +100,26 @@ export async function handleDELETE(request: Request) {
       const siteId = asPositiveInteger(url.searchParams.get("siteId"));
       if (!siteId) throw new Error("Не указан проект сотрудника.");
       if (!canAccessProject(authUser, siteId)) return forbidden();
-      const result = await env.DB.prepare(`UPDATE employee_project_assignments SET active = 0, end_date = COALESCE(end_date, DATE('now'))
-        WHERE employee_id = ? AND site_id = ? AND active = 1
-          AND EXISTS (SELECT 1 FROM employees WHERE id = ? AND active = 1)`).bind(id, siteId, id).run();
-      if (!result.meta.changes) throw new Error("Сотрудник не относится к проекту.");
-      await env.DB.prepare(`UPDATE employees SET
-        site_id = (SELECT MIN(site_id) FROM employee_project_assignments WHERE employee_id = ? AND active = 1),
-        availability_status = CASE
-          WHEN source = 'bitrix24' THEN availability_status
-          WHEN EXISTS (SELECT 1 FROM employee_project_assignments WHERE employee_id = ? AND active = 1) THEN 'on_site'
-          ELSE 'unassigned'
-        END
-        WHERE id = ?`).bind(id, id, id).run();
-      return Response.json({ ok: true });
+      return await env.DB.transaction(async db => {
+        const employee = await db.prepare("SELECT id FROM employees WHERE id = ? AND active = 1 FOR UPDATE").bind(id).first();
+        if (!employee) throw new Error("Сотрудник не относится к проекту.");
+        const result = await db.prepare(`UPDATE employee_project_assignments SET active = 0,
+          end_date = COALESCE(end_date, (CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Moscow')::date)
+          WHERE employee_id = ? AND site_id = ? AND active = 1`).bind(id, siteId).run();
+        if (!result.meta.changes) throw new Error("Сотрудник не относится к проекту.");
+        await db.prepare(`UPDATE employees SET
+          site_id = (SELECT MIN(site_id) FROM employee_project_assignments WHERE employee_id = ? AND active = 1),
+          availability_status = CASE
+            WHEN source = 'bitrix24' THEN availability_status
+            WHEN EXISTS (SELECT 1 FROM employee_project_assignments WHERE employee_id = ? AND active = 1) THEN 'on_site'
+            ELSE 'unassigned'
+          END
+          WHERE id = ?`).bind(id, id, id).run();
+        return Response.json({ ok: true });
+      });
     }
     if (url.searchParams.get("entity") === "site") {
-      const [activeSites, employees, users, entries] = await env.DB.batch([
+      const [activeSites, employees, users, entries, marks] = await env.DB.batch([
         env.DB.prepare("SELECT COUNT(*) AS count FROM sites WHERE active = 1"),
         env.DB.prepare("SELECT id FROM employee_project_assignments WHERE site_id = ? AND active = 1 LIMIT 1").bind(id),
         env.DB.prepare(`SELECT target.id FROM app_users target WHERE target.active = 1 AND (
@@ -125,10 +129,13 @@ export async function handleDELETE(request: Request) {
           OR (NOT EXISTS (SELECT 1 FROM user_project_access access WHERE access.user_id = target.id) AND target.assigned_site_id = ?)
         ) LIMIT 1`).bind(id, id),
         env.DB.prepare("SELECT id FROM placement_entries WHERE site_id = ? AND deleted_at IS NULL LIMIT 1").bind(id),
+        env.DB.prepare("SELECT id FROM timesheet_marks WHERE site_id = ? LIMIT 1").bind(id),
       ]);
       const count = Number((activeSites.results[0] as { count?: number } | undefined)?.count ?? 0);
       if (count <= 1) throw new Error("Нельзя удалить единственный активный проект.");
-      if (employees.results.length || users.results.length || entries.results.length) throw new Error("Проект используется сотрудниками, пользователями или отчётами. Сначала перенесите связанные данные.");
+      if (employees.results.length || users.results.length || entries.results.length || marks.results.length) {
+        throw new Error("Проект используется сотрудниками, пользователями, отчётами или табелями. Сначала перенесите связанные данные.");
+      }
       const result = await env.DB.prepare("UPDATE sites SET active = 0 WHERE id = ? AND active = 1").bind(id).run();
       if (!result.meta.changes) throw new Error("Проект не найден.");
       return Response.json({ ok: true });

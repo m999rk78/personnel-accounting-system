@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { createPersonnelTimesheetXlsx } from "../app/placementXlsx.ts";
-import { buildPersonnelTimesheetRange, monthKeysInRange, selectPersonnelTimesheetRange } from "../app/timesheetExportRange.ts";
+import { buildPersonnelTimesheetRange, dateKeysInRange, monthKeysInRange, selectPersonnelTimesheetRange } from "../app/timesheetExportRange.ts";
 
 test("exports the personnel timesheet with the template layout and month sheet name", async () => {
   const workbook = createPersonnelTimesheetXlsx("Усть-Луга ГПЗ", "Октябрь 2026 г.", ["2026-10-01", "2026-10-02"], [{
@@ -54,6 +54,55 @@ test("loads and combines personnel timesheet dates from different months", () =>
   assert.equal(result.rows[0].masters, "Мастер 1, Мастер 2");
   assert.deepEqual(result.dayTotals, [8, 6]);
   assert.equal(result.totalDifference, -2);
+});
+
+test("export ranges reject calendar overflow and preserve leap days and the inclusive 366-day limit", () => {
+  for (const value of ["2026-02-30", "2026-02-29", "2026-04-31", "0000-01-01", "2026-1-01"]) {
+    assert.throws(() => dateKeysInRange(value, value), /Проверьте даты/);
+    assert.throws(() => monthKeysInRange(value, value), /Проверьте даты/);
+  }
+  assert.deepEqual(dateKeysInRange("2028-02-28", "2028-03-01"), ["2028-02-28", "2028-02-29", "2028-03-01"]);
+  assert.equal(dateKeysInRange("2025-01-31", "2026-01-31").length, 366);
+  assert.equal(monthKeysInRange("2025-01-31", "2026-01-31").length, 13);
+  assert.throws(() => dateKeysInRange("2025-01-31", "2026-02-01"), /366 дней/);
+  assert.deepEqual(monthKeysInRange("9999-12-01", "9999-12-31"), ["9999-12"], "The final supported month must not advance into an invalid loop");
+});
+
+test("a short export includes assignments and facts within its dates without unrelated monthly history", () => {
+  const employee = (id, extra = {}) => ({ id, fullName: `Сотрудник ${id}`, employmentType: "ОПР", department: "УСР", position: "Монтажник", ...extra });
+  const history = { periods: [], unknownDates: ["2026-11-30"], reason: "history" };
+  const november = {
+    employees: [
+      employee(1, { reportDates: ["2026-11-05"], roster: history }),
+      employee(2, { reportDates: [], roster: { periods: [{ startDate: "2026-11-10", endDate: "2026-11-30" }], unknownDates: [], reason: "assignment" } }),
+      employee(3, { reportDates: [], roster: { periods: [{ startDate: "2026-11-30", endDate: "2026-12-01" }], unknownDates: [], reason: "assignment" } }),
+      employee(4, { reportDates: ["2026-11-30"], roster: history }),
+      employee(5, { reportDates: [], roster: history }),
+      employee(6, { employmentType: "ИТР", reportDates: ["2026-11-30"], roster: history }),
+      employee(7, { reportDates: [], roster: { ...history, reason: "assignment" } }),
+    ],
+    entries: [
+      { employeeId: 1, workDate: "2026-11-05", hours: 8, masters: "Мастер", zones: "А", reportTracked: true },
+      { employeeId: 4, workDate: "2026-11-30", hours: 6, masters: "Мастер", zones: "А", reportTracked: true },
+    ],
+    marks: [{ employeeId: 5, workDate: "2026-11-30", hours: null, code: "УВ", note: "", updatedBy: "Инженер" }],
+  };
+  const december = {
+    employees: [employee(3, { position: "Бригадир", reportDates: [], roster: { periods: [{ startDate: "2026-12-01", endDate: "2027-01-01" }], unknownDates: [], reason: "assignment" } })],
+    entries: [], marks: [],
+  };
+  const result = buildPersonnelTimesheetRange([november, december], "2026-11-30", "2026-12-01", [7, 6, 5, 4, 3, 2, 1]);
+  assert.deepEqual(result.rows.map(row => row.fullName), ["Сотрудник 7", "Сотрудник 6", "Сотрудник 5", "Сотрудник 4", "Сотрудник 3"]);
+  assert.equal(result.rows.find(row => row.fullName === "Сотрудник 3").position, "Бригадир");
+  assert.deepEqual(result.rows.find(row => row.fullName === "Сотрудник 6").dailyValues, ["", ""], "A published non-OPR fact retains membership without manufacturing report hours");
+  assert.deepEqual(result.rows.find(row => row.fullName === "Сотрудник 5").dailyValues, ["УВ", ""]);
+  assert.deepEqual(result.dayTotals, [6, 0]);
+  assert.equal(result.totalHours, 6);
+  assert.equal(november.employees.length, 7, "Export filtering does not mutate the monthly payload");
+  const decemberOnly = selectPersonnelTimesheetRange(result.dates, result.rows, result.dayTotals, "2026-12-01", "2026-12-01");
+  assert.deepEqual(decemberOnly.rows.map(row => row.fullName), ["Сотрудник 3"], "Narrowing the preview follows the same roster dates as a new export");
+  assert.deepEqual(decemberOnly.dayTotals, [0]);
+  assert.equal(decemberOnly.totalHours, 0);
 });
 
 test("limits a personnel timesheet export to the selected dates and recalculates totals", () => {
@@ -134,6 +183,59 @@ test("keeps approved OPR hours after a date transfer and a later change of emplo
   assert.equal(newMonth.entries[0].hours, 8);
 });
 
+test("mixed OPR and ITR days keep the same discrepancy in range previews and XLSX formulas", async () => {
+  const employee = { id: 7, fullName: "Сотрудник со сменой типа", employmentType: "ИТР", department: "ПТО", position: "Инженер" };
+  const result = buildPersonnelTimesheetRange([{
+    month: "2026-11", employees: [employee],
+    entries: [{ employeeId: 7, workDate: "2026-11-04", hours: 8, masters: "Мастер", zones: "А", reportTracked: true }],
+    marks: [
+      { employeeId: 7, workDate: "2026-11-04", hours: 4, code: null, note: "", updatedBy: "Инженер" },
+      { employeeId: 7, workDate: "2026-11-05", hours: 7, code: null, note: "", updatedBy: "Инженер" },
+    ],
+  }], "2026-11-04", "2026-11-05");
+  assert.deepEqual(result.rows[0].dailyReportTracked, [true, false]);
+  assert.equal(result.totalHours, 11);
+  assert.equal(result.totalDifference, -4, "ITR manual work must neither hide an older OPR correction nor add a new discrepancy");
+  const firstDay = selectPersonnelTimesheetRange(result.dates, result.rows, result.dayTotals, "2026-11-04", "2026-11-04");
+  assert.deepEqual(firstDay.rows[0].dailyReportTracked, [true]);
+  assert.equal(firstDay.totalDifference, -4);
+  const secondDay = selectPersonnelTimesheetRange(result.dates, result.rows, result.dayTotals, "2026-11-05", "2026-11-05");
+  assert.deepEqual(secondDay.rows[0].dailyReportTracked, [false]);
+  assert.equal(secondDay.totalDifference, 0);
+  const workbook = createPersonnelTimesheetXlsx("Проект", "Ноябрь 2026 г.", result.dates, result.rows, result.dayTotals, result.totalHours, result.totalDifference);
+  const contents = new TextDecoder().decode(await workbook.arrayBuffer());
+  assert.match(contents, /<c r="AM4"[^>]*><f>SUM\(G4\)-8<\/f><v>-4<\/v><\/c>/, "The editable Excel formula uses only the OPR day and agrees with its cached value");
+  assert.doesNotMatch(contents, /<c r="AM4"[^>]*><f>IF\(B4=/, "The final row label cannot suppress historical OPR comparison");
+});
+
+test("multi-month discrepancies use each month's employee type before the final row label", () => {
+  const employee = { id: 7, fullName: "Сотрудник со сменой типа", department: "ПТО", position: "Инженер" };
+  const mark = (workDate, hours) => ({ employeeId: 7, workDate, hours, code: null, note: "", updatedBy: "Инженер" });
+  const result = buildPersonnelTimesheetRange([
+    { month: "2026-10", employees: [{ ...employee, employmentType: "ОПР" }], entries: [], marks: [mark("2026-10-31", 4)] },
+    { month: "2026-11", employees: [{ ...employee, employmentType: "ИТР" }], entries: [], marks: [mark("2026-11-01", 7)] },
+  ], "2026-10-31", "2026-11-01");
+  assert.equal(result.rows[0].employmentType, "ИТР");
+  assert.deepEqual(result.rows[0].dailyReportTracked, [true, false]);
+  assert.equal(result.totalDifference, 4, "An OPR manual day without a report still needs reconciliation");
+});
+
+test("a later OPR profile does not compare a saved ITR report day against missing OPR hours", () => {
+  const result = buildPersonnelTimesheetRange([{
+    month: "2026-11",
+    employees: [{ id: 7, fullName: "Сотрудник со сменой типа", employmentType: "ОПР", department: "УСР", position: "Монтажник",
+      reportDates: ["2026-11-04", "2026-11-05"], reportTrackedByDate: { "2026-11-04": false, "2026-11-05": true } }],
+    entries: [{ employeeId: 7, workDate: "2026-11-05", hours: 8, masters: "Мастер", zones: "А", reportTracked: true }],
+    marks: [{ employeeId: 7, workDate: "2026-11-04", hours: 7, code: null, note: "", updatedBy: "Инженер" }],
+  }], "2026-11-04", "2026-11-05");
+  assert.deepEqual(result.rows[0].dailyValues, [7, 8]);
+  assert.deepEqual(result.rows[0].dailyReportTracked, [false, true]);
+  assert.deepEqual(result.rows[0].dailyReportHours, [0, 8]);
+  assert.equal(result.totalHours, 15);
+  assert.equal(result.totalDifference, 0);
+  assert.equal(selectPersonnelTimesheetRange(result.dates, result.rows, result.dayTotals, "2026-11-04", "2026-11-04").totalDifference, 0);
+});
+
 test("builds the monthly timesheet from saved daily reports with document scrolling", async () => {
   const api = await readFile(new URL("../app/api/timesheet/route.ts", import.meta.url), "utf8");
   const view = await readFile(new URL("../app/TimesheetView.tsx", import.meta.url), "utf8");
@@ -160,7 +262,7 @@ test("builds the monthly timesheet from saved daily reports with document scroll
   assert.match(api, /const workMonth = payload\.workDate\.slice\(0, 7\)/);
   assert.match(api, /const monthEndDate = nextMonthStart\(workMonth\)/);
   assert.match(api, /pe\.site_id = \? AND pe\.work_date >= \? AND pe\.work_date < \? AND pe\.deleted_at IS NULL/);
-  assert.match(api, /tm\.site_id = \? AND tm\.work_date >= \? AND tm\.work_date < \?/);
+  assert.match(api, /FROM timesheet_marks\s+WHERE site_id = \? AND work_date >= \? AND work_date < \?/);
   assert.doesNotMatch(api, /pe\.site_id = \? AND pe\.work_date = \?/);
   assert.doesNotMatch(api, /tm\.site_id = \? AND tm\.work_date = \?/);
   assert.match(api, /SUM\(pe\.hours\)::int AS hours/);
@@ -264,7 +366,7 @@ test("builds the monthly timesheet from saved daily reports with document scroll
   assert.match(view, /openExcelExportPreview/);
   assert.match(view, /kind: "personnel-timesheet"/);
   assert.match(view, /excelFileName\("Табель персонала", \[payload\?\.siteName, month\]\)/);
-  assert.match(view, /<ExcelActionsMenu actions=\{\[\s*\{ label: "Экспорт в Excel", onSelect: openTimesheetExportPreview, disabled: loading \|\| visibleEmployees\.length === 0 \}/);
+  assert.match(view, /<ExcelActionsMenu actions=\{\[\s*\{ label: "Экспорт в Excel", onSelect: openTimesheetExportPreview, disabled: exportBlocked \|\| visibleEmployees\.length === 0 \}/);
   assert.match(view, /TimesheetMonthPicker/);
   const monthPicker = await readFile(new URL("../app/TimesheetMonthPicker.tsx", import.meta.url), "utf8");
   assert.match(monthPicker, /Выбрать месяц, сейчас/);

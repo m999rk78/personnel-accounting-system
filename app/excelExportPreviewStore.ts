@@ -70,6 +70,8 @@ type PersonnelTimesheetPreviewSource = {
   siteId: number;
   siteName: string;
   initialDate: string;
+  employeeIds?: number[];
+  orderedEmployeeIds?: number[];
 };
 
 type EquipmentTimesheetPreviewSource = {

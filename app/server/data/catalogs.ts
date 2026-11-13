@@ -2,6 +2,7 @@ import { type AuthUser } from "../../auth";
 import { accessibleProjectIds, isUserRole, visibleUserProjectAccess } from "../../roles";
 import { loadCustomRole } from "../../customRolesServer";
 import { loadUserProjectAccess } from "../../projectAccessServer";
+import { currentEmployeeDirectoryFilter, currentMasterDirectoryFilter } from "../../employeeDirectoryEligibility";
 import { getDatabase } from "../../../db/client";
 import { type DatabaseExecutor, env } from "./context";
 import { type DirectoryEntity, type UserPayload } from "./types";
@@ -60,21 +61,35 @@ export function employeeCatalogStatement(user: AuthUser, includeFormer = false) 
           e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError, e.last_synced_at AS lastSyncedAt,
           check_state.status AS bitrixCheckStatus, check_state.details AS bitrixCheckDetails,
           CASE WHEN check_state.acknowledged_at IS NOT NULL THEN 1 ELSE 0 END AS bitrixCheckAcknowledged,
+          CASE WHEN check_state.fingerprint LIKE 'office_transfer:%' THEN 1 ELSE 0 END AS bitrixCheckOfficeTransfer,
           MIN(epa.site_id) AS siteId, STRING_AGG(assigned_site.name, ', ' ORDER BY assigned_site.name) AS siteName,
           STRING_AGG(assigned_site.code, '; ' ORDER BY assigned_site.name) AS projectCodes
           FROM employees e
           LEFT JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1
           LEFT JOIN sites assigned_site ON assigned_site.id = epa.site_id AND assigned_site.active = 1
           LEFT JOIN bitrix24_employee_check_states check_state ON check_state.employee_id = e.id
-          WHERE e.active = 1${scoped ? includeFormer
+          WHERE ${currentEmployeeDirectoryFilter("e")}${scoped ? includeFormer
             ? ` AND (epa.site_id = ANY(?::integer[]) OR (epa.site_id IS NULL AND EXISTS (
                 SELECT 1 FROM employee_project_assignments former_assignment
                 WHERE former_assignment.employee_id = e.id AND former_assignment.site_id = ANY(?::integer[]))))`
             : " AND epa.site_id = ANY(?::integer[])" : ""}
           GROUP BY e.id, e.bitrix24_id, e.full_name, e.employment_type, e.department, e.position, e.source, e.sort_order, e.bitrix24_stage, e.availability_status, e.sync_error, e.last_synced_at,
-            check_state.status, check_state.details, check_state.acknowledged_at
+            check_state.status, check_state.details, check_state.acknowledged_at, check_state.fingerprint
           ORDER BY e.sort_order, e.full_name, e.id`);
   return scoped ? statement.bind(siteIds, ...(includeFormer ? [siteIds] : [])) : statement;
+}
+
+export function projectEmployeeCatalogStatement(siteId: number) {
+  return env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
+    e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
+    epa.site_id AS siteId, s.name AS siteName
+    FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
+    WHERE ${currentEmployeeDirectoryFilter("e")} AND epa.site_id = ? ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId);
+}
+
+export function projectMasterCatalogStatement(siteId: number) {
+  return env.DB.prepare(`SELECT id, name, employee_id AS employeeId FROM masters
+    WHERE ${currentMasterDirectoryFilter("masters")} AND site_id = ? ORDER BY id`).bind(siteId);
 }
 
 export function userCatalogStatement(user: AuthUser) {

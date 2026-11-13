@@ -7,6 +7,7 @@ import { asPositiveInteger, validDate, isOprEmploymentType } from "./validation"
 import { PlacementRequestError } from "./responses";
 import { canManagePlacement } from "./access";
 import { personnelReportEmployeeRestriction } from "../../personnelReportWorkflow";
+import { currentEmployeeDirectoryFilter, currentMasterDirectoryFilter } from "../../employeeDirectoryEligibility";
 import type { PermissionAction } from "../../permissionModel";
 
 export function placementEntriesStatement(siteId: number, workDate: string, responsibleUserId?: number) {
@@ -152,11 +153,8 @@ export function reportEmployeesStatement(siteId: number) {
     FROM employees e
     JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1
     JOIN sites s ON s.id = epa.site_id AND s.active = 1
-    WHERE e.active = 1 AND epa.site_id = ? AND e.full_name <> '' AND e.position <> ''
+    WHERE ${currentEmployeeDirectoryFilter("e")} AND epa.site_id = ? AND e.full_name <> '' AND e.position <> ''
       AND UPPER(TRIM(e.employment_type)) = 'ОПР'
-      AND COALESCE(e.availability_status, '') NOT IN ('blacklisted', 'dismissed', 'deleted')
-      AND NOT EXISTS (SELECT 1 FROM bitrix24_employee_check_states check_state
-        WHERE check_state.employee_id = e.id AND check_state.status IN ('blacklisted_in_bitrix', 'dismissed_in_bitrix'))
     ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId);
 }
 
@@ -183,6 +181,7 @@ export async function validatePayload(db: DatabaseExecutor, payload: EntryPayloa
     master_name_snapshot AS masterNameSnapshot FROM placement_entries WHERE id = ? AND deleted_at IS NULL`)
     .bind(excludedId).first<Omit<ExistingPlacementEntry, "id" | "workDate" | "hours">>() : null;
   const keepHistoricalEmployee = existing?.employeeId === employeeId && existing.siteId === siteId;
+  const keepHistoricalMaster = existing?.masterId === masterId && existing.siteId === siteId;
   const employee = keepHistoricalEmployee
     ? { position: existing.positionSnapshot, fullName: existing.employeeNameSnapshot, employmentType: existing.employmentTypeSnapshot, department: existing.departmentSnapshot, availabilityStatus: null, bitrixCheckStatus: null }
     : await db.prepare(`SELECT e.position, e.full_name AS fullName, e.employment_type AS employmentType, e.department,
@@ -207,9 +206,9 @@ export async function validatePayload(db: DatabaseExecutor, payload: EntryPayloa
     db.prepare("SELECT id FROM zones WHERE id = ? AND site_id = ? AND active = 1").bind(zoneId, siteId),
     db.prepare("SELECT id FROM main_work_types WHERE id = ? AND site_id = ? AND active = 1").bind(mainWorkTypeId, siteId),
     db.prepare("SELECT id FROM subwork_types WHERE id = ? AND site_id = ? AND active = 1 AND main_work_type_id = ?").bind(subworkTypeId, siteId, mainWorkTypeId),
-    keepHistoricalEmployee && existing?.masterId === masterId
+    keepHistoricalMaster
       ? db.prepare("SELECT id FROM masters WHERE id = ? AND site_id = ?").bind(masterId, siteId)
-      : db.prepare("SELECT id FROM masters WHERE id = ? AND site_id = ? AND active = 1").bind(masterId, siteId),
+      : db.prepare(`SELECT id FROM masters WHERE id = ? AND site_id = ? AND ${currentMasterDirectoryFilter("masters")}`).bind(masterId, siteId),
   ]);
   if (refs.some((result) => result.results.length === 0)) throw new Error("Одно из значений не относится к выбранному объекту.");
 
@@ -226,7 +225,7 @@ export async function validatePayload(db: DatabaseExecutor, payload: EntryPayloa
     { employeeId, employeeName: employee.fullName, usedHours: used, requestedHours: hours, availableHours: Math.max(0, 10 - used) },
   );
 
-  const master = keepHistoricalEmployee && existing?.masterId === masterId
+  const master = keepHistoricalMaster && existing
     ? { name: existing.masterNameSnapshot }
     : await db.prepare("SELECT name FROM masters WHERE id = ?").bind(masterId).first<{ name: string }>();
   return {
@@ -267,7 +266,7 @@ export async function validateBulkPayloads(db: DatabaseExecutor, payloads: Entry
     db.prepare("SELECT id FROM zones WHERE site_id = ? AND active = 1").bind(siteId),
     db.prepare("SELECT id FROM main_work_types WHERE site_id = ? AND active = 1").bind(siteId),
     db.prepare("SELECT id, main_work_type_id AS mainWorkTypeId FROM subwork_types WHERE site_id = ? AND active = 1").bind(siteId),
-    db.prepare("SELECT id, name, active FROM masters WHERE site_id = ?").bind(siteId),
+    db.prepare(`SELECT id, name, CASE WHEN ${currentMasterDirectoryFilter("masters")} THEN 1 ELSE 0 END AS active FROM masters WHERE site_id = ?`).bind(siteId),
     db.prepare("SELECT employee_id AS employeeId, SUM(hours) AS used FROM placement_entries WHERE work_date = ? AND deleted_at IS NULL AND UPPER(TRIM(employment_type_snapshot)) = 'ОПР' GROUP BY employee_id").bind(workDate),
   ]);
 

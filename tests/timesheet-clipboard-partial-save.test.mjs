@@ -8,7 +8,7 @@ import ts from "typescript";
 const path = new URL("../app/useTimesheetClipboard.ts", import.meta.url);
 const parsed = ts.createSourceFile(path.pathname, await readFile(path, "utf8"), ts.ScriptTarget.Latest, true);
 const callbackNames = ["pasteText", "deleteSelection", "undoLastChange", "rememberUndo", "forgetUndo", "createHistoryId"];
-const helperNames = ["matchingClipboardChanges", "clipboardSaveResult", "partialClipboardStatus", "selectionBounds"];
+const helperNames = ["matchingClipboardChanges", "clipboardSaveResult", "clipboardUndoChanges", "rebaseClipboardUndoHistory", "partialClipboardStatus", "selectionBounds"];
 const callbacks = new Map();
 const helpers = new Map();
 let resetScope;
@@ -34,14 +34,14 @@ const compiled = ts.transpileModule([
 const cell = (columnIndex, value = String(columnIndex + 1), note = `note ${columnIndex}`) => ({ rowIndex: 0, columnIndex, value, note });
 const deferred = () => { let resolve; let reject; const promise = new Promise((ok, fail) => { resolve = ok; reject = fail; }); return { promise, resolve, reject }; };
 
-function harness(save = async changes => changes.length, remove = save) {
+function harness(save = async changes => changes.length, remove = save, rowCount = 1) {
   const calls = [];
   const statuses = [];
   const scope = {
     selectionRef: { current: { start: { rowIndex: 0, columnIndex: 0 }, end: { rowIndex: 0, columnIndex: 2 } } },
     dragging: { current: false },
     lastHeaderCopy: { current: null },
-    rowCount: 1,
+    rowCount,
     columnCount: 3,
     selectionColumns: [0, 1, 2],
     canPaste: () => true,
@@ -63,6 +63,39 @@ function harness(save = async changes => changes.length, remove = save) {
   return { api, scope, calls, statuses };
 }
 
+test("ragged clipboard data skips missing fields and retains explicit empty values", async () => {
+  const env = harness(undefined, undefined, 2);
+  assert.equal(await env.api.pasteText("8\t6\t5\n7\t"), 5);
+  assert.deepEqual(env.calls[0].changes, [
+    { rowIndex: 0, columnIndex: 0, value: "8" }, { rowIndex: 0, columnIndex: 1, value: "6" }, { rowIndex: 0, columnIndex: 2, value: "5" },
+    { rowIndex: 1, columnIndex: 0, value: "7" }, { rowIndex: 1, columnIndex: 1, value: "" },
+  ]);
+});
+
+test("undo sends its acknowledged revision and rebases a prior local edit only after successful rollback", async () => {
+  let revision = "v0";
+  let updates = 0;
+  const env = harness(async (changes, context) => {
+    const [change] = changes;
+    if (context.operation === "undo" && change.expectedRevision !== revision) return { savedChanges: [], failedChanges: changes };
+    const previousRevision = revision;
+    revision = `v${++updates}`;
+    return { savedChanges: changes, failedChanges: [], revisions: [{ rowIndex: 0, columnIndex: 0, previousRevision, expectedRevision: revision }] };
+  });
+  env.scope.selectionRef.current.end = env.scope.selectionRef.current.start;
+  await env.api.pasteText("8");
+  await env.api.pasteText("9");
+  assert.equal(env.scope.undoStack.current[1].changes[0].expectedRevision, "v2");
+  await env.api.undoLastChange();
+  assert.equal(env.calls.at(-1).changes[0].expectedRevision, "v2");
+  assert.equal(env.scope.undoStack.current[0].changes[0].expectedRevision, "v3", "A completed local undo permits the next older undo");
+  revision = "foreign-write";
+  await env.api.undoLastChange();
+  assert.equal(env.calls.at(-1).changes[0].expectedRevision, "v3");
+  assert.equal(revision, "foreign-write");
+  assert.equal(env.scope.undoStack.current.length, 1, "A conflicting undo remains available without changing the saved value");
+});
+
 test("partial paste records undo only for confirmed cells and preserves notes", async () => {
   const env = harness(async changes => ({ savedChanges: [changes[0], changes[2]], failedChanges: [changes[1]] }));
   assert.equal(await env.api.pasteText("8\t9\t10"), 2);
@@ -80,6 +113,24 @@ test("partial deletion records only the manual values actually removed", async (
   assert.deepEqual(env.calls[0].changes.map(change => change.value), ["", "", ""]);
   assert.deepEqual(env.scope.undoStack.current[0].changes, [cell(1)]);
   assert.equal(env.statuses.at(-1), "Сохранено ячеек: 1 из 3. Не сохранено: 2.");
+});
+
+test("a confirmed irreversible deletion counts as saved but is absent from undo", async () => {
+  const env = harness(undefined, async changes => ({ savedChanges: changes, failedChanges: [], undoableChanges: [changes[1]] }));
+  assert.equal(await env.api.deleteSelection(), 3);
+  assert.equal(env.statuses.at(-1), "Удалено ручных значений: 3");
+  assert.deepEqual(env.scope.undoStack.current[0].changes, [cell(1)]);
+});
+
+test("declining an irreversible action leaves the existing undo entry available", async () => {
+  const decline = async () => ({ savedChanges: [], failedChanges: [], cancelled: true });
+  const env = harness(decline);
+  const original = { id: "existing", changes: [cell(0)] };
+  env.api.rememberUndo(original.changes, original.id);
+  assert.equal(await env.api.deleteSelection(), null);
+  assert.deepEqual(env.scope.undoStack.current, [original]);
+  await env.api.undoLastChange();
+  assert.deepEqual(env.scope.undoStack.current, [original]);
 });
 
 test("successful retry joins the original undo entry and preserves each original value", async () => {

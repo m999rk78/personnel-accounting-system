@@ -7,6 +7,7 @@ import { saveUserProjectAccess } from "../../projectAccessServer";
 import { importProjectEmployeesExcel, importProjectDirectoryExcel, normalizeExcelDirectoryName, prepareEmployeeExcelImport } from "../../excelDirectoryImports";
 import { hasPermission } from "../../permissionModel";
 import { rememberPersonnelImportOrder } from "../../personnelImportOrderServer";
+import { currentEmployeeDirectoryFilter } from "../../employeeDirectoryEligibility";
 import { saveSubworkDirectory } from "../../workTypeHierarchyServer";
 import { unauthorized, forbidden, approvalRequired, PlacementRequestError, placementErrorResponse } from "./responses";
 import { ensureDatabaseInitialized } from "./bootstrap";
@@ -39,12 +40,17 @@ export async function handlePOST(request: Request) {
     if (payload.action === "inspect-bitrix24") {
       const cooldown = await reserveBitrix24Action(payload.action);
       const sourceSnapshot = await fetchBitrixEmployeeSnapshot();
-      const inspection = await buildBitrixInspection(sourceSnapshot);
+      const inspection = await buildBitrixInspection(sourceSnapshot, { observeArchivedStatuses: true });
       return Response.json({ ...inspection.response, cooldown });
     }
     if (payload.action === "link-bitrix24-employees") {
       const sourceSnapshot = await fetchBitrixEmployeeSnapshot();
-      return Response.json(await linkBitrixEmployees(sourceSnapshot, payload.links));
+      return Response.json(await linkBitrixEmployees(sourceSnapshot, payload.links, {
+        allowArchivedLink: payload.allowArchivedLink === true,
+        archiveLinkRevision: payload.archiveLinkRevision,
+        autoLinkBitrixIds: payload.autoLinkBitrixIds,
+        archiveTransferLinks: payload.archiveTransferLinks,
+      }));
     }
     if (payload.action === "create-bitrix24-employee") {
       const sourceSnapshot = await fetchBitrixEmployeeSnapshot();
@@ -52,11 +58,15 @@ export async function handlePOST(request: Request) {
     }
     if (payload.action === "update-bitrix24-employee") {
       const sourceSnapshot = await fetchBitrixEmployeeSnapshot();
-      return Response.json(await updateBitrixEmployee(sourceSnapshot, payload));
+      return Response.json(await updateBitrixEmployee(sourceSnapshot, payload, {
+        mayArchiveLegacy: hasPermission(authUser.permissions, "employees", "delete"),
+      }));
     }
     if (payload.action === "update-selected-bitrix24-employees") {
       const sourceSnapshot = await fetchBitrixEmployeeSnapshot();
-      return Response.json(await updateSelectedBitrixEmployees(sourceSnapshot, payload));
+      return Response.json(await updateSelectedBitrixEmployees(sourceSnapshot, payload, {
+        mayArchiveDismissed: hasPermission(authUser.permissions, "employees", "delete"),
+      }));
     }
     if (payload.action === "delete-bitrix24-employee") {
       const sourceSnapshot = await fetchBitrixEmployeeSnapshot();
@@ -65,8 +75,13 @@ export async function handlePOST(request: Request) {
     if (payload.action === "acknowledge-bitrix24-difference") {
       const employeeId = asPositiveInteger(payload.employeeId);
       if (!employeeId) throw new Error("Сотрудник не указан.");
+      const expected = payload.warningFingerprints === undefined ? null : payload.warningFingerprints?.[employeeId];
+      if (payload.warningFingerprints !== undefined && typeof expected !== "string") throw new Error("Выполните проверку ещё раз: предупреждение изменилось.");
       const result = await env.DB.prepare(`UPDATE bitrix24_employee_check_states SET acknowledged_at = CURRENT_TIMESTAMP,
-        acknowledged_by_user_id = ? WHERE employee_id = ? AND status <> 'blacklisted_in_bitrix'`).bind(authUser.id, employeeId).run();
+        acknowledged_by_user_id = ? WHERE employee_id = ? AND status <> 'blacklisted_in_bitrix'
+          AND fingerprint NOT LIKE 'office_transfer:%'
+          AND EXISTS (SELECT 1 FROM employees e WHERE e.id = bitrix24_employee_check_states.employee_id AND e.active = 1)
+          AND (CAST(? AS text) IS NULL OR fingerprint = ?)`).bind(authUser.id, employeeId, expected, expected).run();
       if (!result.meta.changes) throw new Error("Предупреждение уже неактуально. Выполните проверку ещё раз.");
       return Response.json({ ok: true, employeeId });
     }
@@ -75,11 +90,17 @@ export async function handlePOST(request: Request) {
         .map(asPositiveInteger).filter((id): id is number => Boolean(id)))];
       if (!employeeIds.length) throw new Error("Не выбраны сотрудники для подтверждения предупреждений.");
       if (employeeIds.length > 200) throw new Error("За один раз можно подтвердить не более 200 предупреждений.");
+      const expected = payload.warningFingerprints === undefined ? null : JSON.stringify(Object.fromEntries(employeeIds.flatMap(id => {
+        const fingerprint = payload.warningFingerprints?.[id];
+        return typeof fingerprint === "string" ? [[id, fingerprint]] : [];
+      })));
       const acknowledged = await env.DB.prepare(`UPDATE bitrix24_employee_check_states
         SET acknowledged_at = CURRENT_TIMESTAMP, acknowledged_by_user_id = ?
         WHERE employee_id = ANY(?) AND acknowledged_at IS NULL AND status <> 'blacklisted_in_bitrix'
+          AND fingerprint NOT LIKE 'office_transfer:%'
           AND EXISTS (SELECT 1 FROM employees e WHERE e.id = bitrix24_employee_check_states.employee_id AND e.active = 1)
-        RETURNING employee_id AS "employeeId"`).bind(authUser.id, employeeIds).all<{ employeeId: number }>();
+          AND (CAST(? AS jsonb) IS NULL OR fingerprint = (CAST(? AS jsonb) ->> CAST(employee_id AS text)))
+        RETURNING employee_id AS "employeeId"`).bind(authUser.id, employeeIds, expected, expected).all<{ employeeId: number }>();
       if (!acknowledged.results.length) throw new Error("Выбранные предупреждения уже неактуальны или уже подтверждены.");
       return Response.json({ ok: true, acknowledgedCount: acknowledged.results.length, employeeIds: acknowledged.results.map((row) => row.employeeId) });
     }
@@ -135,12 +156,12 @@ export async function handlePOST(request: Request) {
       if (employeeIds.some((id) => !id) || new Set(employeeIds).size !== employeeIds.length) throw new Error("Список порядка содержит некорректные или повторяющиеся строки.");
       const orderedIds = employeeIds as number[];
       await env.DB.transaction(async (db) => {
-        const activeEmployees = await db.prepare("SELECT id FROM employees WHERE active = 1").all<{ id: number }>();
+        const activeEmployees = await db.prepare(`SELECT id FROM employees WHERE ${currentEmployeeDirectoryFilter("employees")}`).all<{ id: number }>();
         const activeIds = new Set(activeEmployees.results.map((employee) => employee.id));
         if (activeIds.size !== orderedIds.length || orderedIds.some((id) => !activeIds.has(id))) {
           throw new Error("Список сотрудников изменился. Обновите таблицу и повторите перенос строки.");
         }
-        const updates = orderedIds.map((employeeId, index) => db.prepare("UPDATE employees SET sort_order = ? WHERE id = ? AND active = 1").bind(index + 1, employeeId));
+        const updates = orderedIds.map((employeeId, index) => db.prepare(`UPDATE employees SET sort_order = ? WHERE id = ? AND ${currentEmployeeDirectoryFilter("employees")}`).bind(index + 1, employeeId));
         for (let offset = 0; offset < updates.length; offset += 100) await db.batch(updates.slice(offset, offset + 100));
       });
       return Response.json({ ok: true, count: orderedIds.length });
@@ -150,7 +171,7 @@ export async function handlePOST(request: Request) {
       const siteId = asPositiveInteger(payload.siteId);
       if (!employeeId || !siteId) throw new Error("Выберите сотрудника и проект.");
       return await env.DB.transaction(async db => {
-        const employee = await db.prepare("SELECT id FROM employees WHERE id = ? AND active = 1 FOR UPDATE").bind(employeeId).first();
+        const employee = await db.prepare(`SELECT id FROM employees WHERE id = ? AND ${currentEmployeeDirectoryFilter("employees")} FOR UPDATE`).bind(employeeId).first();
         if (!employee || !await db.prepare("SELECT id FROM sites WHERE id = ? AND active = 1").bind(siteId).first()) throw new Error("Сотрудник или проект не найден.");
         if (!await projectEntitiesAllowed(db, authUser, "employee", [employeeId], false, true)) return forbidden();
         const active = await db.prepare("SELECT id FROM employee_project_assignments WHERE employee_id = ? AND site_id = ? AND active = 1").bind(employeeId, siteId).first();
@@ -233,7 +254,7 @@ export async function handlePOST(request: Request) {
           if (employeeId) {
             const updated = await db.prepare(`UPDATE employees SET employment_type = ?, department = ?, position = ?, site_id = ?,
               availability_status = CASE WHEN source = 'bitrix24' THEN availability_status ELSE ? END
-              WHERE id = ? AND active = 1`).bind(row.employmentType, row.department, row.position, row.siteIds[0] ?? null, row.siteIds.length ? "on_site" : "unassigned", employeeId).run();
+              WHERE id = ? AND ${currentEmployeeDirectoryFilter("employees")}`).bind(row.employmentType, row.department, row.position, row.siteIds[0] ?? null, row.siteIds.length ? "on_site" : "unassigned", employeeId).run();
             if (updated.meta.changes !== 1) throw new Error(`Не удалось обновить сотрудника «${row.fullName}». Изменения импорта отменены.`);
           } else {
             const inserted = await db.prepare("INSERT INTO employees (full_name, employment_type, department, position, source, site_id, availability_status, sort_order) VALUES (?, ?, ?, ?, 'excel', ?, ?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM employees))")
@@ -297,7 +318,7 @@ export async function handlePOST(request: Request) {
       if (directory.key === "master") {
         const employees = await env.DB.prepare(`SELECT e.id, e.full_name AS fullName FROM employees e
           JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.site_id = ? AND epa.active = 1
-          WHERE e.active = 1`).bind(siteId).all<{ id: number; fullName: string }>();
+          WHERE ${currentEmployeeDirectoryFilter("e")}`).bind(siteId).all<{ id: number; fullName: string }>();
         employees.results.forEach((employee) => employeeById.set(employee.id, employee.fullName));
       }
       const normalizeName = (value: string) => value.trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/g, " ");
@@ -306,7 +327,7 @@ export async function handlePOST(request: Request) {
         const directoryId = asPositiveInteger(row.directoryId);
         if (directoryId && !existingById.has(directoryId)) throw new Error(`Строка ${index + 1}: значение справочника не найдено.`);
         const employeeId = asPositiveInteger(row.employeeId);
-        const name = directory.key === "master" && employeeId ? employeeById.get(employeeId) ?? "" : row.name?.trim() ?? "";
+        const name = directory.key === "master" ? employeeById.get(employeeId ?? 0) ?? "" : row.name?.trim() ?? "";
         if (!name) throw new Error(`Строка ${index + 1}: ${directory.key === "master" ? "выберите мастера из сотрудников текущего проекта" : "заполните название"}.`);
         const normalizedName = normalizeName(name);
         if (occupiedNames.has(normalizedName)) throw new Error(`Строка ${index + 1}: значение «${name}» уже есть в справочнике.`);
@@ -334,7 +355,7 @@ export async function handlePOST(request: Request) {
         const employeeId = asPositiveInteger(payload.employeeId);
         const employee = employeeId ? await env.DB.prepare(`SELECT e.full_name AS fullName FROM employees e
           JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.site_id = ? AND epa.active = 1
-          WHERE e.id = ? AND e.active = 1`).bind(siteId, employeeId).first<{ fullName: string }>() : null;
+          WHERE e.id = ? AND ${currentEmployeeDirectoryFilter("e")}`).bind(siteId, employeeId).first<{ fullName: string }>() : null;
         if (!employee) throw new Error("Выберите мастера из сотрудников текущего проекта.");
         name = employee.fullName;
       }

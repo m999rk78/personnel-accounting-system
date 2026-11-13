@@ -1,3 +1,4 @@
+import { personnelTimesheetExportDifference } from "../app/placementXlsx.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -159,7 +160,7 @@ test("the server reference hashes normalized identities and assigns ranks withou
   assert.deepEqual(rows, before);
 });
 
-test("multi-month Excel data follows the same department order and retains all hours when the date range narrows", () => {
+test("multi-month Excel preserves incoming canonical order and retains all hours when the date range narrows", () => {
   const roster = [
     employee(1, "ОПР", "МУТТ", "А Производственный"),
     { ...employee(2, "ИТР", "ПТО", "А Проектный"), timesheetOrder: 20 },
@@ -177,18 +178,18 @@ test("multi-month Excel data follows the same department order and retains all h
   ];
   const before = structuredClone(months);
   const exported = buildPersonnelTimesheetRange(months, "2026-10-31", "2026-11-01");
-  const expectedNames = ["Г Управленческий", "Я Новый проектный", "А Проектный", "Б Механический", "А Производственный", "В Неизвестный"];
+  const expectedNames = ["А Производственный", "А Проектный", "Б Механический", "В Неизвестный", "Я Новый проектный", "Г Управленческий"];
   assert.deepEqual(exported.rows.map(row => row.fullName), expectedNames);
-  assert.deepEqual(exported.rows.map(row => row.timesheetHours), [8, 2, 14, 5, 15, 4]);
-  assert.equal(exported.rows[2].position, "Обновлённая должность");
+  assert.deepEqual(exported.rows.map(row => row.timesheetHours), [15, 14, 5, 4, 2, 8]);
+  assert.equal(exported.rows[1].position, "Обновлённая должность");
   assert.deepEqual(exported.dayTotals, [13, 35]);
   assert.equal(exported.totalHours, 48);
   assert.equal(exported.totalDifference, 0);
   assert.deepEqual(months, before);
   const selected = selectPersonnelTimesheetRange(exported.dates, exported.rows, exported.dayTotals, "2026-11-01", "2026-11-01");
   assert.deepEqual(selected.rows.map(row => row.fullName), expectedNames);
-  assert.deepEqual(selected.rows.map(row => row.timesheetHours), [8, 2, 8, 5, 8, 4]);
-  assert.deepEqual(selected.rows[4].dailyReportHours, [8]);
+  assert.deepEqual(selected.rows.map(row => row.timesheetHours), [8, 8, 5, 4, 2, 8]);
+  assert.deepEqual(selected.rows[0].dailyReportHours, [8]);
   assert.deepEqual(selected.dayTotals, [35]);
   assert.equal(selected.totalHours, 35);
 });
@@ -209,7 +210,7 @@ test("multi-month Excel uses a saved project order without adding employees outs
   }];
 
   const fallback = buildPersonnelTimesheetRange(months, "2026-10-31", "2026-11-01");
-  assert.deepEqual(fallback.rows.map(row => row.fullName), ["Третий", "Второй", "Первый"]);
+  assert.deepEqual(fallback.rows.map(row => row.fullName), ["Первый", "Второй", "Третий"]);
 
   const ordered = buildPersonnelTimesheetRange(months, "2026-10-31", "2026-11-01", [2, 999, 1]);
   assert.deepEqual(ordered.rows.map(row => row.fullName), ["Второй", "Первый", "Третий"]);
@@ -218,7 +219,7 @@ test("multi-month Excel uses a saved project order without adding employees outs
   assert.doesNotMatch(ordered.rows.map(row => row.fullName).join("|"), /999/);
 });
 
-test("the multi-month preview loads the project's order and reports a failed order read without replacing the preview", async () => {
+test("multi-month preview uses one range snapshot and preserves project order, filtered selection and new participants", async () => {
   const preview = await readFile(new URL("../app/ExcelExportPreview.tsx", import.meta.url), "utf8");
   const source = ts.createSourceFile("ExcelExportPreview.tsx", preview, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let loadRange;
@@ -231,12 +232,19 @@ test("the multi-month preview loads the project's order and reports a failed ord
   const employees = [
     { ...employee(1, "ОПР", "МУТТ", "Рабочий"), position: "Монтажник" },
     { ...employee(2, "АУП", "Дирекция", "Директор"), position: "Руководитель" },
+    { ...employee(3, "ОПР", "МУТТ", "Новый сотрудник"), position: "Монтажник" },
   ];
-  for (const failed of [false, true]) {
+  for (const scenario of [
+    { order: { ids: [1, 2, 3], hasSavedOrder: true }, names: ["Рабочий", "Директор", "Новый сотрудник"] },
+    { order: { ids: [1, 2, 3], importIds: [3, 2, 1], hasImportOrder: true }, names: ["Новый сотрудник", "Директор", "Рабочий"] },
+    { order: { ids: [2, 1, 3] }, names: ["Директор", "Рабочий", "Новый сотрудник"] },
+    { order: { ids: [1, 2, 3] }, source: { employeeIds: [1, 2], orderedEmployeeIds: [2, 1] }, names: ["Директор", "Рабочий"] },
+    { failed: true },
+  ]) {
     const requests = [], replacements = [], errors = [];
-    const payload = { source: { kind: "personnel-timesheet", siteId: 7 }, workbook: { kind: "personnel-timesheet", siteName: "Проект", dates: ["2026-10-31"] } };
+    const payload = { source: { kind: "personnel-timesheet", siteId: 7, ...scenario.source }, workbook: { kind: "personnel-timesheet", siteName: "Проект", dates: ["2026-10-31"] } };
     const noop = () => {};
-    const environment = { payload, baseTimesheetPayload: payload, monthKeysInRange, buildPersonnelTimesheetRange,
+    const environment = { payload, baseTimesheetPayload: payload, monthKeysInRange, buildPersonnelTimesheetRange, personnelTimesheetExportDifference,
       rangeInsideDates: () => false, dateHeaders: dates => dates, periodText: () => "Период", excelFileName: () => "Табель.xlsx",
       setPayload: value => replacements.push(value), setRangeError: value => errors.push(value), setRangeLoading: noop,
       setDownloadError: noop, setDownloaded: noop, setWaitingForEnd: noop, setCalendarOpen: noop,
@@ -244,21 +252,30 @@ test("the multi-month preview loads the project's order and reports a failed ord
         const url = new URL(path, "http://localhost");
         requests.push(url);
         assert.equal(url.searchParams.get("siteId"), "7");
-        if (url.pathname === "/api/table-order") return failed
+        if (url.pathname === "/api/table-order") return scenario.failed
           ? Response.json({ error: "Порядок временно недоступен." }, { status: 503 })
-          : Response.json({ ids: [1, 2], hasSavedOrder: true });
+          : Response.json(scenario.order);
         assert.equal(url.pathname, "/api/timesheet");
-        return Response.json({ employees, entries: [], marks: [] });
+        assert.equal(url.searchParams.get("startMonth"), "2026-10");
+        assert.equal(url.searchParams.get("endMonth"), "2026-11");
+        assert.equal(url.searchParams.get("month"), null);
+        return Response.json({ months: [
+          { month: "2026-10", employees: employees.slice(0, 2), entries: [{ employeeId: 1, workDate: "2026-10-31", hours: 4 }], marks: [] },
+          { month: "2026-11", employees: employees.slice(1), entries: [{ employeeId: 3, workDate: "2026-11-01", hours: 8 }], marks: [] },
+        ] });
       },
     };
     const load = new Function(...Object.keys(environment), `${code}\nreturn loadExportRange;`)(...Object.values(environment));
     await load("2026-10-31", "2026-11-01");
+    assert.equal(requests.filter(url => url.pathname === "/api/timesheet").length, 1, "All months come from one database snapshot");
     assert.equal(requests.find(url => url.pathname === "/api/table-order")?.searchParams.get("scope"), "project-personnel");
-    if (failed) {
+    if (scenario.failed) {
       assert.deepEqual(replacements, []);
       assert.equal(errors.at(-1), "Порядок временно недоступен.");
     } else {
-      assert.deepEqual(replacements[0].workbook.rows.map(row => row.fullName), ["Рабочий", "Директор"]);
+      assert.deepEqual(replacements[0].workbook.rows.map(row => row.fullName), scenario.names);
+      assert.deepEqual(replacements[0].workbook.rows.find(row => row.fullName === "Рабочий").dailyValues, [4, ""]);
+      assert.equal(replacements[0].workbook.totalHours, scenario.source ? 4 : 12);
       assert.equal(errors.at(-1), "");
     }
   }

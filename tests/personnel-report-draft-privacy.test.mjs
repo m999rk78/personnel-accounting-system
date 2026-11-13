@@ -9,7 +9,8 @@ const dataUrl = source => `data:text/javascript;base64,${Buffer.from(source).toS
 const source = ts.transpileModule(await readFile(new URL("../app/personnelReportStore.ts", import.meta.url), "utf8"), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText.replaceAll('"./personnelReportWorkflow"', JSON.stringify(new URL("../app/personnelReportWorkflow.ts", import.meta.url).href))
-  .replaceAll('"./personnelImportOrderServer"', JSON.stringify(new URL("../app/personnelImportOrderServer.ts", import.meta.url).href));
+  .replaceAll('"./personnelImportOrderServer"', JSON.stringify(new URL("../app/personnelImportOrderServer.ts", import.meta.url).href))
+  .replaceAll('"./employeeDirectoryEligibility"', JSON.stringify(new URL("../app/employeeDirectoryEligibility.ts", import.meta.url).href));
 const store = await import(dataUrl(source));
 const order = await import(await compileModuleGraph(new URL("../app/tableRowOrderServer.ts", import.meta.url), {
   "../db/client": dataUrl("export function getDatabase() { throw new Error('Use the isolated test database'); }"),

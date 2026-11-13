@@ -20,11 +20,11 @@ test("employee import rejects ambiguity, duplicate normalized names and bad fina
   assert.throws(() => prepareEmployeeExcelImport([], sites, []), /от 1 до 2000/);
 });
 
-function memoryDatabase({ failInsertAt = 0, failEmployeeUpdate = 0, failOrderWrite = false, duplicateMasterName = false } = {}) {
+function memoryDatabase({ failInsertAt = 0, failEmployeeUpdate = 0, failOrderWrite = false, duplicateMasterName = false, terminalEmployee = {} } = {}) {
   let state = {
     sites: [{ id: 1, active: 1 }, { id: 2, active: 1 }],
     employees: [
-      { id: 1, fullName: "Первый сотрудник", active: 1, siteId: null, source: "manual", availability: "unassigned" },
+      { id: 1, fullName: "Первый сотрудник", active: 1, siteId: null, source: "manual", availability: "unassigned", ...terminalEmployee },
       { id: 2, fullName: "Второй сотрудник", active: 1, siteId: 1, source: "manual", availability: "on_site" },
       { id: 3, fullName: "Третий сотрудник", active: 1, siteId: 2, source: "bitrix24", availability: "vacation" },
       { id: 4, fullName: duplicateMasterName ? "Первый сотрудник" : "Не в проекте", active: 1, siteId: 2, source: "manual", availability: "on_site" },
@@ -40,6 +40,8 @@ function memoryDatabase({ failInsertAt = 0, failEmployeeUpdate = 0, failOrderWri
     async transaction(callback) {
       const pending = structuredClone(state);
       let inserted = 0;
+      const eligible = (sql, row) => row.active && (!sql.includes("terminal_check")
+        || !["blacklisted", "dismissed", "deleted"].includes(row.availability) && !["blacklisted_in_bitrix", "dismissed_in_bitrix"].includes(row.checkStatus));
       const execute = (sql, values) => {
         if (sql.includes("pg_advisory_xact_lock")) return result([]);
         if (sql.startsWith("INSERT INTO table_row_orders")) { if (!pending.orders.has(values[0])) pending.orders.set(values[0], []); return result([], 1); }
@@ -49,17 +51,17 @@ function memoryDatabase({ failInsertAt = 0, failEmployeeUpdate = 0, failOrderWri
           pending.orders.set(values[1], JSON.parse(values[0])); return result([], 1);
         }
         if (sql.startsWith("SELECT id FROM sites")) return result(pending.sites.filter(row => row.id === values[0] && row.active));
-        if (sql.startsWith("SELECT id FROM employees")) return result(pending.employees.filter(row => values[0].includes(row.id) && row.active).map(row => ({ id: row.id })));
+        if (sql.startsWith("SELECT id FROM employees")) return result(pending.employees.filter(row => values[0].includes(row.id) && eligible(sql, row)).map(row => ({ id: row.id })));
         if (sql.startsWith("SELECT employee_id AS employeeId")) return result(pending.assignments.filter(row => values[0].includes(row.employeeId) && row.siteId === values[1] && row.active).map(row => ({ employeeId: row.employeeId })));
         if (sql.startsWith("INSERT INTO employee_project_assignments")) { pending.assignments.push({ employeeId: values[0], siteId: values[1], active: 1 }); return result([], 1); }
         if (sql.startsWith("UPDATE employees")) {
           if (values[1] === failEmployeeUpdate) throw new Error("Тестовый сбой записи сотрудника");
-          const employee = pending.employees.find(row => row.id === values[1] && row.active);
+          const employee = pending.employees.find(row => row.id === values[1] && eligible(sql, row));
           if (!employee) return result([], 0);
           employee.siteId ??= values[0]; if (employee.source !== "bitrix24") employee.availability = "on_site";
           return result([], 1);
         }
-        if (sql.startsWith("SELECT e.id, e.full_name")) return result(pending.employees.filter(row => row.active && pending.assignments.some(assignment => assignment.employeeId === row.id && assignment.siteId === values[0] && assignment.active)).map(row => ({ id: row.id, fullName: row.fullName })));
+        if (sql.startsWith("SELECT e.id, e.full_name")) return result(pending.employees.filter(row => eligible(sql, row) && pending.assignments.some(assignment => assignment.employeeId === row.id && assignment.siteId === values[0] && assignment.active)).map(row => ({ id: row.id, fullName: row.fullName })));
         const table = sql.match(/(?:FROM|INTO) (zones|masters)/)?.[1];
         if (table && sql.startsWith("SELECT")) return result(pending[table].filter(row => row.siteId === values[0] && row.active));
         if (table && sql.startsWith("INSERT")) {
@@ -91,6 +93,15 @@ test("project employee import deduplicates IDs and preserves existing assignment
   assert.deepEqual(snapshot.orders.get("import-order:project-personnel:1"), [3, 2, 1]);
   assert.deepEqual(snapshot.orders.get("project-personnel:1"), [2, 1], "an import never changes the independently saved manual order");
   assert.deepEqual(snapshot.orders.get("import-order:project-personnel:2"), [3]);
+});
+
+test("Excel cannot assign or select a dismissed employee as a master, including a terminal Bitrix warning", async () => {
+  for (const terminalEmployee of [{ availability: "blacklisted" }, { availability: "dismissed" }, { checkStatus: "dismissed_in_bitrix" }, { checkStatus: "blacklisted_in_bitrix" }]) {
+    const db = memoryDatabase({ terminalEmployee });
+    await assert.rejects(importProjectEmployeesExcel(db, 2, [1, 2]), /архивирован/);
+    await assert.rejects(importProjectDirectoryExcel(db, 1, "master", { employeeIds: [1] }), /архивирован/);
+    assert.deepEqual(db.snapshot(), db.original);
+  }
 });
 
 test("reimporting existing project employees changes import order without duplicate assignments or touching other projects", async () => {

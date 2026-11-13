@@ -5,6 +5,7 @@ import { ensurePermissionSchema, resetUserPermissions } from "../../permissions"
 import { requiresAssignedProject, hasRestrictedProjectAccess } from "../../roles";
 import { saveUserProjectAccess } from "../../projectAccessServer";
 import { saveSubworkDirectory } from "../../workTypeHierarchyServer";
+import { currentEmployeeDirectoryFilter } from "../../employeeDirectoryEligibility";
 import { unauthorized, forbidden, approvalRequired, placementErrorResponse } from "./responses";
 import { ensureDatabaseInitialized } from "./bootstrap";
 import { type EntryPayload, type UserPayload, type ReportFinalizationPayload, type ExistingPlacementEntry } from "./types";
@@ -103,7 +104,7 @@ export async function handlePATCH(request: Request) {
         if (duplicate) throw new Error("Рабочий с таким ФИО уже существует.");
         const result = await db.prepare(`UPDATE employees SET full_name = ?, employment_type = ?, department = ?, position = ?, site_id = ?,
           availability_status = CASE WHEN source = 'bitrix24' THEN availability_status ELSE ? END
-          WHERE id = ? AND active = 1`)
+          WHERE id = ? AND ${currentEmployeeDirectoryFilter("employees")}`)
           .bind(fullName, employmentType, department, position, projectSiteId, projectSiteId ? "on_site" : "unassigned", employeeId).run();
         if (!result.meta.changes) throw new Error("Рабочий не найден.");
         if (projectSiteId) {
@@ -164,7 +165,7 @@ export async function handlePATCH(request: Request) {
         const employeeId = asPositiveInteger(payload.employeeId);
         const employee = employeeId ? await env.DB.prepare(`SELECT e.full_name AS fullName FROM employees e
           JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.site_id = ? AND epa.active = 1
-          WHERE e.id = ? AND e.active = 1`).bind(siteId, employeeId).first<{ fullName: string }>() : null;
+          WHERE e.id = ? AND ${currentEmployeeDirectoryFilter("e")}`).bind(siteId, employeeId).first<{ fullName: string }>() : null;
         if (!employee) throw new Error("Выберите мастера из сотрудников текущего проекта.");
         name = employee.fullName;
       }

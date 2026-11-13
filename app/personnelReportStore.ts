@@ -1,6 +1,7 @@
 import type { PostgresDatabase } from "../db/client";
 import type { AuthUser } from "./auth";
 import { rememberPersonnelImportOrder } from "./personnelImportOrderServer";
+import { currentMasterDirectoryFilter } from "./employeeDirectoryEligibility";
 import type { PersonnelReport, PersonnelReportApprovedEntry, PersonnelReportDeleteApprovedRequest, PersonnelReportData, PersonnelReportDateRequest, PersonnelReportEntryDateRequest, PersonnelReportEntrySaveRequest, PersonnelReportRequest, PersonnelReportRow, PersonnelReportRowValidationIssue, PersonnelReportValidationIssue, PersonnelReportValidationRequest, PersonnelReportValidationResult } from "./personnelReportTypes";
 import {
   hasReportStatusPermission, assertCanSavePersonnelReport, assertPersonnelReportHours, assertPersonnelReportOwner,
@@ -179,7 +180,7 @@ async function inspectReferences(db: Executor, siteId: number, rows: NormalizedP
   const fields = ["shiftId", "zoneId", "mainWorkTypeId", "subworkTypeId", "masterId"] as const;
   const tables = ["shifts", "zones", "main_work_types", "subwork_types", "masters"] as const;
   const results = await db.readBatch(fields.map((field, index) => db.prepare(`SELECT id, name${fields[index] === "subworkTypeId" ? ", main_work_type_id AS mainWorkTypeId" : ""} FROM ${tables[index]}
-    WHERE site_id = ? AND active = 1 AND id = ANY(?)`).bind(siteId, [...new Set(rows.flatMap((row) => row[field] ? [row[field]] : []))])));
+    WHERE site_id = ? AND ${field === "masterId" ? currentMasterDirectoryFilter("masters") : "active = 1"} AND id = ANY(?)`).bind(siteId, [...new Set(rows.flatMap((row) => row[field] ? [row[field]] : []))])));
   const references = results.map((result) => new Map((result.results as Array<{ id: number; name: string }>).map((entry) => [entry.id, entry.name])));
   const subworkParents = new Map((results[3].results as Array<{ id: number; mainWorkTypeId: number | null }>).map(child => [child.id, child.mainWorkTypeId]));
   const issues: PersonnelReportRowValidationIssue[] = [];

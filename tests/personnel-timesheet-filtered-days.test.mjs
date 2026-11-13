@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { isPersonnelTimesheetValue } from "../app/personnelTimesheetValues.ts";
+import { orderRowsByIds } from "../app/tableRowOrder.ts";
 
 const source = await readFile(new URL("../app/TimesheetView.tsx", import.meta.url), "utf8");
 const ast = ts.createSourceFile("TimesheetView.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -30,6 +31,25 @@ const employee = { id: 7, fullName: "Тестовый сотрудник", emplo
 const entriesByCell = new Map([["7:2026-11-01", { employeeId: 7, workDate: "2026-11-01", hours: 9, masters: "Мастер", zones: "А" }], ["7:2026-11-06", { employeeId: 7, workDate: "2026-11-06", hours: 8, masters: "Мастер", zones: "А" }], ["7:2026-11-08", { employeeId: 7, workDate: "2026-11-08", hours: 5, masters: "Мастер", zones: "А" }]]);
 const marksByCell = new Map([["7:2026-11-06", { employeeId: 7, workDate: "2026-11-06", hours: 4, code: null, note: "Шестое число" }], ["7:2026-11-08", { employeeId: 7, workDate: "2026-11-08", hours: 3, code: null, note: "Восьмое число" }]]);
 const base = { ...helpers, month, visibleDays: days, visibleEmployees: [employee], entriesByCell, marksByCell };
+const exportState = { exportBlocked: false, filters: { context: { activeColumns: new Set(), sorts: new Map() } } };
+
+function markWriteEnvironment() {
+  return {
+    ...base, isPersonnelTimesheetValue,
+    payload: { siteId: 1, month, canEdit: true, canCreate: true, canUpdate: true, canDelete: true,
+      employees: [employee], entries: [...entriesByCell.values()], marks: [...marksByCell.values()] },
+    activeScope: { current: `1:${month}` }, activeScopeVersion: { current: 0 },
+    clipboardViewScope: { current: "view:all-days:employee-7" },
+    pendingMarkRemoval: { current: false }, retryMarkChanges: { current: new Map() },
+    rosterDeletionCandidates: { current: new Set() }, markWrites: { current: 0 }, markRevision: { current: 0 },
+    refreshControl: { current: null },
+    confirm: async () => assert.fail("Published reports keep the employee on the timesheet without manual marks"),
+  };
+}
+
+function bindMarkWrite(name, environment) {
+  return bind(["planRosterMarkRemovals", "confirmRosterMarkRemoval", name].map(declaration).join("\n"), name, environment);
+}
 
 test("one or several day filters keep every date column and retain the filtered employee rows", () => {
   const code = ["visibleDays", "visibleDaysKey", "visibleEmployees"].map(declaration).join("\n");
@@ -68,15 +88,18 @@ test("clipboard values, undo values and activation keep calendar indices after d
 function pasteHarness() {
   const requests = [];
   const environment = {
-    ...base, isPersonnelTimesheetValue, dateLabel: value => value,
-    payload: { siteId: 1, month, canEdit: true, canCreate: true, canUpdate: true, canDelete: true },
-    navigationBusy: false, loading: false, activeScope: { current: `1:${month}` },
-    clipboardViewScope: { current: "view:all-days:employee-7" },
+    ...markWriteEnvironment(), dateLabel: value => value, navigationBusy: false, loading: false,
     window: { location: { replace() { assert.fail("Unexpected redirect"); } } },
-    fetch: async (_url, options) => { const body = JSON.parse(options.body); requests.push(body); return { ok: true, status: 200, json: async () => ({}) }; },
+    fetch: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      requests.push(body);
+      const { employeeId, workDate, value, note } = body;
+      const result = value ? { mark: { employeeId, workDate, hours: Number(value), code: null, note } } : { deleted: true, employeeId, workDate };
+      return { ok: true, status: 200, json: async () => result };
+    },
     batchSave: { getCellState: () => undefined, run: async jobs => ({ saved: await Promise.all(jobs.map(async job => ({ job, value: await job.save() }))), failed: [] }) },
   };
-  return { requests, paste: bind(declaration("pasteTimesheetCells"), "pasteTimesheetCells", environment) };
+  return { requests, paste: bindMarkWrite("pasteTimesheetCells", environment) };
 }
 
 test("pasting and clearing chosen cells do not remap dates or write to other calendar columns", async () => {
@@ -107,7 +130,7 @@ test("monthly totals and Excel retain the full calendar while employee rows are 
   assert.deepEqual(metrics.get(7), { timesheet: 16, reports: 22, difference: -6 });
   let preview;
   const exportPreview = bind(declaration("openTimesheetExportPreview"), "openTimesheetExportPreview", {
-    ...base, days, payload, siteId: 1, reconciliationTimesheet: 16, reconciliationDifference: -6, dayTotals: new Map(),
+    ...base, ...exportState, days, payload, siteId: 1, reconciliationTimesheet: 16, reconciliationDifference: -6, dayTotals: new Map(),
     monthLabel: () => "Ноябрь 2026", excelFileName: () => "Табель.xlsx", setError() {}, openExcelExportPreview: value => { preview = value; },
   });
   exportPreview();
@@ -118,25 +141,63 @@ test("monthly totals and Excel retain the full calendar while employee rows are 
   assert.equal(preview.workbook.rows[0].reportHours, 22);
 });
 
+test("historical OPR days reconcile while manual ITR days contribute only to timesheet hours", () => {
+  const engineer = { ...employee, employmentType: "ИТР" };
+  const payload = { siteName: "Учебный проект", employees: [engineer] };
+  const environment = { ...base, days, payload, visibleEmployees: [engineer],
+    entriesByCell: new Map([["7:2026-11-06", { hours: 8, masters: "", reportTracked: true }]]), useMemo: create => create(),
+  };
+  const metrics = bind(declaration("rowMetricsByEmployee"), "rowMetricsByEmployee", environment);
+  assert.deepEqual(metrics.get(7), { timesheet: 7, reports: 8, difference: -4 });
+  let preview;
+  bind(declaration("openTimesheetExportPreview"), "openTimesheetExportPreview", {
+    ...environment, ...exportState, siteId: 1, reconciliationTimesheet: 7, reconciliationDifference: -4, dayTotals: new Map(),
+    monthLabel: () => "Ноябрь 2026", excelFileName: () => "Табель.xlsx", setError() {}, openExcelExportPreview: value => { preview = value; },
+  })();
+  assert.equal(preview.workbook.rows[0].dailyReportTracked[5], true);
+  assert.equal(preview.workbook.rows[0].dailyReportTracked[7], false);
+  assert.equal(preview.rows[0].at(-2), -4);
+});
+
+test("timesheet uses canonical project order, then import or saved order according to project settings", () => {
+  const employees = [1, 2, 3].map(id => ({ ...employee, id }));
+  const payload = { employees };
+  const common = { useMemo: callback => callback(), payload, orderRowsByIds };
+  const canonical = (rows, getId) => orderRowsByIds(rows, [3, 2, 1], getId);
+  for (const [hasSavedOrder, hasImportOrder, expected] of [[false, false, [3, 2, 1]], [false, true, [2, 1, 3]], [true, true, [3, 2, 1]]]) {
+    const rowOrder = { order: canonical, hasSavedOrder, hasImportOrder, importIds: [2, 1, 3] };
+    assert.deepEqual(bind(declaration("filterRows"), "filterRows", { ...common, rowOrder }).map(item => item.id), expected);
+  }
+});
+
+test("Excel does not export while edits, failures or a roster refresh are pending", () => {
+  const scope = { loading: false, navigationBusy: false, navigationDirty: false, refreshLoading: false, rosterRefreshPending: false,
+    refreshError: "", error: "", markConflict: "", rowOrder: { ready: true } };
+  assert.equal(bind(declaration("exportBlocked"), "exportBlocked", scope), false);
+  for (const key of ["loading", "navigationBusy", "navigationDirty", "refreshLoading", "rosterRefreshPending", "refreshError", "markConflict"]) {
+    const exportBlocked = bind(declaration("exportBlocked"), "exportBlocked", { ...scope, [key]: true });
+    assert.equal(exportBlocked, true, key);
+    const open = bind(declaration("openTimesheetExportPreview"), "openTimesheetExportPreview", { exportBlocked });
+    assert.doesNotThrow(open, `Export returns before reading workbook data when ${key}`);
+  }
+});
+
 test("late single-cell saves do not insert stale visible-column indices into a different view's undo", async () => {
   for (const viewChanged of [false, true]) {
     let respond;
     const undo = [];
     const scope = { current: "view:all-days:employee-7" };
     const environment = {
-      ...base,
-      payload: { siteId: 1, month, canEdit: true, canCreate: true, canUpdate: true, canDelete: true },
-      savingBulkMarks: false, activeScope: { current: `1:${month}` }, activeScopeVersion: { current: 0 },
-      markWrites: { current: 0 }, markRevision: { current: 0 }, clipboardViewScope: scope,
+      ...markWriteEnvironment(), savingBulkMarks: false, clipboardViewScope: scope,
       batchSave: { getCellState: () => undefined, clearCell() {} },
-      setSavingMark() {}, setPayload() {}, rememberTimesheetUndo: changes => undo.push(...changes), refreshControl: { current: null },
+      setSavingMark() {}, setPayload() {}, rememberTimesheetUndo: changes => undo.push(...changes),
       window: { location: { replace() { assert.fail("Unexpected redirect"); } } },
       fetch: () => new Promise(resolve => { respond = resolve; }),
     };
-    const save = bind(declaration("persistMark"), "persistMark", environment);
+    const save = bindMarkWrite("persistMark", environment);
     const pending = save({ employeeId: 7, workDate: "2026-11-06" }, "5");
     if (viewChanged) scope.current = "view:all-days:different-rows";
-    respond({ ok: true, status: 200, json: async () => ({}) });
+    respond({ ok: true, status: 200, json: async () => ({ mark: { ...marksByCell.get("7:2026-11-06"), hours: 5 } }) });
     assert.equal(await pending, true);
     assert.equal(undo.length, viewChanged ? 0 : 1);
     if (!viewChanged) assert.equal(undo[0].columnIndex, 5, "The sixth calendar day remains at its full-month coordinate");

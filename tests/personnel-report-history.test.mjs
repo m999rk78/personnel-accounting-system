@@ -9,7 +9,8 @@ import { compatibleSubworkId } from "../app/workTypeHierarchy.ts";
 const source = ts.transpileModule(await readFile(new URL("../app/personnelReportStore.ts", import.meta.url), "utf8"), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText.replaceAll('"./personnelReportWorkflow"', JSON.stringify(new URL("../app/personnelReportWorkflow.ts", import.meta.url).href))
-  .replaceAll('"./personnelImportOrderServer"', JSON.stringify(new URL("../app/personnelImportOrderServer.ts", import.meta.url).href));
+  .replaceAll('"./personnelImportOrderServer"', JSON.stringify(new URL("../app/personnelImportOrderServer.ts", import.meta.url).href))
+  .replaceAll('"./employeeDirectoryEligibility"', JSON.stringify(new URL("../app/employeeDirectoryEligibility.ts", import.meta.url).href));
 const { mutatePersonnelReport, mutatePersonnelReportEntry } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 const actor = { id: 8, role: "engineer", fullName: "Инженер", projectAccess: { mode: "selected", siteIds: [7] }, permissions: rolePermissionTemplate("engineer") };
 const original = {
@@ -162,5 +163,7 @@ test("approved and legacy editors retain unchanged references; copying starts a 
   assert.equal(copied[0].referenceIds, undefined);
   assert.equal(copied[0].lockedEmployee, false);
   assert.equal(copied[0].employeeId, "");
+  assert.equal(copied[0].employeeQuery, "");
+  assert.equal(approved.employeeQuery, original.employeeName);
   assert.ok(personnelCellErrors(copied[0], catalogs, true).employeeName);
 });

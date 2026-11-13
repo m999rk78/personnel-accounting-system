@@ -6,14 +6,24 @@ import ts from "typescript";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { projectForemanCounts } from "../app/projectUserUsage.ts";
+import { currentEmployeeDirectoryFilter } from "../app/employeeDirectoryEligibility.ts";
 import { readDataImplementation } from "./fixtures/read-implementation.mjs";
 
 const routePath = new URL("../app/api/data/route.ts", import.meta.url);
 const route = ts.createSourceFile(routePath.pathname, await readDataImplementation(), ts.ScriptTarget.Latest, true);
 const queries = [];
 function visit(node) {
-  if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "prepare"
-      && node.arguments[0] && ts.isStringLiteralLike(node.arguments[0])) queries.push(node.arguments[0].text);
+  if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "prepare" && node.arguments[0]) {
+    const sql = node.arguments[0];
+    if (ts.isStringLiteralLike(sql)) queries.push(sql.text);
+    if (ts.isTemplateExpression(sql) && sql.templateSpans.length === 1) {
+      const [span] = sql.templateSpans;
+      if (ts.isCallExpression(span.expression) && span.expression.expression.getText(route) === "currentEmployeeDirectoryFilter"
+        && span.expression.arguments[0] && ts.isStringLiteralLike(span.expression.arguments[0])) {
+        queries.push(sql.head.text + currentEmployeeDirectoryFilter(span.expression.arguments[0].text) + span.literal.text);
+      }
+    }
+  }
   ts.forEachChild(node, visit);
 }
 visit(route);
@@ -30,11 +40,13 @@ function fixture(users = []) {
     CREATE TABLE app_users(id INTEGER PRIMARY KEY, role TEXT, assigned_site_id INTEGER, active INTEGER);
     CREATE TABLE user_project_access(user_id INTEGER PRIMARY KEY, all_projects INTEGER);
     CREATE TABLE user_project_access_sites(user_id INTEGER, site_id INTEGER);
-    CREATE TABLE employees(id INTEGER PRIMARY KEY, active INTEGER);
+    CREATE TABLE employees(id INTEGER PRIMARY KEY, active INTEGER, availability_status TEXT);
+    CREATE TABLE bitrix24_employee_check_states(employee_id INTEGER, status TEXT);
     CREATE TABLE employee_project_assignments(employee_id INTEGER, site_id INTEGER, active INTEGER);
     INSERT INTO sites VALUES (7,1),(8,1),(9,1),(10,0);
-    INSERT INTO employees VALUES (1,1),(2,0);
-    INSERT INTO employee_project_assignments VALUES (1,7,1),(1,8,1),(2,7,1);`);
+    INSERT INTO employees VALUES (1,1,'on_site'),(2,0,'on_site'),(3,1,'dismissed'),(4,1,'on_site');
+    INSERT INTO bitrix24_employee_check_states VALUES (4,'blacklisted_in_bitrix');
+    INSERT INTO employee_project_assignments VALUES (1,7,1),(1,8,1),(2,7,1),(3,7,1),(4,8,1);`);
   for (const [index, user] of users.entries()) {
     const id = index + 1;
     db.prepare("INSERT INTO app_users VALUES (?,?,?,?)").run(id, user.role, user.assignedSiteId ?? null, user.active === false ? 0 : 1);

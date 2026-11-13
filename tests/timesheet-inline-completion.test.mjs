@@ -14,7 +14,7 @@ for (const variant of variants) {
   const source = ts.createSourceFile(path.pathname, await readFile(path, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   variant.code = new Map();
   function visit(node) {
-    if (ts.isFunctionDeclaration(node) && [variant.save, variant.open, "parseEquipmentClipboardHours"].includes(node.name?.text)) variant.code.set(node.name.text, node.getText(source));
+    if (ts.isFunctionDeclaration(node) && [variant.save, variant.open, "parseEquipmentClipboardHours", "canAddTimesheetMark"].includes(node.name?.text)) variant.code.set(node.name.text, node.getText(source));
     if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === "input" && node.attributes.getText(source).includes(variant.label)) {
       for (const attr of node.attributes.properties) {
         if (ts.isJsxAttribute(attr) && ["onBlur", "onKeyDown"].includes(attr.name.text)) variant.code.set(attr.name.text, attr.initializer.expression.getText(source));
@@ -59,7 +59,7 @@ function harness(variant, value = "8", mode = "success") {
     focusEquipmentTimesheetCell: (...coordinates) => { state.moves++; state.moveTargets.push(coordinates); }, notifyEquipmentTimesheetClipboard() {},
     savingMark: false, savingTimesheetMark: false,
     savingBulkMarks: false, savingBulkTimesheetMarks: false, loading: false,
-    payload: { canCreate: true, canUpdate: true, canCreateTimesheet: true, canUpdateTimesheet: true },
+    payload: { canCreate: true, canUpdate: true, canCreateTimesheet: true, canUpdateTimesheet: true, employees: [{ id: 1 }, { id: 2 }] },
     inlineInputRef: { current: { focus: () => { state.focus++; } } },
     timesheetInlineInput: { current: { focus: () => { state.focus++; } } },
     monthRows: [], markValue: () => "", formatEquipmentHours: () => "",
@@ -68,7 +68,8 @@ function harness(variant, value = "8", mode = "success") {
   const parser = variant.code.has("parseEquipmentClipboardHours") ? js(variant.code.get("parseEquipmentClipboardHours")) : "";
   const save = new Function(...Object.keys(scope), `${parser}${js(variant.code.get(variant.save))}; return ${variant.save};`)(...Object.values(scope));
   const handlerScope = { ...scope, [variant.save]: save };
-  const open = new Function(...Object.keys(handlerScope), `${js(variant.code.get(variant.open))}; return ${variant.open};`)(...Object.values(handlerScope));
+  const eligibility = variant.code.has("canAddTimesheetMark") ? js(variant.code.get("canAddTimesheetMark")) : "";
+  const open = new Function(...Object.keys(handlerScope), `${eligibility}${js(variant.code.get(variant.open))}; return ${variant.open};`)(...Object.values(handlerScope));
   const callbacks = Object.fromEntries(["onBlur", "onKeyDown"].map(name => [name,
     new Function(...Object.keys(handlerScope), `${js(`const callback = ${variant.code.get(name)};`)}; return callback;`)(...Object.values(handlerScope)),
   ]));

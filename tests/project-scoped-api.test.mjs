@@ -34,7 +34,7 @@ const replacements = {
   "../../excelDirectoryImports": noop(["importProjectDirectoryExcel", "importProjectEmployeesExcel", "normalizeExcelDirectoryName", "prepareEmployeeExcelImport"]),
   "../../personnelImportOrderServer": fileUrl("personnelImportOrderServer"),
   "../../personnelTimesheetReference.server": fileUrl("personnelTimesheetReference.server"),
-  "../../bitrix24Sync": noop(["compareBitrixEmployees", "fetchBitrixEmployeeSnapshot", "normalizeBitrixText", "selectBitrixEmployeesForImport", "selectLinkedBitrixEmployeesForReview", "suggestBitrixEmployeeLinks"]),
+  "../../bitrix24Sync": noop(["compareBitrixEmployees", "fetchBitrixEmployeeSnapshot", "normalizeBitrixText", "selectBitrixEmployeesForImport", "selectLinkedBitrixEmployeesForReview", "suggestBitrixEmployeeLinks", "suggestArchivedBitrixEmployeeLinks", "observeLegacyTerminalBitrixDuplicates", "isBitrixCentralOfficeEmployee", "bitrixOfficeTransferDirection"]),
   "../../equipmentAvailability": fileUrl("equipmentAvailability"),
   "../../equipmentImportServer": noop(["importEquipmentEntries"]),
   "../../equipmentImport": fileUrl("equipmentImport"),
@@ -65,7 +65,10 @@ function fakeDatabase(userRows) {
     if (/SELECT role, password_hash/.test(sql)) return [{ role: "foreman", passwordHash: "already-activated" }];
     if (/SELECT id FROM app_users WHERE email/.test(sql)) return [];
     if (/SELECT id FROM equipment_units WHERE id = \?/.test(sql)) return [{ id: values[0] }];
-    if (/SELECT id FROM employees WHERE id = \?/.test(sql) || /SELECT e.id FROM employees e WHERE e.id = \?/.test(sql)) return [{ id: values[0] }];
+    if (/SELECT id FROM employees WHERE id = \?/.test(sql)) return [{ id: values[0] }];
+    if (sql.startsWith("WITH assignment_roster AS") && sql.includes("AND employee_id = ?")) return [{
+      id: values[2], assignments: [{ startDate: "2000-01-01", endDate: null, active: true }], reportDates: [], markDates: [], exits: [], profileDate: null,
+    }];
     if (/SELECT eu.id FROM equipment_units eu WHERE eu.id = \?/.test(sql)) return [{ id: values[0] }];
     if (/FROM sites WHERE id = \?/.test(sql)) return sites.filter(site => site.id === values[0]);
     if (/SELECT id, name(?:, code, timezone)? FROM sites WHERE active = 1/.test(sql)) return sites;

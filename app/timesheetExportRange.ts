@@ -1,9 +1,19 @@
-import type { EquipmentTimesheetExportRow, PersonnelTimesheetExportRow } from "./placementXlsx";
-import { orderPersonnelTimesheetEmployees } from "./personnelTimesheetOrder.ts";
+import { personnelTimesheetExportDifference, type EquipmentTimesheetExportRow, type PersonnelTimesheetExportRow } from "./placementXlsx.ts";
 import { orderRowsByIds } from "./tableRowOrder.ts";
+import { isReportWorkDate } from "./reportDateChanges.ts";
 
 export type PersonnelTimesheetMonthData = {
-  employees: Array<{ id: number; fullName: string; employmentType: string; department: string; position: string; timesheetOrder?: number | null }>;
+  month?: string;
+  employees: Array<{
+    id: number; fullName: string; employmentType: string; department: string; position: string; timesheetOrder?: number | null;
+    reportDates?: string[];
+    reportTrackedByDate?: Record<string, boolean>;
+    roster?: {
+      periods: Array<{ startDate: string; endDate: string }>;
+      unknownDates: string[];
+      reason: string;
+    };
+  }>;
   entries: Array<{ employeeId: number; workDate: string; hours: number; masters: string; zones: string; reportTracked?: boolean }>;
   marks: Array<{ employeeId: number; workDate: string; hours: number | null; code: string | null; note: string; updatedBy: string }>;
 };
@@ -25,7 +35,7 @@ export type EquipmentTimesheetMonthData = {
 };
 
 function checkedRange(start: string, end: string) {
-  if (!start || !end || start > end) throw new Error("Проверьте даты начала и окончания периода.");
+  if (!isReportWorkDate(start) || !isReportWorkDate(end) || start > end) throw new Error("Проверьте даты начала и окончания периода.");
   const startTime = Date.parse(`${start}T00:00:00Z`);
   const endTime = Date.parse(`${end}T00:00:00Z`);
   if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) throw new Error("Проверьте даты начала и окончания периода.");
@@ -46,6 +56,7 @@ export function monthKeysInRange(start: string, end: string) {
   const last = `${end.slice(0, 7)}-01`;
   while (current <= last) {
     months.push(current.slice(0, 7));
+    if (current === last) break;
     const date = new Date(`${current}T00:00:00Z`);
     date.setUTCMonth(date.getUTCMonth() + 1);
     current = date.toISOString().slice(0, 10);
@@ -54,7 +65,7 @@ export function monthKeysInRange(start: string, end: string) {
 }
 
 function selectedIndices(dates: string[], start: string, end: string) {
-  if (!start || !end || start > end) throw new Error("Проверьте даты начала и окончания периода.");
+  checkedRange(start, end);
   const indices = dates.flatMap((date, index) => date >= start && date <= end ? [index] : []);
   if (!indices.length || start < (dates[0] ?? "") || end > (dates.at(-1) ?? "")) {
     throw new Error("Для табеля можно выбрать даты только в пределах открытого месяца.");
@@ -89,37 +100,73 @@ function isEquipmentDowntime(entry: EquipmentTimesheetMonthData["entries"][numbe
 export function buildPersonnelTimesheetRange(months: PersonnelTimesheetMonthData[], start: string, end: string, savedOrderIds?: readonly number[]) {
   const dates = dateKeysInRange(start, end);
   const employees = new Map<number, PersonnelTimesheetMonthData["employees"][number]>();
+  const rosterDatesByEmployee = new Map<number, Set<string> | null>();
+  const employeeTypesByMonth = new Map<string, string>();
+  const reportTrackingByDate = new Map<string, boolean>();
   const entries = new Map<string, PersonnelTimesheetMonthData["entries"][number]>();
   const marks = new Map<string, PersonnelTimesheetMonthData["marks"][number]>();
   for (const month of months) {
-    for (const employee of month.employees) employees.set(employee.id, employee);
+    const recordedDatesByEmployee = new Map<number, Set<string>>();
+    for (const record of [...month.entries, ...month.marks]) {
+      const employeeDates = recordedDatesByEmployee.get(record.employeeId) ?? new Set<string>();
+      employeeDates.add(record.workDate);
+      recordedDatesByEmployee.set(record.employeeId, employeeDates);
+    }
+    for (const employee of month.employees) {
+      if (month.month) employeeTypesByMonth.set(`${employee.id}:${month.month}`, employee.employmentType);
+      for (const [date, tracked] of Object.entries(employee.reportTrackedByDate ?? {})) reportTrackingByDate.set(personnelCellKey(employee.id, date), tracked);
+      const roster = employee.roster;
+      const factDates = new Set([...(employee.reportDates ?? []), ...(recordedDatesByEmployee.get(employee.id) ?? [])]);
+      const includedDates = roster ? dates.filter(date => factDates.has(date)
+        || roster.periods.some(period => period.startDate <= date && date < period.endDate)
+        || roster.reason === "assignment" && roster.unknownDates.includes(date)) : null;
+      // A monthly historical row does not imply work on every exported date.
+      // Preserve the latest included month's profile without adding empty rows
+      // from other months in the requested range.
+      if (includedDates === null || includedDates.length) {
+        employees.set(employee.id, employee);
+        if (includedDates === null || rosterDatesByEmployee.get(employee.id) === null) {
+          rosterDatesByEmployee.set(employee.id, null);
+        } else {
+          const rosterDates = rosterDatesByEmployee.get(employee.id) ?? new Set<string>();
+          for (const date of includedDates) rosterDates.add(date);
+          rosterDatesByEmployee.set(employee.id, rosterDates);
+        }
+      }
+    }
     for (const entry of month.entries) entries.set(personnelCellKey(entry.employeeId, entry.workDate), entry);
     for (const mark of month.marks) marks.set(personnelCellKey(mark.employeeId, mark.workDate), mark);
   }
   const roster = Array.from(employees.values());
   const orderedEmployees = savedOrderIds === undefined
-    ? orderPersonnelTimesheetEmployees(roster)
+    ? roster
     : orderRowsByIds(roster, savedOrderIds, employee => employee.id);
   const rows = orderedEmployees
     .map((employee): PersonnelTimesheetExportRow => {
-      const reportTracked = employee.employmentType.trim().toLocaleUpperCase("ru-RU") === "ОПР";
       const dailyTimesheetHours: number[] = [];
       const dailyReportHours: number[] = [];
+      const dailyReportTracked: boolean[] = [];
       const dailyMasters: string[] = [];
       const dailyValues = dates.map((date) => {
         const key = personnelCellKey(employee.id, date);
         const reported = entries.get(key);
+        const monthlyEmploymentType = employeeTypesByMonth.get(`${employee.id}:${date.slice(0, 7)}`) ?? employee.employmentType;
+        const reportTracked = reported?.reportTracked === true
+          || (reportTrackingByDate.get(key) ?? monthlyEmploymentType.trim().toLocaleUpperCase("ru-RU") === "ОПР");
         // The API identifies historical OPR records from their saved snapshots.
         // A later transfer to ITR must not erase those hours from an export.
-        const entry = reportTracked || reported?.reportTracked ? reported : undefined;
+        const entry = reportTracked ? reported : undefined;
         const mark = marks.get(key);
         dailyTimesheetHours.push(mark?.code ? 0 : mark?.hours !== null && mark?.hours !== undefined ? Number(mark.hours) : Number(entry?.hours ?? 0));
         dailyReportHours.push(Number(entry?.hours ?? 0));
+        dailyReportTracked.push(reportTracked);
         dailyMasters.push(entry?.masters ?? "");
         return mark?.code ?? mark?.hours ?? entry?.hours ?? "";
       });
       const masterNames = new Set(dailyMasters.flatMap((value) => value.split(/[,;]/).map((name) => name.trim()).filter(Boolean)));
+      const rosterDates = rosterDatesByEmployee.get(employee.id);
       return {
+        rosterDates: rosterDates ? [...rosterDates].sort() : undefined,
         employmentType: employee.employmentType,
         department: employee.department,
         fullName: employee.fullName,
@@ -128,6 +175,7 @@ export function buildPersonnelTimesheetRange(months: PersonnelTimesheetMonthData
         dailyValues,
         dailyTimesheetHours,
         dailyReportHours,
+        dailyReportTracked,
         dailyMasters,
         timesheetHours: sum(dailyTimesheetHours),
         reportHours: sum(dailyReportHours),
@@ -136,7 +184,7 @@ export function buildPersonnelTimesheetRange(months: PersonnelTimesheetMonthData
     });
   const dayTotals = dates.map((_, index) => rows.reduce((total, row) => total + row.dailyTimesheetHours[index], 0));
   const totalHours = rows.reduce((total, row) => total + row.timesheetHours, 0);
-  const totalDifference = rows.reduce((total, row) => total + (row.employmentType.trim().toLocaleUpperCase("ru-RU") === "ОПР" ? row.timesheetHours - row.reportHours : 0), 0);
+  const totalDifference = rows.reduce((total, row) => total + personnelTimesheetExportDifference(row), 0);
   return { dates, rows, dayTotals, totalHours, totalDifference };
 }
 
@@ -209,7 +257,7 @@ export function selectPersonnelTimesheetRange(
 ) {
   const indices = selectedIndices(dates, start, end);
   const selectedDates = indices.map((index) => dates[index]);
-  const selectedRows = rows.map((row) => {
+  const selectedRows = rows.filter(row => row.rosterDates === undefined || row.rosterDates.some(date => date >= start && date <= end)).map((row) => {
     const dailyTimesheetHours = indices.map((index) => row.dailyTimesheetHours[index] ?? 0);
     const dailyReportHours = indices.map((index) => row.dailyReportHours[index] ?? 0);
     const masters = new Set(indices.flatMap((index) => (row.dailyMasters[index] ?? "").split(/[,;]/).map((value) => value.trim()).filter(Boolean)));
@@ -218,6 +266,7 @@ export function selectPersonnelTimesheetRange(
       dailyValues: indices.map((index) => row.dailyValues[index] ?? ""),
       dailyTimesheetHours,
       dailyReportHours,
+      dailyReportTracked: row.dailyReportTracked && indices.map(index => row.dailyReportTracked?.[index] ?? false),
       dailyMasters: indices.map((index) => row.dailyMasters[index] ?? ""),
       timesheetHours: sum(dailyTimesheetHours),
       reportHours: sum(dailyReportHours),
@@ -225,11 +274,12 @@ export function selectPersonnelTimesheetRange(
     };
   });
   const totalHours = selectedRows.reduce((total, row) => total + row.timesheetHours, 0);
-  const totalDifference = selectedRows.reduce((total, row) => total + (row.employmentType.trim().toLocaleUpperCase("ru-RU") === "ОПР" ? row.timesheetHours - row.reportHours : 0), 0);
+  const totalDifference = selectedRows.reduce((total, row) => total + personnelTimesheetExportDifference(row), 0);
   return {
     dates: selectedDates,
     rows: selectedRows,
-    dayTotals: indices.map((index) => dayTotals[index] ?? 0),
+    dayTotals: selectedRows.length === rows.length ? indices.map((index) => dayTotals[index] ?? 0)
+      : selectedDates.map((_, index) => selectedRows.reduce((total, row) => total + row.dailyTimesheetHours[index], 0)),
     totalHours,
     totalDifference,
   };

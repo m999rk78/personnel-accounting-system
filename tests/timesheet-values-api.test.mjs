@@ -23,9 +23,10 @@ function actor() {
   return { id: 17, role: "engineer", fullName: "Учебный инженер", assignedSiteId: 7,
     projectAccess: { mode: "selected", siteIds: [7] }, permissions: rolePermissionTemplate("superadmin") };
 }
-function fixture(user = actor(), { existing = false, member = true } = {}) {
+function fixture(user = actor(), { existing = false, member = true, directoryActive = 1, reportDates = [] } = {}) {
   const writes = [];
-  let mark = existing ? { siteId: 7, employeeId: 101, workDate, hours: 8, code: null, note: "", updatedBy: "Предыдущий автор" } : null;
+  let revision = 1;
+  let mark = existing ? { siteId: 7, employeeId: 101, workDate, hours: 8, code: null, note: "", updatedBy: "Предыдущий автор", revision: "r1" } : null;
   const database = {
     prepare(sql) {
       let values = [];
@@ -33,16 +34,19 @@ function fixture(user = actor(), { existing = false, member = true } = {}) {
         bind(...parameters) { values = parameters; return this; },
         async first() {
           if (/SELECT id, name FROM sites/.test(sql)) return { id: 7, name: "Учебный проект" };
-          if (/SELECT e.id FROM employees e/.test(sql)) return member ? { id: 101 } : null;
+          if (sql.startsWith("WITH assignment_roster AS")) return member ? {
+            id: 101, directoryActive, assignments: [{ startDate: "2000-01-01", endDate: null, active: true }], reportDates, markDates: mark ? [mark.workDate] : [], exits: [], profileDate: null,
+          } : null;
           if (/pg_advisory_xact_lock/.test(sql)) return {};
-          if (/SELECT id FROM timesheet_marks/.test(sql)) return mark ? { id: 1 } : null;
+          if (/AS revision FROM timesheet_marks/.test(sql)) return mark?.workDate === values[2] ? { revision: mark.revision } : null;
+          if (/SELECT id FROM timesheet_marks/.test(sql)) return mark?.workDate === values[2] ? { id: 1 } : null;
           throw new Error(`Unexpected read: ${sql.slice(0, 80)}`);
         },
         async run() {
           writes.push({ sql, values: structuredClone(values) });
           if (/INSERT INTO timesheet_marks/.test(sql)) {
             const [siteId, employeeId, date, hours, code, note, updatedBy] = values;
-            mark = { siteId, employeeId, workDate: date, hours, code, note, updatedBy };
+            mark = { siteId, employeeId, workDate: date, hours, code, note, updatedBy, revision: `r${++revision}` };
           } else if (/DELETE FROM timesheet_marks/.test(sql)) mark = null;
           else throw new Error(`Unexpected write: ${sql.slice(0, 80)}`);
           return { meta: { changes: 1 } };
@@ -58,6 +62,21 @@ const save = (value, overrides = {}) => POST(new Request("http://localhost/api/t
   method: "POST", headers: { "Content-Type": "application/json", origin: "http://localhost" },
   body: JSON.stringify({ siteId: 7, employeeId: 101, workDate, value, note: "Проверка", ...overrides }),
 }));
+
+test("an archived employee requires monthly history but permits backdated corrections within that month", async () => {
+  let state = fixture(actor(), { directoryActive: 0 });
+  assert.equal((await save(8)).status, 404);
+  assert.equal(state.writes.length, 0);
+
+  state = fixture(actor(), { directoryActive: 0, existing: true });
+  const response = await save(8, { workDate: "2026-11-06" });
+  assert.equal(response.status, 200, "monthly historical membership permits correction of another day and supports undo");
+  assert.equal(state.writes.length, 1);
+  assert.equal((await save(7)).status, 200, "historical days remain editable");
+
+  state = fixture(actor(), { directoryActive: 0, reportDates: [workDate] });
+  assert.equal((await save(7)).status, 200, "a day with a historical report is still eligible for a correction");
+});
 
 test("the actual timesheet API saves every reference code and all hours from one through ten", async () => {
   for (const value of [...Array.from({ length: 10 }, (_, hour) => hour + 1), ...expectedCodes]) {
@@ -108,6 +127,18 @@ test("invalid hours and unknown codes never write a mark", async () => {
   }
 });
 
+test("invalid calendar dates cannot save a mark on a normalized different date", async () => {
+  for (const workDate of ["2026-02-29", "2026-02-30", "2026-04-31", "0000-01-01", "2026-13-01", "2026-11-00"]) {
+    const state = fixture();
+    const response = await save(8, { workDate });
+    assert.equal(response.status, 400, `Reject impossible date ${workDate}`);
+    assert.deepEqual(state.writes, []);
+  }
+  const state = fixture();
+  assert.equal((await save(8, { workDate: "2028-02-29" })).status, 200);
+  assert.equal(state.mark().workDate, "2028-02-29", "A real leap day remains writable");
+});
+
 test("new codes respect independent create, update and delete permissions", async () => {
   const updateOnly = actor();
   Object.assign(updateOnly.permissions.workers_timesheet, { create: false, update: true, delete: false });
@@ -149,5 +180,35 @@ for (const role of ["foreman", "viewer"]) test(`${role} can save, edit and delet
   assert.equal((await save("О")).status, 200);
   assert.equal(state.mark().code, "О");
   assert.equal((await save("")).status, 200);
+  assert.equal(state.mark(), null);
+});
+
+
+test("stale edits and retries cannot overwrite a later saved mark or delete it", async () => {
+  const state = fixture(actor(), { existing: true });
+  const first = await save(6, { expectedRevision: "r1" });
+  assert.equal(first.status, 200);
+  const saved = (await first.json()).mark;
+  assert.notEqual(saved.revision, "r1");
+  for (const value of [9, "", "ПЕ"]) {
+    assert.equal((await save(value, { expectedRevision: "r1" })).status, 409);
+    assert.equal(state.mark().hours, 6);
+    assert.equal(state.writes.length, 1);
+  }
+  assert.equal((await save(7, { expectedRevision: saved.revision })).status, 200);
+});
+
+test("a concurrent create cannot replace a mark when the client saw an empty day", async () => {
+  const state = fixture();
+  assert.equal((await save(8, { expectedRevision: null })).status, 200);
+  assert.equal((await save(3, { expectedRevision: null })).status, 409);
+  assert.equal(state.mark().hours, 8);
+});
+
+test("the server requires confirmation before a guarded delete removes the final historical row", async () => {
+  const state = fixture(actor(), { directoryActive: 0, existing: true });
+  assert.equal((await save("", { expectedRevision: "r1" })).status, 409);
+  assert.equal(state.mark().hours, 8);
+  assert.equal((await save("", { expectedRevision: "r1", allowRosterRemoval: true })).status, 200);
   assert.equal(state.mark(), null);
 });

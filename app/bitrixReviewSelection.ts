@@ -9,7 +9,7 @@ export type BitrixReviewDifference = {
 export function bitrixReviewUpdateIds(result: { differences: readonly BitrixReviewDifference[]; updatableEmployeeIds?: readonly number[] }): number[] {
   // The server supplies IDs for the whole inspection, not only its 100-row preview.
   const ids = result.updatableEmployeeIds ?? result.differences.flatMap(item =>
-    ["changed", "blacklisted_in_bitrix"].includes(item.kind) && !item.acknowledged && item.bitrix24Id && item.localEmployeeId ? [item.localEmployeeId] : []);
+    ["changed", "dismissed_in_bitrix", "blacklisted_in_bitrix"].includes(item.kind) && !item.acknowledged && item.bitrix24Id && item.localEmployeeId ? [item.localEmployeeId] : []);
   return [...new Set(ids.filter(id => Number.isSafeInteger(id) && id > 0))];
 }
 

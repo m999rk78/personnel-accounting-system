@@ -8,7 +8,8 @@ const asModule = code => `data:text/javascript;base64,${Buffer.from(code).toStri
 const source = ts.transpileModule(await readFile(new URL("../app/personnelReportStore.ts", import.meta.url), "utf8"), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
 }).outputText.replaceAll('"./personnelReportWorkflow"', JSON.stringify(new URL("../app/personnelReportWorkflow.ts", import.meta.url).href))
-  .replaceAll('"./personnelImportOrderServer"', JSON.stringify(new URL("../app/personnelImportOrderServer.ts", import.meta.url).href));
+  .replaceAll('"./personnelImportOrderServer"', JSON.stringify(new URL("../app/personnelImportOrderServer.ts", import.meta.url).href))
+  .replaceAll('"./employeeDirectoryEligibility"', JSON.stringify(new URL("../app/employeeDirectoryEligibility.ts", import.meta.url).href));
 const { deletePersonnelReportApprovedRows } = await import(asModule(source));
 const actor = (role = "engineer") => ({ id: 8, role, fullName: "Тестовый инженер", projectAccess: { mode: "selected", siteIds: [7] }, permissions: rolePermissionTemplate(role) });
 const changedAt = "2026-11-09T08:00:00Z";

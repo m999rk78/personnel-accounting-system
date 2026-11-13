@@ -23,7 +23,7 @@ const replacements = {
   ...Object.fromEntries(["roles", "permissionModel", "projectScopedData", "readOptionalBatch", "settingsReadPolicy", "bitrix24Cooldown", "bitrixReviewSelection", "excelDirectoryImports", "personnelImportOrderServer", "equipmentAvailability", "equipmentImport", "equipmentTimesheetUnits", "equipmentReportWorkflow", "personnelTimesheetReference.server"].map(name=>[`../../${name}`,file(name)])),
   "../../projectMasters": noop(["ensureProjectMastersSchema", "syncProjectMasters"]),
   "../../workTypeHierarchyServer": noop(["saveSubworkDirectory"]),
-  "../../bitrix24Sync": noop(["compareBitrixEmployees", "fetchBitrixEmployeeSnapshot", "normalizeBitrixText", "selectBitrixEmployeesForImport", "selectLinkedBitrixEmployeesForReview", "suggestBitrixEmployeeLinks"]),
+  "../../bitrix24Sync": noop(["compareBitrixEmployees", "fetchBitrixEmployeeSnapshot", "normalizeBitrixText", "selectBitrixEmployeesForImport", "selectLinkedBitrixEmployeesForReview", "suggestBitrixEmployeeLinks", "suggestArchivedBitrixEmployeeLinks", "observeLegacyTerminalBitrixDuplicates", "isBitrixCentralOfficeEmployee", "bitrixOfficeTransferDirection"]),
   "../../equipmentImportServer": noop(["importEquipmentEntries"]),
 };
 async function route(path) {
@@ -60,7 +60,13 @@ function fixture(role="engineer") {
     if(/SELECT employee_id AS employeeId FROM employee_project_assignments/.test(sql)) return state.employees.filter(e=>values[0].includes(e.id)&&owned(e)).map(e=>({employeeId:e.id}));
     if(/SELECT id FROM employee_project_assignments WHERE employee_id/.test(sql)) return state.employees.some(e=>e.id===values[0]&&owned(e))?[{id:101}]:[];
     if(/SELECT site_id AS "siteId" FROM equipment_project_assignments/.test(sql)) return state.units.find(e=>e.id===values[0])?.assignments.filter(a=>a.active).map(a=>({siteId:a.siteId}))??[];
-    if(/SELECT e.id FROM employees e WHERE e.id/.test(sql)) return state.employees.filter(e=>e.id===values[0]&&owned(e)).map(e=>({id:e.id}));
+    if (sql.startsWith("WITH assignment_roster AS")) {
+      const employeeId = sql.includes("AND employee_id = ?") ? values[2] : undefined;
+      return state.employees.filter(employee => employee.active && (employeeId === undefined || employee.id === employeeId)
+        && employee.assignments.some(assignment => assignment.siteId === values[0] && assignment.active))
+        .map(employee => ({ id: employee.id, fullName: `Сотрудник ${employee.id}`, employmentType: "ОПР", department: "", position: "Монтажник",
+          assignments: [{ startDate: "2000-01-01", endDate: null, active: true }], reportDates: [], markDates: [], exits: [], profileDate: null }));
+    }
     if(/SELECT eu.id FROM equipment_units eu WHERE eu.id/.test(sql)) return state.units.filter(e=>e.id===values[0]&&owned(e)).map(e=>({id:e.id}));
     if(/SELECT id FROM timesheet_marks/.test(sql)) return state.marks.has(values.join(":"))?[{id:1}]:[];
     if(/SELECT id FROM equipment_timesheet_marks/.test(sql)) return state.equipmentMarks.has(values.join(":"))?[{id:1}]:[];

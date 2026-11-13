@@ -14,7 +14,7 @@ const boundary = await import(boundaryUrl);
 async function loadRoute(name) {
   let code = ts.transpileModule(await readFile(new URL(`../app/api/${name}/route.ts`, import.meta.url), "utf8"), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
   for (const path of ["../../../db/client", "../../auth", "../../auditLog", "../../compressJsonResponse", "../../equipmentImportServer"]) code = code.replaceAll(JSON.stringify(path), JSON.stringify(boundaryUrl));
-  for (const name of ["roles", "permissionModel", "projectScopedData", "equipmentAvailability", "equipmentImport", "equipmentTimesheetUnits", "equipmentReportWorkflow", "personnelTimesheetReference.server", "personnelTimesheetValues"]) code = code.replaceAll(JSON.stringify(`../../${name}`), JSON.stringify(new URL(`../app/${name}.ts`, import.meta.url).href));
+  for (const name of ["roles", "permissionModel", "projectScopedData", "equipmentAvailability", "equipmentImport", "equipmentTimesheetUnits", "equipmentReportWorkflow", "personnelTimesheetReference.server", "personnelTimesheetValues", "personnelTimesheetRoster", "projectClock", "employeeDirectoryEligibility"]) code = code.replaceAll(JSON.stringify(`../../${name}`), JSON.stringify(new URL(`../app/${name}.ts`, import.meta.url).href));
   return import(moduleUrl(code));
 }
 process.env.NODE_ENV = "production";
@@ -39,7 +39,10 @@ function fixture(actor) {
         state.queries.push({ sql, values, transaction });
         if (sql.includes("pg_advisory_xact_lock")) { const hook = state.onLock; state.onLock = null; hook?.(); return []; }
         if (/FROM sites WHERE id = \?/.test(sql)) return [{ id: 7, name: "Тестовый проект" }];
-        if (/^SELECT e.id FROM employees e WHERE/.test(sql) || /^SELECT eu.id FROM equipment_units eu WHERE/.test(sql)) return [{ id: 11 }];
+        if (sql.startsWith("WITH assignment_roster AS")) return [{
+          id: 11, assignments: [{ startDate: "2000-01-01", endDate: null, active: true }], reportDates: [], markDates: [], exits: [], profileDate: null,
+        }];
+        if (/^SELECT eu.id FROM equipment_units eu WHERE/.test(sql)) return [{ id: 11 }];
         if (/^SELECT id FROM (?:equipment_)?timesheet_marks/.test(sql)) return state.marks.has(values.join(":")) ? [{ id: 1 }] : [];
         if (/^SELECT id FROM equipment_units WHERE/.test(sql)) return state.unit ? [{ id: state.unit.id }] : [];
         if (/^SELECT site_id AS "siteId" FROM equipment_project_assignments/.test(sql)) return state.unit?.siteId ? [{ siteId: state.unit.siteId }] : [];
@@ -86,6 +89,11 @@ for (const [title, handler, path, resource, payload] of [
     const read = state.queries.findIndex(query => /^SELECT id FROM (?:equipment_)?timesheet_marks/.test(query.sql));
     assert.ok(lock >= 0 && read > lock);
     assert.equal(state.queries[lock].transaction, state.queries[read].transaction);
+    if (title === "personnel") {
+      const membershipRead = state.queries.findIndex(query => query.sql.startsWith("WITH assignment_roster AS"));
+      assert.ok(membershipRead > lock && membershipRead < read);
+      assert.equal(state.queries[lock].transaction, state.queries[membershipRead].transaction);
+    }
   });
   test(`${title}: update-only user cannot recreate a mark deleted while waiting for its lock`, async () => {
     const state = fixture(user(resource, ["update"]));

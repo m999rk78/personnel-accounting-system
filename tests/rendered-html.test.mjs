@@ -582,12 +582,14 @@ test("checks Bitrix24 read-only and links only explicitly confirmed employee mat
   assert.match(app, /Проверить с Битрикс24/);
   assert.match(app, /ДАННЫЕ НЕ ИЗМЕНЕНЫ/);
   assert.match(app, /Нужно проверить сотрудников/);
-  assert.match(app, /Требуют внимания/);
+  assert.match(app, /Нерешённые расхождения/);
+  assert.match(app, /Нужно сопоставить или добавить/);
   assert.match(app, /bitrix-review-layout/);
   assert.match(app, /selectedBitrixDifferenceIndex/);
   assert.match(app, /Выбранный сотрудник/);
   assert.match(app, /Что обнаружено/);
-  assert.match(app, /Сопоставить автоматически/);
+  assert.match(app, /Сопоставить выбранных/);
+  assert.match(app, /Изменились стадии архивных карточек/);
   assert.match(app, /link-bitrix24-employees/);
   assert.match(app, /create-bitrix24-employee/);
   assert.match(app, /Добавить из Битрикс24/);
@@ -618,6 +620,7 @@ test("checks Bitrix24 read-only and links only explicitly confirmed employee mat
   assert.match(app, /Добавить сотрудника/);
   assert.match(app, /Обновить из Битрикс24/);
   assert.match(app, /Оставить как есть/);
+  assert.match(app, /Игнорировать различия/);
   assert.doesNotMatch(app, />Прочитано</);
   assert.doesNotMatch(app, />Сравнено</);
   assert.doesNotMatch(app, /"Стадия в Битрикс24"/);
@@ -632,7 +635,8 @@ test("checks Bitrix24 read-only and links only explicitly confirmed employee mat
   assert.match(api, /payload\.action === "update-bitrix24-employee"/);
   assert.match(api, /payload\.action === "update-selected-bitrix24-employees"/);
   assert.match(api, /payload\.action === "acknowledge-selected-bitrix24-differences"/);
-  assert.match(api, /updateBitrixEmployeeRecord\(sourceSnapshot, row\.id, row\.bitrix24Id\)/);
+  assert.match(api, /updateBitrixEmployeeRecord\(sourceSnapshot, row\.id, bitrix24Id\)/);
+  assert.match(api, /row\.bitrix24Id \?\? legacy\?\.bitrix24Id/);
   assert.match(api, /check_state\.status AS "checkStatus"/);
   assert.match(api, /acknowledgedCount/);
   assert.match(api, /payload\.action === "delete-bitrix24-employee"/);
@@ -644,7 +648,9 @@ test("checks Bitrix24 read-only and links only explicitly confirmed employee mat
   assert.match(api, /Используйте сопоставление, чтобы не создавать дубль/);
   assert.match(api, /INSERT INTO employee_profile_versions/);
   assert.match(api, /INSERT INTO employee_availability_periods/);
-  assert.match(api, /WHERE id = \? AND active = 1 AND bitrix24_id IS NULL/);
+  assert.match(api, /buildBitrixInspection\(sourceSnapshot, \{ observeArchivedStatuses: true \}\)/);
+  assert.match(api, /UPDATE employees AS employee SET bitrix24_id = link\.bitrix_id\s+FROM unnest/);
+  assert.match(api, /WHERE employee\.id = link\.employee_id AND employee\.active = 1 AND employee\.bitrix24_id IS NULL/);
   assert.match(api, /bitrix24_stage = \?/);
   assert.match(api, /sourceById\.get\(link\.bitrix24Id\)/);
   assert.doesNotMatch(api, /Рабочий не найден или управляется Битрикс24/);

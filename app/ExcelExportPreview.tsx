@@ -5,7 +5,7 @@ import { TablePageScroll, type TablePageScrollSource } from "./TablePageScroll";
 import { useNativeTableSelectAll } from "./useNativeTableSelectAll";
 import { excelPreviewClipboardHeaders, excelPreviewClipboardRows } from "./excelPreviewClipboardRows";
 import "./previewPageScroll.css";
-import { createEquipmentPlacementXlsx, createEquipmentTimesheetXlsx, createPersonnelTimesheetXlsx, createPlacementXlsx, createTableXlsx, type EquipmentPlacementExportRow } from "./placementXlsx";
+import { createEquipmentPlacementXlsx, createEquipmentTimesheetXlsx, createPersonnelTimesheetXlsx, personnelTimesheetExportDifference, createPlacementXlsx, createTableXlsx, type EquipmentPlacementExportRow } from "./placementXlsx";
 import { takeExcelExportPreview, type ExcelExportPreviewPayload } from "./excelExportPreviewStore";
 import { downloadExcelFile, excelFileName } from "./excelFiles";
 import {
@@ -201,25 +201,30 @@ export function ExcelExportPreviewPage() {
         } else {
           if (originalTimesheet.source?.kind !== "personnel-timesheet") throw new Error("Не удалось определить объект для загрузки другого месяца.");
           const siteId = originalTimesheet.source.siteId;
-          const [monthPayloads, savedOrderIds] = await Promise.all([
-            Promise.all(monthKeysInRange(start, end).map(async (month) => {
-              const query = new URLSearchParams({ siteId: String(siteId), month });
+          const requestedMonths = monthKeysInRange(start, end);
+          const [monthPayloads, projectOrderIds] = await Promise.all([
+            (async () => {
+              const query = new URLSearchParams({ siteId: String(siteId), startMonth: requestedMonths[0], endMonth: requestedMonths.at(-1)! });
               const response = await fetch(`/api/timesheet?${query.toString()}`, { cache: "no-store" });
-              const result = await response.json() as PersonnelTimesheetMonthData & { error?: string };
-              if (!response.ok) throw new Error(result.error ?? `Не удалось загрузить табель за ${month}.`);
-              return result;
-            })),
+              const result = await response.json() as { months?: PersonnelTimesheetMonthData[]; error?: string };
+              if (!response.ok) throw new Error(result.error ?? "Не удалось загрузить табель за выбранный период.");
+              if (!Array.isArray(result.months) || result.months.length !== requestedMonths.length
+                || result.months.some((month, index) => month.month !== requestedMonths[index])) throw new Error("Получен неполный табель за выбранный период.");
+              return result.months;
+            })(),
             (async () => {
               const query = new URLSearchParams({ scope: "project-personnel", siteId: String(siteId) });
               const response = await fetch(`/api/table-order?${query.toString()}`, { cache: "no-store" });
-              const result = await response.json() as { ids?: unknown; hasSavedOrder?: boolean; error?: string };
+              const result = await response.json() as { ids?: unknown; importIds?: unknown; hasSavedOrder?: boolean; hasImportOrder?: boolean; error?: string };
               if (!response.ok) throw new Error(result.error ?? "Не удалось загрузить порядок сотрудников.");
-              if (!result.hasSavedOrder) return undefined;
-              if (!Array.isArray(result.ids)) throw new Error("Не удалось загрузить сохранённый порядок сотрудников.");
-              return result.ids.filter((id): id is number => Number.isSafeInteger(id) && id > 0);
+              const ids = result.hasSavedOrder ? result.ids : result.hasImportOrder ? result.importIds : result.ids;
+              if (!Array.isArray(ids)) throw new Error("Не удалось загрузить порядок сотрудников.");
+              return ids.filter((id): id is number => Number.isSafeInteger(id) && id > 0);
             })(),
           ]);
-          selected = buildPersonnelTimesheetRange(monthPayloads, start, end, savedOrderIds);
+          const employeeIds = originalTimesheet.source.employeeIds;
+          const scopedMonths = employeeIds ? monthPayloads.map(month => ({ ...month, employees: month.employees.filter(employee => employeeIds.includes(employee.id)) })) : monthPayloads;
+          selected = buildPersonnelTimesheetRange(scopedMonths, start, end, originalTimesheet.source.orderedEmployeeIds ?? projectOrderIds);
         }
         const rows = selected.rows.map((row) => [
           row.employmentType,
@@ -229,7 +234,7 @@ export function ExcelExportPreviewPage() {
           row.positionNote,
           ...row.dailyValues,
           row.timesheetHours,
-          row.employmentType.trim().toLocaleUpperCase("ru-RU") === "ОПР" ? row.timesheetHours - row.reportHours : 0,
+          personnelTimesheetExportDifference(row),
           row.masters,
         ]);
         setPayload({
@@ -474,7 +479,7 @@ export function ExcelExportPreviewPage() {
             <tr className="excel-timesheet-filter-row">{Array.from({ length: 8 + timesheetDayCount }, (_, index) => <th key={index}>−</th>)}</tr>
           </thead>
           <tbody>{personnelTimesheetWorkbook.rows.map((row, rowIndex) => {
-            const difference = row.employmentType.trim().toLocaleUpperCase("ru-RU") === "ОПР" ? row.timesheetHours - row.reportHours : 0;
+            const difference = personnelTimesheetExportDifference(row);
             return <tr key={`${row.fullName}-${rowIndex}`}>
               <td>{row.employmentType}</td><td>{row.department}</td><td>{row.fullName}</td><td>{row.position}</td><td>{row.positionNote}</td>
               {Array.from({ length: timesheetDayCount }, (_, index) => <td key={index} className="excel-timesheet-day">{row.dailyValues[index] ?? ""}</td>)}

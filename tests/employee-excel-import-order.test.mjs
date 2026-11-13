@@ -22,7 +22,7 @@ const replacements = {
   "../../projectAccessServer": noop(["loadUserProjectAccess", "saveUserProjectAccess"]),
   "../../projectMasters": noop(["ensureProjectMastersSchema", "syncProjectMasters"]),
   "../../workTypeHierarchyServer": noop(["saveSubworkDirectory"]),
-  "../../bitrix24Sync": noop(["compareBitrixEmployees", "fetchBitrixEmployeeSnapshot", "normalizeBitrixText", "selectBitrixEmployeesForImport", "selectLinkedBitrixEmployeesForReview", "suggestBitrixEmployeeLinks"]),
+  "../../bitrix24Sync": noop(["compareBitrixEmployees", "fetchBitrixEmployeeSnapshot", "normalizeBitrixText", "selectBitrixEmployeesForImport", "selectLinkedBitrixEmployeesForReview", "suggestBitrixEmployeeLinks", "suggestArchivedBitrixEmployeeLinks", "observeLegacyTerminalBitrixDuplicates", "isBitrixCentralOfficeEmployee", "bitrixOfficeTransferDirection"]),
   ...Object.fromEntries(["roles", "permissionModel", "projectScopedData", "readOptionalBatch", "settingsReadPolicy", "bitrix24Cooldown", "bitrixReviewSelection", "excelDirectoryImports", "personnelImportOrderServer"].map(name => [`../../${name}`, file(name)])),
 };
 // This suite exercises the actual route and its transaction with an in-memory DB.

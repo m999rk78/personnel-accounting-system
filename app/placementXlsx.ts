@@ -81,6 +81,8 @@ export type EquipmentEntryImportRow = {
 };
 
 export type PersonnelTimesheetExportRow = {
+  /** Dates belonging to the row, used when narrowing an export preview. */
+  rosterDates?: string[];
   employmentType: string;
   department: string;
   fullName: string;
@@ -89,11 +91,18 @@ export type PersonnelTimesheetExportRow = {
   dailyValues: CellValue[];
   dailyTimesheetHours: number[];
   dailyReportHours: number[];
+  dailyReportTracked?: boolean[];
   dailyMasters: string[];
   timesheetHours: number;
   reportHours: number;
   masters: string;
 };
+
+export function personnelTimesheetExportDifference(row: Pick<PersonnelTimesheetExportRow, "employmentType" | "dailyReportTracked" | "dailyTimesheetHours" | "dailyReportHours" | "timesheetHours" | "reportHours">) {
+  if (!row.dailyReportTracked) return row.employmentType.trim().toLocaleUpperCase("ru-RU") === "ОПР" ? row.timesheetHours - row.reportHours : 0;
+  return row.dailyReportTracked.reduce((total, tracked, index) => total + (tracked
+    ? (row.dailyTimesheetHours[index] ?? 0) - (row.dailyReportHours[index] ?? 0) : 0), 0);
+}
 
 export type EquipmentTimesheetExportRow = {
   equipmentName: string;
@@ -419,10 +428,29 @@ export function createPersonnelTimesheetXlsx(siteName: string, monthLabel: strin
       const dayOfWeek = date ? new Date(`${date}T00:00:00Z`).getUTCDay() : -1;
       return cell(`${columnLetter(dayStartColumn + dayIndex)}${rowNumber}`, row.dailyValues[dayIndex] ?? "", dayOfWeek === 0 || dayOfWeek === 6 ? 9 : 8);
     }).join("");
-    const compareWithReport = row.employmentType.trim().toLocaleUpperCase("ru-RU") === "ОПР";
-    const difference = compareWithReport ? row.timesheetHours - row.reportHours : 0;
+    const difference = personnelTimesheetExportDifference(row);
+    const trackedCells = row.dailyReportTracked ? [] as string[] : undefined;
+    if (trackedCells) {
+      // Excel SUM accepts at most 255 arguments; runs also keep a year-long
+      // export compact when every day belongs to OPR.
+      let runStart = -1;
+      for (let dayIndex = 0; dayIndex <= dates.length; dayIndex++) {
+        if (dayIndex < dates.length && row.dailyReportTracked?.[dayIndex]) {
+          if (runStart < 0) runStart = dayIndex;
+        } else if (runStart >= 0) {
+          const first = `${columnLetter(dayStartColumn + runStart)}${rowNumber}`;
+          const last = `${columnLetter(dayStartColumn + dayIndex - 1)}${rowNumber}`;
+          trackedCells.push(first === last ? first : `${first}:${last}`);
+          runStart = -1;
+        }
+      }
+    }
+    const trackedReportHours = row.dailyReportTracked?.reduce((total, tracked, index) => total + (tracked ? row.dailyReportHours[index] ?? 0 : 0), 0) ?? row.reportHours;
+    const differenceFormula = trackedCells
+      ? trackedCells.length ? `SUM(${trackedCells.join(",")})-${trackedReportHours}` : "0"
+      : `IF(B${rowNumber}="ОПР",${hoursLetter}${rowNumber}-${reportHoursLetter}${rowNumber},0)`;
     rowHeights.set(rowNumber, 22);
-    return `${identityCells}${dailyCells}${formulaCell(`${hoursLetter}${rowNumber}`, `SUM(${firstDayLetter}${rowNumber}:${lastDayLetter}${rowNumber})`, row.timesheetHours, 10)}${formulaCell(`${differenceLetter}${rowNumber}`, `IF(B${rowNumber}="ОПР",${hoursLetter}${rowNumber}-${reportHoursLetter}${rowNumber},0)`, difference, difference === 0 ? 14 : 15)}${cell(`${masterLetter}${rowNumber}`, row.masters, 12)}${cell(`${reportHoursLetter}${rowNumber}`, row.reportHours)}`;
+    return `${identityCells}${dailyCells}${formulaCell(`${hoursLetter}${rowNumber}`, `SUM(${firstDayLetter}${rowNumber}:${lastDayLetter}${rowNumber})`, row.timesheetHours, 10)}${formulaCell(`${differenceLetter}${rowNumber}`, differenceFormula, difference, difference === 0 ? 14 : 15)}${cell(`${masterLetter}${rowNumber}`, row.masters, 12)}${cell(`${reportHoursLetter}${rowNumber}`, row.reportHours)}`;
   });
   dataRows.forEach((value, index) => addRowCells(index + firstDataRow, value));
   const totalsRow = Math.max(lastDataRow + 2, 8);

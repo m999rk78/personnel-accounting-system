@@ -39,7 +39,7 @@ const replacements = {
   "../../projectMasters": readonlySync,
   "../../workTypeHierarchyServer": disabled(["saveSubworkDirectory"]),
   "../../excelDirectoryImports": disabled(["importProjectDirectoryExcel", "importProjectEmployeesExcel", "normalizeExcelDirectoryName", "prepareEmployeeExcelImport"]),
-  "../../bitrix24Sync": disabled(["compareBitrixEmployees", "fetchBitrixEmployeeSnapshot", "normalizeBitrixText", "selectBitrixEmployeesForImport", "suggestBitrixEmployeeLinks"]),
+  "../../bitrix24Sync": disabled(["compareBitrixEmployees", "fetchBitrixEmployeeSnapshot", "normalizeBitrixText", "selectBitrixEmployeesForImport", "selectLinkedBitrixEmployeesForReview", "suggestBitrixEmployeeLinks", "suggestArchivedBitrixEmployeeLinks", "observeLegacyTerminalBitrixDuplicates", "isBitrixCentralOfficeEmployee", "bitrixOfficeTransferDirection"]),
   ...Object.fromEntries(["compressJsonResponse", "roles", "customRoles", "permissionModel", "projectScopedData", "readOptionalBatch", "settingsReadPolicy", "bitrix24Cooldown", "equipmentAvailability", "equipmentImport", "equipmentTimesheetUnits", "equipmentReportWorkflow", "personnelReportWorkflow", "tableRowOrder", "personnelReportRowOrder", "equipmentReportRowOrder", "workTypesRowOrder"].map(name => [`../../${name}`, fileUrl(name)])),
   "../../equipmentImportServer": disabled(["importEquipmentEntries"]),
 };

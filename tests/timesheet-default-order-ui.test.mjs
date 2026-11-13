@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
-import { orderPersonnelTimesheetEmployees } from "../app/personnelTimesheetOrder.ts";
 import { moveRowBlock, orderRowsByIds, reconcileRowOrder, tableOrderScope } from "../app/tableRowOrder.ts";
 
 const source = await readFile(new URL("../app/TimesheetView.tsx", import.meta.url), "utf8");
@@ -31,14 +30,14 @@ const employees = [
   { id: 40, fullName: "А Инженер", employmentType: "ИТР", department: "ПТО", timesheetOrder: 1 },
 ];
 const ids = rows => rows.map(row => row.id);
-const displayed = (rowOrder, roster = employees) => memo("filterRows", { payload: { employees: roster }, rowOrder, orderPersonnelTimesheetEmployees });
+const displayed = (rowOrder, roster = employees) => memo("filterRows", { payload: { employees: roster }, rowOrder, orderRowsByIds });
 const loadedOrder = (saved, available = ids(employees)) => ({
   hasSavedOrder: saved !== undefined,
   order: rows => orderRowsByIds(rows, reconcileRowOrder(available, saved ?? []), row => row.id),
 });
 
-test("opening a timesheet applies a saved order across departments and within Excel reference ranks", () => {
-  assert.deepEqual(ids(displayed(null)), [20, 30, 40, 10]);
+test("opening a timesheet applies a saved project order across departments", () => {
+  assert.deepEqual(ids(displayed(null)), [10, 20, 30, 40]);
   const saved = [10, 40, 20, 30];
   const manual = displayed(loadedOrder(saved));
   assert.deepEqual(ids(manual), saved);
@@ -46,14 +45,14 @@ test("opening a timesheet applies a saved order across departments and within Ex
   assert.deepEqual(ids(employees), [10, 20, 30, 40]);
 });
 
-test("a late unsaved canonical order cannot alphabetize employees missing from the Excel reference", () => {
+test("an unsaved timesheet uses the canonical project order after it loads", () => {
   const employees = [
     { id: 10, fullName: "Я Новый инженер", employmentType: "ИТР", department: "ПТО" },
     { id: 20, fullName: "А Новый инженер", employmentType: "ИТР", department: "ПТО" },
     { id: 30, fullName: "Директор", employmentType: "АУП", department: "Дирекция", timesheetOrder: 0 },
   ];
-  assert.deepEqual(ids(displayed(null, employees)), [30, 10, 20]);
-  assert.deepEqual(ids(displayed(loadedOrder(undefined, [20, 30, 10]), employees)), [30, 10, 20]);
+  assert.deepEqual(ids(displayed(null, employees)), [10, 20, 30]);
+  assert.deepEqual(ids(displayed(loadedOrder(undefined, [20, 30, 10]), employees)), [20, 30, 10]);
   assert.deepEqual(ids(employees), [10, 20, 30]);
 });
 
@@ -72,8 +71,8 @@ test("the first successful timesheet move seeds the displayed order; subsequent 
     return memo("manualRowOrder", { rowOrder, displayedRowIds: ids(displayed(rowOrder)) });
   };
   assert.equal(await open().move(operation), false);
-  assert.deepEqual(ids(displayed(loadedOrder(saved))), [20, 30, 40, 10]);
-  const firstRequest = { ...operation, displayedIds: [20, 30, 40, 10], displayedIdsOnlyIfUnsaved: true };
+  assert.deepEqual(ids(displayed(loadedOrder(saved))), [10, 20, 30, 40]);
+  const firstRequest = { ...operation, displayedIds: [10, 20, 30, 40], displayedIdsOnlyIfUnsaved: true };
   assert.deepEqual(requests[0], firstRequest);
   rejected = false;
   assert.equal(await open().move(operation), true);
@@ -95,22 +94,20 @@ test("a move from project settings survives reopening and changing months withou
   const december = displayed(loadedOrder(stored.get(key("timesheet")), ids(roster)), roster);
   assert.deepEqual(ids(december), [30, 10, 20, 50]);
   assert.deepEqual(ids(displayed(loadedOrder(stored.get(key("timesheet"))))), ids(november));
-  assert.deepEqual(ids(displayed(loadedOrder(stored.get("project-personnel:8")))), [20, 30, 40, 10]);
+  assert.deepEqual(ids(displayed(loadedOrder(stored.get("project-personnel:8")))), [10, 20, 30, 40]);
 });
 
-test("the personnel timesheet retains explicit filters but never automatically replaces the default with import sorting", () => {
+test("the personnel timesheet uses import order as its baseline and keeps explicit filters independent", () => {
   const rows = [{ id: 20 }], columns = [{ colId: "fullName" }];
   const node = declaration("filters");
   assert.ok(node);
   const config = bind(`const config = ${node.initializer.getText(ast)};`, "config", {
     useTimesheetFilters: options => options, filterRows: rows, filterColumns: columns,
-    employeeFilterRowId: row => String(row.id), siteId: 7, month: "2026-11", importRank: () => 0,
-    rowOrder: { ready: true, importOrderRevision: 50, hasImportOrder: true, hasSavedOrder: false },
+    employeeFilterRowId: row => String(row.id), siteId: 7, month: "2026-11",
   });
   assert.equal(config.rows, rows);
   assert.equal(config.columns, columns);
   assert.equal(config.resetKey, "7:2026-11");
-  assert.equal(config.importOrder.defaultSort, false);
-  assert.equal(config.importOrder.activation, 0);
-  assert.equal(config.importOrder.ready, true);
+  assert.equal(config.importOrder, undefined);
+  assert.deepEqual(ids(displayed({ ...loadedOrder(undefined), hasImportOrder: true, importIds: [40, 20, 10, 30] })), [40, 20, 10, 30]);
 });

@@ -4,12 +4,13 @@ import { hasPermission, hasReportStatusPermission, type PermissionResource } fro
 import { syncProjectMasters } from "../../projectMasters";
 import { settingsReadPolicy } from "../../settingsReadPolicy";
 import { readOptionalBatch } from "../../readOptionalBatch";
+import { currentEmployeeDirectoryFilter } from "../../employeeDirectoryEligibility";
 import { unauthorized, forbidden } from "./responses";
 import { ensureDatabaseInitialized } from "./bootstrap";
 import { asPositiveInteger, todayInMoscow, validDate } from "./validation";
 import { env } from "./context";
 import { placementEntriesStatement, filledDatesStatement, reportSubmissionStatement, employeeUsageStatement, foremanProgressStatement, reportTimesheetMarksStatement, placementEntriesForRangeStatement, reportEmployeesStatement } from "./placement";
-import { employeeCatalogStatement, userCatalogStatement, usersWithProjectAccess } from "./catalogs";
+import { employeeCatalogStatement, projectEmployeeCatalogStatement, projectMasterCatalogStatement, userCatalogStatement, usersWithProjectAccess } from "./catalogs";
 import { mapBitrix24Cooldowns, type Bitrix24ActionLimitRow } from "./bitrixCooldown";
 import { reportCatalogStatements } from "./reportCatalog";
 
@@ -133,11 +134,7 @@ export async function handleGET(request: Request) {
       const [sites, employees, projectEmployees, positionCatalog, employmentTypes, departments, positions, shifts, zones, mainWorkTypes, subworkTypes, masters, users, syncStatus, bitrix24ActionLimits, projectStats] = await readOptionalBatch(env.DB, [
         env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
         reads.employees ? employeeCatalogStatement(authUser, url.searchParams.get("section") === "projectEmployees") : null,
-        reads.projectEmployees ? env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
-          e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
-          epa.site_id AS siteId, s.name AS siteName
-          FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
-          WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId) : null,
+        reads.projectEmployees ? projectEmployeeCatalogStatement(siteId) : null,
         reads.positions ? env.DB.prepare("SELECT id, employment_type AS employmentType, department, position FROM position_catalog WHERE active = 1 ORDER BY employment_type, department, position") : null,
         reads.positions ? env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'employmentType' ORDER BY name") : null,
         reads.positions ? env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'department' ORDER BY name") : null,
@@ -146,7 +143,7 @@ export async function handleGET(request: Request) {
         reads.directories ? env.DB.prepare("SELECT id, name FROM zones WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId) : null,
         reads.directories ? env.DB.prepare("SELECT id, name FROM main_work_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId) : null,
         reads.directories ? env.DB.prepare("SELECT id, name, main_work_type_id AS mainWorkTypeId FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId) : null,
-        reads.directories ? env.DB.prepare("SELECT id, name, employee_id AS employeeId FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId) : null,
+        reads.directories ? projectMasterCatalogStatement(siteId) : null,
         reads.users ? userCatalogStatement(authUser) : null,
         reads.sync ? env.DB.prepare("SELECT id, status, started_at AS startedAt, completed_at AS completedAt, summary, error_text AS errorText FROM employee_sync_runs ORDER BY id DESC LIMIT 1") : null,
         reads.sync ? env.DB.prepare("SELECT action_key AS actionKey, last_started_at AS lastStartedAt FROM bitrix24_action_limits WHERE action_key IN ('inspect-bitrix24', 'sync-bitrix24')") : null,
@@ -161,7 +158,7 @@ export async function handleGET(request: Request) {
           FROM sites project
           LEFT JOIN (SELECT assignment.site_id, COUNT(DISTINCT employee.id) AS employee_count
             FROM employee_project_assignments assignment JOIN employees employee ON employee.id = assignment.employee_id
-            WHERE assignment.active = 1 AND employee.active = 1 AND ?::boolean GROUP BY assignment.site_id) staff ON staff.site_id = project.id
+            WHERE assignment.active = 1 AND ${currentEmployeeDirectoryFilter("employee")} AND ?::boolean GROUP BY assignment.site_id) staff ON staff.site_id = project.id
           WHERE project.active = 1 ORDER BY project.id`)
           .bind(hasPermission(authUser.permissions, "system_users", "view"), hasPermission(authUser.permissions, "employees", "view")) : null,
       ]);
@@ -205,16 +202,8 @@ export async function handleGET(request: Request) {
       env.DB.prepare("SELECT id, name, code, timezone FROM sites WHERE active = 1 ORDER BY id"),
       employeeCatalogStatement(authUser),
       reportEmployeesStatement(siteId),
-      env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
-        e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
-        epa.site_id AS siteId, s.name AS siteName
-        FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
-        WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId),
-      env.DB.prepare(`SELECT e.id, e.full_name AS fullName, e.employment_type AS employmentType, e.department, e.position, e.source, e.sort_order AS sortOrder,
-        e.bitrix24_stage AS bitrix24Stage, e.availability_status AS availabilityStatus, e.sync_error AS syncError,
-        epa.site_id AS siteId, s.name AS siteName
-        FROM employees e JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.active = 1 JOIN sites s ON s.id = epa.site_id AND s.active = 1
-        WHERE e.active = 1 AND epa.site_id = ? ORDER BY e.sort_order, e.full_name, e.id`).bind(siteId),
+      projectEmployeeCatalogStatement(siteId),
+      projectEmployeeCatalogStatement(siteId),
       env.DB.prepare("SELECT id, employment_type AS employmentType, department, position FROM position_catalog WHERE active = 1 ORDER BY employment_type, department, position"),
       env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'employmentType' ORDER BY name"),
       env.DB.prepare("SELECT id, name FROM personnel_options WHERE active = 1 AND kind = 'department' ORDER BY name"),
@@ -223,7 +212,7 @@ export async function handleGET(request: Request) {
       env.DB.prepare("SELECT id, name FROM zones WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
       env.DB.prepare("SELECT id, name FROM main_work_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
       env.DB.prepare("SELECT id, name, main_work_type_id AS mainWorkTypeId FROM subwork_types WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
-      env.DB.prepare("SELECT id, name, employee_id AS employeeId FROM masters WHERE active = 1 AND site_id = ? ORDER BY id").bind(siteId),
+      projectMasterCatalogStatement(siteId),
       placementEntriesStatement(siteId, workDate, responsibleUserId),
       filledDatesStatement(siteId, rangeStart, rangeEnd, responsibleUserId),
       reportSubmissionStatement(siteId, workDate, responsibleUserId),

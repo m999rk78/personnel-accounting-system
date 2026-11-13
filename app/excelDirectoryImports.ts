@@ -1,5 +1,6 @@
 import type { PostgresDatabase } from "../db/client";
 import { rememberPersonnelImportOrder } from "./personnelImportOrderServer.ts";
+import { currentEmployeeDirectoryFilter } from "./employeeDirectoryEligibility.ts";
 
 export const normalizeExcelDirectoryName = (value: string) => value.trim().toLocaleLowerCase("ru-RU").replaceAll("ё", "е").replace(/\s+/g, " ");
 
@@ -20,7 +21,7 @@ export async function importProjectEmployeesExcel(database: PostgresDatabase, si
   return database.transaction(async db => {
     const site = await db.prepare("SELECT id FROM sites WHERE id = ? AND active = 1 FOR SHARE").bind(siteId).first();
     if (!site) throw new Error("Проект не найден или закрыт.");
-    const employees = await db.prepare("SELECT id FROM employees WHERE id = ANY(?::integer[]) AND active = 1 ORDER BY id FOR UPDATE").bind(employeeIds).all<{ id: number }>();
+    const employees = await db.prepare(`SELECT id FROM employees WHERE id = ANY(?::integer[]) AND ${currentEmployeeDirectoryFilter("employees")} ORDER BY id FOR UPDATE`).bind(employeeIds).all<{ id: number }>();
     if (employees.results.length !== employeeIds.length) throw new Error("Один из сотрудников не найден или уже архивирован. Обновите справочник и повторите импорт.");
     await beforeAssign?.(db, employeeIds);
     const assigned = await db.prepare("SELECT employee_id AS employeeId FROM employee_project_assignments WHERE employee_id = ANY(?::integer[]) AND site_id = ? AND active = 1 FOR UPDATE").bind(employeeIds, siteId).all<{ employeeId: number }>();
@@ -30,7 +31,7 @@ export async function importProjectEmployeesExcel(database: PostgresDatabase, si
       await db.prepare("INSERT INTO employee_project_assignments (employee_id, site_id, source, start_date) VALUES (?, ?, 'excel', CURRENT_DATE)").bind(employeeId, siteId).run();
       const updated = await db.prepare(`UPDATE employees SET site_id = COALESCE(site_id, ?),
         availability_status = CASE WHEN source = 'bitrix24' THEN availability_status ELSE 'on_site' END
-        WHERE id = ? AND active = 1`).bind(siteId, employeeId).run();
+        WHERE id = ? AND ${currentEmployeeDirectoryFilter("employees")}`).bind(siteId, employeeId).run();
       if (updated.meta.changes !== 1) throw new Error("Не удалось добавить одного из сотрудников. Изменения импорта отменены.");
     }
     await rememberPersonnelImportOrder(db, "project-personnel", siteId, employeeIds);
@@ -58,7 +59,7 @@ export async function importProjectDirectoryExcel(database: PostgresDatabase, si
     if (entity === "master") {
       const employees = await db.prepare(`SELECT e.id, e.full_name AS fullName FROM employees e
         JOIN employee_project_assignments epa ON epa.employee_id = e.id AND epa.site_id = ? AND epa.active = 1
-        WHERE e.active = 1 ORDER BY e.id FOR SHARE OF e, epa`).bind(siteId).all<{ id: number; fullName: string }>();
+        WHERE ${currentEmployeeDirectoryFilter("e")} ORDER BY e.id FOR SHARE OF e, epa`).bind(siteId).all<{ id: number; fullName: string }>();
       const byId = new Map(employees.results.map(row => [row.id, row.fullName]));
       if (employeeIds.some(id => !byId.has(id))) throw new Error("Один из мастеров не относится к текущему проекту или уже архивирован. Обновите список и повторите импорт.");
       allNames = employeeIds.map(id => byId.get(id)!);
