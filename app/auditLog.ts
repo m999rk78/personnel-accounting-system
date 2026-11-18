@@ -338,13 +338,14 @@ async function previousState(path: string, method: string, payload: Record<strin
       return db.prepare(`SELECT productive_hours AS "productiveHours", downtime_hours AS "downtimeHours", note, created_by AS "updatedBy"
         FROM equipment_timesheet_marks WHERE site_id = ? AND equipment_id = ? AND work_date = ?`).bind(siteId, equipmentId, workDate).first();
     }
+    if (payload.action !== "save-entry" && payload.action !== "delete-entry") return null;
     const entryId = positiveInteger(payload.id);
     if (!entryId) return null;
     return db.prepare(`SELECT ee.id, ee.work_date AS "workDate", ee.hours, ee.note,
       eu.equipment_type AS "equipmentType", eu.brand, eu.model, eu.registration_number AS "registrationNumber"
       FROM equipment_entries ee JOIN equipment_units eu ON eu.id = ee.equipment_id WHERE ee.id = ?`).bind(entryId).first();
   }
-  if (path === "/api/data" && (!payload.action || method === "DELETE")) {
+  if (path === "/api/data" && !payload.entity && !payload.action) {
     const ids = [payload.id, ...(Array.isArray(payload.ids) ? payload.ids : []), ...(Array.isArray(payload.updates) ? payload.updates.map((row) => row && typeof row === "object" ? (row as Record<string, unknown>).id : null) : [])]
       .map(positiveInteger).filter((id): id is number => id !== null);
     if (!ids.length) return null;

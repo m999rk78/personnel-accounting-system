@@ -50,3 +50,7 @@ backups/
 *.local.sql
 # Runtime maintenance coordination lives on a persistent mount, not in Git.
 /.runtime/
+
+# Python backup tooling caches
+__pycache__/
+*.py[cod]

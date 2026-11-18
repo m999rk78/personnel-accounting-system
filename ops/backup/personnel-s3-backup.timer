@@ -1,0 +1,12 @@
+[Unit]
+Description=Personnel Accounting nightly backup (03:00 Moscow time)
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Europe/Moscow
+RandomizedDelaySec=300
+AccuracySec=1min
+Persistent=true
+Unit=personnel-s3-backup.service
+
+[Install]
+WantedBy=timers.target

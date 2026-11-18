@@ -6,9 +6,10 @@ export type MaintenanceSnapshot = { kind: MaintenanceKind | null; checking: bool
 type Fetch = typeof fetch;
 
 const temporaryMessage = "Сейчас ведутся технические работы. Доступ к системе скоро возобновится. Введённые данные остаются в открытой вкладке.";
+const unavailableMessage = "Временно нет связи с сервером. Проверяем соединение. Введённые данные остаются в открытой вкладке.";
 
 function temporaryResponse(kind: MaintenanceKind) {
-  return Response.json({ error: temporaryMessage, code: kind === "maintenance" ? "MAINTENANCE" : "SERVICE_UNAVAILABLE", maintenance: true }, {
+  return Response.json({ error: kind === "maintenance" ? temporaryMessage : unavailableMessage, code: kind === "maintenance" ? "MAINTENANCE" : "SERVICE_UNAVAILABLE", maintenance: true }, {
     status: 503,
     headers: { "Cache-Control": "no-store", "Retry-After": "5", "X-Personnel-Maintenance": "1" },
   });
@@ -27,6 +28,7 @@ export function createMaintenanceClient({ request, origin, onChange, onReady, ti
   let stopped = false;
   let pendingCheck: Promise<void> | null = null;
   let statusAbort: AbortController | null = null;
+  let inconclusiveChecks = 0;
 
   const update = (next: MaintenanceSnapshot) => {
     if (stopped || next.kind === state.kind && next.checking === state.checking) return;
@@ -35,7 +37,14 @@ export function createMaintenanceClient({ request, origin, onChange, onReady, ti
   };
   const announce = (kind: MaintenanceKind) => {
     incident++;
+    inconclusiveChecks = 0;
     update({ kind, checking: false });
+  };
+  const inconclusiveCheck = () => {
+    if (state.kind) { update({ ...state, checking: false }); return; }
+    // One lost background probe is not proof that the workspace is down.
+    // Actual API failures and explicit status/offline signals still block immediately.
+    if (++inconclusiveChecks >= 2) announce("unavailable");
   };
   const apiUrl = (input: RequestInfo | URL) => {
     try {
@@ -53,15 +62,18 @@ export function createMaintenanceClient({ request, origin, onChange, onReady, ti
       const response = await request(input, init);
       if (stopped) return response;
       if (response.status === 503) {
-        let explicitMaintenance = response.headers.get("X-Personnel-Maintenance") === "1";
-        if (!explicitMaintenance && response.headers.get("Content-Type")?.includes("json")) {
+        let kind: MaintenanceKind = response.headers.get("X-Personnel-Maintenance") === "1" ? "maintenance" : "unavailable";
+        if (response.headers.get("Content-Type")?.includes("json")) {
           try {
-            const body = await response.clone().json() as { code?: string; maintenance?: boolean };
-            explicitMaintenance = body.code === "MAINTENANCE" || body.maintenance === true;
+            const body = await response.clone().json() as { code?: string; maintenance?: boolean; phase?: string };
+            // Gateways use the maintenance header for both planned work and
+            // temporary outages. The phase distinguishes what actually happened.
+            if (body.phase === "unavailable" || body.code === "SERVICE_UNAVAILABLE") kind = "unavailable";
+            else if (body.code === "MAINTENANCE" || body.maintenance === true) kind = "maintenance";
           } catch { /* A proxy can return HTML or an empty response during restart. */ }
         }
-        announce(explicitMaintenance ? "maintenance" : "unavailable");
-        return response.headers.get("Content-Type")?.includes("json") ? response : temporaryResponse(explicitMaintenance ? "maintenance" : "unavailable");
+        announce(kind);
+        return kind === "unavailable" || !response.headers.get("Content-Type")?.includes("json") ? temporaryResponse(kind) : response;
       }
       if (response.status === 502 || response.status === 504 || response.status >= 500 && !response.headers.get("Content-Type")?.includes("json")) {
         announce("unavailable");
@@ -86,15 +98,19 @@ export function createMaintenanceClient({ request, origin, onChange, onReady, ti
         const response = await request(new URL(MAINTENANCE_STATUS_PATH, origin).href, { cache: "no-store", signal: controller.signal });
         const result = await response.json() as { maintenance?: boolean; phase?: string };
         if (stopped) return;
-        if (!response.ok || typeof result.maintenance !== "boolean") { announce("unavailable"); return; }
-        if (result.maintenance || result.phase !== "ready") { announce(result.phase === "unavailable" ? "unavailable" : "maintenance"); return; }
+        if (result.phase === "unavailable") { announce("unavailable"); return; }
+        if (result.maintenance === true || result.phase === "maintenance" || result.phase === "starting" || result.phase === "stopping") {
+          announce("maintenance"); return;
+        }
+        if (!response.ok || result.maintenance !== false || result.phase !== "ready") { inconclusiveCheck(); return; }
+        inconclusiveChecks = 0;
         // A delayed healthy probe predating a failed save must not dismiss its warning.
         if (incident !== startedAtIncident) { update({ ...state, checking: false }); return; }
         const resumed = state.kind !== null;
         update({ kind: null, checking: false });
         if (resumed) onReady();
       } catch {
-        if (!stopped) announce("unavailable");
+        if (!stopped) inconclusiveCheck();
       } finally {
         clearTimeout(timeout);
         if (statusAbort === controller) statusAbort = null;

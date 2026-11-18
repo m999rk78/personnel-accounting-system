@@ -19,6 +19,8 @@ export type EnterpriseFilterOptions = {
   kind?: PersonnelFilterModel["kind"];
   rowSortOptions?: readonly SortOption[];
   valueFormatter?: ISetFilterParams["valueFormatter"];
+  comparator?: ISetFilterParams["comparator"];
+  defaultToNothingSelected?: boolean;
   stateFilter?: {
     values: readonly { value: string; label: string }[];
     getValue: (data: unknown) => string[];
@@ -159,9 +161,10 @@ export function enterpriseFilterParams(params: IFilterParams, options: Enterpris
     // its existing Excel-style Apply/Cancel boundary.
     ...(compact ? { applyMiniFilterWhileTyping: true } : { excelMode: "windows" as const }),
     refreshValuesOnOpen: true, suppressClearModelOnRefreshValues: true,
+    ...(options.defaultToNothingSelected ? { defaultToNothingSelected: true } : {}),
     showTooltips: true, cellHeight: kind === "date" ? 36 : checklist ? 34 : setCellHeight(params.api, params.column.getColId(), compact),
     textFormatter: normalizeFilterText,
-    comparator: kind === "date" ? (a, b) => filterDateKey(b).localeCompare(filterDateKey(a)) : compareGridValues,
+    comparator: options.comparator ?? (kind === "date" ? (a, b) => filterDateKey(b).localeCompare(filterDateKey(a)) : compareGridValues),
     valueFormatter: formatter ?? (({ value }) => value === null || value === undefined || value === "" ? "(Пустые)" : String(value)),
   };
   const stateFilter = options.stateFilter;

@@ -41,13 +41,50 @@ test("equipment month defaults to imported order while preserving an explicitly 
     [{ ready: true, hasImportOrder: true, hasSavedOrder: true }, false],
   ]) {
     const filter = bind(code, "monthFilters", {
-      rowOrder, monthImportRank: () => 0, orderedMonthRows: monthRows, monthFilterColumns: [], equipmentMonthRowId: row => String(row.unit.id), siteId: 1, month,
+      rowOrder, monthImportRank: () => 0, orderedMonthRows: monthRows, monthFilterColumns: [], equipmentMonthRowId: row => String(row.unit.id), siteId: 1, month, section: "month", focusedEquipmentId: null,
       useTimesheetFilters: options => options,
     });
     assert.equal(filter.presentation, "checklist"); assert.equal(filter.includeConditions, false);
     assert.equal(filter.importOrder.defaultSort, expected);
     assert.equal(filter.importOrder.activation, rowOrder?.importOrderRevision ?? 0);
   }
+});
+
+test("equipment navigation keeps historical identity and passes the full roster to a resettable column filter", () => {
+  const historicalEntry = { ...unit, id: 900, equipmentId: 7, workDate: "2026-11-01", hours: 8 };
+  const otherUnit = { ...unit, id: 8, registrationNumber: "А002" };
+  const payload = { units: [otherUnit], entries: [historicalEntry] };
+  const units = bind(declaration("monthUnits"), "monthUnits", { payload, useMemo: create => create() });
+  assert.deepEqual(units.map(unit => unit.id), [8, 7], "Historical rows use equipment IDs, never report row IDs");
+  assert.equal(historicalEntry.id, 900, "Source report identity must remain unchanged");
+  const orderedMonthRows = [monthRows[0], { ...monthRows[0], unit: otherUnit }];
+  for (const [section, focusedEquipmentId, expected] of [
+    ["month", 7, "7"], ["month", 8, "8"], ["month", 99, "99"], ["month", null, undefined], ["registry", 7, undefined],
+  ]) {
+    const onClearEquipmentFocus = () => {};
+    const filter = bind(declaration("monthFilters"), "monthFilters", {
+      section, focusedEquipmentId, orderedMonthRows, rowOrder: null, monthImportRank: () => 0, monthFilterColumns: [],
+      equipmentMonthRowId: row => String(row.unit.id), siteId: 1, month, loading: false, payload, onClearEquipmentFocus,
+      useTimesheetFilters: options => options,
+    });
+    assert.equal(filter.rows, orderedMonthRows, "Resetting a filter must have every row available without another fetch");
+    assert.equal(filter.navigationFilter?.value, expected);
+    if (expected) {
+      assert.equal(filter.navigationFilter.columnId, "equipment");
+      assert.equal(filter.navigationFilter.onCleared, onClearEquipmentFocus);
+      assert.equal(filter.navigationFilter.ready, true);
+    }
+  }
+  assert.equal(orderedMonthRows.length, 2);
+  for (const isActive of [true, false]) {
+    const movement = bind(declaration("monthRowMoves"), "monthRowMoves", {
+      rowOrder: {}, monthFilters: { isActive }, focusedEquipmentId: 7, timesheetEditor: null, timesheetInlineEditor: null,
+      navigationBusy: false, loading: false, section: "month", siteId: 1, month, monthRows,
+      useNativeRowMoves: (_order, filtered) => ({ filtered }),
+    });
+    assert.equal(movement.filtered, isActive, "Reset restores normal reordering through the actual filter state");
+  }
+  assert.doesNotMatch(source, /focusedMonthRows|employee-navigation-focus/);
 });
 
 test("equipment day filters keep the complete month and only change matching equipment rows", () => {
@@ -117,8 +154,9 @@ test("equipment day filters retain column identity while changes to rows or mont
 test("equipment export retains the complete month and totals while equipment rows are filtered", () => {
   let preview;
   const exportPreview = bind(declaration("openTimesheetExportPreview"), "openTimesheetExportPreview", {
-    ...base, monthDays, siteId: 1, payload: { siteName: "Учебный проект" },
+    ...base, monthDays, siteId: 1, payload: { siteName: "Учебный проект" }, focusedEquipmentId: 7, monthFilters: { context: { activeColumns: new Set(["equipment"]) } },
     timesheetEditor: null, timesheetInlineEditor: null, savingTimesheetMark: false,
+    savingBulkTimesheetMarks: false, batchSave: { hasFailures: false }, timesheetMarkConflict: "",
     requireSavedExcelRows: () => true, setError() {},
     equipmentExcelName: () => "Кран Тест", titleCase: value => value,
     MONTH_FORMATTER: new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric", timeZone: "UTC" }),
@@ -128,10 +166,13 @@ test("equipment export retains the complete month and totals while equipment row
   exportPreview();
   assert.equal(preview.workbook.dates.length, 30);
   assert.equal(preview.workbook.rows[0].dailyValues[0], "9 / П 1");
+  assert.equal(preview.workbook.rows[0].dailyValues[7], 0, "A saved zero must stay distinct from an unfilled day in Excel");
+  assert.equal(preview.workbook.rows[0].dailyValues[8], "");
   assert.equal(preview.workbook.dayTotals[0], 10);
   assert.equal(preview.workbook.productiveTotal, 13);
   assert.equal(preview.workbook.downtimeTotal, 3);
   assert.equal(preview.workbook.totalHours, 16);
+  assert.deepEqual(preview.source.equipmentIds, [7], "Changing export dates must preserve the selected equipment");
 });
 
 test("late equipment saves do not add undo positions into a different date view", async () => {
@@ -152,7 +193,22 @@ test("late equipment saves do not add undo positions into a different date view"
     respond({});
     await pending;
     assert.equal(undo.length, viewChanged ? 0 : 1);
-    if (!viewChanged) assert.deepEqual(undo[0], { rowIndex: 0, columnIndex: 5, value: "4/2", note: "Шестое число" });
+    if (!viewChanged) assert.deepEqual(undo[0], { rowIndex: 0, columnIndex: 5, value: "4/2", note: "Шестое число", expectedRevision: null, previousRevision: null });
+  }
+});
+
+test("equipment export waits for bulk completion and unresolved conflicts", () => {
+  for (const blocked of ["bulk", "failures", "conflict"]) {
+    let warned = false;
+    const open = bind(declaration("openTimesheetExportPreview"), "openTimesheetExportPreview", {
+      timesheetEditor: null, timesheetInlineEditor: null, savingTimesheetMark: false,
+      savingBulkTimesheetMarks: blocked === "bulk", batchSave: { hasFailures: blocked === "failures" },
+      timesheetMarkConflict: blocked === "conflict" ? "Ячейка изменена" : "",
+      requireSavedExcelRows: pending => { warned = Boolean(pending); return !pending; },
+      openExcelExportPreview() { assert.fail("Export cannot publish a stale or partially saved view"); },
+    });
+    open();
+    assert.equal(warned, true);
   }
 });
 

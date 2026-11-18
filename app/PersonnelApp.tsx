@@ -19,7 +19,7 @@ import { getReportStatusPermission, hasPermission, limitPermissionsToRole, type 
 import { ProjectCards } from "./ProjectCards";
 import { TimesheetView } from "./TimesheetView";
 import { UserAccessCards } from "./UserAccessCards";
-import { parseWorkspaceLocation, workspaceDocumentTitle, workspaceUrl } from "./appRoutes";
+import { isEmployeeNavigationTarget, isEquipmentNavigationTarget, parseWorkspaceLocation, validMonth, workspaceDocumentTitle, workspaceUrl } from "./appRoutes";
 import { accessibleProjectIds, canAccessProject, canViewAllProjects, canViewPendingReportsFor, hasRestrictedProjectAccess } from "./roles";
 import { profileProjectChangeAllowed, userDraftProjectAccess, userProjectAccessValid, userProjectLabel, userRoleLabel, userVisibleProjects } from "./userAccessModel";
 import { WorkspaceAccessProvider } from "./TableAccessContext";
@@ -30,6 +30,7 @@ import { useSettingsExcelActions } from "./workspace/useSettingsExcelActions";
 import { BitrixReviewDialogs } from "./workspace/BitrixReviewDialogs";
 import { useBitrixReview } from "./workspace/useBitrixReview";
 import { WorkspaceSidebar, AppIcon } from "./workspace/WorkspaceSidebar";
+import { useSidebarPreferences } from "./workspace/useSidebarPreferences";
 import { useWorkspaceData } from "./workspace/useWorkspaceData";
 import { workspaceNavigationDiscards, pendingWorkspaceGridInput, normalize, newKey } from "./workspace/model";
 import type { Option, Site, PositionRecord, AppUser, CurrentUser, View, UserDraft, EmployeeDraft, EmployeeBulkChanges, ProjectEmployeeDraft, PositionDraft, DirectoryEntity, DirectoryFocus, DirectoryDraft, SiteDraft } from "./workspace/types";
@@ -95,18 +96,21 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const firstStatisticsKind = availableStatisticsKinds[0];
   const fallbackView = useMemo(() => (["placement", "equipment", "timesheet", "equipmentTimesheet", "personnelStatistics", "equipmentStatistics", "projectSettings", "settings"] as View[]).find(viewAllowed) ?? "placement", [viewAllowed]);
   const [initialView] = useState(() => viewAllowed(initialLocation.view) ? initialLocation.view : fallbackView);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const { preferences: sidebarPreferences, togglePreference: toggleSidebarPreference } = useSidebarPreferences(currentUser.id);
+  const sidebarOpen = sidebarPreferences.menu;
   const sidebarToggleRef = useRef<HTMLButtonElement>(null);
   const mobileSidebarToggleRef = useRef<HTMLButtonElement>(null);
   const toggleSidebar = () => {
     const nextOpen = !sidebarOpen;
-    setSidebarOpen(nextOpen);
+    toggleSidebarPreference("menu");
     if (window.matchMedia("(max-width:680px)").matches) {
       requestAnimationFrame(() => (nextOpen ? sidebarToggleRef : mobileSidebarToggleRef).current?.focus({ preventScroll: true }));
     }
   };
   const [view, setView] = useState<View>(initialView);
   const statisticsKind = view === statisticsViews.personnel ? "personnel" : view === statisticsViews.equipment ? "equipment" : null;
+  const [focusedEmployeeId, setFocusedEmployeeId] = useState<number | null>(initialView === initialLocation.view ? initialLocation.employeeId ?? null : null);
+  const [focusedEquipmentId, setFocusedEquipmentId] = useState<number | null>(initialView === initialLocation.view ? initialLocation.equipmentId ?? null : null);
   const tableAccess = useMemo(() => workspaceTableAccess(effectivePermissions, view), [effectivePermissions, view]);
   const [selectedSiteId, setSiteId] = useState(() => currentUser.assignedSiteId && canAccessProject(currentUser, currentUser.assignedSiteId) ? currentUser.assignedSiteId : projectIds?.[0] ?? (projectIds === null ? 1 : 0));
   const siteId = canAccessProject(currentUser, selectedSiteId) ? selectedSiteId : projectIds?.[0] ?? (projectIds === null ? selectedSiteId : 0);
@@ -206,10 +210,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const bitrixReview = useBitrixReview({ data, view, visibleEmployees, visibleSites, selectedEmployeeRows, employeeDrafts, employeeFullRowEditIds, mayCreateEmployees, mayDeleteEmployees, mayInspectBitrix24, mayUpdateEmployees, loadData, requireSavedExcelRows, setEmployeePendingDeletes, setError, setNotice, confirm });
   const { syncingBitrix24, linkingBitrix24, setBitrixCheckResult, bitrixBulkRunning, processingBitrixEmployee, selectedBitrixUpdatableEmployees, selectedBitrixWarningEmployees, inspectBitrix24Remaining, inspectBitrix24Title, inspectBitrix24Connection, updateSelectedEmployeesFromBitrix, acknowledgeSelectedBitrixWarnings } = bitrixReview;
   const settingsDraftsDirty = Boolean(userDrafts.length || employeeDrafts.length || employeeFullRowEditIds.length || positionDrafts.length || positionFullRowEditIds.length || siteDrafts.length || directoryDrafts.length || projectEmployeeDrafts.length || employeeBulkEditOpen && Object.values(employeeBulkChanges).some(Boolean));
-  const navigationState = useRef({ view, focus: directoryFocus, month: selectedMonth, settings: settingsDraftsDirty, busy: saving || importing });
+  const navigationState = useRef({ view, focus: directoryFocus, month: selectedMonth, employeeId: focusedEmployeeId, equipmentId: focusedEquipmentId, settings: settingsDraftsDirty, busy: saving || importing });
   useLayoutEffect(() => {
-    navigationState.current = { view, focus: directoryFocus, month: selectedMonth, settings: settingsDraftsDirty, busy: saving || importing };
-  }, [view, directoryFocus, selectedMonth, settingsDraftsDirty, saving, importing]);
+    navigationState.current = { view, focus: directoryFocus, month: selectedMonth, employeeId: focusedEmployeeId, equipmentId: focusedEquipmentId, settings: settingsDraftsDirty, busy: saving || importing };
+  }, [view, directoryFocus, selectedMonth, focusedEmployeeId, focusedEquipmentId, settingsDraftsDirty, saving, importing]);
   const getNavigationDiscards = useCallback((nextView: View, nextFocus: DirectoryFocus, changingProject = false) => {
     const pending = pendingWorkspaceGridInput();
     return workspaceNavigationDiscards({ ...navigationState.current,
@@ -241,12 +245,12 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     window.addEventListener("beforeunload", preventLoss);
     return () => window.removeEventListener("beforeunload", preventLoss);
   }, [getNavigationDiscards]);
-  useEffect(() => { personnelReportLocationRef.current = `${window.location.pathname}${window.location.search}`; }, [view, directoryFocus, workDate, selectedMonth]);
+  useEffect(() => { personnelReportLocationRef.current = `${window.location.pathname}${window.location.search}`; }, [view, directoryFocus, workDate, selectedMonth, focusedEmployeeId, focusedEquipmentId]);
   const initialUrlNormalized = useRef(false);
 
   useEffect(() => {
     const initialFocus = initialView === "directories" ? initialLocation.directoryFocus : "all";
-    const canonicalUrl = viewAllowed(initialView) ? workspaceUrl(initialView, initialFocus, initialLocation.date, initialLocation.month) : "/";
+    const canonicalUrl = viewAllowed(initialView) ? workspaceUrl(initialView, initialFocus, initialLocation.date, initialLocation.month, initialLocation.employeeId, initialLocation.equipmentId) : "/";
     if (!initialUrlNormalized.current && (!initialLocation.recognized || initialView !== initialLocation.view || `${window.location.pathname}${window.location.search}` !== canonicalUrl)) {
       window.history.replaceState({}, "", canonicalUrl);
     }
@@ -264,7 +268,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       const nextView = viewAllowed(location.view) ? location.view : fallbackView;
       const nextFocus = nextView === "directories" ? location.directoryFocus : "all";
       const periodChanged = (navigationState.current.view === "timesheet" || navigationState.current.view === "equipmentTimesheet") && navigationState.current.month !== location.month;
-      const discard = getNavigationDiscards(nextView, nextFocus, periodChanged);
+      const employeeChanged = (navigationState.current.employeeId ?? null) !== (location.employeeId ?? null);
+      const equipmentChanged = (navigationState.current.equipmentId ?? null) !== (location.equipmentId ?? null);
+      const discard = getNavigationDiscards(nextView, nextFocus, periodChanged || employeeChanged || equipmentChanged);
       if (Object.values(discard).some(Boolean)) {
         const confirmed = await confirm({ title: "Перейти без сохранения?", description: "На текущей странице есть несохранённые изменения. При переходе в другой раздел они будут отменены.", confirmLabel: "Перейти без сохранения" });
         if (!listening || sequence !== locationSequence) return;
@@ -276,7 +282,9 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         if (discard.equipment) { equipmentReportDirtyRef.current = false; setEquipmentReportDirty(false); }
         if (discard.workTypes) { workTypesDirtyRef.current = false; setWorkTypesDirty(false); }
       }
-      if (navigationState.current.view !== nextView || navigationState.current.focus !== nextFocus || periodChanged) discardSettingsEdits();
+      if (navigationState.current.view !== nextView || navigationState.current.focus !== nextFocus || periodChanged || employeeChanged || equipmentChanged) discardSettingsEdits();
+      setFocusedEmployeeId(nextView === location.view ? location.employeeId ?? null : null);
+      setFocusedEquipmentId(nextView === location.view ? location.equipmentId ?? null : null);
       setSelectedMonth(location.month);
       setDirectoryFocus(nextFocus);
       setView(nextView);
@@ -296,6 +304,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     }
     const timer = window.setTimeout(() => {
       setView(fallbackView);
+      setFocusedEmployeeId(null);
+      setFocusedEquipmentId(null);
       setDirectoryFocus("all");
       window.history.replaceState({}, "", viewAllowed(fallbackView) ? workspaceUrl(fallbackView, "all", workDate, selectedMonth) : "/");
     }, 0);
@@ -340,30 +350,49 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setEquipmentReportDirty(false);
     workTypesDirtyRef.current = false;
     setWorkTypesDirty(false);
+    setFocusedEmployeeId(null);
+    setFocusedEquipmentId(null);
+    window.history.replaceState({}, "", workspaceUrl(view, directoryFocus, workDate, selectedMonth));
     setSiteId(nextSiteId);
   }
 
   function changeTimesheetMonth(nextMonth: string) {
     setSelectedMonth(nextMonth);
-    if (view === "timesheet" || view === "equipmentTimesheet") window.history.replaceState({}, "", workspaceUrl(view, directoryFocus, workDate, nextMonth));
+    if (view === "timesheet" || view === "equipmentTimesheet") window.history.replaceState({}, "", workspaceUrl(view, directoryFocus, workDate, nextMonth, focusedEmployeeId, focusedEquipmentId));
   }
 
-  async function navigateTo(nextView: View, nextDirectoryFocus: DirectoryFocus = "all") {
+  async function navigateTo(nextView: View, nextDirectoryFocus: DirectoryFocus = "all", target?: { employeeId: number; equipmentId?: never; month: string } | { equipmentId: number; employeeId?: never; month: string }) {
     if (bitrixBulkRunning.current || navigationState.current.busy || childNavigationBusyRef.current) return false;
+    if (target && (!viewAllowed(nextView) || !validMonth(target.month)
+      || !(isEmployeeNavigationTarget(nextView, target.employeeId) || isEquipmentNavigationTarget(nextView, target.equipmentId)))) return false;
     const allowedView = viewAllowed(nextView) ? nextView : fallbackView;
     const allowedFocus = allowedView === "directories" ? nextDirectoryFocus : "all";
-    const discard = getNavigationDiscards(allowedView, allowedFocus);
+    const changingContext = Boolean(target && navigationState.current.view === allowedView
+      && (target.month !== selectedMonth || (target.employeeId ?? null) !== focusedEmployeeId || (target.equipmentId ?? null) !== focusedEquipmentId));
+    const discard = getNavigationDiscards(allowedView, allowedFocus, changingContext);
     if (Object.values(discard).some(Boolean) && !await confirm({ title: "Перейти без сохранения?", description: "На текущей странице есть несохранённые изменения. При переходе в другой раздел они будут отменены.", confirmLabel: "Перейти без сохранения" })) return false;
-    if (navigationState.current.view !== allowedView || navigationState.current.focus !== allowedFocus) discardSettingsEdits();
+    if (navigationState.current.view !== allowedView || navigationState.current.focus !== allowedFocus || changingContext) discardSettingsEdits();
     if (discard.report) { personnelReportDirtyRef.current = false; setPersonnelReportDirty(false); }
     if (discard.equipment) { equipmentReportDirtyRef.current = false; setEquipmentReportDirty(false); }
     if (discard.workTypes) { workTypesDirtyRef.current = false; setWorkTypesDirty(false); }
-    const url = workspaceUrl(allowedView, allowedFocus, workDate, selectedMonth);
+    const targetMonth = target?.month ?? selectedMonth;
+    const url = workspaceUrl(allowedView, allowedFocus, workDate, targetMonth, target?.employeeId, target?.equipmentId);
+    setFocusedEmployeeId(target?.employeeId ?? null);
+    setFocusedEquipmentId(target?.equipmentId ?? null);
+    if (target) setSelectedMonth(targetMonth);
     setDirectoryFocus(allowedFocus);
     setView(allowedView);
     if (`${window.location.pathname}${window.location.search}` !== url) window.history.pushState({}, "", url);
     window.scrollTo({ top: 0, behavior: "auto" });
     return true;
+  }
+  function clearEmployeeFocus() {
+    setFocusedEmployeeId(null);
+    window.history.replaceState({}, "", workspaceUrl(view, directoryFocus, workDate, selectedMonth));
+  }
+  function clearEquipmentFocus() {
+    setFocusedEquipmentId(null);
+    window.history.replaceState({}, "", workspaceUrl(view, directoryFocus, workDate, selectedMonth));
   }
   function patchUserDraft(key: string, changes: Partial<UserDraft>) {
     setUserDrafts((current) => current.map((draft) => draft.key === key ? { ...draft, ...changes } : draft));
@@ -930,7 +959,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const currentTableOrderScope = viewAllowed(view) ? tableOrderScope(view, directoryFocus) : null;
   return <WorkspaceAccessProvider access={tableAccess}><TableOrderProvider key={`${currentTableOrderScope}:${siteId}:${currentUser.id}`} scope={currentTableOrderScope} siteId={siteId}><main className={sidebarOpen ? "app-shell" : "app-shell sidebar-collapsed"}>
     <SidebarToggleButton expanded={sidebarOpen} onToggle={toggleSidebar} buttonRef={mobileSidebarToggleRef} className="sidebar-mobile-toggle" />
-    <WorkspaceSidebar sidebarOpen={sidebarOpen} toggleSidebar={toggleSidebar} sidebarToggleRef={sidebarToggleRef} visibleSites={visibleSites} siteId={siteId} activeSite={activeSite} mayViewAllProjects={mayViewAllProjects} mayViewWorkersReport={mayViewWorkersReport} mayViewWorkersTimesheet={mayViewWorkersTimesheet} mayViewEquipmentReport={mayViewEquipmentReport} mayViewEquipmentTimesheet={mayViewEquipmentTimesheet} statisticsView={firstStatisticsKind ? statisticsViews[firstStatisticsKind] : null} mayAccessGeneralSettings={mayAccessGeneralSettings} mayAccessProjectSettings={mayAccessProjectSettings} view={view} navigateTo={navigateTo} fallbackView={fallbackView} changeSite={changeSite} currentUser={currentUser} openProfile={openProfile} />
+    <WorkspaceSidebar sidebarOpen={sidebarOpen} toggleSidebar={toggleSidebar} sidebarToggleRef={sidebarToggleRef} sectionState={sidebarPreferences} toggleSection={toggleSidebarPreference} visibleSites={visibleSites} siteId={siteId} activeSite={activeSite} mayViewAllProjects={mayViewAllProjects} mayViewWorkersReport={mayViewWorkersReport} mayViewWorkersTimesheet={mayViewWorkersTimesheet} mayViewEquipmentReport={mayViewEquipmentReport} mayViewEquipmentTimesheet={mayViewEquipmentTimesheet} statisticsView={firstStatisticsKind ? statisticsViews[firstStatisticsKind] : null} mayAccessGeneralSettings={mayAccessGeneralSettings} mayAccessProjectSettings={mayAccessProjectSettings} view={view} navigateTo={navigateTo} fallbackView={fallbackView} changeSite={changeSite} currentUser={currentUser} openProfile={openProfile} />
     <section className="workspace">
       {viewAllowed(view) ? <div className={pageContentClassName}>{!statisticsKind && <div className={["page-heading", "workspace-page-heading", view === "placement" || view === "equipment" ? "report-page-heading" : "", view === "placement" || view === "equipment" ? "personnel-report-heading" : "", view === "timesheet" || view === "equipmentTimesheet" ? "timesheet-page-heading" : "", settingsBackTarget ? "settings-page-heading" : "", view === "employees" ? "employees-page-heading" : "", view === "users" || view === "accessRights" ? "users-rights-page-heading" : ""].filter(Boolean).join(" ")}>
         {usersRightsPage && settingsBackButton}
@@ -991,18 +1020,28 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
 
       {mayViewWorkersReport && view === "placement" && <>
         {error && <div className="message error" role="alert"><strong>Не удалось загрузить справочники</strong><span>{error}</span></div>}
-        <Suspense fallback={<p role="status">Загружаем отчёты персонала…</p>}><PersonnelReportWorkspace key={`personnel-reports-${siteId}-${currentUser.id}`} siteId={siteId} siteName={activeSite?.name ?? "Проект"} today={initialToday} currentUser={currentUser} permissions={{ create: mayCreateWorkersReport, update: mayUpdateWorkersReport, delete: mayDeleteWorkersReport }} employees={data?.reportEmployees ?? []} shifts={data?.shifts ?? []} zones={data?.zones ?? []} mainWorkTypes={data?.mainWorkTypes ?? []} subworkTypes={data?.subworkTypes ?? []} masters={data?.masters ?? []} loading={loading} onDirtyChange={setPersonnelReportDirty} /></Suspense>
+        <Suspense fallback={<p role="status">Загружаем отчёты персонала…</p>}><PersonnelReportWorkspace key={`personnel-reports-${siteId}-${currentUser.id}`} siteId={siteId} siteName={activeSite?.name ?? "Проект"} today={initialToday} currentUser={currentUser} permissions={{ create: mayCreateWorkersReport, update: mayUpdateWorkersReport, delete: mayDeleteWorkersReport }} employees={data?.reportEmployees ?? []} shifts={data?.shifts ?? []} zones={data?.zones ?? []} mainWorkTypes={data?.mainWorkTypes ?? []} subworkTypes={data?.subworkTypes ?? []} masters={data?.masters ?? []} loading={loading} onDirtyChange={setPersonnelReportDirty}
+          employeeNavigationTargets={[
+            ...(mayViewWorkersTimesheet ? [{ view: "timesheet" as const, label: "В табель персонала" }] : []),
+            ...(may("employees") ? [{ view: "employees" as const, label: "В справочник сотрудников" }] : []),
+            ...(may("project_employees") ? [{ view: "projectEmployees" as const, label: "В сотрудники проекта" }] : []),
+          ]}
+          onNavigateEmployee={(nextView, employeeId, date) => { void navigateTo(nextView, "all", { employeeId, month: date.slice(0, 7) }); }} /></Suspense>
       </>}
 
 
-      {mayViewWorkersTimesheet && view === "timesheet" && <TimesheetView key={`personnel-timesheet-${siteId}-${selectedMonth}`} siteId={siteId} initialMonth={selectedMonth} today={initialToday} onMonthChange={changeTimesheetMonth} onDirtyChange={onNativeTimesheetDirty} onBusyChange={onChildNavigationBusy} />}
-      {mayViewEquipmentReport && view === "equipment" && <Suspense fallback={<p role="status">Загружаем отчёты техники…</p>}><EquipmentReportPage key={`equipment-report-${siteId}-${currentUser.id}`} siteId={siteId} siteName={activeSite?.name ?? "Проект"} today={initialToday} currentUser={currentUser} permissions={{ create: may("equipment_report", "create"), update: may("equipment_report", "update"), delete: may("equipment_report", "delete") }} onDirtyChange={setEquipmentReportDirty} /></Suspense>}
-      {mayViewEquipmentTimesheet && view === "equipmentTimesheet" && <EquipmentAccountingView key={`equipment-timesheet-${siteId}-${selectedMonth}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserId={currentUser.id} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="month" onMonthChange={changeTimesheetMonth} onDirtyChange={onEquipmentSettingsDirty} onBusyChange={onChildNavigationBusy} />}
+      {mayViewWorkersTimesheet && view === "timesheet" && <TimesheetView key={`personnel-timesheet-${siteId}-${selectedMonth}`} siteId={siteId} initialMonth={selectedMonth} today={initialToday} focusedEmployeeId={focusedEmployeeId} onClearEmployeeFocus={clearEmployeeFocus} onMonthChange={changeTimesheetMonth} onDirtyChange={onNativeTimesheetDirty} onBusyChange={onChildNavigationBusy} />}
+      {mayViewEquipmentReport && view === "equipment" && <Suspense fallback={<p role="status">Загружаем отчёты техники…</p>}><EquipmentReportPage key={`equipment-report-${siteId}-${currentUser.id}`} siteId={siteId} siteName={activeSite?.name ?? "Проект"} today={initialToday} currentUser={currentUser} permissions={{ create: may("equipment_report", "create"), update: may("equipment_report", "update"), delete: may("equipment_report", "delete") }} onDirtyChange={setEquipmentReportDirty} equipmentNavigationTargets={[
+          ...(mayViewEquipmentTimesheet ? [{ view: "equipmentTimesheet" as const, label: "В табель техники" }] : []),
+          ...(may("equipment_registry") ? [{ view: "equipmentRegistry" as const, label: "В реестр техники" }] : []),
+          ...(may("project_equipment") ? [{ view: "projectEquipment" as const, label: "В технику проекта" }] : []),
+        ]} onNavigateEquipment={(nextView, equipmentId, date) => { void navigateTo(nextView, "all", { equipmentId, month: date.slice(0, 7) }); }} /></Suspense>}
+      {mayViewEquipmentTimesheet && view === "equipmentTimesheet" && <EquipmentAccountingView key={`equipment-timesheet-${siteId}-${selectedMonth}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserId={currentUser.id} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="month" focusedEquipmentId={focusedEquipmentId} onClearEquipmentFocus={clearEquipmentFocus} onMonthChange={changeTimesheetMonth} onDirtyChange={onEquipmentSettingsDirty} onBusyChange={onChildNavigationBusy} />}
 
 
 
-      {view === "equipmentRegistry" && may("equipment_registry") && <section className="users-settings admin-section equipment-settings-section"><EquipmentAccountingView key={`equipment-registry-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserId={currentUser.id} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="registry" onDirtyChange={onEquipmentSettingsDirty} onBusyChange={onChildNavigationBusy} /></section>}
-      {view === "projectEquipment" && may("project_equipment") && <section className="users-settings admin-section equipment-settings-section"><EquipmentAccountingView key={`project-equipment-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserId={currentUser.id} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="project" onDirtyChange={onEquipmentSettingsDirty} onBusyChange={onChildNavigationBusy} /></section>}
+      {view === "equipmentRegistry" && may("equipment_registry") && <section className="users-settings admin-section equipment-settings-section"><EquipmentAccountingView key={`equipment-registry-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserId={currentUser.id} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="registry" focusedEquipmentId={focusedEquipmentId} onClearEquipmentFocus={clearEquipmentFocus} onDirtyChange={onEquipmentSettingsDirty} onBusyChange={onChildNavigationBusy} /></section>}
+      {view === "projectEquipment" && may("project_equipment") && <section className="users-settings admin-section equipment-settings-section"><EquipmentAccountingView key={`project-equipment-${siteId}`} siteId={siteId} initialDate={workDate} initialMonth={selectedMonth} today={initialToday} currentUserId={currentUser.id} currentUserRole={role} currentUserProjectAccess={currentUser.projectAccess} mode="project" focusedEquipmentId={focusedEquipmentId} onClearEquipmentFocus={clearEquipmentFocus} onDirtyChange={onEquipmentSettingsDirty} onBusyChange={onChildNavigationBusy} /></section>}
 
       {view === "settings" && mayAccessGeneralSettings && <section className="settings-home general-settings-home"><p className="settings-scope-description">Общие данные используются во всей системе и не зависят от выбранного проекта.</p><div className="settings-list">{generalSettingsCards.filter((card) => may(card.resource)).map((card) => <button type="button" className="settings-list-item" key={card.title} onClick={() => { if (card.focus) void navigateTo("directories", card.focus); else if (card.view) void navigateTo(card.view); }}><span className="settings-card-icon">{card.icon}</span><span className="settings-row-copy"><strong>{card.title}</strong><span>{card.description}</span></span><span className="settings-list-arrow" aria-hidden="true">›</span></button>)}</div></section>}
 
@@ -1013,7 +1052,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       </section>}
       {view === "projectEmployees" && may("project_employees") && <section className="users-settings admin-section reference-section">
         {error && <div className="message error inline-message"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}{notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
-        <ProjectEmployeeAgGrid onVisibleIdsChange={ids => referenceExportOrder.current.set(`projectEmployees:${siteId}`, ids)} rows={visibleProjectEmployees} allEmployees={data?.employees ?? []} drafts={projectEmployeeDrafts} pendingDeletes={projectEmployeePendingDeletes} readOnly={!mayCreateProjectEmployees} selectionDisabled={!mayDeleteProjectEmployees} onPatchDraft={patchProjectEmployeeDraft} canCreate={mayCreateProjectEmployees} loading={settingsBusy} preferenceScope={{ userId: currentUser.id, siteId }} onReplaceDrafts={(drafts) => { setProjectEmployeeDrafts(drafts); setError(""); setNotice(""); }} onValidationError={(message) => { setError(message); setNotice(""); }} renderFooter={(selection) => <AdminGridFooter compact selectedDraftCount={selection.selectedDraftCount} onRemoveSelectedDrafts={() => { const removed = selection.removeSelectedDrafts(); if (removed) { setError(""); setNotice(`Убрано новых строк: ${removed}. Отменить — Ctrl+Z.`); } }} addLabel="Добавить сотрудника в проект" countLabel="Всего в проекте" count={visibleProjectEmployees.length} deletingCount={projectEmployeePendingDeletes.length} deletingLabel="Убрать из проекта" uniformActions editorOpen={Boolean(projectEmployeeDrafts.length)} pendingCount={projectEmployeeDrafts.length} saving={settingsBusy} allowMultiple canCreate={mayCreateProjectEmployees} canUpdate={mayUpdateProjectEmployees} canDelete={mayDeleteProjectEmployees} onAdd={() => { setProjectEmployeeDrafts((current) => [{ key: newKey(), employeeId: "", employeeQuery: "" }, ...current]); setNotice(""); }} onDelete={() => setProjectEmployeeDeleteConfirmationOpen(true)} onClearSelection={() => { selection.clearSelection(); setProjectEmployeePendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={() => { setProjectEmployeeDrafts([]); setError(""); setNotice(""); }} onSave={() => void assignProjectEmployees()} />} onSelectionChange={(ids) => { setProjectEmployeePendingDeletes(ids); setError(""); setNotice(""); }} />
+        <ProjectEmployeeAgGrid onVisibleIdsChange={ids => referenceExportOrder.current.set(`projectEmployees:${siteId}`, ids)} rows={visibleProjectEmployees} existingEmployees={visibleProjectEmployees} focusedEmployeeId={focusedEmployeeId} onClearEmployeeFocus={clearEmployeeFocus} allEmployees={data?.employees ?? []} drafts={projectEmployeeDrafts} pendingDeletes={projectEmployeePendingDeletes} readOnly={!mayCreateProjectEmployees} selectionDisabled={!mayDeleteProjectEmployees} onPatchDraft={patchProjectEmployeeDraft} canCreate={mayCreateProjectEmployees} loading={settingsBusy} preferenceScope={{ userId: currentUser.id, siteId }} onReplaceDrafts={(drafts) => { setProjectEmployeeDrafts(drafts); setError(""); setNotice(""); }} onValidationError={(message) => { setError(message); setNotice(""); }} renderFooter={(selection) => <AdminGridFooter compact selectedDraftCount={selection.selectedDraftCount} onRemoveSelectedDrafts={() => { const removed = selection.removeSelectedDrafts(); if (removed) { setError(""); setNotice(`Убрано новых строк: ${removed}. Отменить — Ctrl+Z.`); } }} addLabel="Добавить сотрудника в проект" countLabel="Всего в проекте" count={visibleProjectEmployees.length} deletingCount={projectEmployeePendingDeletes.length} deletingLabel="Убрать из проекта" uniformActions editorOpen={Boolean(projectEmployeeDrafts.length)} pendingCount={projectEmployeeDrafts.length} saving={settingsBusy} allowMultiple canCreate={mayCreateProjectEmployees} canUpdate={mayUpdateProjectEmployees} canDelete={mayDeleteProjectEmployees} onAdd={() => { setProjectEmployeeDrafts((current) => [{ key: newKey(), employeeId: "", employeeQuery: "" }, ...current]); setNotice(""); }} onDelete={() => setProjectEmployeeDeleteConfirmationOpen(true)} onClearSelection={() => { selection.clearSelection(); setProjectEmployeePendingDeletes([]); setError(""); setNotice(""); }} onCancelEditing={() => { setProjectEmployeeDrafts([]); setError(""); setNotice(""); }} onSave={() => void assignProjectEmployees()} />} onSelectionChange={(ids) => { setProjectEmployeePendingDeletes(ids); setError(""); setNotice(""); }} />
 
       </section>}
       {mayDeleteProjectEmployees && projectEmployeeDeleteConfirmationOpen && <AdminDeleteConfirmation title="Убрать выбранных сотрудников из проекта?" text={`Сотрудники (${projectEmployeePendingDeletes.length}) исчезнут только из проекта «${activeSite?.name ?? ""}». Их общие карточки и история отчётов сохранятся.`} saving={saving} onCancel={() => setProjectEmployeeDeleteConfirmationOpen(false)} onConfirm={() => void deletePendingProjectEmployees()} />}
@@ -1022,6 +1061,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         {notice && <div className="message success inline-message"><strong>Готово</strong><span>{notice}</span></div>}
         <EmployeeAgGrid
           rows={visibleEmployees}
+          focusedEmployeeId={focusedEmployeeId}
+          onClearEmployeeFocus={clearEmployeeFocus}
           drafts={employeeDrafts}
           positionCatalog={data?.positionCatalog ?? []}
           preferenceScope={{ userId: currentUser.id }}

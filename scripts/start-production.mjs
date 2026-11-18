@@ -41,8 +41,13 @@ export async function startProduction({ cwd = process.cwd(), env = process.env, 
     return { child, done };
   };
   const probe = async () => {
-    try { const response = await fetch(`${upstream}/api/health`, { signal: AbortSignal.timeout(1500), cache: "no-store" }); await response.body?.cancel(); return response.ok; }
-    catch { return false; }
+    try {
+      const response = await fetch(`${upstream}/api/health`, { signal: AbortSignal.timeout(1500), cache: "no-store" });
+      await response.body?.cancel();
+      return { ready: response.ok, reason: response.ok ? null : `HTTP ${response.status}` };
+    } catch (error) {
+      return { ready: false, reason: error?.name === "TimeoutError" ? "timeout" : "connection error" };
+    }
   };
   const shutdown = () => {
     if (stopTask) return stopTask;
@@ -80,16 +85,27 @@ export async function startProduction({ cwd = process.cwd(), env = process.env, 
     let exited = false;
     void backendDone.then(() => { exited = true; if (!stopped) gateway.setPhase("unavailable"); }, () => { exited = true; if (!stopped) gateway.setPhase("unavailable"); });
     const started = Date.now();
-    while (!stopped && !exited && !await probe()) {
+    while (!stopped && !exited && !(await probe()).ready) {
       if (Date.now() - started > startupTimeoutMs) throw new Error("Приложение не прошло проверку готовности за отведённое время.");
       await new Promise(resolveWait => setTimeout(resolveWait, 250));
     }
     if (!stopped && !exited) gateway.setPhase("ready");
     let checking = false;
+    let failedProbes = 0;
     readinessTimer = setInterval(() => {
       if (checking || stopped || exited) return;
       checking = true;
-      void probe().then(ready => { if (!stopped && !exited) gateway.setPhase(ready ? "ready" : "unavailable"); }).finally(() => { checking = false; });
+      void probe().then(({ ready, reason }) => {
+        if (stopped || exited) return;
+        if (ready) {
+          if (!gateway.snapshot().backendReady) log.log(`Application readiness restored (health probe succeeded; previous failed probes: ${failedProbes}).`);
+          failedProbes = 0;
+          gateway.setPhase("ready");
+        } else if (++failedProbes >= 3) {
+          if (gateway.snapshot().backendReady) log.error(`Application readiness lost after ${failedProbes} consecutive failed probes (${reason}).`);
+          gateway.setPhase("unavailable");
+        }
+      }).finally(() => { checking = false; });
     }, 2000);
     const exit = await backendDone;
     if (stopped) { await stopTask; return stopFailed ? 1 : 0; }

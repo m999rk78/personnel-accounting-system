@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { createLatestRequest } from "../app/latestRequest.ts";
+import { MAINTENANCE_READY_EVENT } from "../app/maintenanceClient.ts";
 import { emptyDataSet } from "../app/workspace/model.ts";
 
 const source = ts.createSourceFile("useWorkspaceData.ts", await readFile(new URL("../app/workspace/useWorkspaceData.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -46,9 +47,10 @@ function harness() {
       pendingEffects.push(() => { previous?.cleanup?.(); hooks[index].cleanup = effect(); });
     }
   };
-  const window = { setTimeout(callback) { const id = ++nextTimer; timers.set(id, callback); return id; }, clearTimeout(id) { timers.delete(id); }, location: { replace() {} } };
+  const events = new EventTarget();
+  const window = { addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), setTimeout(callback) { const id = ++nextTimer; timers.set(id, callback); return id; }, clearTimeout(id) { timers.delete(id); }, location: { replace() {} } };
   const fetch = (url, options) => new Promise(resolve => { requests.push({ url, ...options, respond(status, body) { resolve({ status, ok: status >= 200 && status < 300, json: async () => body }); } }); });
-  const environment = { useState, useRef, useMemo: memo, useCallback: (callback, dependencies) => memo(() => callback, dependencies), useEffect, createLatestRequest, emptyDataSet, window, fetch };
+  const environment = { useState, useRef, useMemo: memo, useCallback: (callback, dependencies) => memo(() => callback, dependencies), useEffect, createLatestRequest, MAINTENANCE_READY_EVENT, emptyDataSet, window, fetch };
   const run = new Function(...Object.keys(environment), `${implementation}; return useWorkspaceData;`)(...Object.values(environment));
   const permissions = {}, viewAllowed = () => true;
   let props = { siteId: 1, workDate: "2026-11-09", view: "directories", effectivePermissions: permissions, viewAllowed };

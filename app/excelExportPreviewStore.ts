@@ -79,6 +79,7 @@ type EquipmentTimesheetPreviewSource = {
   siteId: number;
   siteName: string;
   initialDate: string;
+  equipmentIds?: number[];
 };
 
 export type ExcelExportPreviewPayload = {

@@ -1,0 +1,22 @@
+[Unit]
+Description=Check Personnel Accounting backups and email operational alerts
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/python3 /opt/personnel-s3-backup/personnel-backup-notify.py --config /etc/personnel-s3-backup/notify.env --check
+TimeoutStartSec=90
+StateDirectory=personnel-s3-backup-notify
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/personnel-s3-backup-notify
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=personnel-s3-backup-notify

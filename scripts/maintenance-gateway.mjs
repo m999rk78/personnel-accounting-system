@@ -60,7 +60,7 @@ export function createMaintenanceGateway({ upstream, stateFile, html, htmlPath, 
   const unavailable = (req, res) => {
     if (res.headersSent) { res.destroy(); return; }
     const path = requestPath(req.url) ?? "/";
-    if (path.startsWith("/api/")) return json(res, { code: "MAINTENANCE", error: "Сейчас ведутся технические работы. Доступ к сайту скоро возобновится.", maintenance: true }, 503, headers);
+    if (path.startsWith("/api/")) return json(res, { code: "MAINTENANCE", error: "Сейчас ведутся технические работы. Доступ к сайту скоро возобновится.", maintenance: true, phase: state().phase }, 503, headers);
     res.writeHead(503, { "Content-Type": "text/html; charset=utf-8", "X-Content-Type-Options": "nosniff", ...headers });
     res.end(req.method === "HEAD" ? undefined : page);
   };
@@ -78,6 +78,7 @@ export function createMaintenanceGateway({ upstream, stateFile, html, htmlPath, 
     activeRequests++;
     if (unsafe) activeWrites++;
     let finished = false;
+    let clientAborted = false;
     const finish = (uncertain = false) => {
       if (finished) return;
       finished = true;
@@ -95,9 +96,17 @@ export function createMaintenanceGateway({ upstream, stateFile, html, htmlPath, 
       response.pipe(res);
       res.once("close", () => { response.unpipe(res); response.resume(); });
     });
-    proxy.on("error", () => { finish(true); if (phase === "ready") phase = "unavailable"; unavailable(req, res); });
-    req.on("aborted", () => { if (!req.complete) proxy.destroy(); });
-    req.on("error", () => { if (!req.complete) proxy.destroy(); });
+    proxy.on("error", () => { finish(true); if (!clientAborted && phase === "ready") phase = "unavailable"; unavailable(req, res); });
+    const abortIncompleteRequest = () => {
+      if (req.complete) return;
+      // A browser abandoning its upload is not evidence that the backend is
+      // down. Its partial write still has an uncertain result for safe drain.
+      clientAborted = true;
+      finish(true);
+      proxy.destroy();
+    };
+    req.on("aborted", abortIncompleteRequest);
+    req.on("error", abortIncompleteRequest);
     req.pipe(proxy);
   });
   server.on("connection", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });

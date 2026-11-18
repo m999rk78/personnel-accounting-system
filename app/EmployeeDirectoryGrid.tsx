@@ -12,6 +12,8 @@ import { applyEmployeeSpreadsheetBatch, removeNewEmployeeDrafts, type EmployeeSp
 import { useEmployeeSpreadsheetHistory } from "./useEmployeeSpreadsheetHistory";
 import { useEmployeeGridPreferences } from "./useEmployeeGridPreferences";
 import { useWorkspaceTableOrder } from "./TableRowMoves";
+import { useGridNavigationFilter } from "./useGridNavigationFilter";
+import { compareGridValues } from "./gridFilterModel";
 import { gridTheme } from "./gridTheme";
 import { AgTablePageScroll } from "./TablePageScroll";
 import { employeeBitrixStatus } from "./bitrixEmployeeStatus";
@@ -29,6 +31,8 @@ type EmployeeGridProps = EmployeeSpreadsheetReferences & {
   loading?: boolean;
   selectionDisabled?: boolean;
   preferenceScope?: { userId: number };
+  focusedEmployeeId?: number | null;
+  onClearEmployeeFocus?: () => void;
   renderFooter?: (selection: DraftSelectionActions) => ReactNode;
   onEdit: (employee: GridEmployee, changes?: Partial<GridEmployeeDraft>) => void;
   onSelectionChange: (ids: number[]) => void;
@@ -50,12 +54,25 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
   const [selectedDraftKeys, setSelectedDraftKeys] = useState<string[]>([]);
   const draftsById = useMemo(() => new Map(props.drafts.filter(draft => draft.id).map(draft => [draft.id!, draft])), [props.drafts]);
   const draftsByKey = useMemo(() => new Map(props.drafts.map(draft => [draft.key, draft])), [props.drafts]);
+  const employeeFilterLabels = useMemo(() => {
+    const values = [
+      ...props.rows.map(employee => ({ key: String(employee.id), label: draftsById.get(employee.id)?.fullName ?? employee.fullName, suffix: `№${employee.id}` })),
+      ...props.drafts.filter(draft => !draft.id).map((draft, index) => ({ key: `draft:${draft.key}`, label: draft.fullName, suffix: `новая строка ${index + 1}` })),
+    ];
+    const counts = new Map<string, number>();
+    values.forEach(item => counts.set(item.label, (counts.get(item.label) ?? 0) + 1));
+    return new Map(values.map(item => [item.key, !item.label ? "(Пустые)" : (counts.get(item.label) ?? 0) > 1 ? `${item.label} (${item.suffix})` : item.label]));
+  }, [props.rows, props.drafts, draftsById]);
   const liveSelectedDraftKeys = useMemo(() => selectedDraftKeys.filter(key => draftsByKey.has(key) && draftsByKey.get(key)?.id === undefined), [selectedDraftKeys, draftsByKey]);
-  const latest = useRef({ ...props, draftsById, draftsByKey, selectedDraftKeys: liveSelectedDraftKeys });
-  useLayoutEffect(() => { latest.current = { ...props, draftsById, draftsByKey, selectedDraftKeys: liveSelectedDraftKeys }; }, [props, draftsById, draftsByKey, liveSelectedDraftKeys]);
+  const latest = useRef({ ...props, draftsById, draftsByKey, employeeFilterLabels, selectedDraftKeys: liveSelectedDraftKeys });
+  useLayoutEffect(() => { latest.current = { ...props, draftsById, draftsByKey, employeeFilterLabels, selectedDraftKeys: liveSelectedDraftKeys }; }, [props, draftsById, draftsByKey, employeeFilterLabels, liveSelectedDraftKeys]);
   const frame = useRef<HTMLDivElement>(null);
   const gridApi = useRef<GridApi<EmployeeTableRow> | null>(null);
   const [pageApi, setPageApi] = useState<GridApi<EmployeeTableRow> | null>(null);
+  const navigation = useGridNavigationFilter({ api: pageApi, navigationFilter: props.focusedEmployeeId ? {
+    columnId: "fullName", value: String(props.focusedEmployeeId), ready: !props.loading, onCleared: props.onClearEmployeeFocus,
+  } : undefined });
+  const navigationVisibility = useRef({ pending: navigation.pending, error: navigation.error });
   const [activeEditor, setActiveEditor] = useState<{ rowKey: string; field: string; initialValue?: string } | null>(null);
   const history = useEmployeeSpreadsheetHistory({ drafts: props.drafts, onReplaceDrafts: props.onReplaceDrafts });
   const draftHistory = useRef(history);
@@ -195,20 +212,39 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     const { label, tone, details } = employeeBitrixStatus(params.data?.employee);
     return <div className="bitrix-grid-check" title={details || label}><span className={`bitrix-grid-status ${tone}`}>{label}</span>{details && <span className="bitrix-grid-details">{details}</span>}</div>;
   }, []);
+  const formatEmployeeFilterValue = useCallback((value: unknown) => value == null || value === "" ? "(Пустые)" : latest.current.employeeFilterLabels.get(String(value)) ?? `Сотрудник №${value}`, []);
+  // Stable callbacks retain the active Set model when names or drafts refresh.
+  const employeeIdentityFilter = useMemo<Pick<ColDef<EmployeeTableRow>, "filterValueGetter" | "filterParams">>(() => ({
+    filterValueGetter: params => params.data?.employee ? String(params.data.employee.id) : params.data?.draft ? `draft:${params.data.draft.key}` : null,
+    filterParams: {
+      defaultToNothingSelected: true,
+      valueFormatter: ({ value }: { value: unknown }) => formatEmployeeFilterValue(value),
+      comparator: (left: unknown, right: unknown) => compareGridValues(formatEmployeeFilterValue(left), formatEmployeeFilterValue(right)),
+    },
+  }), [formatEmployeeFilterValue]);
+  const formatFilterSummaryValue = useCallback((columnId: string, value: unknown) => columnId === "fullName" ? formatEmployeeFilterValue(value) : value == null || value === "" ? "(Пустые)" : String(value), [formatEmployeeFilterValue]);
   const columns = useMemo<ColDef<EmployeeTableRow>[]>(() => [
-    { field: "fullName", headerName: "ФИО", pinned: "left", lockPinned: true, initialWidth: 250, minWidth: 180, cellRenderer: editableRenderer },
+    { field: "fullName", headerName: "ФИО", pinned: "left", lockPinned: true, initialWidth: 250, minWidth: 180, cellRenderer: editableRenderer, ...employeeIdentityFilter },
     { field: "employmentType", headerName: "Тип", initialFlex: .55, minWidth: 105, cellRenderer: editableRenderer },
     { field: "department", headerName: "Отдел", initialFlex: .7, minWidth: 125, cellRenderer: editableRenderer },
     { field: "position", headerName: "Должность", initialFlex: 1.4, minWidth: 210, cellRenderer: editableRenderer },
     { field: "siteName", headerName: "Проект", initialFlex: 1, minWidth: 180, cellRenderer: editableRenderer },
     { colId: "bitrixCheckLabel", headerName: "Проверка Б24 / расхождение", initialFlex: 1.3, minWidth: 260, cellRenderer: bitrixRenderer },
-  ], [editableRenderer, bitrixRenderer]);
+  ], [editableRenderer, bitrixRenderer, employeeIdentityFilter]);
   const defaultColDef = useMemo<ColDef<EmployeeTableRow>>(() => ({ headerComponentParams: filterHeader, valueGetter: params => params.data ? valueFor(params.data, params.column.getColId()) : "", filter: personnelColumnFilter, filterParams: { ...personnelFilterParams, presentation: "checklist" }, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), [valueFor]);
   const reportVisibleRows = useCallback((api: GridApi<EmployeeTableRow>) => {
     const ids: number[] = [];
-    api.forEachNodeAfterFilterAndSort(node => { if (node.data?.employee) ids.push(node.data.employee.id); });
+    if (!navigationVisibility.current.pending && !navigationVisibility.current.error) {
+      api.forEachNodeAfterFilterAndSort(node => { if (node.data?.employee) ids.push(node.data.employee.id); });
+    }
     latest.current.onVisibleIdsChange(ids);
   }, []);
+  useLayoutEffect(() => {
+    navigationVisibility.current = { pending: navigation.pending, error: navigation.error };
+    // Filtering can finish before the hook publishes its pending state. Publish
+    // again when it settles so exports never keep the temporary empty scope.
+    if (pageApi && !pageApi.isDestroyed()) reportVisibleRows(pageApi);
+  }, [pageApi, navigation.pending, navigation.error, reportVisibleRows]);
   const keepNewRowsFirst = useCallback(({ nodes }: PostSortRowsParams<EmployeeTableRow>) => {
     const rank = new Map(latest.current.drafts.filter(draft => !draft.id).map((draft, index) => [`employee-new-${draft.key}`, index]));
     const newRows = nodes.filter(node => rank.has(node.data?.rowKey ?? "")).sort((a, b) => rank.get(a.data!.rowKey)! - rank.get(b.data!.rowKey)!);
@@ -219,9 +255,10 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     const selectable = (row?: EmployeeTableRow) => Boolean(row?.employee ? !latest.current.selectionDisabled : row?.draft && row.draft.id === undefined && latest.current.canCreate !== false);
     return { mode: "multiRow" as const, checkboxes: (params: { data?: EmployeeTableRow }) => selectable(params.data), headerCheckbox: true, selectAll: "filtered" as const, enableClickSelection: false as const, hideDisabledCheckboxes: true, isRowSelectable: (node: { data?: EmployeeTableRow }) => selectable(node.data) };
   }, [props.selectionDisabled, props.canCreate]);
-  return <AgTablePageScroll gridRoot={frame} api={pageApi} label="Горизонтальная прокрутка сотрудников" footer={props.renderFooter && <EmployeeFooter render={props.renderFooter} selection={{ selectedDraftCount: liveSelectedDraftKeys.length, removeSelectedDrafts, clearSelection }} />}><div ref={frame} className="employee-performance-frame employee-spreadsheet-frame"><div className="employee-performance-main"><div className="ag-grid-shell ag-admin-grid ag-employee-grid"><LocalizedGrid<EmployeeTableRow>
+  return <>{navigation.error && <div className="message error" role="alert"><span>{navigation.error}</span><button type="button" onClick={props.onClearEmployeeFocus}>Сбросить фильтр</button></div>}<AgTablePageScroll gridRoot={frame} api={pageApi} label="Горизонтальная прокрутка сотрудников" footer={props.renderFooter && <EmployeeFooter render={props.renderFooter} selection={{ selectedDraftCount: liveSelectedDraftKeys.length, removeSelectedDrafts, clearSelection }} />}><div ref={frame} className="employee-performance-frame employee-spreadsheet-frame"><div className="employee-performance-main"><div className="ag-grid-shell ag-admin-grid ag-employee-grid"><LocalizedGrid<EmployeeTableRow>
     theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} getRowId={params => params.data.rowKey}
-    rowHeight={44} headerHeight={46} animateRows={false} postSortRows={keepNewRowsFirst} loading={props.loading}
+    formatFilterSummaryValue={formatFilterSummaryValue}
+    rowHeight={44} headerHeight={46} animateRows={false} postSortRows={keepNewRowsFirst} loading={props.loading || navigation.pending || Boolean(navigation.error)}
     suppressHorizontalScroll scrollbarWidth={0}
     spreadsheetToolbar={false} showSortSummary={false} rowOrderAutoSwitchSort preserveSavedSort={preferences.hasSavedSort} rowOrderBlocked={Boolean(activeEditor) || props.drafts.length > 0}
     rowClassRules={{ "editable-row": params => Boolean(params.data?.draft), "bitrix-mismatch-row": params => params.data?.employee?.bitrixCheckStatus === "mismatch" && !params.data.employee.bitrixCheckAcknowledged, "bitrix-missing-row": params => params.data?.employee?.bitrixCheckStatus === "missing_in_bitrix" && !params.data.employee.bitrixCheckAcknowledged, "bitrix-dismissed-row": params => params.data?.employee?.bitrixCheckStatus === "dismissed_in_bitrix" && !params.data.employee.bitrixCheckAcknowledged, "bitrix-blacklisted-row": params => params.data?.employee?.bitrixCheckStatus === "blacklisted_in_bitrix" && !params.data.employee.bitrixCheckAcknowledged }}
@@ -241,5 +278,5 @@ export function EmployeeAgGrid(props: EmployeeGridProps) {
     onSpreadsheetBatch={applyBatch} canWriteSpreadsheetCell={canWrite} spreadsheetHistory={history}
     onSpreadsheetEdit={({ row, columnId, initialValue }) => openEditor(row, columnId, initialValue)} onSpreadsheetCancelEdit={() => setActiveEditor(null)}
     suppressCellFocus
-  /></div></div></div></AgTablePageScroll>;
+  /></div></div></div></AgTablePageScroll></>;
 }

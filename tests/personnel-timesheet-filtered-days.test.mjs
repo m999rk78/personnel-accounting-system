@@ -31,7 +31,9 @@ const employee = { id: 7, fullName: "Тестовый сотрудник", emplo
 const entriesByCell = new Map([["7:2026-11-01", { employeeId: 7, workDate: "2026-11-01", hours: 9, masters: "Мастер", zones: "А" }], ["7:2026-11-06", { employeeId: 7, workDate: "2026-11-06", hours: 8, masters: "Мастер", zones: "А" }], ["7:2026-11-08", { employeeId: 7, workDate: "2026-11-08", hours: 5, masters: "Мастер", zones: "А" }]]);
 const marksByCell = new Map([["7:2026-11-06", { employeeId: 7, workDate: "2026-11-06", hours: 4, code: null, note: "Шестое число" }], ["7:2026-11-08", { employeeId: 7, workDate: "2026-11-08", hours: 3, code: null, note: "Восьмое число" }]]);
 const base = { ...helpers, month, visibleDays: days, visibleEmployees: [employee], entriesByCell, marksByCell };
-const exportState = { exportBlocked: false, filters: { context: { activeColumns: new Set(), sorts: new Map() } } };
+const exportState = { exportBlocked: false, focusedEmployeeId: null, filters: { context: { activeColumns: new Set(), sorts: new Map() } },
+  setError: error => assert.equal(error, "", "Export must not silently swallow a missing harness dependency or another error"),
+};
 
 function markWriteEnvironment() {
   return {
@@ -131,7 +133,7 @@ test("monthly totals and Excel retain the full calendar while employee rows are 
   let preview;
   const exportPreview = bind(declaration("openTimesheetExportPreview"), "openTimesheetExportPreview", {
     ...base, ...exportState, days, payload, siteId: 1, reconciliationTimesheet: 16, reconciliationDifference: -6, dayTotals: new Map(),
-    monthLabel: () => "Ноябрь 2026", excelFileName: () => "Табель.xlsx", setError() {}, openExcelExportPreview: value => { preview = value; },
+    monthLabel: () => "Ноябрь 2026", excelFileName: () => "Табель.xlsx", openExcelExportPreview: value => { preview = value; },
   });
   exportPreview();
   assert.equal(preview.workbook.dates.length, 30);
@@ -139,6 +141,39 @@ test("monthly totals and Excel retain the full calendar while employee rows are 
   assert.equal(preview.workbook.rows[0].dailyValues[0], 9, "A different day's filter must not remove first-day values from export");
   assert.equal(preview.workbook.rows[0].timesheetHours, 16);
   assert.equal(preview.workbook.rows[0].reportHours, 22);
+  assert.equal(preview.source.employeeIds, undefined, "An unfocused, unfiltered export keeps the complete roster scope");
+});
+
+test("employee navigation supplies the complete roster to ordinary filters and exports their result", () => {
+  const payload = { siteName: "Учебный проект", employees: [employee, { ...employee, id: 8, fullName: "Другой сотрудник" }] };
+  const focusedEmployeeId = employee.id;
+  const filterRows = bind(declaration("filterRows"), "filterRows", {
+    payload, focusedEmployeeId, rowOrder: null, useMemo: create => create(),
+  });
+  assert.deepEqual(filterRows.map(row => row.id), [7, 8], "The filter checklist must retain the entire roster");
+  const filters = bind(declaration("filters"), "filters", {
+    filterRows, filterColumns: [], employeeFilterRowId: row => String(row.id), siteId: 1, month, focusedEmployeeId,
+    payload, loading: false, onClearEmployeeFocus() {}, useTimesheetFilters: options => options,
+  });
+  assert.equal(filters.navigationFilter.columnId, "fullName");
+  assert.equal(filters.navigationFilter.value, "7");
+  assert.equal(filters.navigationFilter.ready, true);
+  const visibleEmployees = [employee];
+  let preview;
+  bind(declaration("openTimesheetExportPreview"), "openTimesheetExportPreview", {
+    ...base, ...exportState, days, payload, focusedEmployeeId, visibleEmployees, siteId: 1,
+    filters: { context: { activeColumns: new Set(["fullName"]), sorts: new Map() } },
+    reconciliationTimesheet: 16, reconciliationDifference: -6, dayTotals: new Map(),
+    monthLabel: () => "Ноябрь 2026", excelFileName: () => "Табель.xlsx", openExcelExportPreview: value => { preview = value; },
+  })();
+  assert.deepEqual(preview.source.employeeIds, [7], "The server export follows the applied ordinary filter");
+  assert.equal(preview.source.orderedEmployeeIds, undefined);
+  assert.equal(preview.workbook.rows.length, 1);
+  assert.equal(preview.workbook.rows[0].fullName, employee.fullName);
+  assert.equal(preview.workbook.dates.length, 30);
+  assert.equal(preview.workbook.rows[0].dailyValues[0], 9);
+  assert.equal(preview.workbook.rows[0].dailyValues[5], 4);
+  assert.equal(payload.employees.length, 2, "Focus must not mutate the loaded roster");
 });
 
 test("historical OPR days reconcile while manual ITR days contribute only to timesheet hours", () => {
@@ -152,7 +187,7 @@ test("historical OPR days reconcile while manual ITR days contribute only to tim
   let preview;
   bind(declaration("openTimesheetExportPreview"), "openTimesheetExportPreview", {
     ...environment, ...exportState, siteId: 1, reconciliationTimesheet: 7, reconciliationDifference: -4, dayTotals: new Map(),
-    monthLabel: () => "Ноябрь 2026", excelFileName: () => "Табель.xlsx", setError() {}, openExcelExportPreview: value => { preview = value; },
+    monthLabel: () => "Ноябрь 2026", excelFileName: () => "Табель.xlsx", openExcelExportPreview: value => { preview = value; },
   })();
   assert.equal(preview.workbook.rows[0].dailyReportTracked[5], true);
   assert.equal(preview.workbook.rows[0].dailyReportTracked[7], false);
@@ -162,7 +197,7 @@ test("historical OPR days reconcile while manual ITR days contribute only to tim
 test("timesheet uses canonical project order, then import or saved order according to project settings", () => {
   const employees = [1, 2, 3].map(id => ({ ...employee, id }));
   const payload = { employees };
-  const common = { useMemo: callback => callback(), payload, orderRowsByIds };
+  const common = { useMemo: callback => callback(), payload, orderRowsByIds, focusedEmployeeId: null };
   const canonical = (rows, getId) => orderRowsByIds(rows, [3, 2, 1], getId);
   for (const [hasSavedOrder, hasImportOrder, expected] of [[false, false, [3, 2, 1]], [false, true, [2, 1, 3]], [true, true, [3, 2, 1]]]) {
     const rowOrder = { order: canonical, hasSavedOrder, hasImportOrder, importIds: [2, 1, 3] };

@@ -16,6 +16,7 @@ import { useTimesheetFilters, type TimesheetFilterColumn } from "./useTimesheetF
 import { TimesheetCellPopover } from "./TimesheetCellPopover";
 import { TimesheetMonthPicker } from "./TimesheetMonthPicker";
 import { useTimesheetClipboard, type TimesheetClipboardChange, type TimesheetClipboardSaveContext } from "./useTimesheetClipboard";
+import { TableStatusToast } from "./useTableCopyToast";
 import { useTimesheetBatchSave } from "./useTimesheetBatchSave";
 import { TimesheetSaveStatus } from "./TimesheetSaveStatus";
 import type { TimesheetSavedResult } from "./timesheetBatchSave";
@@ -315,7 +316,7 @@ function cellDetails(employee: TimesheetEmployee, entry: TimesheetEntry | undefi
   return details.join("\n");
 }
 
-export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDirtyChange, onBusyChange }: { siteId: number; initialMonth: string; today: string; onMonthChange?: (month: string) => void; onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void }) {
+export function TimesheetView({ siteId, initialMonth, today, focusedEmployeeId, onClearEmployeeFocus, onMonthChange, onDirtyChange, onBusyChange }: { siteId: number; initialMonth: string; today: string; focusedEmployeeId?: number | null; onClearEmployeeFocus?: () => void; onMonthChange?: (month: string) => void; onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void }) {
   const { confirm, dialog: confirmationDialog } = useConfirmationDialog();
   const [month, setMonth] = useState(initialMonth);
   const access = useWorkspaceAccess();
@@ -521,7 +522,14 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDi
   const filterColumns = useMemo<TimesheetFilterColumn<TimesheetEmployee>[]>(() => [
     { colId: "employmentType", headerName: "Тип", getValue: employee => employee.employmentType },
     { colId: "department", headerName: "Отдел", getValue: employee => employee.department },
-    { colId: "fullName", headerName: "Сотрудник", getValue: employee => employee.fullName },
+    { colId: "fullName", headerName: "Сотрудник", getValue: employee => employee.fullName,
+      getFilterValue: employeeFilterRowId,
+      formatFilterValue: value => {
+        const employee = payload?.employees.find(employee => String(employee.id) === String(value));
+        if (!employee) return `№${value}`;
+        return payload!.employees.some(other => other.id !== employee.id && other.fullName === employee.fullName) ? `${employee.fullName} (№${employee.id})` : employee.fullName;
+      },
+    },
     { colId: "position", headerName: "Должность", getValue: employee => employee.position },
     ...days.map((day): TimesheetFilterColumn<TimesheetEmployee> => {
       const workDate = dateForDay(month, day);
@@ -549,14 +557,16 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDi
     { colId: "timesheet", headerName: "Табель", kind: "number", getValue: employee => rowMetricsByEmployee.get(employee.id)?.timesheet ?? 0 },
     { colId: "reports", headerName: "Отчёты", kind: "number", getValue: employee => rowMetricsByEmployee.get(employee.id)?.reports ?? 0 },
     { colId: "difference", headerName: "Разница", kind: "number", getValue: employee => rowMetricsByEmployee.get(employee.id)?.difference ?? 0 },
-  ], [days, entriesByCell, marksByCell, month, rowMetricsByEmployee]);
+  ], [days, entriesByCell, marksByCell, month, rowMetricsByEmployee, payload]);
   const filterRows = useMemo(() => {
     const employees = payload?.employees ?? [];
     if (!rowOrder) return employees;
     if (!rowOrder.hasSavedOrder && rowOrder.hasImportOrder) return orderRowsByIds(employees, rowOrder.importIds, employee => employee.id);
     return rowOrder.order(employees, employee => employee.id);
   }, [payload?.employees, rowOrder]);
-  const filters = useTimesheetFilters({ rows: filterRows, columns: filterColumns, getRowId: employeeFilterRowId, resetKey: `${siteId}:${month}`, presentation: "checklist", includeConditions: false });
+  const filters = useTimesheetFilters({ rows: filterRows, columns: filterColumns, getRowId: employeeFilterRowId, resetKey: `${siteId}:${month}`, presentation: "checklist", includeConditions: false,
+    navigationFilter: focusedEmployeeId ? { columnId: "fullName", value: String(focusedEmployeeId), ready: Boolean(payload) && !loading, onCleared: onClearEmployeeFocus } : undefined,
+  });
   // A day filter selects employees, not date columns: keep the month's layout
   // and clipboard coordinates stable, just like filtering an Excel column.
   const visibleDays = days;
@@ -1162,6 +1172,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDi
     </div>, headerActionsTarget)}
 
     {error && <div className="timesheet-state timesheet-state-error"><strong>Не удалось открыть табель</strong><span>{error}</span><button type="button" onClick={() => setReloadKey((value) => value + 1)}>Повторить</button></div>}
+    {filters.navigationError && <div className="timesheet-state timesheet-state-error" role="alert"><span>{filters.navigationError}</span><button type="button" onClick={filters.reset}>Сбросить фильтры</button></div>}
     {refreshError && !error && <div className="timesheet-state timesheet-state-error" role="status"><strong>Не удалось обновить табель</strong><span>{refreshError}</span><button type="button" onClick={() => refreshControl.current?.request()}>Повторить</button></div>}
     {markConflict && <div className="personnel-timesheet-roster-notice" role="status">{markConflict} <button type="button" disabled={navigationBusy} onClick={() => void reloadConflictedTimesheet()}>Обновить данные</button></div>}
     {rosterRemovalCount > 0 && <p className="personnel-timesheet-roster-notice" role="status">{rosterRemovalCount === 1
@@ -1189,7 +1200,7 @@ export function TimesheetView({ siteId, initialMonth, today, onMonthChange, onDi
     {!error && <NativeTimesheetPageScroll viewportRef={clipboardShellRef} rowCount={visibleEmployees.length} geometryKey={`${rowOrderKey}:${loading}`} label="Горизонтальная прокрутка табеля рабочих"><div ref={clipboardShellRef} className={["timesheet-grid-shell", "timesheet-grid-shell-reconciled", "timesheet-clipboard-shell", clipboardActiveCell ? "timesheet-selection-active" : "", clipboardHeadersSelected ? "timesheet-headers-selected" : ""].filter(Boolean).join(" ")} role="application" tabIndex={0} aria-busy={loading} aria-label="Табель рабочих. Стрелки перемещают выбранную ячейку, Enter или F2 открывают редактирование." {...clipboardShellHandlers}>
       {clipboardContextMenu}
       {columnContextMenu}
-      {clipboardStatus && <div className="timesheet-clipboard-status" role="status">{clipboardStatus}</div>}
+      <TableStatusToast message={clipboardStatus} />
       {loading && <div className="timesheet-loading">Формируем табель…</div>}
       {!loading && visibleEmployees.length === 0 && <div className="timesheet-empty" role="status">
         {payload?.employees.length ? <><strong>По фильтрам никого не найдено</strong><span>Измените или сбросьте фильтры.</span></>

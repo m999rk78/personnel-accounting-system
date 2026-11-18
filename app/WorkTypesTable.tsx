@@ -2,12 +2,13 @@
 
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { AgGridReact, type CustomCellRendererProps } from "ag-grid-react";
-import type { ColDef, GridApi, GetContextMenuItemsParams, ICellRendererParams, IFilterParams, PostSortRowsParams, RowDragEndEvent, SuppressMouseEventHandlingParams } from "ag-grid-community";
+import type { ColDef, GridApi, GetContextMenuItemsParams, MenuItemDef, ICellRendererParams, IFilterParams, PostSortRowsParams, RowDragEndEvent, SuppressMouseEventHandlingParams } from "ag-grid-community";
 import { gridTheme } from "./gridTheme";
 import { gridLocaleRu } from "./gridLocaleRu";
 import { tableColumnMenuItems } from "./gridColumnMenu";
 import { AdminGridFooter } from "./AdminGridFooter";
 import { useRowMoveActions, useWorkspaceTableOrder } from "./TableRowMoves";
+import type { TableContextMenuAction } from "./TableContextMenu";
 import { workTypesOrderId } from "./workTypesRowOrder";
 import { SelectionRowDragRenderer } from "./SelectionRowDragRenderer";
 import { enterpriseFilterParams } from "./GridEnterpriseFilters";
@@ -15,12 +16,14 @@ import type { WorkTypeDraft, WorkTypeEdits, WorkTypeRow } from "./workTypesWorks
 import "./gridFilters.css";
 import { useEmptyGridRows } from "./useEmptyGridRows";
 import { useTableEscapeSelection } from "./useTableEscapeSelection";
+import { useGridFilterEscape } from "./useGridFilterEscape";
 import { SpreadsheetFilterHeader } from "./SpreadsheetFilterHeader";
 import { useCatalogGridPreferences } from "./useCatalogGridPreferences";
 import { AgTablePageScroll } from "./TablePageScroll";
 import { isTableSelectAllShortcut, isTableTextEntryTarget } from "./tableSelectAllShortcut";
 import { nativeSpreadsheetSelectionKey, nativeSpreadsheetSelectionValues, spreadsheetDataColumns, spreadsheetDataRowRanges, spreadsheetHeaderValues } from "./gridSpreadsheetRows";
 import { serializeSpreadsheetText, stripSpreadsheetHeaderRow } from "./spreadsheetClipboard";
+import { useTableCopyToast, writeTableClipboardText } from "./useTableCopyToast";
 
 type Props = {
   masters: WorkTypeRow[];
@@ -48,7 +51,8 @@ type Props = {
   onBatchEnd: () => void;
   history: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean };
 };
-const Workspace = createContext<Props | null>(null);
+type WorkspaceValue = Props & { showCopyToast: (message: string) => void };
+const Workspace = createContext<WorkspaceValue | null>(null);
 const MasterGrid = createContext<RefObject<GridApi<WorkTypeRow> | null> | null>(null);
 const EMPTY_ROWS: WorkTypeRow[] = [];
 
@@ -74,6 +78,7 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
   const preferences = useCatalogGridPreferences({ ...props.preferenceScope, scopeKey: master ? "worktypes:parents" : "worktypes:children", ready: !props.loading && (!order || order.ready) });
   const orderedRows = useMemo(() => order ? order.order(rows, workTypesOrderId) : rows, [rows, order]);
   const [api, setApi] = useState<GridApi<WorkTypeRow> | null>(null);
+  const trackFilterEscape = useGridFilterEscape<WorkTypeRow>();
   const gridElement = useRef<HTMLDivElement>(null);
   useEmptyGridRows(gridElement, api, 44);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
@@ -268,7 +273,16 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
     const row = params.node?.data;
     if (!row || params.node?.detail || !params.column) return [];
     const id = row && workTypesOrderId(row);
-    return ["copy", "copyWithHeaders", ...(params.column.isCellEditable(params.node!) ? ["paste"] : []), ...(id ? moveActions.getActions(id, selected.map(workTypesOrderId).filter((key): key is string => Boolean(key)), () => api?.hidePopupMenu()).flatMap(action => [...(action.separatorBefore ? ["separator"] : []), { name: action.label, disabled: action.disabled, tooltip: action.title, action: action.onSelect }]) : [])] as ReturnType<NonNullable<import("ag-grid-community").GridOptions<WorkTypeRow>["getContextMenuItems"]>>;
+    const nativeAction = (action: TableContextMenuAction): MenuItemDef<WorkTypeRow> => ({
+      name: action.label,
+      disabled: action.disabled,
+      tooltip: action.title,
+      ...(action.children ? { subMenu: action.children.flatMap(child => [...(child.separatorBefore ? ["separator" as const] : []), nativeAction(child)]) } : { action: action.onSelect }),
+    });
+    return [
+      { name: "Копировать / вставить", subMenu: ["copy", "copyWithHeaders", ...(params.column.isCellEditable(params.node!) ? ["paste" as const] : [])] },
+      ...(id ? moveActions.getActions(id, selected.map(workTypesOrderId).filter((key): key is string => Boolean(key)), () => api?.hidePopupMenu()).flatMap(action => [...(action.separatorBefore ? ["separator" as const] : []), nativeAction(action)]) : []),
+    ] satisfies ("separator" | MenuItemDef<WorkTypeRow>)[];
   };
   const dragEnd = (event: RowDragEndEvent<WorkTypeRow>) => {
     if (!canDragSelection(event.node.data) || event.node.isSelected() !== true || event.node.detail || !event.overNode?.data || event.overNode.detail || event.overNode.data.unassigned) return;
@@ -321,9 +335,12 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
       const text = serializeSpreadsheetText(matrix);
       event.clipboardData.setData("text/plain", text);
       lastHeaderClipboard.current = selectionIncludesHeaders.current !== null ? text : null;
+      const copiedRows = Math.max(0, matrix.length - (selectionIncludesHeaders.current !== null ? 1 : 0));
+      props.showCopyToast(`Скопировано: ${copiedRows} × ${matrix[0]?.length ?? 0}`);
     }}>
       <AgGridReact<WorkTypeRow>
         theme={gridTheme} localeText={gridLocaleRu} rowData={orderedRows} columnDefs={columns} defaultColDef={defaultColDef}
+        postProcessPopup={trackFilterEscape}
         getRowId={({ data }) => data.key} rowHeight={44} headerHeight={46} animateRows={false} rowBuffer={6} postSortRows={keepNewRowsFirst} suppressMovableColumns
         loading={props.loading} readOnlyEdit stopEditingWhenCellsLoseFocus enableFilterHandlers
         suppressHorizontalScroll={master} scrollbarWidth={master ? 0 : undefined}
@@ -343,6 +360,12 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
           return includesHeaders ? stripSpreadsheetHeaderRow(params.data, headers) : params.data;
         }}
         processCellForClipboard={params => params.column.getColId() === "parentKey" ? parentOptions.find(row => row.key === params.value)?.name ?? "Без вида работы" : String(params.value ?? "")}
+        sendToClipboard={({ data }) => {
+          void writeTableClipboardText(data).then(
+            () => props.showCopyToast("Скопировано"),
+            () => props.showCopyToast("Не удалось скопировать"),
+          );
+        }}
         onCellEditRequest={event => {
           if (!event.data || event.colDef.field !== "name" && event.colDef.field !== "parentKey") return;
           const changes = { [event.colDef.field]: String(event.newValue ?? "") };
@@ -420,5 +443,7 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
 
 export function WorkTypesTable(props: Props) {
   const masterGridRef = useRef<GridApi<WorkTypeRow> | null>(null);
-  return <Workspace.Provider value={props}><MasterGrid.Provider value={masterGridRef}><WorkTypesEntityGrid/></MasterGrid.Provider></Workspace.Provider>;
+  const { showCopyToast, copyToast } = useTableCopyToast();
+  const workspace = useMemo<WorkspaceValue>(() => ({ ...props, showCopyToast }), [props, showCopyToast]);
+  return <Workspace.Provider value={workspace}><MasterGrid.Provider value={masterGridRef}><WorkTypesEntityGrid/></MasterGrid.Provider>{copyToast}</Workspace.Provider>;
 }

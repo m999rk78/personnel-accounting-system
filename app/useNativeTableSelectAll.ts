@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type FocusEvent, type KeyboardEvent, type PointerEvent, type RefObject } from "react";
 import { serializeSpreadsheetText } from "./spreadsheetClipboard";
 import { isTableSelectAllShortcut, isTableTextEntryTarget } from "./tableSelectAllShortcut";
+import { useTableCopyToast } from "./useTableCopyToast";
 import "./nativeTableSelectAll.css";
 
 type ClipboardRows = readonly (readonly (string | number | null | undefined)[])[];
@@ -17,7 +18,10 @@ export function useNativeTableSelectAll<T extends HTMLElement = HTMLDivElement>(
 }) {
   const localRef = useRef<T>(null);
   const ref = rootRef ?? localRef;
+  const { showCopyToast, copyToast } = useTableCopyToast(ref);
   const text = useMemo(() => serializeSpreadsheetText([...(headers?.length ? [headers] : []), ...rows].map(row => row.map(value => value == null ? "" : String(value)))), [headers, rows]);
+  const copiedRowCount = rows.length + (headers?.length ? 1 : 0);
+  const copiedColumnCount = Math.max(headers?.length ?? 0, rows.reduce((count, row) => Math.max(count, row.length), 0));
   const scope = `${enabled ? "enabled" : "disabled"}\u0000${resetKey}\u0000${text}`;
   const [state, setState] = useState({ scope, selected: false });
   if (state.scope !== scope) setState({ scope, selected: false });
@@ -49,6 +53,7 @@ export function useNativeTableSelectAll<T extends HTMLElement = HTMLDivElement>(
     if (!enabled || selection.current !== scope || !hasCells || isTableTextEntryTarget(event.target)) return;
     event.preventDefault(); event.stopPropagation();
     event.clipboardData.setData("text/plain", text);
+    showCopyToast(`Скопировано: ${copiedRowCount} × ${copiedColumnCount}`);
   };
   const onPointerDownCapture = (event: PointerEvent<T>) => {
     if (selection.current) clear();
@@ -60,7 +65,7 @@ export function useNativeTableSelectAll<T extends HTMLElement = HTMLDivElement>(
   };
 
   return {
-    ref, selected,
+    ref, selected, copyToast,
     className: selected ? "native-table-select-all" : "",
     handlers: { onKeyDownCapture, onCopyCapture, onPointerDownCapture, onBlurCapture },
   };

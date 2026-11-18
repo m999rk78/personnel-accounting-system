@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import ts from "typescript";
 import { applyCatalogBatch, removeCatalogDrafts } from "../app/catalogSpreadsheetModel.ts";
 import { createCatalogDraftHistory } from "../app/useCatalogDraftHistory.ts";
+import { exactCustomSelectOption } from "../app/customSelectOptionMatch.ts";
 
 const record = (id, name = `Зона ${id}`) => ({ id, name });
 const draft = (key, overrides = {}) => ({ key, name: "", note: "", entity: "zone", ...overrides });
@@ -132,6 +135,52 @@ test("final validation sees the complete batch and can reject duplicates atomica
     { row: draftRow(first), values: { name: "Дубликат" } }, { row: draftRow(second), values: { name: "Дубликат" } },
   ] }), /Сотрудник выбран в нескольких строках/);
   assert.deepEqual([first.name, second.name], ["А", "Б"]);
+});
+
+test("project employee navigation uses a resettable ID filter and keeps all assignments for validation", async () => {
+  const url = new URL("../app/ReferenceDirectoryGrids.tsx", import.meta.url);
+  const ast = ts.createSourceFile(url.pathname, await readFile(url, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const functions = new Set(["findEmployee", "validateDistinct", "replaceCompatible", "ProjectEmployeeAgGrid"]);
+  const declarations = ast.statements.flatMap(node => {
+    if (ts.isFunctionDeclaration(node) && functions.has(node.name?.text)) return [node.getText(ast).replace(/^export\s+/, "")];
+    if (ts.isVariableStatement(node)) return node.declarationList.declarations.filter(declaration => declaration.name.getText(ast) === "normalize").map(declaration => `const ${declaration.getText(ast)};`);
+    return [];
+  });
+  assert.equal(declarations.length, functions.size + 1);
+  const code = ts.transpileModule(declarations.join("\n"), { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } }).outputText;
+  const render = new Function("React", "useMemo", "CatalogSpreadsheetGrid", "exactCustomSelectOption", `${code}; return ProjectEmployeeAgGrid;`)(
+    { createElement: (_component, props) => props }, callback => callback(), () => {}, exactCustomSelectOption,
+  );
+  const employees = [1, 2, 3].map(id => ({ id, fullName: `Сотрудник ${id}` }));
+  const blank = { key: "new-employee", employeeId: "", employeeQuery: "" };
+  const onClearEmployeeFocus = () => {};
+  const props = { rows: employees.slice(0, 2), allEmployees: employees, drafts: [blank], pendingDeletes: [], focusedEmployeeId: 1, onClearEmployeeFocus, loading: false };
+  const grid = render(props);
+  assert.equal(grid.rows, props.rows, "The ordinary filter receives the complete project roster");
+  assert.deepEqual(grid.navigationFilter, { columnId: "fullName", value: "1", ready: true, onCleared: onClearEmployeeFocus });
+  assert.equal(grid.columns[0].getFilterValue(employees[0]), "1");
+  assert.equal(grid.columns[0].formatFilterValue("1"), "Сотрудник 1");
+  assert.equal(grid.columns[0].formatFilterValue("99"), "Сотрудник №99");
+  assert.equal(grid.columns[0].formatFilterValue(null), "(Пустые)");
+  assert.deepEqual(grid.columns[0].options(blank, [blank]), [{ value: "3", label: "Сотрудник 3" }]);
+  const duplicate = grid.patchDraft(blank, { fullName: "Сотрудник 2" });
+  assert.throws(() => grid.validateDrafts([duplicate], [blank.key]), /уже есть в таблице/);
+  const available = grid.patchDraft(blank, { fullName: "Сотрудник 3" });
+  assert.doesNotThrow(() => grid.validateDrafts([available], [blank.key]));
+  assert.deepEqual(blank, { key: "new-employee", employeeId: "", employeeQuery: "" });
+  const unfiltered = render({ ...props, focusedEmployeeId: null });
+  assert.equal(unfiltered.rows, props.rows, "Removing the navigation marker keeps every record available");
+  assert.equal(unfiltered.navigationFilter, undefined);
+  assert.equal(render({ ...props, loading: true }).navigationFilter.ready, false);
+  const sameNames = employees.map(employee => ({ ...employee, fullName: "Иванов Иван Иванович" }));
+  const identity = render({ ...props, rows: sameNames.slice(0, 2), allEmployees: sameNames }).columns[0];
+  assert.equal(identity.getFilterValue(sameNames[0]), "1");
+  assert.equal(identity.getFilterValue(sameNames[1]), "2");
+  assert.equal(identity.formatFilterValue("1"), "Иванов Иван Иванович (№1)");
+  assert.equal(identity.formatFilterValue("2"), "Иванов Иван Иванович (№2)");
+  const legacy = render({ ...props, rows: employees.slice(0, 1), existingEmployees: employees.slice(0, 2) });
+  assert.deepEqual(legacy.columns[0].options(blank, [blank]), [{ value: "3", label: "Сотрудник 3" }]);
+  assert.throws(() => legacy.validateDrafts([duplicate], [blank.key]), /уже есть в таблице/);
 });
 
 test("catalog paste limit allows one thousand rows and rejects larger batches", () => {

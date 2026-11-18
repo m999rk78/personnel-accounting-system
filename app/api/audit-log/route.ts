@@ -22,21 +22,41 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const limit = Math.min(500, positiveInteger(url.searchParams.get("limit"), 200));
     const beforeId = positiveInteger(url.searchParams.get("beforeId"), 0);
-    // A report event can contain its earlier draft, requested rows and review
-    // comments even after that report has been approved. Filtering on the
-    // current report status would therefore still reveal pending information.
-    const hideReportEvents = !(["workers_report", "equipment_report"] as const).some(resource => hasReportStatusPermission(authUser.permissions, resource, "draft", "view") || hasReportStatusPermission(authUser.permissions, resource, "submitted", "view"));
+    // Raw audit snapshots can mix earlier and later statuses, including arbitrary
+    // legacy request fields. A current status alone cannot authorize the entire
+    // snapshot, and access to one report kind must never grant the other kind.
+    const reportKinds = [
+      { resource: "workers_report", predicate: `(action_key LIKE 'personnel_report.%'
+        OR entity_type IN ('personnel_report', 'personnel_report_draft', 'placement_entry')
+        OR entity_type = 'table_row_order' AND entity_id = 'personnel-report-rows')` },
+      { resource: "equipment_report", predicate: `(action_key LIKE 'equipment_report.%'
+        OR entity_type IN ('equipment_report', 'equipment_report_draft', 'equipment_entry')
+        OR entity_type = 'table_row_order' AND entity_id = 'equipment-report-rows')` },
+    ] as const;
+    const readableReports = reportKinds.filter(({ resource }) => (["draft", "submitted", "approved"] as const)
+      .every(status => hasReportStatusPermission(authUser.permissions, resource, status, "view")));
+    const hiddenReports = reportKinds.filter(kind => !readableReports.includes(kind));
     const conditions = [
       ...(scoped ? ["site_id = ANY(?::integer[])"] : []),
       ...(beforeId ? ["id < ?"] : []),
-      ...(hideReportEvents ? [`NOT (category = 'reports'
+      ...(!readableReports.length ? [`NOT (category = 'reports'
         OR action_key LIKE 'personnel_report.%' OR action_key LIKE 'equipment_report.%'
         OR entity_type IN ('personnel_report', 'personnel_report_draft', 'equipment_report', 'equipment_report_draft', 'placement_entry', 'equipment_entry')
         OR entity_type = 'table_row_order' AND entity_id IN ('personnel-report-rows', 'equipment-report-rows'))`] : []),
+      ...(readableReports.length === 1 ? [
+        ...hiddenReports.map(kind => `NOT ${kind.predicate}`),
+        `NOT (category = 'reports' AND NOT ${readableReports[0].predicate})`,
+      ] : []),
     ];
+    // Older catalog mutations accidentally looked up a report row with the
+    // same numeric ID. Keep their history, but never return that unrelated data.
     const result = await getDatabase().prepare(`SELECT id, actor_user_id AS "actorUserId", actor_name AS "actorName", actor_role AS "actorRole",
           category, action_key AS "actionKey", entity_type AS "entityType", entity_id AS "entityId", site_id AS "siteId",
-          site_name AS "siteName", summary, before_data AS "beforeData", after_data AS "afterData", created_at AS "createdAt"
+          site_name AS "siteName", summary,
+          CASE WHEN request_path = '/api/data' AND action_key NOT LIKE 'personnel_report.%'
+            OR request_path = '/api/equipment' AND action_key NOT LIKE 'equipment_report.%' AND action_key NOT LIKE 'equipment_timesheet.%'
+            THEN NULL ELSE before_data END AS "beforeData",
+          after_data AS "afterData", created_at AS "createdAt"
         FROM audit_events${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`)
       .bind(...(scoped ? [siteIds] : []), ...(beforeId ? [beforeId] : []), limit).all();
     return Response.json({ events: result.results, hasMore: result.results.length === limit });

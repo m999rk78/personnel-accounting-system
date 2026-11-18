@@ -1,20 +1,144 @@
-.statistics-period-picker { width:max-content; max-width:100%; }
-
-.statistics-period-calendar.excel-preview-range-calendar {
-  position:fixed;
-  z-index:10020;
-  visibility:hidden;
-  width:min(326px, calc(100vw - 16px));
-  max-height:calc(100dvh - 16px);
-  overflow:auto;
-  animation:none;
+.statistics-period-picker {
+  display:grid;
+  grid-template-columns:minmax(0, 210px) minmax(0, auto);
+  align-items:start;
+  align-self:start;
+  gap:5px 8px;
+  width:max-content;
+  max-width:100%;
+  min-width:0;
 }
 
-.statistics-period-calendar .excel-preview-calendar-days + .excel-preview-calendar-days { margin-top:3px; }
-.statistics-period-calendar .excel-preview-calendar-days button { width:100%; }
-.statistics-period-calendar .excel-preview-calendar-days button.other-month:not(.in-range, .range-start, .range-end) { color:#71717a; }
-.statistics-period-calendar .excel-preview-calendar-days button[aria-current="date"] { box-shadow:inset 0 0 0 1px #ab8655; }
-.statistics-period-calendar .excel-preview-calendar-heading button:disabled { color:#a1a1aa; cursor:default; }
-.statistics-period-calendar .excel-preview-calendar-selection { font-size:11px; }
-.statistics-period-calendar .excel-preview-period-error { margin:8px 0 0; font-size:11px; }
-.statistics-period-calendar button:focus-visible { z-index:3; outline:2px solid #a66a00; outline-offset:-2px; }
+.statistics-period-label {
+  grid-column:1 / -1;
+  color:#52525b;
+  font-size:12px;
+  font-weight:600;
+  line-height:1.2;
+}
+
+.statistics-period-select { width:210px; max-width:100%; }
+.statistics-period-select .custom-select-toggle { height:36px; font-size:13px; }
+.statistics-period-select .custom-select-toggle[aria-expanded="true"] { border-color:#d49b3c; box-shadow:0 0 0 2px #f6e3bb; }
+.statistics-period-menu .custom-select-option { font-size:13px; }
+.statistics-period-menu .custom-select-option.selected { background:#fff3d7; color:#754a10; }
+.statistics-period-menu .custom-select-option.selected.active { background:#ffebbd; }
+.statistics-period-menu .custom-select-option svg { stroke:#9a6117; }
+
+.statistics-custom-range { min-width:0; }
+.statistics-date-fields {
+  display:grid;
+  grid-template-columns:repeat(2, minmax(0, 1fr));
+  align-items:center;
+  gap:7px;
+  padding:3px 5px;
+  border:1px solid #dedee3;
+  border-radius:8px;
+  background:#f7f7f8;
+}
+
+.statistics-date-field {
+  display:flex;
+  align-items:center;
+  gap:5px;
+  min-width:0;
+}
+
+.statistics-date-field > label { color:#52525b; font-size:12px; font-weight:600; }
+.statistics-date-input {
+  display:flex;
+  align-items:center;
+  min-width:0;
+  width:128px;
+  min-height:28px;
+  border:1px solid #dedee3;
+  border-radius:6px;
+  background:#fff;
+}
+
+.statistics-date-input:focus-within { border-color:#d49b3c; box-shadow:0 0 0 1px #f6e3bb; }
+.statistics-date-input:has(input[aria-invalid="true"]) { border-color:#d99a91; }
+.statistics-date-input input {
+  flex:1 1 0;
+  width:100%;
+  min-width:0;
+  height:27px;
+  padding:0 2px 0 7px;
+  border:0;
+  background:transparent;
+  color:#27272a;
+  font:inherit;
+  font-size:12px;
+  font-variant-numeric:tabular-nums;
+}
+
+.statistics-view .statistics-date-input input:focus-visible { outline:none; }
+.statistics-date-input button {
+  display:grid;
+  flex:0 0 26px;
+  width:26px;
+  height:26px;
+  place-items:center;
+  padding:0;
+  border:0;
+  border-radius:5px;
+  background:transparent;
+  color:#71717a;
+}
+
+.statistics-date-input button:hover,
+.statistics-date-input button[aria-expanded="true"] { background:#fff3d7; color:#754a10; }
+.statistics-date-input button svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.65; stroke-linecap:round; }
+.statistics-range-error { margin:5px 0 0; color:#a9362b; font-size:12px; }
+
+.statistics-period-calendar {
+  position:fixed;
+  z-index:1220;
+  width:min(292px, calc(100vw - 16px));
+  max-height:calc(100dvh - 16px);
+  padding:10px;
+  overflow:auto;
+  border:1px solid #dedee3;
+  border-radius:10px;
+  background:#fff;
+  box-shadow:0 12px 30px #18181b26;
+}
+
+.statistics-calendar-heading {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:5px;
+  margin-bottom:6px;
+  color:#27272a;
+  font-size:13px;
+}
+
+.statistics-period-calendar button {
+  display:grid;
+  width:100%;
+  min-height:30px;
+  place-items:center;
+  padding:0;
+  border:0;
+  border-radius:6px;
+  background:transparent;
+  color:#27272a;
+  font-size:12px;
+}
+
+.statistics-calendar-heading button { width:32px; background:#f4f4f5; font-size:18px; }
+.statistics-calendar-heading button:disabled { opacity:.45; }
+.statistics-calendar-row { display:grid; grid-template-columns:repeat(7, minmax(0,1fr)); gap:2px; }
+.statistics-calendar-row + .statistics-calendar-row { margin-top:2px; }
+.statistics-calendar-weekdays { padding:4px 0; color:#71717a; text-align:center; font-size:11px; }
+.statistics-period-calendar button.other-month { color:#71717a; }
+.statistics-period-calendar button:hover:not(:disabled) { background:#f4f4f5; }
+.statistics-period-calendar [aria-selected="true"] button { background:#fff0cb; color:#754a10; font-weight:700; }
+.statistics-period-calendar button[aria-current="date"] { box-shadow:inset 0 0 0 1px #d49b3c; }
+.statistics-period-calendar button:focus-visible { outline:2px solid #a66a00; outline-offset:-2px; }
+
+@container (max-width:560px) {
+  .statistics-period-picker { grid-template-columns:minmax(0, 1fr); }
+  .statistics-period-label { grid-column:1; }
+}

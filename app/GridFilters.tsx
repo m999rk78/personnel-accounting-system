@@ -12,6 +12,7 @@ import { DateFilterTree } from "./DateFilterTree";
 import { matchesDateFilterSearch } from "./dateFilterTreeModel";
 import { enterpriseFilterParams, type EnterpriseFilterOptions } from "./GridEnterpriseFilters";
 import { useGridFilterPopup } from "./useGridFilterPopup";
+import { useGridFilterEscape } from "./useGridFilterEscape";
 import { closeTableContextMenus, TableContextMenu, type TableContextMenuAction } from "./TableContextMenu";
 import { useRowMoveActions, useWorkspaceTableOrder } from "./TableRowMoves";
 import { gridRowEntityId, rowMoveIsBlocked, saveManualRowMove, type RowOrderId } from "./tableRowOrder";
@@ -21,10 +22,12 @@ import { useWorkspaceAccess } from "./TableAccessContext";
 import { SelectionRowDragRenderer } from "./SelectionRowDragRenderer";
 import { gridRowSelection } from "./gridRowSelection";
 import { allSpreadsheetCells, findSpreadsheetDataRowIndex, isStructuralSpreadsheetRow, spreadsheetDataColumns, spreadsheetHeaderValues, spreadsheetPointRowIndex, spreadsheetRangeHasStructuralRows } from "./gridSpreadsheetRows";
+import { summarizeSpreadsheetSelection, type SpreadsheetSelectionSummary } from "./gridSelectionSummary";
 import { isTableSelectAllShortcut } from "./tableSelectAllShortcut";
 import { createImportOrderRank, IMPORT_ORDER_COLUMN, importOrderColumnState, importOrderScopes, shouldApplyImportOrder } from "./importOrderSorting";
 import { useEmptyGridRows } from "./useEmptyGridRows";
 import { useTableEscapeSelection } from "./useTableEscapeSelection";
+import { useTableCopyToast, writeTableClipboardText } from "./useTableCopyToast";
 import { rowDragPoint, startRowDragAutoScroll } from "./rowDragAutoScroll";
 
 type FilterRow = { kind: "entry" | "edit" | "draft" };
@@ -243,6 +246,14 @@ export type SpreadsheetBatch<TData> = {
 
 export type SpreadsheetContextPayload<TData> = SpreadsheetEditPayload<TData> & { value: string };
 
+// Submenu parents only reveal their children; close the menu after the selected
+// leaf finishes, so navigation and asynchronous custom actions retain errors.
+function closeContextActionsAfterSelection(actions: TableContextMenuAction[], close: () => void): TableContextMenuAction[] {
+  return actions.map(action => action.children
+    ? { ...action, children: closeContextActionsAfterSelection(action.children, close) }
+    : { ...action, onSelect: async () => { await action.onSelect(); close(); } });
+}
+
 type SpreadsheetPoint = { rowIndex: number; columnId: string; rowId?: string };
 type SpreadsheetSelection = { start: SpreadsheetPoint; end: SpreadsheetPoint };
 type LocalizedGridProps<TData extends FilterRow> = AgGridReactProps<TData> & {
@@ -251,6 +262,7 @@ type LocalizedGridProps<TData extends FilterRow> = AgGridReactProps<TData> & {
   onSpreadsheetCancelEdit?: () => void;
   spreadsheetFocusRequestKey?: number;
   spreadsheetSelectionResetKey?: string;
+  onSpreadsheetSelectionSummary?: (summary: SpreadsheetSelectionSummary | null) => void;
   getSpreadsheetContextActions?: (payload: SpreadsheetContextPayload<TData>) => TableContextMenuAction[];
   getRowOrderId?: (row: TData) => RowOrderId | undefined;
   rowOrderFixedSorts?: string[];
@@ -262,6 +274,7 @@ type LocalizedGridProps<TData extends FilterRow> = AgGridReactProps<TData> & {
   spreadsheetHistory?: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean };
   enterpriseFilters?: boolean;
   showSortSummary?: boolean;
+  formatFilterSummaryValue?: (columnId: string, value: unknown) => string;
   spreadsheetToolbar?: boolean;
 };
 
@@ -292,7 +305,7 @@ function spreadsheetBounds<TData>(grid: GridApi<TData>, current: SpreadsheetSele
   };
 }
 
-export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: suppliedPaste, onSpreadsheetEdit: suppliedEdit, onSpreadsheetCancelEdit, spreadsheetFocusRequestKey = 0, spreadsheetSelectionResetKey = "", getSpreadsheetContextActions, getRowOrderId = gridRowEntityId, rowOrderFixedSorts, rowOrderBlocked = false, rowOrderAutoSwitchSort = false, preserveSavedSort = false, onSpreadsheetBatch: suppliedBatch, canWriteSpreadsheetCell, spreadsheetHistory: suppliedHistory, enterpriseFilters = true, showSortSummary = true, spreadsheetToolbar = true, popupParent: requestedPopupParent, ...props }: LocalizedGridProps<TData>) {
+export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: suppliedPaste, onSpreadsheetEdit: suppliedEdit, onSpreadsheetCancelEdit, spreadsheetFocusRequestKey = 0, spreadsheetSelectionResetKey = "", onSpreadsheetSelectionSummary, getSpreadsheetContextActions, getRowOrderId = gridRowEntityId, rowOrderFixedSorts, rowOrderBlocked = false, rowOrderAutoSwitchSort = false, preserveSavedSort = false, onSpreadsheetBatch: suppliedBatch, canWriteSpreadsheetCell, spreadsheetHistory: suppliedHistory, enterpriseFilters = true, showSortSummary = true, formatFilterSummaryValue, spreadsheetToolbar = true, popupParent: requestedPopupParent, ...props }: LocalizedGridProps<TData>) {
   const access = useWorkspaceAccess();
   const onSpreadsheetPaste = access?.edit === false ? undefined : suppliedPaste;
   const onSpreadsheetEdit = access?.edit === false ? undefined : suppliedEdit;
@@ -304,6 +317,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     return () => cancelAnimationFrame(frame);
   }, [access?.edit, onSpreadsheetCancelEdit]);
   const [api, setApi] = useState<GridApi<TData> | null>(null);
+  const trackFilterEscape = useGridFilterEscape<TData>();
   const rowNumberFrame = useRef<number | null>(null);
   const refreshRowNumbers = useCallback((grid: GridApi<TData>) => {
     if (grid.isDestroyed() || !grid.getColumn("number")) return;
@@ -425,6 +439,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
   const [spreadsheetStatus, setSpreadsheetStatus] = useState("");
   const [contextMenu, setContextMenu] = useState<(SpreadsheetContextPayload<TData> & { x: number; y: number; error: string }) | null>(null);
   const body = useRef<HTMLDivElement>(null);
+  const { copyToast, showCopyToast } = useTableCopyToast(body);
   const rowDragScroll = useRef<ReturnType<typeof startRowDragAutoScroll>>(null);
   const stopRowDragScroll = useCallback(() => { rowDragScroll.current?.stop(); rowDragScroll.current = null; }, []);
   useEffect(() => stopRowDragScroll, [api, rowMoveDisabled, rowOrder?.busy, rowOrder?.canWrite, stopRowDragScroll]);
@@ -433,6 +448,9 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
   const selectionIncludesHeaders = useRef(false);
   const lastHeaderClipboard = useRef<string | null>(null);
   const lastSelectionRef = useRef(selection);
+  const selectionSummaryCallback = useRef(onSpreadsheetSelectionSummary);
+  const lastSelectionSummary = useRef<SpreadsheetSelectionSummary | null | undefined>(undefined);
+  useEffect(() => { selectionSummaryCallback.current = onSpreadsheetSelectionSummary; }, [onSpreadsheetSelectionSummary]);
   const previousFocusRequestKey = useRef(spreadsheetFocusRequestKey);
   const dragging = useRef(false);
   const undoStack = useRef<SpreadsheetPastePayload<TData>[][]>([]);
@@ -445,12 +463,12 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     let count = 0, total = 0;
     grid.forEachNode((node: IRowNode<TData>) => { if (node.data?.kind === "entry") total++; });
     grid.forEachNodeAfterFilter((node: IRowNode<TData>) => { if (node.data?.kind === "entry") count++; });
-    const filters = Object.entries(grid.getFilterModel()).map(([id, model]) => ({ id, name: grid.getColumnDef(id)?.headerName ?? id, description: describeGridFilter(model) }));
+    const filters = Object.entries(grid.getFilterModel()).map(([id, model]) => ({ id, name: grid.getColumnDef(id)?.headerName ?? id, description: describeGridFilter(model, formatFilterSummaryValue ? value => formatFilterSummaryValue(id, value) : undefined) }));
     const sorts = grid.getColumnState().filter((state): state is typeof state & { sort: "asc" | "desc" } => state.sort === "asc" || state.sort === "desc")
       .sort((left, right) => (left.sortIndex ?? 0) - (right.sortIndex ?? 0))
       .map((state, index) => ({ id: state.colId, name: grid.getColumnDef(state.colId)?.headerName ?? state.colId, direction: state.sort, priority: index + 1 }));
     setSummary({ count, total, filters, sorts });
-  }, [setSummary]);
+  }, [setSummary, formatFilterSummaryValue]);
   const sourceDefaultColDef = props.defaultColDef;
   const hasSpreadsheetBatch = Boolean(onSpreadsheetBatch);
   const enhancedDefaultColDef = useMemo<ColDef<TData>>(() => ({
@@ -464,10 +482,18 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
   const paintSelection = useCallback((grid: GridApi<TData>) => {
     requestAnimationFrame(() => {
       const root = body.current;
-      if (!root) return;
+      if (!root || grid.isDestroyed()) return;
       root.querySelectorAll(".ag-excel-selected,.ag-excel-top,.ag-excel-right,.ag-excel-bottom,.ag-excel-left").forEach((cell) => cell.classList.remove("ag-excel-selected", "ag-excel-top", "ag-excel-right", "ag-excel-bottom", "ag-excel-left"));
       root.querySelectorAll(".ag-excel-header-selected").forEach(header => header.classList.remove("ag-excel-header-selected"));
       const bounds = spreadsheetBounds(grid, selectionRef.current);
+      if (selectionSummaryCallback.current) {
+        const summary = summarizeSpreadsheetSelection(grid, bounds);
+        const previous = lastSelectionSummary.current;
+        if (previous === undefined || previous?.count !== summary?.count || previous?.sum !== summary?.sum) {
+          lastSelectionSummary.current = summary;
+          selectionSummaryCallback.current(summary);
+        }
+      }
       if (selectionIncludesHeaders.current) {
         const selectedColumns = new Set((bounds ? bounds.columns.slice(bounds.columnStart, bounds.columnEnd + 1) : spreadsheetColumns(grid)).map(column => column.getColId()));
         root.querySelectorAll<HTMLElement>(".ag-header-cell[col-id]").forEach(header => {
@@ -659,14 +685,18 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     event.preventDefault();
     event.clipboardData.setData("text/plain", text);
     const bounds = api ? spreadsheetBounds(api, selectionRef.current) : null;
-    if (!bounds) return;
-    let copiedRows = 0;
+    if (!bounds) {
+      const columns = api && selectionIncludesHeaders.current ? spreadsheetColumns(api).length : 0;
+      if (columns) showCopyToast(`Скопировано: 1 × ${columns}`);
+      return;
+    }
+    let copiedRows = selectionIncludesHeaders.current ? 1 : 0;
     for (let index = bounds.rowStart; index <= bounds.rowEnd; index++) {
       const node = api?.getDisplayedRowAtIndex(index);
       if (node?.data && !isStructuralSpreadsheetRow(node)) copiedRows++;
     }
-    setSpreadsheetStatus(`Скопировано: ${copiedRows} × ${bounds.columnEnd - bounds.columnStart + 1}`);
-  }, [api, selectedText]);
+    if (copiedRows) showCopyToast(`Скопировано: ${copiedRows} × ${bounds.columnEnd - bounds.columnStart + 1}`);
+  }, [api, selectedText, showCopyToast]);
   const previousCellValues = useCallback((rowNode: IRowNode<TData>, columns: { getColId: () => string }[]) => Object.fromEntries(columns.flatMap((column) => {
     const columnId = column.getColId();
     if (columnId === "number" || columnId === "actions" || columnId === "rowOrder") return [];
@@ -890,6 +920,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     if (event.key === "Enter" || event.key === "F2") editSelectedCell(event);
   };
   return <div className="localized-grid">
+    {copyToast}
     {spreadsheetToolbar && onSpreadsheetBatch && <div className="personnel-spreadsheet-tools" onPointerDown={event => event.preventDefault()}><div><button type="button" disabled={!spreadsheetHistory?.canUndo} onClick={() => spreadsheetHistory?.undo()} title="Ctrl+Z / ⌘Z">↶ Отменить</button><button type="button" disabled={!spreadsheetHistory?.canRedo} onClick={() => spreadsheetHistory?.redo()} title="Ctrl+Shift+Z / ⌘⇧Z">↷ Повторить</button><button type="button" onClick={() => changeRange("down")} title="Ctrl+D / ⌘D">Заполнить вниз</button><button type="button" onClick={() => changeRange("right")} title="Ctrl+R / ⌘R">Заполнить вправо</button><button type="button" onClick={() => changeRange("clear")} title="Delete / Backspace">Очистить</button></div><span role="status">{spreadsheetStatus || "Выделите диапазон · Ctrl/⌘ C, X, V · Shift + стрелки"}</span></div>}
     {rowMoves.feedback}
     {(summary.filters.length > 0 || showSortSummary && summary.sorts.length > 0) && <div className="grid-filter-summary" aria-label={showSortSummary ? "Активные фильтры и сортировка" : "Активные фильтры"}>
@@ -952,6 +983,10 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       {/* AG's global suppression also blocks header menus. Disable only its body
           items: cells use our scoped clipboard menu, headers keep native actions. */}
       <AgGridReact<TData> {...props} rowSelection={rowSelection} selectionColumnDef={selectionColumnDef} rowData={orderedRowData} columnDefs={orderedColumns} defaultColDef={enhancedDefaultColDef} popupParent={requestedPopupParent ?? popupParent} suppressContextMenu={false} getContextMenuItems={() => []} columnMenu="new" getMainMenuItems={props.getMainMenuItems ?? tableColumnMenuItems} suppressMovableColumns enableFilterHandlers localeText={gridLocaleRu}
+      postProcessPopup={params => { trackFilterEscape(params); props.postProcessPopup?.(params); }}
+      sendToClipboard={props.sendToClipboard ?? (({ data }) => {
+        void writeTableClipboardText(data).then(() => showCopyToast("Скопировано"), () => showCopyToast("Не удалось скопировать"));
+      })}
       onColumnHeaderContextMenu={event => { closeTableContextMenus(); setContextMenu(null); props.onColumnHeaderContextMenu?.(event); }}
       rowDragManaged={false} rowDragMultiRow={selectionDrag || props.rowDragMultiRow} suppressRowDrag={rowMoveDisabled || Boolean(rowOrder?.busy)}
       onRowDragEnter={event => {
@@ -1002,7 +1037,17 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       error={contextMenu.error}
       onClose={() => setContextMenu(null)}
       actions={[
-        { label: "Копировать ячейку", shortcut: "Ctrl+C", onSelect: async () => { try { await navigator.clipboard.writeText(selectedText() ?? contextMenu.value); setSpreadsheetStatus("Ячейка скопирована"); setContextMenu(null); } catch { setContextMenu((current) => current ? { ...current, error: "Не удалось скопировать. Разрешите доступ к буферу обмена." } : current); } } },
+        ...closeContextActionsAfterSelection(getSpreadsheetContextActions?.(contextMenu) ?? [], () => setContextMenu(null)),
+        { label: "Копировать / вставить", section: "Работа с таблицей", onSelect: () => {}, children: [
+        { label: "Копировать ячейку", shortcut: "Ctrl+C", onSelect: async () => {
+          try {
+            await writeTableClipboardText(selectedText() ?? contextMenu.value);
+            showCopyToast("Скопировано");
+            setContextMenu(null);
+          } catch {
+            setContextMenu(current => current ? { ...current, error: "Не удалось скопировать. Разрешите доступ к буферу обмена." } : current);
+          }
+        } },
         ...(onSpreadsheetPaste || onSpreadsheetBatch ? [{ label: "Вставить в ячейку", shortcut: "Ctrl+V", disabled: !onSpreadsheetPaste && !onSpreadsheetBatch, title: onSpreadsheetPaste || onSpreadsheetBatch ? undefined : "Таблица доступна только для просмотра", onSelect: async () => { try { const changed = pasteText(await navigator.clipboard.readText()); if (changed) setContextMenu(null); else setContextMenu((current) => current ? { ...current, error: "Эту ячейку нельзя изменить или значение не подходит." } : current); } catch { setContextMenu((current) => current ? { ...current, error: "Не удалось прочитать буфер обмена. Разрешите доступ в браузере." } : current); } } }] satisfies TableContextMenuAction[] : []),
         ...(onSpreadsheetBatch ? [
           { label: "Вырезать диапазон", shortcut: "Ctrl+X", onSelect: async () => { try { await navigator.clipboard.writeText(selectedText() ?? contextMenu.value); changeRange("clear", true); setContextMenu(null); } catch { setContextMenu(current => current ? { ...current, error: "Не удалось записать в буфер обмена." } : current); } } },
@@ -1010,10 +1055,10 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
           { label: "Заполнить вниз", shortcut: "Ctrl+D", onSelect: () => { changeRange("down"); setContextMenu(null); } },
           { label: "Заполнить вправо", shortcut: "Ctrl+R", onSelect: () => { changeRange("right"); setContextMenu(null); } },
         ] satisfies TableContextMenuAction[] : []),
+        ] },
         ...(onSpreadsheetEdit ? [{ label: "Редактировать ячейку", shortcut: "Enter", separatorBefore: true, onSelect: () => { if (onSpreadsheetEdit?.(contextMenu)) { rememberCellUndo(contextMenu.rowIndex, contextMenu.columnId); setSpreadsheetStatus("Редактирование ячейки"); setContextMenu(null); } else setContextMenu((current) => current ? { ...current, error: "Эта ячейка недоступна для редактирования." } : current); } }] satisfies TableContextMenuAction[] : []),
         ...(rowSelection ? [{ label: api?.getDisplayedRowAtIndex(contextMenu.rowIndex)?.isSelected() ? "Снять выделение строки" : "Выбрать строку для действий", separatorBefore: true, disabled: api?.getDisplayedRowAtIndex(contextMenu.rowIndex)?.selectable === false, onSelect: () => { const node = api?.getDisplayedRowAtIndex(contextMenu.rowIndex); if (node) node.setSelected(!node.isSelected(), !node.isSelected()); setContextMenu(null); } } satisfies TableContextMenuAction] : []),
         ...(getRowOrderId(contextMenu.row) ? rowMoves.getActions(getRowOrderId(contextMenu.row)!, api?.getSelectedRows().map(getRowOrderId).filter((id): id is RowOrderId => Boolean(id)) ?? [], () => setContextMenu(null)) : []),
-        ...(getSpreadsheetContextActions?.(contextMenu) ?? []).map((action) => ({ ...action, onSelect: async () => { await action.onSelect(); setContextMenu(null); } })),
       ]}
     />}</div>
   </div>;

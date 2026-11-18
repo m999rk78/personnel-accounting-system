@@ -17,7 +17,7 @@ import { SpreadsheetFilterHeader as FilterHeader } from "./SpreadsheetFilterHead
 import { useWorkspaceTableOrder } from "./TableRowMoves";
 import { useCatalogGridPreferences } from "./useCatalogGridPreferences";
 import { EQUIPMENT_REPORT_COLUMN_SIZING, equipmentReportColumnWidths } from "./equipmentReportColumnSizing";
-import { gridTheme } from "./gridTheme";
+import { approvedReportRowTone, gridTheme } from "./gridTheme";
 import { AgTablePageScroll } from "./TablePageScroll";
 import "./personnelReportGrid.css";
 
@@ -67,6 +67,9 @@ export type EquipmentReportGridProps = {
   onSelectionChange: (keys: string[]) => void;
   onVisibleRowsChange?: (keys: string[]) => void;
   onCopyRows: (rows: EquipmentReportGridRow[]) => void;
+  equipmentNavigationTargets?: { view: "equipmentTimesheet" | "equipmentRegistry" | "projectEquipment"; label: string }[];
+  onNavigateEquipment?: (view: "equipmentTimesheet" | "equipmentRegistry" | "projectEquipment", equipmentId: number, date: string) => void;
+  navigationDisabled?: boolean;
   onRemoveDraft?: (keys: string[]) => void;
   onValidationError: (message: string) => void;
   footerActions?: ReactNode;
@@ -340,7 +343,7 @@ export function EquipmentReportGrid(props: EquipmentReportGridProps) {
   const removableKeys = selectedRows.filter((row) => row.removable !== false && row.editable && row.draft && (row.status === "draft" || row.status === "rejected")).map((row) => row.rowKey);
   const footerPanel = <div className="personnel-history-footer"><div className="personnel-history-summary" role="status"><strong>Строк: {summary.rows} · Единиц техники: {summary.units} · Часы: {formatHours(summary.hours)}</strong><span>Работа: {formatHours(summary.productive)} ч. · Простой: {formatHours(summary.downtime)} ч.</span>{summary.approved > 0 && summary.unapprovedRows > 0 && <span className="personnel-history-approved">Подтверждено: {formatHours(summary.approved)} ч.</span>}{summary.submitted > 0 && <span>На проверке: {formatHours(summary.submitted)} ч.</span>}{summary.draft + summary.rejected > 0 && <span>Черновики: {formatHours(summary.draft + summary.rejected)} ч.</span>}{props.footerStatus && <div className="personnel-history-save-status">{props.footerStatus}</div>}</div><div className="personnel-history-footer-actions">{props.footerActions}{selectedRows.length > 0 && <>{props.canCreate && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onCopyRows(selectedRows)}>Скопировать на сегодня ({selectedRows.length})</button>}{props.onRemoveDraft && removableKeys.length > 0 && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onRemoveDraft?.(removableKeys)}>Убрать из черновика ({removableKeys.length})</button>}</>}</div></div>;
   return <section className="personnel-history-table personnel-page-scroll-table equipment-report-table" aria-label="Отчёт техники за все дни">
-    <AgTablePageScroll gridRoot={sizingHost} api={scrollApi} footer={footerPanel} className="personnel-report-page-scroll-stage" frameClassName="personnel-report-page-scroll-frame" label="Горизонтальная прокрутка отчёта техники"><div ref={sizingHost} id={gridId} className="ag-grid-shell ag-placement-grid personnel-history-grid ag-equipment-grid"><LocalizedGrid<TableRow>
+    <AgTablePageScroll gridRoot={sizingHost} api={scrollApi} footer={footerPanel} className="personnel-report-page-scroll-stage" frameClassName="personnel-report-page-scroll-frame" label="Горизонтальная прокрутка отчёта техники"><div ref={sizingHost} id={gridId} data-approved-tone={approvedReportRowTone} className="ag-grid-shell ag-placement-grid personnel-history-grid ag-equipment-grid"><LocalizedGrid<TableRow>
       theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} postSortRows={keepDatesTogether}
       enterpriseFilters showSortSummary={false} spreadsheetToolbar={false} suppressHorizontalScroll scrollbarWidth={0}
       getRowOrderId={getRowOrderId}
@@ -348,7 +351,7 @@ export function EquipmentReportGrid(props: EquipmentReportGridProps) {
       getRowId={({ data }) => data.rowKey} rowHeight={44} headerHeight={46} animateRows={false} loading={props.loading}
       loadingOverlayComponent={() => <span className="ag-overlay-message">Загружаем отчёты…</span>}
       noRowsOverlayComponent={() => <span className="ag-overlay-message">{props.emptyMessage ?? "За выбранный период отчётов пока нет"}</span>}
-      rowClassRules={{ "editable-row": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.editable), "personnel-history-today": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.workDate === propsRef.current.today), "personnel-history-rejected": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.status === "rejected"), "timesheet-conflict-row": ({ data }) => { const row = data && rowsRef.current.get(data.rowKey); return Boolean(row && equipmentUnavailableFor(propsRef.current, row.draft?.equipmentId || row.entry?.equipmentId || "", row.workDate)); } }}
+      rowClassRules={{ "editable-row": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.editable), "personnel-history-approved-row": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.status === "approved"), "personnel-history-today": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.workDate === propsRef.current.today), "personnel-history-rejected": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.status === "rejected"), "timesheet-conflict-row": ({ data }) => { const row = data && rowsRef.current.get(data.rowKey); return Boolean(row && equipmentUnavailableFor(propsRef.current, row.draft?.equipmentId || row.entry?.equipmentId || "", row.workDate)); } }}
       rowSelection={{ mode: "multiRow", checkboxes: ({ node }) => Boolean(!node.group && node.data), isRowSelectable: node => Boolean(!node.group && node.data), headerCheckbox: true, selectAll: "filtered", enableClickSelection: false }}
       selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true }}
       onGridReady={(event) => { apiRef.current = event.api; setScrollApi(event.api); defaultWidthsApplied.current = false; preferences.attach(event.api); reportSummary(event.api); sizeInitialColumns(); }}
@@ -362,7 +365,23 @@ export function EquipmentReportGrid(props: EquipmentReportGridProps) {
       canWriteSpreadsheetCell={(row, field) => { const source = rowsRef.current.get(row.rowKey); return Boolean(source && canEdit(source) && editableFields.includes(field as EditableField) && !(field === "equipment" && source.draft?.lockedEquipment)); }}
       spreadsheetHistory={props.history}
       spreadsheetFocusRequestKey={focusRequest} spreadsheetSelectionResetKey={`${props.selectionScope ?? ""}:${structure}`}
-      getSpreadsheetContextActions={({ row }) => { const source = rowsRef.current.get(row.rowKey); return source && propsRef.current.canCreate ? [{ label: "Скопировать строку на сегодня", onSelect: () => propsRef.current.onCopyRows([source]) }] : []; }}
+      getSpreadsheetContextActions={({ row }) => {
+        const source = rowsRef.current.get(row.rowKey);
+        if (!source) return [];
+        const current = propsRef.current;
+        const equipmentId = Number(source.draft ? source.draft.equipmentId : source.entry?.equipmentId);
+        const destinations = current.equipmentNavigationTargets ?? [];
+        return [
+          ...(Number.isSafeInteger(equipmentId) && equipmentId > 0 && current.onNavigateEquipment && destinations.length ? [{
+            label: "Перейти", section: "Переходы", onSelect: () => {},
+            children: destinations.map(target => ({ label: target.label, disabled: current.navigationDisabled, onSelect: () => {
+              const latest = propsRef.current;
+              if (!latest.navigationDisabled && latest.equipmentNavigationTargets?.some(item => item.view === target.view)) latest.onNavigateEquipment?.(target.view, equipmentId, source.workDate);
+            } })),
+          }] : []),
+          ...(current.canCreate ? [{ label: "Скопировать строку на сегодня", section: "Работа с отчётом", onSelect: () => current.onCopyRows([source]) }] : []),
+        ];
+      }}
       suppressCellFocus
     /></div>
     </AgTablePageScroll>

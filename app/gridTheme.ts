@@ -1,5 +1,8 @@
 import { themeQuartz } from "ag-grid-community";
 
+// Set to "legacy" to keep the original blue editable rows in approved reports.
+export const approvedReportRowTone: "warm" | "legacy" = "warm";
+
 export const gridTheme = themeQuartz.withParams({
   accentColor: "#f2aa00",
   backgroundColor: "#ffffff",

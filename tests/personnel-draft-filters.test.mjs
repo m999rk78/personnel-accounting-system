@@ -281,33 +281,49 @@ test("filtered draft totals use the current employee identity, excluding cleared
   assert.ok(reportSummary);
   const declarations = ["emptySummary", "displayDate", "statusLabels", "valueFor"].map(name => declaration(reportGrid, name)).join("\n");
   const source = `${declarations}\nconst reportSummary = ${reportSummary.initializer.arguments[0].getText(reportGrid)};`;
-  const empty = { rows: 0, dates: 0, employees: 0, hours: 0, approved: 0, submitted: 0, draft: 0, rejected: 0, unapprovedRows: 0 };
+  const empty = { rows: 0, dates: 0, employees: 0, hours: 0, monthHours: 0, approved: 0, submitted: 0, draft: 0, rejected: 0, unapprovedRows: 0 };
   const draft = (employeeId, hours) => ({ employeeId, hours, note: "", employeeQuery: "", shiftId: "", zoneId: "", mainWorkTypeId: "", subworkTypeId: "", masterId: "" });
   const rows = [
     { rowKey: "cleared", workDate: "2026-11-02", status: "draft", draft: draft("", "2"), entry: { employeeId: 11, hours: 2 } },
     { rowKey: "changed", workDate: "2026-11-02", status: "draft", draft: draft("22", "8"), entry: { employeeId: 11, hours: 8 } },
+    { rowKey: "previous-month", workDate: "2026-10-31", status: "approved", entry: { employeeId: 22, hours: 6 } },
+    { rowKey: "previous-year", workDate: "2025-11-02", status: "submitted", entry: { employeeId: 22, hours: 4 } },
     { rowKey: "hidden", workDate: "2026-11-01", status: "approved", entry: { employeeId: 33, hours: 6 } },
   ];
-  const visible = [{ group: true }, ...rows.slice(0, 2).map(row => ({ data: { rowKey: row.rowKey } }))];
+  const visible = [{ group: true }, ...rows.filter(row => row.rowKey !== "hidden").map(row => ({ data: { rowKey: row.rowKey } }))];
   const catalogs = { employees: [{ id: 22 }, { id: 33 }], shifts: [], zones: [], mainWorkTypes: [], subworkTypes: [], masters: [] };
   let summary = empty;
   const reportedKeys = [];
+  const propsRef = { current: { ...catalogs, today: "2026-11-17", onVisibleRowsChange: keys => reportedKeys.push(keys) } };
   const summarize = bind(source, "reportSummary", {
     rowsRef: { current: new Map(rows.map(row => [row.rowKey, row])) },
-    propsRef: { current: { ...catalogs, onVisibleRowsChange: keys => reportedKeys.push(keys) } },
+    propsRef,
     lastVisibleKeys: { current: null }, optionFields: personnelOptionFields, personnelActivityTime, personnelCellErrors,
     setSummary: update => { summary = update(summary); },
   });
   const api = { forEachNodeAfterFilterAndSort: callback => visible.forEach(callback) };
   summarize(api);
-  assert.deepEqual(summary, { ...empty, rows: 2, dates: 1, employees: 1, hours: 10, draft: 10, unapprovedRows: 2 });
-  assert.deepEqual(reportedKeys, [["cleared", "changed"]]);
+  assert.deepEqual(summary, { ...empty, rows: 4, dates: 3, employees: 1, hours: 20, monthHours: 10, approved: 6, submitted: 4, draft: 10, unapprovedRows: 3 });
+  assert.deepEqual(reportedKeys, [["cleared", "changed", "previous-month", "previous-year"]]);
   summarize(api);
   assert.equal(reportedKeys.length, 1, "An unchanged visible set must not trigger repeated parent updates");
   rows[0].draft.employeeId = "33";
   rows[0].draft.hours = "не число";
   summarize(api);
   assert.equal(summary.employees, 2);
-  assert.equal(summary.hours, 8);
+  assert.equal(summary.hours, 18);
+  assert.equal(summary.monthHours, 8);
   assert.equal(summary.draft, 8);
+
+  propsRef.current.today = "2026-10-31";
+  summarize(api);
+  assert.equal(summary.monthHours, 6);
+  assert.equal(summary.hours, 18);
+  assert.equal(reportedKeys.length, 1, "Changing the current month does not change visible rows");
+
+  propsRef.current.today = "2026-11-17";
+  visible.splice(3);
+  summarize(api);
+  assert.deepEqual(summary, { ...empty, rows: 2, dates: 1, employees: 2, hours: 8, monthHours: 8, draft: 8, unapprovedRows: 2 });
+  assert.deepEqual(reportedKeys.at(-1), ["cleared", "changed"]);
 });

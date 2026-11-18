@@ -7,7 +7,7 @@ import "./tableRowOrder.css";
 import { useWorkspaceAccess } from "./TableAccessContext";
 import { personnelReportOrderScope } from "./personnelReportRowOrder";
 import { equipmentReportOrderScope } from "./equipmentReportRowOrder";
-import { nativeRowDragIds, nativeRowDropIds, nativeSelectedRowIds, toggleNativeRowSelection, type NativeRowSelection } from "./nativeRowSelection";
+import { nativeRowDragIds, nativeRowDropIds, nativeSelectedRowIds, selectNativeRow, type NativeRowSelection } from "./nativeRowSelection";
 import { startRowDragAutoScroll } from "./rowDragAutoScroll";
 
 const EMPTY_ORDER: RowOrderId[] = [];
@@ -161,7 +161,7 @@ export function useRowMoveActions(order: ReturnType<typeof useTableRowOrder> | n
       { label: `Вставить ниже этой строки (${pending.length})`, disabled: blocked || pending.includes(clickedId), onSelect: () => run({ movingIds: pending, placement: "after", targetId: clickedId }) },
       { label: "Отменить перенос", onSelect: () => { setPending([]); close(); } },
     );
-    return actions;
+    return [{ label: "Перемещение", separatorBefore: true, onSelect: () => {}, children: actions.map((action, index) => index === 0 ? { ...action, separatorBefore: false } : action) }];
   };
   // The provider key resets pending moves when switching tables or projects.
   return { getActions, feedback: <>{order?.error && <p className="table-order-feedback error" role="alert">{order.error}</p>}{pending.length > 0 && <div className="table-order-feedback" key={scope}>Для переноса выбрано: {pending.length}. Откройте меню нужной строки и выберите «Вставить выше/ниже».<button type="button" onClick={() => setPending([])}>Отменить</button></div>}{order?.busy && <span className="sr-only" role="status">Сохраняем порядок строк…</span>}{order?.message && <span className="table-order-toast" role="status">{order.message}</span>}</> };
@@ -198,6 +198,12 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
     dragged.current = { key, ids: [] };
     trailingClick.current = null;
     setSelection({ key, ids: [] });
+    // Escape should leave neither a selected row nor a selection-like focus ring
+    // on its number. Keep keyboard focus in the table, away from any editor.
+    const activeHandle = typeof document === "undefined" ? null : document.activeElement;
+    if (activeHandle && activeHandle instanceof HTMLElement && activeHandle.matches(".table-row-number-handle")) {
+      activeHandle.closest<HTMLElement>(".timesheet-grid-shell")?.focus({ preventScroll: true });
+    }
   };
   const closeMenu = () => setMenu(null);
   const openMenu = (event: React.MouseEvent, id: number) => {
@@ -227,12 +233,14 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
       });
     },
   });
-  const handle = (id: number, label: string, number: number) => canSelect ? <button type="button" className="table-row-number-handle" aria-label={`Строка ${number}: ${label}`} aria-pressed={selected.includes(id)} title={blocked ? "Выбор строки. Для переноса завершите редактирование и сбросьте фильтры и сортировку" : "Перетащите номер для переноса. Ctrl/⌘ + клик — выбрать несколько строк. Правый клик — меню переноса"} draggable={!blocked}
-      onClick={(event) => setSelection(current => event.ctrlKey || event.metaKey
-        ? toggleNativeRowSelection(current, key, context.ids, id, !nativeSelectedRowIds(current, key, context.ids).includes(id))
-        : { key, ids: [id] })}
+  const handle = (id: number, label: string, number: number) => canSelect ? <button type="button" className="table-row-number-handle" aria-label={`Строка ${number}: ${label}`} aria-pressed={selected.includes(id)} title={`Shift + клик — выбрать диапазон. Ctrl/⌘ + клик — выбрать отдельные строки. Escape — снять выделение. ${blocked ? "Для переноса завершите редактирование и сбросьте фильтры и сортировку" : "Перетащите номер для переноса. Правый клик — меню переноса"}`} draggable={!blocked}
+      onClick={(event) => {
+        const modifiers = { shiftKey: event.shiftKey, ctrlKey: event.ctrlKey, metaKey: event.metaKey };
+        event.currentTarget.focus({ preventScroll: true });
+        setSelection(current => selectNativeRow(current, key, context.ids, id, modifiers));
+      }}
       onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}
-      onPointerDown={() => { trailingClick.current = null; }} onMouseDown={() => { trailingClick.current = null; }}
+      onPointerDown={() => { trailingClick.current = null; }} onMouseDown={(event) => { trailingClick.current = null; if (event.shiftKey) event.preventDefault(); }}
       onClickCapture={(event) => stopTrailingClick(event, id)} onContextMenu={(event) => openMenu(event, id)}
       onDragStart={(event) => {
         const movingIds = nativeRowDragIds(selected, id, blocked);

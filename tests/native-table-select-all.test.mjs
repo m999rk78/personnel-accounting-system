@@ -46,7 +46,7 @@ globalThis.Element = FakeElement; globalThis.Node = FakeNode;
 test.after(() => { if (originalElement === undefined) delete globalThis.Element; else globalThis.Element = originalElement; if (originalNode === undefined) delete globalThis.Node; else globalThis.Node = originalNode; });
 
 function harness(initialRows = [["Первый", "1"], ["Второй", "2"]]) {
-  const slots = [], listeners = new Map(), root = new FakeElement();
+  const slots = [], listeners = new Map(), root = new FakeElement(), toasts = [];
   let cursor = 0, dirty = false, pending = [], cleanup = [];
   const options = { rows: initialRows, resetKey: "first", rootRef: { current: root } };
   const document = { addEventListener(type, fn) { listeners.set(type, fn); }, removeEventListener(type, fn) { if (listeners.get(type) === fn) listeners.delete(type); } };
@@ -56,6 +56,7 @@ function harness(initialRows = [["Первый", "1"], ["Второй", "2"]]) {
     useState(value) { const index = cursor++; if (!(index in slots)) slots[index] = value; return [slots[index], next => { slots[index] = typeof next === "function" ? next(slots[index]) : next; dirty = true; }]; },
     useEffect(callback) { pending.push(callback); }, useLayoutEffect(callback) { pending.push(callback); }, document, Node: FakeNode, Element: FakeElement,
     serializeSpreadsheetText, isTableSelectAllShortcut, isTableTextEntryTarget,
+    useTableCopyToast() { return { showCopyToast: message => toasts.push(message), copyToast: "copy-toast" }; },
   };
   const hook = new Function(...Object.keys(deps), `${hookCode};return useNativeTableSelectAll;`)(...Object.values(deps));
   function render() {
@@ -71,7 +72,7 @@ function harness(initialRows = [["Первый", "1"], ["Второй", "2"]]) {
       clipboardData: { setData: (...args) => writes.push(args) }, writes, ...fields };
     result.nativeEvent = result; return result;
   }
-  return { root, options, render, event, listeners };
+  return { root, options, render, event, listeners, toasts };
 }
 
 test("native table Ctrl+A and Cmd+A select only its current data and copy a quoted TSV without changing checkboxes", () => {
@@ -85,6 +86,8 @@ test("native table Ctrl+A and Cmd+A select only its current data and copy a quot
     const copy = env.event(); current.handlers.onCopyCapture(copy);
     assert.equal(copy.defaultPrevented, true);
     assert.deepEqual(parseSpreadsheetText(copy.writes[0][1]), [["Имя\tс табуляцией", "Две\nстроки"], ["Кавычки \"тут\"", "0"]]);
+    assert.equal(current.copyToast, "copy-toast");
+    assert.deepEqual(env.toasts, ["Скопировано: 2 × 2"]);
   }
 });
 
@@ -92,10 +95,11 @@ test("native full selection includes one heading row; ordinary partial text copy
   const env = harness([["Тестовый сотрудник", "visible@example.invalid", "Просмотр", "Активен"]]);
   env.options.headers = userHeaders;
   const partialCopy = env.event(); env.render().handlers.onCopyCapture(partialCopy);
-  assert.equal(partialCopy.defaultPrevented, false); assert.deepEqual(partialCopy.writes, []);
+  assert.equal(partialCopy.defaultPrevented, false); assert.deepEqual(partialCopy.writes, []); assert.deepEqual(env.toasts, []);
   env.render().handlers.onKeyDownCapture(env.event());
   const copy = env.event(); env.render().handlers.onCopyCapture(copy);
   assert.deepEqual(parseSpreadsheetText(copy.writes[0][1]), [userHeaders, ...env.options.rows]);
+  assert.deepEqual(env.toasts, ["Скопировано: 2 × 4"]);
   assert.deepEqual(userHeaders, ["ФИО", "Email", "Роль", "Статус"]);
   env.options.headers = ["Новое название", ...userHeaders.slice(1)];
   assert.equal(env.render().selected, false);
@@ -108,7 +112,16 @@ test("a native table with headings and no data still selects and copies its head
   env.render().handlers.onKeyDownCapture(env.event()); assert.equal(env.render().selected, true);
   const copy = env.event(); env.render().handlers.onCopyCapture(copy);
   assert.deepEqual(parseSpreadsheetText(copy.writes[0][1]), [permissionHeaders]);
+  assert.deepEqual(env.toasts, ["Скопировано: 1 × 5"]);
   assert.deepEqual(permissionHeaders, ["Раздел системы", "Просмотр", "Добавление", "Редактирование", "Удаление"]);
+});
+
+test("a failed clipboard write never reports a successful copy", () => {
+  const env = harness();
+  env.render().handlers.onKeyDownCapture(env.event());
+  const copy = env.event(undefined, { clipboardData: { setData() { throw new Error("Clipboard unavailable"); } } });
+  assert.throws(() => env.render().handlers.onCopyCapture(copy), /Clipboard unavailable/);
+  assert.deepEqual(env.toasts, []);
 });
 
 test("native table select-all preserves editor, search and popup native selection", () => {
@@ -117,7 +130,7 @@ test("native table select-all preserves editor, search and popup native selectio
     const select = env.event(target); env.render().handlers.onKeyDownCapture(select);
     assert.equal(select.defaultPrevented, false, kind);
     assert.equal(env.render().selected, false);
-    const copy = env.event(target); env.render().handlers.onCopyCapture(copy); assert.deepEqual(copy.writes, [], kind);
+    const copy = env.event(target); env.render().handlers.onCopyCapture(copy); assert.deepEqual(copy.writes, [], kind); assert.deepEqual(env.toasts, [], kind);
   }
 });
 
@@ -146,6 +159,7 @@ test("Escape, focus leaving and outside pointer clear native select-all; empty t
   env.options.rows = []; const empty = env.event(); env.render().handlers.onKeyDownCapture(empty);
   assert.equal(empty.defaultPrevented, true); assert.equal(env.render().selected, false);
   const plainCopy = env.event(); env.render().handlers.onCopyCapture(plainCopy); assert.equal(plainCopy.defaultPrevented, false);
+  assert.deepEqual(env.toasts, []);
 });
 
 test("user table projection includes visible identity, email, role and status without decorative or hidden data", () => {

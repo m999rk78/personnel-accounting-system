@@ -192,7 +192,8 @@ test("actual WorkTypes copy event writes selected model data to clipboardData an
   api.isModuleRegistered = () => true;
   api.getCellRanges = () => [{ startRow: { rowIndex: 0 }, endRow: { rowIndex: 403 }, columns: api.columns }];
   api.getFocusedCell = () => null;
-  const handler = bind(attr.initializer.expression.getText(workTypesSource), { api, isTableTextEntryTarget, nativeSpreadsheetSelectionValues, serializeSpreadsheetText, Element: ElementFixture, selectionIncludesHeaders: { current: null }, lastHeaderClipboard: { current: null } });
+  const notices = [];
+  const handler = bind(attr.initializer.expression.getText(workTypesSource), { api, props: { showCopyToast: message => notices.push(message) }, isTableTextEntryTarget, nativeSpreadsheetSelectionValues, serializeSpreadsheetText, Element: ElementFixture, selectionIncludesHeaders: { current: null }, lastHeaderClipboard: { current: null } });
   const shell = new ElementFixture(); shell.closest = selector => selector === ".work-types-master-grid,.work-types-detail-grid" ? shell : ElementFixture.prototype.closest.call(shell, selector);
   const copy = (target = shell, currentTarget = shell) => ({ target, currentTarget, defaultPrevented: false,
     clipboardData: { values: {}, setData(type, value) { this.values[type] = value; } },
@@ -203,11 +204,39 @@ test("actual WorkTypes copy event writes selected model data to clipboardData an
   const matrix = parseSpreadsheetText(event.clipboardData.values["text/plain"]);
   assert.equal(matrix.length, 404, "copy includes virtual rows beyond the mounted viewport");
   assert.deepEqual(matrix[403], ["Вид 404", "403"]);
+  assert.deepEqual(notices, ["Скопировано: 404 × 2"]);
   for (const skipped of [copy(new ElementFixture({ tag: "textarea" })), copy(new ElementFixture({ popup: true })), copy(shell, new ElementFixture())]) {
     handler(skipped);
     assert.equal(skipped.defaultPrevented, false);
     assert.deepEqual(skipped.clipboardData.values, {});
   }
+});
+
+test("actual WorkTypes AG clipboard sender reports success only after the write completes", async () => {
+  const attr = find(workTypesSource, node => ts.isJsxAttribute(node) && node.name.getText(workTypesSource) === "sendToClipboard");
+  const notices = [], writes = [];
+  let finish;
+  const pending = new Promise(resolve => { finish = resolve; });
+  const sender = bind(attr.initializer.expression.getText(workTypesSource), {
+    props: { showCopyToast: message => notices.push(message) },
+    writeTableClipboardText: text => { writes.push(text); return pending; },
+  });
+  sender({ data: "Вид работы\nМонтаж" });
+  assert.deepEqual(writes, ["Вид работы\nМонтаж"]);
+  assert.deepEqual(notices, [], "a pending or denied clipboard write must not show a false success");
+  finish();
+  await pending;
+  await Promise.resolve();
+  assert.deepEqual(notices, ["Скопировано"]);
+
+  const failed = bind(attr.initializer.expression.getText(workTypesSource), {
+    props: { showCopyToast: message => notices.push(message) },
+    writeTableClipboardText: () => Promise.reject(new Error("denied")),
+  });
+  failed({ data: "Монтаж" });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(notices, ["Скопировано", "Не удалось скопировать"]);
 });
 
 test("explicit LocalizedGrid select-all copies headers while an identical manual body range remains data-only", () => {
@@ -319,7 +348,7 @@ test("actual WorkTypes copy/paste retains legitimate header-valued rows and reco
   api.getDisplayNameForColumn = () => "Подвид работы"; api.isModuleRegistered = () => true;
   api.getCellRanges = () => [{ startRow: { rowIndex: 0 }, endRow: { rowIndex: 1 }, columns: api.columns }];
   const selectionIncludesHeaders = { current: null }, lastHeaderClipboard = { current: "old-header-copy" };
-  const environment = { api, selectionIncludesHeaders, lastHeaderClipboard, isTableTextEntryTarget, nativeSpreadsheetSelectionValues, serializeSpreadsheetText, Element: ElementFixture, stripSpreadsheetHeaderRow, spreadsheetHeaderValues, spreadsheetDataColumns };
+  const environment = { api, props: { showCopyToast() {} }, selectionIncludesHeaders, lastHeaderClipboard, isTableTextEntryTarget, nativeSpreadsheetSelectionValues, serializeSpreadsheetText, Element: ElementFixture, stripSpreadsheetHeaderRow, spreadsheetHeaderValues, spreadsheetDataColumns };
   const copyAttr = find(workTypesSource, node => ts.isJsxAttribute(node) && node.name.getText(workTypesSource) === "onCopyCapture");
   const pasteAttr = find(workTypesSource, node => ts.isJsxAttribute(node) && node.name.getText(workTypesSource) === "processDataFromClipboard");
   const copy = bind(copyAttr.initializer.expression.getText(workTypesSource), environment), paste = bind(pasteAttr.initializer.expression.getText(workTypesSource), environment);

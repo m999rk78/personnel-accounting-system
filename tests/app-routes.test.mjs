@@ -2,7 +2,7 @@ import { readWorkspaceImplementation } from "./fixtures/read-implementation.mjs"
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { isGeneralSettingsView, isTimesheetView, parseWorkspaceLocation, validDate, validMonth, workspaceDocumentTitle, workspacePath, workspaceTitle, workspaceUrl } from "../app/appRoutes.ts";
+import { isEmployeeNavigationTarget, isEquipmentNavigationTarget, isGeneralSettingsView, isTimesheetView, parseWorkspaceLocation, validDate, validMonth, workspaceDocumentTitle, workspacePath, workspaceTitle, workspaceUrl } from "../app/appRoutes.ts";
 
 test("maps every workspace section to a stable address", () => {
   assert.equal(workspaceUrl("placement", "all", "2026-10-01", "2026-10"), "/reports/workers?date=2026-10-01");
@@ -43,6 +43,79 @@ test("restores a section and its period from the browser address", () => {
   assert.equal(validDate("2026-02-28"), true);
   assert.equal(validMonth("2026-13"), false);
   assert.equal(validMonth("2026-12"), true);
+});
+
+test("employee links preserve identity and report month only in supported destinations", () => {
+  for (const [view, expected] of [
+    ["timesheet", "/timesheets/workers?month=2025-12&employeeId=42"],
+    ["employees", "/settings/general/employees?employeeId=42"],
+    ["projectEmployees", "/settings/project/employees?employeeId=42"],
+  ]) {
+    assert.equal(isEmployeeNavigationTarget(view, 42), true);
+    const url = workspaceUrl(view, "all", "2025-12-31", "2025-12", 42);
+    assert.equal(url, expected);
+    const parsed = new URL(url, "http://localhost");
+    const location = parseWorkspaceLocation(parsed.pathname, parsed.search, "2026-11-17");
+    assert.equal(location.view, view);
+    assert.equal(location.employeeId, 42);
+    if (view === "timesheet") assert.equal(location.month, "2025-12");
+  }
+  for (const view of ["placement", "equipment", "equipmentTimesheet", "users", "settings", "directories"]) {
+    assert.equal(isEmployeeNavigationTarget(view, 42), false);
+    const url = workspaceUrl(view, "all", "2026-11-17", "2026-11", 42);
+    assert.ok(!url.includes("employeeId"));
+    const parsed = new URL(url, "http://localhost");
+    parsed.searchParams.set("employeeId", "42");
+    assert.equal(parseWorkspaceLocation(parsed.pathname, parsed.search, "2026-11-17").employeeId, undefined);
+  }
+});
+
+test("invalid or unsafe employee identities never become navigable links", () => {
+  for (const employeeId of [undefined, null, 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "42"]) {
+    assert.equal(isEmployeeNavigationTarget("timesheet", employeeId), false);
+    assert.equal(workspaceUrl("timesheet", "all", "2026-11-17", "2026-11", employeeId), "/timesheets/workers?month=2026-11");
+  }
+  for (const employeeId of ["", "0", "-1", "1.5", "NaN", "Infinity", "9007199254740992", "person-42"]) {
+    assert.equal(parseWorkspaceLocation("/timesheets/workers", `?month=2025-12&employeeId=${encodeURIComponent(employeeId)}`, "2026-11-17").employeeId, undefined);
+  }
+});
+
+test("equipment links preserve identity in all linked tables and the report month in the timesheet", () => {
+  for (const [view, expected] of [
+    ["equipmentTimesheet", "/timesheets/equipment?month=2025-12&equipmentId=73"],
+    ["equipmentRegistry", "/settings/general/equipment?equipmentId=73"],
+    ["projectEquipment", "/settings/project/equipment?equipmentId=73"],
+  ]) {
+    assert.equal(isEquipmentNavigationTarget(view, 73), true);
+    const url = workspaceUrl(view, "all", "2025-12-31", "2025-12", null, 73);
+    assert.equal(url, expected);
+    const parsed = new URL(url, "http://localhost");
+    assert.deepEqual(parseWorkspaceLocation(parsed.pathname, parsed.search, "2026-11-17"), {
+      view, directoryFocus: "all", date: "2026-11-17", month: view === "equipmentTimesheet" ? "2025-12" : "2026-11", equipmentId: 73, recognized: true,
+    });
+  }
+  for (const view of ["placement", "equipment", "timesheet", "employees", "projectEmployees", "settings"]) {
+    assert.equal(isEquipmentNavigationTarget(view, 73), false);
+    const otherUrl = new URL(workspaceUrl(view, "all", "2026-11-17", "2026-11", null, 73), "http://localhost");
+    assert.equal(otherUrl.searchParams.has("equipmentId"), false);
+    otherUrl.searchParams.set("equipmentId", "73");
+    assert.equal(parseWorkspaceLocation(otherUrl.pathname, otherUrl.search, "2026-11-17").equipmentId, undefined);
+  }
+  const bothIds = "?month=2025-12&employeeId=42&equipmentId=73";
+  assert.equal(parseWorkspaceLocation("/timesheets/equipment", bothIds, "2026-11-17").employeeId, undefined);
+  assert.equal(parseWorkspaceLocation("/timesheets/workers", bothIds, "2026-11-17").equipmentId, undefined);
+});
+
+test("invalid or unsafe equipment identities never become navigable links", () => {
+  for (const view of ["equipmentTimesheet", "equipmentRegistry", "projectEquipment"]) {
+    for (const equipmentId of [undefined, null, 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "73"]) {
+      assert.equal(isEquipmentNavigationTarget(view, equipmentId), false);
+      assert.equal(workspaceUrl(view, "all", "2026-11-17", "2026-11", null, equipmentId), workspaceUrl(view, "all", "2026-11-17", "2026-11"));
+    }
+    for (const equipmentId of ["", "0", "-1", "1.5", "NaN", "Infinity", "9007199254740992", "unit-73"]) {
+      assert.equal(parseWorkspaceLocation(workspacePath(view), `?month=2025-12&equipmentId=${encodeURIComponent(equipmentId)}`, "2026-11-17").equipmentId, undefined);
+    }
+  }
 });
 
 test("marks protected route families and serves direct workspace links", async () => {

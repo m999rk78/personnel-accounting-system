@@ -111,6 +111,7 @@ try {
 
     const customRoles = await import(await compile("../app/customRolesServer.ts", {
       "../db/client": dbBoundary, "./customRoles.ts": new URL("../app/customRoles.ts", import.meta.url).href,
+      "./permissionModel.ts": new URL("../app/permissionModel.ts", import.meta.url).href,
       "./projectAccessServer.ts": projectAccessModuleUrl,
     }));
     const permissionStore = await import(await compile("../app/permissions.ts", {

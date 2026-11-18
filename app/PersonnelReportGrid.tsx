@@ -15,7 +15,7 @@ import { ReportDatePicker } from "./ReportDateControls";
 import { useWorkspaceTableOrder } from "./TableRowMoves";
 import { usePersonnelReportGridPreferences } from "./usePersonnelReportGridPreferences";
 import { PERSONNEL_REPORT_COLUMN_SIZING, personnelReportColumnWidths } from "./personnelReportColumnSizing";
-import { gridTheme } from "./gridTheme";
+import { approvedReportRowTone, gridTheme } from "./gridTheme";
 import { SpreadsheetFilterHeader } from "./SpreadsheetFilterHeader";
 import { AgTablePageScroll } from "./TablePageScroll";
 import "./personnelReportGrid.css";
@@ -70,6 +70,9 @@ export type PersonnelReportGridProps = {
   onRemoveDraft?: (keys: string[]) => void;
   onRemoveApproved?: (rows: PersonnelReportGridRow[]) => void;
   onValidationError: (message: string) => void;
+  employeeNavigationTargets?: { view: "timesheet" | "employees" | "projectEmployees"; label: string }[];
+  onNavigateEmployee?: (view: "timesheet" | "employees" | "projectEmployees", employeeId: number, date: string) => void;
+  navigationDisabled?: boolean;
   footerActions?: ReactNode;
   footerStatus?: ReactNode;
 };
@@ -78,9 +81,9 @@ export type PersonnelReportGridProps = {
 // filtering discriminator, not the approval status of the report.
 type TableRow = { rowKey: string; orderKey?: string; workDate: string; kind: "entry"; insertionRank: number };
 type EditableField = PersonnelCellField;
-type Summary = { rows: number; dates: number; employees: number; hours: number; approved: number; submitted: number; draft: number; rejected: number; unapprovedRows: number };
+type Summary = { rows: number; dates: number; employees: number; hours: number; monthHours: number; approved: number; submitted: number; draft: number; rejected: number; unapprovedRows: number };
 const reportFixedSorts = ["workDate"];
-const emptySummary: Summary = { rows: 0, dates: 0, employees: 0, hours: 0, approved: 0, submitted: 0, draft: 0, rejected: 0, unapprovedRows: 0 };
+const emptySummary: Summary = { rows: 0, dates: 0, employees: 0, hours: 0, monthHours: 0, approved: 0, submitted: 0, draft: 0, rejected: 0, unapprovedRows: 0 };
 const editableFields = personnelEditableFields;
 const statusLabels: Record<PersonnelReportStatus, string> = { draft: "Черновик", submitted: "На проверке", approved: "Подтверждён", rejected: "На доработке" };
 const optionFields = personnelOptionFields;
@@ -170,6 +173,7 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
   const getRowOrderId = personnelReportOrderId;
   const [activeEditor, setActiveEditor] = useState<{ rowKey: string; field: EditableField; initialValue?: string } | null>(null);
   const [summary, setSummary] = useState(emptySummary);
+  const summaryMonthLabel = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(`${props.today.slice(0, 7)}-01T00:00:00Z`));
   const lastVisibleKeys = useRef<string | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [focusRequest, setFocusRequest] = useState(0);
@@ -205,7 +209,11 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
       const employeeId = row.draft ? row.draft.employeeId : row.entry?.employeeId;
       if (employeeId) employeeIds.add(String(employeeId));
       const hours = Number(valueFor(row, "hours", propsRef.current));
-      if (Number.isFinite(hours) && (!row.draft || !personnelCellErrors(row.draft, propsRef.current).hours)) { next.hours += hours; next[row.status] += hours; }
+      if (Number.isFinite(hours) && (!row.draft || !personnelCellErrors(row.draft, propsRef.current).hours)) {
+        next.hours += hours;
+        if (row.workDate.slice(0, 7) === propsRef.current.today.slice(0, 7)) next.monthHours += hours;
+        next[row.status] += hours;
+      }
     });
     next.employees = employeeIds.size;
     next.dates = dates.size;
@@ -269,7 +277,7 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
       reportSummary(api);
     });
     return () => cancelAnimationFrame(frame);
-  }, [rowsByKey, reportSummary, refreshDateGroups, props.requireComplete, props.requiredRowKeys]);
+  }, [rowsByKey, reportSummary, refreshDateGroups, props.requireComplete, props.requiredRowKeys, props.today]);
 
   const canEdit = useCallback((row: PersonnelReportGridRow) => Boolean(row.editable && row.draft), []);
   const openEditor = useCallback((row: TableRow, field: string, initialValue?: string) => {
@@ -363,11 +371,13 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
   const selectedRows = selectedKeys.flatMap((key) => rowsByKey.get(key) ?? []);
   const removableKeys = selectedRows.filter((row) => row.editable && row.draft && (row.status === "draft" || row.status === "rejected")).map((row) => row.rowKey);
   const removableApprovedRows = selectedRows.filter(row => row.status === "approved" && (row.removable ?? row.editable) && row.entry);
-  const footerPanel = <div className="personnel-history-footer"><div className="personnel-history-summary" role="status"><strong>Строк: {summary.rows} · Сотрудников: {summary.employees} · Часы: {formatHours(summary.hours)}</strong>{summary.approved > 0 && summary.unapprovedRows > 0 && <span className="personnel-history-approved">Подтверждено: {formatHours(summary.approved)} ч.</span>}{summary.submitted > 0 && <span>На проверке: {formatHours(summary.submitted)} ч.</span>}{summary.draft + summary.rejected > 0 && <span>Черновики: {formatHours(summary.draft + summary.rejected)} ч.</span>}{props.footerStatus && <div className="personnel-history-save-status">{props.footerStatus}</div>}</div><div className="personnel-history-footer-actions">{props.footerActions}{selectedRows.length > 0 && <>{props.canCreate && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onCopyRows(selectedRows)}>Скопировать на сегодня ({selectedRows.length})</button>}{props.onRemoveDraft && removableKeys.length > 0 && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onRemoveDraft?.(removableKeys)}>Убрать из черновика ({removableKeys.length})</button>}{props.onRemoveApproved && removableApprovedRows.length > 0 && <button type="button" className="secondary-button personnel-report-delete-button" disabled={props.loading} aria-haspopup="dialog" onClick={() => props.onRemoveApproved?.(removableApprovedRows)}>Удалить из отчёта ({removableApprovedRows.length})</button>}</>}</div></div>;
+  const footerPanel = <div className="personnel-history-footer"><div className="personnel-history-summary" role="status"><strong>Строк: {summary.rows} · Сотрудников: {summary.employees}</strong>
+    <strong title={`${summaryMonthLabel} · С учётом выбранной вкладки и фильтров`}>Часы месяца: {formatHours(summary.monthHours)}</strong>
+    <strong title="За все даты с учётом выбранной вкладки и фильтров">Часов всего: {formatHours(summary.hours)}</strong>{summary.approved > 0 && summary.unapprovedRows > 0 && <span className="personnel-history-approved">Подтверждено: {formatHours(summary.approved)} ч.</span>}{summary.submitted > 0 && <span>На проверке: {formatHours(summary.submitted)} ч.</span>}{summary.draft + summary.rejected > 0 && <span>Черновики: {formatHours(summary.draft + summary.rejected)} ч.</span>}{props.footerStatus && <div className="personnel-history-save-status">{props.footerStatus}</div>}</div><div className="personnel-history-footer-actions">{props.footerActions}{selectedRows.length > 0 && <>{props.canCreate && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onCopyRows(selectedRows)}>Скопировать на сегодня ({selectedRows.length})</button>}{props.onRemoveDraft && removableKeys.length > 0 && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onRemoveDraft?.(removableKeys)}>Убрать из черновика ({removableKeys.length})</button>}{props.onRemoveApproved && removableApprovedRows.length > 0 && <button type="button" className="secondary-button personnel-report-delete-button" disabled={props.loading} aria-haspopup="dialog" onClick={() => props.onRemoveApproved?.(removableApprovedRows)}>Удалить из отчёта ({removableApprovedRows.length})</button>}</>}</div></div>;
   return <section className={`personnel-history-table personnel-page-scroll-table${props.groupByDate ? " personnel-history-grouped" : ""}`} aria-label={props.groupByDate ? "Подтверждённые отчёты по датам" : "Отчёт персонала за все дни"}>
     {props.groupByDate && <div className="personnel-date-controls"><span>Дат: <strong>{summary.dates}</strong></span><div><button type="button" disabled={props.loading || !summary.dates} onClick={() => apiRef.current?.expandAll()}>Раскрыть все</button><button type="button" disabled={props.loading || !summary.dates} onClick={() => apiRef.current?.collapseAll()}>Свернуть все</button></div></div>}
     <AgTablePageScroll gridRoot={sizingHost} api={scrollApi} footer={footerPanel} className="personnel-report-page-scroll-stage" frameClassName="personnel-report-page-scroll-frame" label="Горизонтальная прокрутка отчёта персонала">
-    <div ref={sizingHost} id={gridId} className="ag-grid-shell ag-placement-grid personnel-history-grid"><LocalizedGrid<TableRow>
+    <div ref={sizingHost} id={gridId} data-approved-tone={approvedReportRowTone} className="ag-grid-shell ag-placement-grid personnel-history-grid"><LocalizedGrid<TableRow>
       theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} postSortRows={keepDatesTogether}
       suppressHorizontalScroll
       scrollbarWidth={0}
@@ -379,7 +389,7 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
       getRowId={({ data }) => data.rowKey} rowHeight={44} headerHeight={46} animateRows={false} loading={props.loading}
       loadingOverlayComponent={() => <span className="ag-overlay-message">Загружаем отчёты…</span>}
       noRowsOverlayComponent={() => <span className="ag-overlay-message">{props.emptyMessage ?? "За выбранный период отчётов пока нет"}</span>}
-      rowClassRules={{ "personnel-date-group-row": ({ node }) => Boolean(node.group), "editable-row": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.editable), "personnel-history-today": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.workDate === propsRef.current.today), "personnel-history-rejected": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.status === "rejected") }}
+      rowClassRules={{ "personnel-date-group-row": ({ node }) => Boolean(node.group), "editable-row": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.editable), "personnel-history-approved-row": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.status === "approved"), "personnel-history-today": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.workDate === propsRef.current.today), "personnel-history-rejected": ({ data }) => Boolean(data && rowsRef.current.get(data.rowKey)?.status === "rejected") }}
       rowSelection={{ mode: "multiRow", checkboxes: ({ node }) => Boolean(!node.group && node.data), isRowSelectable: node => Boolean(!node.group && node.data), headerCheckbox: true, selectAll: "filtered", enableClickSelection: false }}
       selectionColumnDef={{ width: 44, minWidth: 44, maxWidth: 44, pinned: "left", lockPinned: true, lockPosition: "left", resizable: false, suppressMovable: true }}
       onGridReady={(event) => { apiRef.current = event.api; setScrollApi(event.api); defaultWidthsApplied.current = false; preferences.attach(event.api); reportSummary(event.api); sizeInitialColumns(); }}
@@ -393,7 +403,23 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
       canWriteSpreadsheetCell={(row, field) => { const source = rowsRef.current.get(row.rowKey); return Boolean(source && canEdit(source) && editableFields.includes(field as EditableField) && !(field === "employeeName" && source.draft?.lockedEmployee)); }}
       spreadsheetHistory={props.history}
       spreadsheetFocusRequestKey={focusRequest} spreadsheetSelectionResetKey={`${props.selectionScope ?? ""}:${Boolean(props.groupByDate)}:${structure}`}
-      getSpreadsheetContextActions={({ row }) => { const source = rowsRef.current.get(row.rowKey); return source && propsRef.current.canCreate ? [{ label: "Скопировать строку на сегодня", onSelect: () => propsRef.current.onCopyRows([source]) }] : []; }}
+      getSpreadsheetContextActions={({ row }) => {
+        const source = rowsRef.current.get(row.rowKey);
+        if (!source) return [];
+        const current = propsRef.current;
+        const employeeId = Number(source.draft ? source.draft.employeeId : source.entry?.employeeId);
+        const destinations = current.employeeNavigationTargets ?? [];
+        return [
+          ...(Number.isSafeInteger(employeeId) && employeeId > 0 && current.onNavigateEmployee && destinations.length ? [{
+            label: "Перейти", section: "Переходы", onSelect: () => {},
+            children: destinations.map(target => ({ label: target.label, disabled: current.navigationDisabled, onSelect: () => {
+              const latest = propsRef.current;
+              if (!latest.navigationDisabled && latest.employeeNavigationTargets?.some(item => item.view === target.view)) latest.onNavigateEmployee?.(target.view, employeeId, source.workDate);
+            } })),
+          }] : []),
+          ...(current.canCreate ? [{ label: "Скопировать строку на сегодня", section: "Работа с отчётом", onSelect: () => current.onCopyRows([source]) }] : []),
+        ];
+      }}
       suppressCellFocus
     /></div>
     </AgTablePageScroll>

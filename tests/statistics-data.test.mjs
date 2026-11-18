@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { readStatisticsRows } from "../app/statisticsData.ts";
+import { readStatisticsByDay, readStatisticsRows } from "../app/statisticsData.ts";
 
 function fixture(t) {
   const sql = new DatabaseSync(":memory:");
@@ -84,6 +84,21 @@ test("statistics sums every foreman once, includes date boundaries, and isolates
   assert.ok(queries.every(({ values }) => values.length === 3), "One bound aggregation query per request");
 });
 
+test("all-time totals include earlier years, excluding deleted rows and other projects", async t => {
+  const { db, queries, personnel, equipment } = fixture(t);
+  for (const add of [personnel, equipment]) {
+    add({ id: 1, date: "2024-02-29", hours: 3 });
+    add({ id: 2, date: "2026-11-17", hours: 5 });
+    add({ id: 3, date: "2024-02-29", hours: 11, deleted: "2024-03-01T00:00:00Z" });
+    add({ id: 4, site: 8, zone: 20, hours: 19 });
+  }
+  for (const kind of ["personnel", "equipment"]) {
+    assert.equal(totals(await readStatisticsRows(db, 7, kind)), 8);
+    assert.equal(totals(await readStatisticsRows(db, 8, kind)), 19);
+  }
+  assert.deepEqual(queries.map(({ values }) => values), [[7], [8], [7], [8]]);
+});
+
 test("personnel grouping uses saved position and employment history even after employee or zone archival", async t => {
   const { db, personnel } = fixture(t);
   personnel({ id: 1, employee: 3, position: "ЭЛЕКТРОГАЗОСВАРЩИК", hours: 5 });
@@ -136,6 +151,50 @@ test("pending reports and manual timesheet values do not inflate published stati
   equipment({ id: 1, hours: 7 });
   assert.equal(totals(await read(db)), 6);
   assert.equal(totals(await read(db, "equipment")), 7);
+  assert.equal(totals(await readStatisticsByDay(db, 7, "personnel")), 6);
+  assert.equal(totals(await readStatisticsByDay(db, 7, "equipment")), 7);
+});
+
+test("daily personnel statistics combine all zones by work date, not by current role or report owner", async t => {
+  const { db, queries, personnel } = fixture(t);
+  personnel({ id: 1, date: "2026-11-30", zone: null, hours: 3, position: "Кладовщик" });
+  personnel({ id: 2, date: "2026-11-01", employee: 3, hours: 4, position: "ЭЛЕКТРОГАЗОСВАРЩИК" });
+  personnel({ id: 3, date: "2026-11-01", zone: 11, hours: 2, position: "Сварщик", owner: 102 });
+  personnel({ id: 4, date: "2026-11-01", zone: 11, employee: 2, hours: 6, position: "Монтажник", employment: "" });
+  personnel({ id: 5, date: "2026-11-01", site: 8, zone: 20, hours: 19 });
+  personnel({ id: 6, date: "2026-11-05", hours: 17, deleted: "2026-11-06T00:00:00Z" });
+  personnel({ id: 7, date: "2026-11-15", hours: 5, position: "Мастер", employment: "ИТР" });
+  personnel({ id: 8, date: "2024-02-29", hours: 10 });
+  personnel({ id: 9, date: "2026-12-01", hours: 7 });
+
+  const rows = await readStatisticsByDay(db, 7, "personnel", "2026-11-01", "2026-11-30");
+  assert.deepEqual(rows, [
+    { workDate: "2026-11-01", welders: 6, installers: 6, other: 0, productive: 0, downtime: 0, total: 12 },
+    { workDate: "2026-11-30", welders: 0, installers: 0, other: 3, productive: 0, downtime: 0, total: 3 },
+  ]);
+  const allTimeRows = await readStatisticsByDay(db, 7, "personnel");
+  assert.deepEqual(allTimeRows.map(row => [row.workDate, row.total]), [
+    ["2024-02-29", 10], ["2026-11-01", 12], ["2026-11-30", 3], ["2026-12-01", 7],
+  ]);
+  assert.deepEqual(queries.map(({ values }) => values), [[7, "2026-11-01", "2026-11-30"], [7]]);
+  assert.equal(totals(allTimeRows), totals(await readStatisticsRows(db, 7, "personnel")));
+});
+
+test("daily equipment statistics keep the work and downtime split and preserve historical dates", async t => {
+  const { db, queries, equipment } = fixture(t);
+  equipment({ id: 1, date: "2024-02-29", hours: 5, subwork: 2, zone: 11 });
+  equipment({ id: 2, date: "2024-02-29", hours: 3, subwork: 3, zone: null });
+  equipment({ id: 3, date: "2024-02-29", hours: 6 });
+  equipment({ id: 4, date: "2026-11-17", hours: 4, subwork: 4 });
+  equipment({ id: 5, date: "2026-11-17", site: 8, zone: 20, hours: 19 });
+  equipment({ id: 6, date: "2026-11-12", hours: 12, deleted: "2026-11-13T00:00:00Z" });
+
+  assert.deepEqual(await readStatisticsByDay(db, 7, "equipment"), [
+    { workDate: "2024-02-29", welders: 0, installers: 0, other: 0, productive: 6, downtime: 8, total: 14 },
+    { workDate: "2026-11-17", welders: 0, installers: 0, other: 0, productive: 4, downtime: 0, total: 4 },
+  ]);
+  assert.deepEqual(await readStatisticsByDay(db, 7, "equipment", "2026-11-12", "2026-11-16"), []);
+  assert.deepEqual(queries.map(({ values }) => values), [[7], [7, "2026-11-12", "2026-11-16"]]);
 });
 
 test("corrections, zone or date moves, and removal of published entries update aggregate totals", async t => {

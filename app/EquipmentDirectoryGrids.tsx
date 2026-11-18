@@ -8,6 +8,8 @@ import { emptyEquipmentRegistryDraft, equipmentAssignmentOptions, equipmentDirec
 type CommonProps<D> = {
   rows: GridEquipmentUnit[]; drafts: D[]; selectedIds: number[]; loading: boolean; canCreate: boolean; canSelect: boolean;
   preferenceScope?: { userId: number; siteId?: number };
+  focusedEquipmentId?: number | null;
+  onClearEquipmentFocus?: () => void;
   onReplaceDrafts?: (drafts: D[]) => void;
   onSelectionChange: (ids: number[]) => void;
   onVisibleIdsChange?: (ids: number[]) => void;
@@ -44,6 +46,15 @@ export function EquipmentRegistryAgGrid(props: EquipmentRegistryGridProps) {
       initialFlex: field === "note" ? 1.3 : field === "model" ? 1.2 : .95,
       ...(field === "equipmentType" ? { pinned: "left" as const } : {}),
       value: (unit, draft) => draft?.[field] ?? unit?.[field] ?? "",
+      ...(field === "registrationNumber" ? {
+        getFilterValue: (unit: GridEquipmentUnit | undefined, draft: GridEquipmentRegistryDraft | undefined) => unit ? String(unit.id) : draft?.id !== undefined ? String(draft.id) : `draft:${draft?.key ?? ""}`,
+        formatFilterValue: (value: unknown) => {
+          if (value == null || value === "") return "(Пустые)";
+          const id = String(value), unit = props.rows.find(unit => String(unit.id) === id);
+          const draft = props.drafts.find(draft => draft.id !== undefined ? String(draft.id) === id : `draft:${draft.key}` === id);
+          return draft?.registrationNumber || unit?.registrationNumber || (unit ? `${unit.brand} ${unit.model}`.trim() : draft || id.startsWith("draft:") ? "(Пустые)" : `Техника №${id}`);
+        },
+      } : {}),
     }));
     result.splice(result.length - 1, 0, {
       field: "siteName", headerName: "Проект", minWidth: 180, initialFlex: 1,
@@ -52,11 +63,12 @@ export function EquipmentRegistryAgGrid(props: EquipmentRegistryGridProps) {
       options: () => [...(siteRequired ? [] : [{ value: "", label: "Не назначена" }]), ...props.sites.map(site => ({ value: String(site.id), label: site.name }))],
     });
     return result;
-  }, [props.sites, siteRequired]);
+  }, [props.sites, props.rows, props.drafts, siteRequired]);
   const scope = props.requiredSiteId;
   const defaultSite = props.defaultProjectSiteId ?? (typeof scope === "number" ? String(scope) : scope?.length === 1 ? String(scope[0]) : "");
   return <CatalogSpreadsheetGrid<GridEquipmentUnit, GridEquipmentRegistryDraft>
     rows={props.rows} drafts={props.drafts} columns={columns} scopeKey="equipmentRegistry" preferenceScope={props.preferenceScope}
+    navigationFilter={props.focusedEquipmentId ? { columnId: "registrationNumber", value: String(props.focusedEquipmentId), ready: !props.loading, onCleared: props.onClearEquipmentFocus } : undefined}
     canCreate={props.canCreate} canUpdate={props.canUpdate} canSelect={props.canSelect} loading={props.loading}
     newDraft={key => emptyEquipmentRegistryDraft(key, defaultSite)} toDraft={equipmentRegistryDraft}
     patchDraft={(draft, values) => patchEquipmentRegistryDraft(draft, values, references)}
@@ -74,11 +86,22 @@ export function ProjectEquipmentAgGrid(props: ProjectEquipmentGridProps) {
       value: (unit, draft) => resolve(unit, draft)?.equipmentType ?? "", editValue: draft => draft.equipmentId,
       options: (draft, drafts) => equipmentAssignmentOptions(props.allUnits, props.rows, draft, drafts),
     }];
-    for (const [field, headerName, minWidth, initialFlex] of [["brand", "Марка", 125, .8], ["model", "Модель", 180, 1.2], ["registrationNumber", "ГРЗ / инв. №", 160, .95], ["organization", "Организация", 165, 1.05], ["note", "Примечание", 190, 1.25]] as const) result.push({ field, headerName, minWidth, initialFlex, editable: false, value: (unit, draft) => resolve(unit, draft)?.[field] ?? "" });
+    for (const [field, headerName, minWidth, initialFlex] of [["brand", "Марка", 125, .8], ["model", "Модель", 180, 1.2], ["registrationNumber", "ГРЗ / инв. №", 160, .95], ["organization", "Организация", 165, 1.05], ["note", "Примечание", 190, 1.25]] as const) result.push({
+      field, headerName, minWidth, initialFlex, editable: false, value: (unit, draft) => resolve(unit, draft)?.[field] ?? "",
+      ...(field === "registrationNumber" ? {
+        getFilterValue: (unit: GridEquipmentUnit | undefined, draft: GridProjectEquipmentDraft | undefined) => unit ? String(unit.id) : draft?.equipmentId || `draft:${draft?.key ?? ""}`,
+        formatFilterValue: (value: unknown) => {
+          if (value == null || value === "") return "(Пустые)";
+          const unit = props.rows.find(unit => String(unit.id) === String(value)) ?? props.allUnits.find(unit => String(unit.id) === String(value));
+          return unit?.registrationNumber || (unit ? `${unit.brand} ${unit.model}`.trim() : String(value).startsWith("draft:") ? "(Пустые)" : `Техника №${value}`);
+        },
+      } : {}),
+    });
     return result;
   }, [props.allUnits, props.rows]);
   return <CatalogSpreadsheetGrid<GridEquipmentUnit, ProjectEquipmentDraft>
     rows={props.rows} drafts={props.drafts} columns={columns} scopeKey="projectEquipment" preferenceScope={props.preferenceScope}
+    navigationFilter={props.focusedEquipmentId ? { columnId: "registrationNumber", value: String(props.focusedEquipmentId), ready: !props.loading, onCleared: props.onClearEquipmentFocus } : undefined}
     canCreate={props.canCreate} canUpdate={false} canSelect={props.canSelect} loading={props.loading}
     newDraft={key => ({ key, equipmentId: "" })} toDraft={unit => ({ key: `project-equipment-${unit.id}`, id: unit.id, equipmentId: String(unit.id) })}
     patchDraft={(draft, values) => patchEquipmentAssignmentDraft(draft, values, props.allUnits)}

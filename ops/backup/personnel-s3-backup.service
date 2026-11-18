@@ -1,0 +1,31 @@
+[Unit]
+Description=Verified PostgreSQL backup for Personnel Accounting to private S3
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+OnFailure=personnel-s3-backup-notify.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/python3 /opt/personnel-s3-backup/backup-personnel-s3.py --config /etc/personnel-s3-backup/backup.env
+TimeoutStartSec=3600
+TimeoutStopSec=120
+KillMode=control-group
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+StateDirectory=personnel-s3-backup
+StateDirectoryMode=0700
+RuntimeDirectory=personnel-s3-backup
+RuntimeDirectoryMode=0700
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/personnel-s3-backup /run/personnel-s3-backup
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=personnel-s3-backup

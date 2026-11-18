@@ -24,6 +24,7 @@ import { equipmentTimesheetDayPresets, equipmentTimesheetFilterValue, matchesEqu
 import { TimesheetCellPopover } from "./TimesheetCellPopover";
 import { TimesheetMonthPicker as EquipmentMonthPicker } from "./TimesheetMonthPicker";
 import { useTimesheetClipboard, type TimesheetClipboardChange, type TimesheetClipboardSaveContext } from "./useTimesheetClipboard";
+import { TableStatusToast } from "./useTableCopyToast";
 import { PERSONNEL_TIMESHEET_CODES as EQUIPMENT_TIMESHEET_CODES } from "./personnelTimesheetValues";
 import { useTimesheetBatchSave } from "./useTimesheetBatchSave";
 import { TimesheetSaveStatus } from "./TimesheetSaveStatus";
@@ -53,6 +54,7 @@ type EquipmentTimesheetMark = {
   downtimeHours: number;
   note: string;
   updatedBy: string;
+  revision?: string;
 };
 type EquipmentTimesheetSavedCell = {
   equipmentId: number;
@@ -61,6 +63,7 @@ type EquipmentTimesheetSavedCell = {
   change: TimesheetClipboardChange;
   undoValue: string;
   undoNote: string;
+  previousRevision?: string | null;
   context?: TimesheetClipboardSaveContext;
   viewScope?: string;
 };
@@ -393,7 +396,7 @@ function EquipmentDeleteConfirmation({ title, description, saving, onCancel, onC
   </div>;
 }
 
-export function EquipmentAccountingView({ siteId, initialDate, initialMonth, today, mode, currentUserId, currentUserRole, currentUserProjectAccess, onDateChange, onMonthChange, onDirtyChange, onBusyChange }: { siteId: number; initialDate: string; initialMonth?: string; today: string; mode: EquipmentSection; currentUserId?: number; currentUserRole?: UserRole; currentUserProjectAccess?: ProjectAccess; onDateChange?: (date: string) => void; onMonthChange?: (month: string) => void; onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void }) {
+export function EquipmentAccountingView({ siteId, initialDate, initialMonth, today, mode, focusedEquipmentId, onClearEquipmentFocus, currentUserId, currentUserRole, currentUserProjectAccess, onDateChange, onMonthChange, onDirtyChange, onBusyChange }: { siteId: number; initialDate: string; initialMonth?: string; today: string; mode: EquipmentSection; focusedEquipmentId?: number | null; onClearEquipmentFocus?: () => void; currentUserId?: number; currentUserRole?: UserRole; currentUserProjectAccess?: ProjectAccess; onDateChange?: (date: string) => void; onMonthChange?: (month: string) => void; onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void }) {
   const { confirm: confirmMonthChange, dialog: monthChangeDialog } = useConfirmationDialog();
   const section = mode;
   const [workDate, setWorkDate] = useState(initialDate);
@@ -439,6 +442,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   const [savingTimesheetMark, setSavingTimesheetMark] = useState(false);
   const [refreshError, setRefreshError] = useState("");
   const [timesheetEditorError, setTimesheetEditorError] = useState("");
+  const [timesheetMarkConflict, setTimesheetMarkConflict] = useState("");
   const [timesheetInfoOpen, setTimesheetInfoOpen] = useState(false);
   const [importing, setImporting] = useState(false);
   const refreshControl = useRef<ReturnType<typeof createIdlePageRefresh> | null>(null);
@@ -526,6 +530,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
       setLoading(true);
       setError("");
       setRefreshError("");
+      setTimesheetMarkConflict("");
       const scope = section === "registry" ? "global" : section === "project" ? "assignments" : "project";
       const viewMode = section === "month" ? "timesheet" : section;
       const rangeQuery = section === "daily" ? `&rangeStart=${recentDates[0]}&rangeEnd=${reportRangeEnd}` : "";
@@ -612,6 +617,8 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }, [month, payload?.canCreateDaily, payload?.currentUserRole, payload?.reportSubmitted, payload?.workDate, section, siteId, today, workDate]);
 
   const post = useCallback(async (body: Record<string, unknown>) => {
+    const requestScope = activeScope.current;
+    const requestScopeVersion = activeScopeVersion.current;
     const response = await fetch("/api/equipment", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -622,9 +629,25 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
       throw new Error("Требуется авторизация.");
     }
     const result = await response.json() as { error?: string; imported?: number; skipped?: number; mark?: EquipmentTimesheetMark; deleted?: boolean };
+    if (response.status === 409 && body.action === "save-timesheet-mark" && activeScope.current === requestScope && activeScopeVersion.current === requestScopeVersion) {
+      setTimesheetMarkConflict(result.error ?? "Отметка изменилась после загрузки табеля.");
+    }
     if (!response.ok) throw new Error(result.error ?? "Не удалось сохранить изменения.");
     return result;
   }, [siteId]);
+
+  async function reloadConflictedEquipmentTimesheet() {
+    if (navigationBusy) return;
+    const requestScope = activeScope.current;
+    if (dirty && !await confirmMonthChange({ title: "Обновить данные табеля?", description: "Несохранённые изменения будут сброшены. Табель загрузит сохранённые на сервере отметки.", confirmLabel: "Обновить данные" })) return;
+    if (activeScope.current !== requestScope) return;
+    timesheetInlineCancelPending.current = true;
+    timesheetInlineSession.current++;
+    setTimesheetInlineEditor(null);
+    setTimesheetEditor(null);
+    for (const { key } of batchSave.getSnapshot().status?.failures ?? []) batchSave.clearCell(key);
+    setReloadKey(value => value + 1);
+  }
 
   function changeWorkDate(next: string) {
     initializedCarryoverSession.current = null;
@@ -1013,7 +1036,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   const monthUnits = useMemo(() => {
     const units = new Map<number, EquipmentUnit>((payload?.units ?? []).map((unit) => [unit.id, unit]));
     for (const entry of payload?.entries ?? []) {
-      if (!units.has(entry.equipmentId)) units.set(entry.equipmentId, entry);
+      if (!units.has(entry.equipmentId)) units.set(entry.equipmentId, { ...entry, id: entry.equipmentId });
     }
     return Array.from(units.values());
   }, [payload?.entries, payload?.units]);
@@ -1056,8 +1079,10 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
       return { unit, byDate, productive, downtime, total: productive + downtime };
     }), [month, monthDays, monthReportByCell, monthUnits, timesheetMarksByCell]);
   const orderedMonthRows = useMemo(() => rowOrder?.order(unfilteredMonthRows, row => row.unit.id) ?? unfilteredMonthRows, [rowOrder, unfilteredMonthRows]);
+  const monthUnitLabels = useMemo(() => new Map(monthUnits.map(unit => [String(unit.id), unitTitle(unit)])), [monthUnits]);
   const monthFilterColumns = useMemo<readonly TimesheetFilterColumn<EquipmentMonthRow>[]>(() => [
-    { colId: "equipment", headerName: "Техника", getValue: row => unitTitle(row.unit) },
+    { colId: "equipment", headerName: "Техника", getValue: row => unitTitle(row.unit),
+      getFilterValue: row => String(row.unit.id), formatFilterValue: value => value == null || value === "" ? "(Пустые)" : monthUnitLabels.get(String(value)) ?? `Техника №${value}` },
     { colId: "organization", headerName: "Организация", getValue: row => row.unit.organization },
     ...monthDays.map(day => {
       const date = `${month}-${String(day).padStart(2, "0")}`;
@@ -1070,9 +1095,11 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     { colId: "productive", headerName: "Работа", kind: "number", getValue: row => row.productive },
     { colId: "downtime", headerName: "Простой", kind: "number", getValue: row => row.downtime },
     { colId: "total", headerName: "Всего", kind: "number", getValue: row => row.total },
-  ], [month, monthDays]);
+  ], [month, monthDays, monthUnitLabels]);
   const monthImportRank = useMemo(() => createImportOrderRank(unfilteredMonthRows, rowOrder?.importIds ?? [], row => row.unit.id), [unfilteredMonthRows, rowOrder?.importIds]);
-  const monthFilters = useTimesheetFilters({ rows: orderedMonthRows, columns: monthFilterColumns, getRowId: equipmentMonthRowId, resetKey: `equipment:${siteId}:${month}`, presentation: "checklist", includeConditions: false, importOrder: {
+  const monthFilters = useTimesheetFilters({ rows: orderedMonthRows, columns: monthFilterColumns, getRowId: equipmentMonthRowId, resetKey: `equipment:${siteId}:${month}`, presentation: "checklist", includeConditions: false,
+    navigationFilter: section === "month" && focusedEquipmentId ? { columnId: "equipment", value: String(focusedEquipmentId), ready: !loading && Boolean(payload), onCleared: onClearEquipmentFocus } : undefined,
+    importOrder: {
     rank: monthImportRank, activation: rowOrder?.importOrderRevision ?? 0, ready: rowOrder?.ready ?? false, defaultSort: Boolean(rowOrder?.hasImportOrder && !rowOrder.hasSavedOrder),
   } });
   // Filter units by each day's value without collapsing the other month columns.
@@ -1300,6 +1327,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         action: "save-timesheet-mark",
         equipmentId: target.equipmentId,
         workDate: target.workDate,
+        expectedRevision: previousMark?.revision ?? null,
         ...(value.clear ? { clear: true } : { productiveHours: value.productiveHours, downtimeHours: value.downtimeHours, note: value.note }),
       });
       if (activeScope.current !== requestScope || activeScopeVersion.current !== requestScopeVersion) return false;
@@ -1311,7 +1339,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         ],
       } : current);
       batchSave.clearCell(equipmentCellKey(target.equipmentId, target.workDate));
-      if (clipboardViewScope.current === undoViewScope && undoRowIndex >= 0 && undoColumnIndex >= 0) rememberEquipmentTimesheetUndo([{ rowIndex: undoRowIndex, columnIndex: undoColumnIndex, value: previousMark ? formatEquipmentHours(previousMark.productiveHours, previousMark.downtimeHours) : "", note: previousMark?.note ?? "" }]);
+      if (clipboardViewScope.current === undoViewScope && undoRowIndex >= 0 && undoColumnIndex >= 0) rememberEquipmentTimesheetUndo([{ rowIndex: undoRowIndex, columnIndex: undoColumnIndex, value: previousMark ? formatEquipmentHours(previousMark.productiveHours, previousMark.downtimeHours) : "", note: previousMark?.note ?? "", expectedRevision: result.mark?.revision ?? null, previousRevision: previousMark?.revision ?? null }]);
       return true;
     } finally {
       markWrites.current -= 1;
@@ -1402,9 +1430,9 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
       const rowIndex = monthRows.findIndex(row => row.unit.id === value.equipmentId);
       const columnIndex = visibleMonthDays.indexOf(Number(value.workDate.slice(8, 10)));
       if (value.context?.operation === "undo") {
-        forgetEquipmentTimesheetUndo(value.context.historyId, [value.change]);
+        forgetEquipmentTimesheetUndo(value.context.historyId, [{ ...value.change, expectedRevision: value.mark?.revision ?? null }]);
       } else if (rowIndex >= 0 && columnIndex >= 0) {
-        rememberEquipmentTimesheetUndo([{ rowIndex, columnIndex, value: value.undoValue, note: value.undoNote }], value.context?.historyId);
+        rememberEquipmentTimesheetUndo([{ rowIndex, columnIndex, value: value.undoValue, note: value.undoNote, expectedRevision: value.mark?.revision ?? null, previousRevision: value.previousRevision }], value.context?.historyId);
       }
     }
   }
@@ -1421,9 +1449,10 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
       if (!row || !workDate) throw new Error("Выбранный диапазон содержит недоступные ячейки");
       const key = equipmentCellKey(row.unit.id, workDate);
       const previousMark = timesheetMarksByCell.get(key);
-      if (!change.value.trim() && !previousMark && batchSave.getCellState(key)?.state !== "error") return [];
+      const expectedRevision = context?.operation === "undo" && change.expectedRevision !== undefined ? change.expectedRevision : previousMark?.revision ?? null;
+      if (!change.value.trim() && !previousMark && expectedRevision === null && batchSave.getCellState(key)?.state !== "error") return [];
       return [{ key, equipmentId: row.unit.id, workDate, label: `${unitTitle(row.unit)}, ${fullDate(workDate)}`,
-        value: change.value, note: change.note ?? "", change,
+        value: change.value, note: change.note ?? previousMark?.note ?? "", change, expectedRevision,
         undoValue: previousMark ? formatEquipmentHours(previousMark.productiveHours, previousMark.downtimeHours) : "", undoNote: previousMark?.note ?? "" }];
     });
     if (!prepared.length) return { savedChanges: [], failedChanges: [] };
@@ -1445,15 +1474,20 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
           action: "save-timesheet-mark",
           equipmentId: item.equipmentId,
           workDate: item.workDate,
+          expectedRevision: item.expectedRevision,
           ...(value.clear ? { clear: true } : { productiveHours: value.productiveHours, downtimeHours: value.downtimeHours, note: item.note }),
         });
         return { equipmentId: item.equipmentId, workDate: item.workDate, mark: result.mark,
-          change: item.change, undoValue: item.undoValue, undoNote: item.undoNote, context, viewScope: preparedViewScope };
+          change: item.change, undoValue: item.undoValue, undoNote: item.undoNote, previousRevision: item.expectedRevision, context, viewScope: preparedViewScope };
       },
     })));
     return {
       savedChanges: outcome.saved.map(({ value }) => value.change),
       failedChanges: outcome.failed.flatMap(({ job }) => { const change = changesByKey.get(job.key); return change ? [change] : []; }),
+      ...(outcome.saved.length ? { revisions: outcome.saved.map(({ value }) => ({
+        rowIndex: value.change.rowIndex, columnIndex: value.change.columnIndex,
+        expectedRevision: value.mark?.revision ?? null, previousRevision: value.previousRevision,
+      })) } : {}),
     };
   }
 
@@ -1500,7 +1534,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   }
 
   function openTimesheetExportPreview() {
-    if (!requireSavedExcelRows(Number(Boolean(timesheetEditor || timesheetInlineEditor || savingTimesheetMark)))) return;
+    if (!requireSavedExcelRows(Number(Boolean(timesheetEditor || timesheetInlineEditor || savingTimesheetMark || savingBulkTimesheetMarks || batchSave.hasFailures || timesheetMarkConflict)))) return;
     const dates = monthDays.map((day) => `${month}-${String(day).padStart(2, "0")}`);
     const rows = monthRows.map((row) => {
       const dailyProductiveHours: number[] = [];
@@ -1515,7 +1549,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         if (!value) return "";
         if (value.productive && value.downtime) return `${value.productive} / П ${value.downtime}`;
         if (value.downtime) return `П ${value.downtime}`;
-        return value.productive || "";
+        return value.productive || (value.mark ? 0 : "");
       });
       return {
         equipmentName: equipmentExcelName(row.unit),
@@ -1563,7 +1597,9 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
           downtimeTotal: monthSummary.downtime,
           totalHours: monthSummary.total,
         },
-        source: { kind: "equipment-timesheet", siteId, siteName: payload?.siteName ?? "Объект", initialDate: dates[0] },
+        source: { kind: "equipment-timesheet", siteId, siteName: payload?.siteName ?? "Объект", initialDate: dates[0],
+          ...(monthFilters.context.activeColumns.size ? { equipmentIds: monthRows.map(row => row.unit.id) } : {}),
+        },
       });
     } catch (exportError) {
       setError(exportError instanceof Error ? exportError.message : "Не удалось открыть предпросмотр Excel.");
@@ -1660,7 +1696,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     {section === "month" && headerActionsTarget && createPortal(<div className="excel-actions equipment-timesheet-page-actions timesheet-heading-actions">
       {monthFilters.isActive && <button type="button" className="timesheet-header-filter-reset" onClick={monthFilters.reset}>Сбросить фильтры <span>{monthFilters.activeCount}</span></button>}
       <ExcelActionsMenu actions={[
-        { label: "Экспорт в Excel", onSelect: openTimesheetExportPreview, disabled: loading || monthRows.length === 0 },
+        { label: "Экспорт в Excel", onSelect: openTimesheetExportPreview, disabled: loading || navigationBusy || dirty || Boolean(timesheetMarkConflict) || monthRows.length === 0 },
       ]} />
       <button type="button" className="equipment-timesheet-info-button" aria-label="Информация" title="Информация" onClick={() => setTimesheetInfoOpen(true)}><span aria-hidden="true">i</span></button>
     </div>, headerActionsTarget)}
@@ -1684,6 +1720,8 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     </>}
 
     {section === "month" && <TimesheetFiltersProvider value={monthFilters.context}>
+      {timesheetMarkConflict && <div className="equipment-message error" role="status"><span>{timesheetMarkConflict}</span><button type="button" disabled={navigationBusy} onClick={() => void reloadConflictedEquipmentTimesheet()}>Обновить данные</button></div>}
+      {monthFilters.navigationError && <div className="equipment-message error" role="alert"><span>{monthFilters.navigationError}</span><button type="button" onClick={monthFilters.reset}>Сбросить фильтр</button></div>}
       {refreshError && !error && <div className="equipment-message error" role="status"><strong>Не удалось обновить табель техники</strong><span>{refreshError}</span><button type="button" onClick={() => refreshControl.current?.request()}>Повторить</button></div>}
       <div className="equipment-timesheet-summary timesheet-top-summary" aria-busy={loading} aria-label={`Период и итоги за ${titleCase(MONTH_FORMATTER.format(new Date(`${month}-01T00:00:00Z`)))}`}>
         <div className="timesheet-month-control timesheet-summary-month-control" aria-label="Выбор месяца табеля">
@@ -1703,7 +1741,11 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         onDismiss={batchSave.dismiss} />
       {/* The spreadsheet shell must receive focus so native copy and paste events reach it. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-      <NativeTimesheetPageScroll viewportRef={timesheetClipboardShellRef} rowCount={monthRows.length} rowHeight={48} geometryKey={`${monthRowOrderKey}:${loading}`} label="Горизонтальная прокрутка табеля техники"><div ref={timesheetClipboardShellRef} className={["timesheet-grid-shell", "equipment-timesheet-shell", "timesheet-clipboard-shell", timesheetClipboardActiveCell ? "timesheet-selection-active" : "", timesheetClipboardHeadersSelected ? "timesheet-headers-selected" : ""].filter(Boolean).join(" ")} role="application" tabIndex={0} aria-label="Табель техники. Стрелки перемещают выбранную ячейку, Enter или F2 открывают редактирование." {...timesheetClipboardShellHandlers}>{timesheetClipboardContextMenu}{timesheetColumnContextMenu}{timesheetClipboardStatus && <div className="timesheet-clipboard-status" role="status">{timesheetClipboardStatus}</div>}<table className="timesheet-table equipment-month-table timesheet-resizable" style={monthColumnResize.tableStyle} aria-rowcount={monthRows.length + 3}>
+      <NativeTimesheetPageScroll viewportRef={timesheetClipboardShellRef} rowCount={monthRows.length} rowHeight={48} geometryKey={`${monthRowOrderKey}:${loading}`} label="Горизонтальная прокрутка табеля техники"><div ref={timesheetClipboardShellRef} className={["timesheet-grid-shell", "equipment-timesheet-shell", "timesheet-clipboard-shell", timesheetClipboardActiveCell ? "timesheet-selection-active" : "", timesheetClipboardHeadersSelected ? "timesheet-headers-selected" : ""].filter(Boolean).join(" ")} role="application" tabIndex={0} aria-label="Табель техники. Стрелки перемещают выбранную ячейку, Enter или F2 открывают редактирование." {...timesheetClipboardShellHandlers}>
+        {timesheetClipboardContextMenu}
+        {timesheetColumnContextMenu}
+        <TableStatusToast message={timesheetClipboardStatus} />
+        <table className="timesheet-table equipment-month-table timesheet-resizable" style={monthColumnResize.tableStyle} aria-rowcount={monthRows.length + 3}>
         {monthColumnResize.colGroup}
         <thead><tr>
           <th className="timesheet-sticky equipment-number-column" rowSpan={2}>{monthRowMoves.headerCheckbox}{monthColumnResize.handle("number", "№")}</th>
@@ -1809,7 +1851,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
           </>}{saveState && !isInlineEditing && <span className="timesheet-cell-save-indicator" aria-hidden="true">{saveState.state === "error" ? "!" : saveState.state === "saved" ? "✓" : "·"}</span>}</td>;
         })}<td className={`timesheet-total-column equipment-work-total ${timesheetClipboardCellClass(index, visibleMonthDays.length)}`} {...timesheetClipboardCellHandlers(index, visibleMonthDays.length)}>{row.productive ? formatTimesheetHours(row.productive) : "—"}</td>
           <td className={`timesheet-total-column equipment-idle-total has-difference ${timesheetClipboardCellClass(index, visibleMonthDays.length + 1)}`} {...timesheetClipboardCellHandlers(index, visibleMonthDays.length + 1)}>{row.downtime ? formatTimesheetHours(row.downtime) : "—"}</td>
-          <td className={`timesheet-total-column equipment-all-total ${timesheetClipboardCellClass(index, visibleMonthDays.length + 2)}`} {...timesheetClipboardCellHandlers(index, visibleMonthDays.length + 2)}>{row.total ? formatTimesheetHours(row.total) : "—"}</td></tr>; }) : <tr><td colSpan={monthColumnResize.columnCount}><div className="equipment-table-empty"><strong>В этом месяце данных нет</strong><span>Записи появятся после заполнения ежедневных отчётов техники.</span></div></td></tr>}{monthViewport.bottom > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} style={{ height: monthViewport.bottom }} /></tr>}{monthRows.length > 0 && <tr className="timesheet-fill-row" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} /></tr>}</tbody>
+          <td className={`timesheet-total-column equipment-all-total ${timesheetClipboardCellClass(index, visibleMonthDays.length + 2)}`} {...timesheetClipboardCellHandlers(index, visibleMonthDays.length + 2)}>{row.total ? formatTimesheetHours(row.total) : "—"}</td></tr>; }) : <tr><td colSpan={monthColumnResize.columnCount}><div className="equipment-table-empty"><strong>{monthFilters.navigationPending ? "Применяем фильтр…" : monthFilters.isActive ? "Нет техники по выбранным фильтрам" : "В этом месяце данных нет"}</strong>{!monthFilters.navigationPending && <span>{monthFilters.isActive ? "Измените или сбросьте фильтры, чтобы увидеть другие строки." : "Записи появятся после заполнения ежедневных отчётов техники."}</span>}</div></td></tr>}{monthViewport.bottom > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} style={{ height: monthViewport.bottom }} /></tr>}{monthRows.length > 0 && <tr className="timesheet-fill-row" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} /></tr>}</tbody>
         {monthRows.length > 0 && <tfoot><tr><th className="timesheet-sticky timesheet-summary-label" colSpan={3}>Итого по дням</th>{visibleMonthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; const hours = monthDayTotals.get(date); return <td key={date}>{hours ? formatTimesheetHours(hours) : ""}</td>; })}<th className="timesheet-total-column equipment-work-total">{formatTimesheetHours(monthSummary.productive)}</th><th className="timesheet-total-column equipment-idle-total has-difference">{formatTimesheetHours(monthSummary.downtime)}</th><th className="timesheet-total-column equipment-all-total">{formatTimesheetHours(monthSummary.total)}</th></tr></tfoot>}
       </table></div></NativeTimesheetPageScroll>
       {timesheetInfoOpen && <div className="equipment-reference-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setTimesheetInfoOpen(false); }}><section className="equipment-reference-dialog" role="dialog" aria-modal="true" aria-labelledby="equipment-timesheet-reference-title">
@@ -1855,6 +1897,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
 
     {section === "registry" && <EquipmentRegistryAgGrid
       rows={registryUnits}
+      focusedEquipmentId={focusedEquipmentId} onClearEquipmentFocus={onClearEquipmentFocus}
       drafts={unitDrafts}
       sites={payload?.sites ?? []}
       requiredSiteId={payload ? accessibleProjectIds({ role: payload.currentUserRole, assignedSiteId: siteId, projectAccess: currentUserProjectAccess }) ?? undefined : undefined}
@@ -1887,6 +1930,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     />}
 
     {section === "project" && <ProjectEquipmentAgGrid
+      focusedEquipmentId={focusedEquipmentId} onClearEquipmentFocus={onClearEquipmentFocus}
       onVisibleIdsChange={(ids) => setVisibleProjectUnitIds((current) => current?.length === ids.length && current.every((id, index) => id === ids[index]) ? current : ids)}
       rows={payload?.units ?? []}
       allUnits={payload?.availableUnits ?? []}

@@ -98,7 +98,7 @@ export function ExcelExportPreviewPage() {
   const tableViewport = useRef<HTMLDivElement>(null);
   const clipboardRows = useMemo(() => excelPreviewClipboardRows(payload), [payload]);
   const clipboardHeaders = useMemo(() => excelPreviewClipboardHeaders(payload), [payload]);
-  const { className: selectionClass, handlers: selectionHandlers } = useNativeTableSelectAll({ rows: clipboardRows, headers: clipboardHeaders, resetKey: payload?.fileName ?? "", enabled: ready && !rangeLoading, rootRef: tableViewport });
+  const { className: selectionClass, handlers: selectionHandlers, copyToast } = useNativeTableSelectAll({ rows: clipboardRows, headers: clipboardHeaders, resetKey: payload?.fileName ?? "", enabled: ready && !rangeLoading, rootRef: tableViewport });
   const pageScrollSource = useMemo<TablePageScrollSource>(() => ({
     getViewport: () => tableViewport.current,
     getContentHeight: () => {
@@ -258,7 +258,14 @@ export function ExcelExportPreviewPage() {
             if (!response.ok) throw new Error(result.error ?? `Не удалось загрузить табель техники за ${month}.`);
             return result;
           }));
-          selected = buildEquipmentTimesheetRange(monthPayloads, start, end);
+          const equipmentIds = originalTimesheet.source.equipmentIds;
+          const scopedMonths = equipmentIds ? monthPayloads.map(month => ({
+            ...month,
+            units: month.units.filter(unit => equipmentIds.includes(unit.id)),
+            entries: month.entries.filter(entry => equipmentIds.includes(entry.equipmentId)),
+            marks: month.marks.filter(mark => equipmentIds.includes(mark.equipmentId)),
+          })) : monthPayloads;
+          selected = buildEquipmentTimesheetRange(scopedMonths, start, end);
         }
         const rows = selected.rows.map((row) => [
           row.equipmentType ?? "",
@@ -503,7 +510,7 @@ export function ExcelExportPreviewPage() {
             const difference = row.productiveHours + row.downtimeHours - (row.reportHours ?? row.totalHours);
             return <tr key={`${row.equipmentName}-${rowIndex}`}>
               <td>{row.equipmentType ?? slashParts[0] ?? ""}</td><td>{row.equipmentName}</td><td>{row.registrationNumber ?? slashParts[2] ?? ""}</td>
-              {Array.from({ length: timesheetDayCount }, (_, index) => <td key={index} className="excel-timesheet-day">{row.dailyProductiveHours[index] || ""}</td>)}
+              {Array.from({ length: timesheetDayCount }, (_, index) => <td key={index} className="excel-timesheet-day">{row.dailyValues[index] ?? ""}</td>)}
               <td className="excel-timesheet-total">{row.productiveHours}</td><td className={row.downtimeHours ? "excel-timesheet-downtime" : "excel-timesheet-total"}>{row.downtimeHours}</td><td className={difference ? "excel-timesheet-difference" : "excel-timesheet-total"}>{difference}</td>
             </tr>;
           })}</tbody>
@@ -516,6 +523,7 @@ export function ExcelExportPreviewPage() {
         </table>}
       </div>
       </TablePageScroll>
+      {copyToast}
     </section>
   </main>;
 }

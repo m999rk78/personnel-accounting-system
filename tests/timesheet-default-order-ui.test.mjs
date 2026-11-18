@@ -30,7 +30,7 @@ const employees = [
   { id: 40, fullName: "А Инженер", employmentType: "ИТР", department: "ПТО", timesheetOrder: 1 },
 ];
 const ids = rows => rows.map(row => row.id);
-const displayed = (rowOrder, roster = employees) => memo("filterRows", { payload: { employees: roster }, rowOrder, orderRowsByIds });
+const displayed = (rowOrder, roster = employees, focusedEmployeeId = null) => memo("filterRows", { payload: { employees: roster }, rowOrder, orderRowsByIds, focusedEmployeeId });
 const loadedOrder = (saved, available = ids(employees)) => ({
   hasSavedOrder: saved !== undefined,
   order: rows => orderRowsByIds(rows, reconcileRowOrder(available, saved ?? []), row => row.id),
@@ -54,6 +54,19 @@ test("an unsaved timesheet uses the canonical project order after it loads", () 
   assert.deepEqual(ids(displayed(null, employees)), [10, 20, 30]);
   assert.deepEqual(ids(displayed(loadedOrder(undefined, [20, 30, 10]), employees)), [20, 30, 10]);
   assert.deepEqual(ids(employees), [10, 20, 30]);
+});
+
+test("employee navigation retains the complete ordered roster for ordinary column filtering", () => {
+  const saved = [40, 10, 20, 30];
+  for (const order of [null, loadedOrder(saved), { ...loadedOrder(undefined), hasImportOrder: true, importIds: saved }]) {
+    const before = ids(displayed(order));
+    const focused = displayed(order, employees, 30);
+    assert.deepEqual(ids(focused), before);
+    assert.deepEqual(ids(displayed(order, employees, 999)), before, "Even a missing target must retain the complete checklist source");
+    assert.deepEqual(ids(displayed(order, employees, null)), before, "Clearing a filter preserves the complete order");
+  }
+  assert.deepEqual(saved, [40, 10, 20, 30]);
+  assert.deepEqual(ids(employees), [10, 20, 30, 40]);
 });
 
 test("the first successful timesheet move seeds the displayed order; subsequent moves do not replay it", async () => {
@@ -103,7 +116,7 @@ test("the personnel timesheet uses import order as its baseline and keeps explic
   assert.ok(node);
   const config = bind(`const config = ${node.initializer.getText(ast)};`, "config", {
     useTimesheetFilters: options => options, filterRows: rows, filterColumns: columns,
-    employeeFilterRowId: row => String(row.id), siteId: 7, month: "2026-11",
+    employeeFilterRowId: row => String(row.id), siteId: 7, month: "2026-11", focusedEmployeeId: null,
   });
   assert.equal(config.rows, rows);
   assert.equal(config.columns, columns);

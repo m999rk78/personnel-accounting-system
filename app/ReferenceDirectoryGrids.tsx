@@ -162,6 +162,9 @@ export function PositionAgGrid(props: PositionGridProps) {
 type ProjectEmployeeDraft = GridProjectEmployeeDraft & { id?: number };
 type ProjectEmployeeGridProps = AdapterProps<GridProjectEmployeeDraft> & {
   rows: GridEmployee[];
+  existingEmployees?: GridEmployee[];
+  focusedEmployeeId?: number | null;
+  onClearEmployeeFocus?: () => void;
   allEmployees: GridEmployee[];
   drafts: GridProjectEmployeeDraft[];
   pendingDeletes: number[];
@@ -173,13 +176,24 @@ type ProjectEmployeeGridProps = AdapterProps<GridProjectEmployeeDraft> & {
 };
 
 export function ProjectEmployeeAgGrid(props: ProjectEmployeeGridProps) {
+  const existingEmployees = props.existingEmployees ?? props.rows;
   const columns = useMemo(() => {
     const employeeFor = (record?: GridEmployee, draft?: GridProjectEmployeeDraft) => draft ? props.allEmployees.find(employee => employee.id === Number(draft.employeeId)) : record;
+    const employeesById = new Map([...props.allEmployees, ...props.rows].map(employee => [String(employee.id), employee]));
+    const nameCounts = new Map<string, number>();
+    employeesById.forEach(employee => nameCounts.set(employee.fullName, (nameCounts.get(employee.fullName) ?? 0) + 1));
     const result: CatalogColumn<GridEmployee, ProjectEmployeeDraft>[] = [{
       field: "fullName", headerName: "ФИО", minWidth: 250, initialFlex: 1.5, pinned: "left", editable: record => !record,
       value: (record, draft) => draft?.employeeQuery ?? record?.fullName ?? "", editValue: draft => draft.employeeId,
+      getFilterValue: (record, draft) => record ? String(record.id) : draft?.employeeId || `draft:${draft?.key ?? ""}`,
+      formatFilterValue: value => {
+        if (value == null || value === "" || String(value).startsWith("draft:")) return "(Пустые)";
+        const employee = employeesById.get(String(value));
+        if (!employee) return `Сотрудник №${value}`;
+        return (nameCounts.get(employee.fullName) ?? 0) > 1 ? `${employee.fullName} (№${employee.id})` : employee.fullName;
+      },
       options: (draft, drafts) => {
-        const unavailable = new Set([...props.rows.map(employee => employee.id), ...drafts.filter(candidate => candidate.key !== draft.key).map(candidate => Number(candidate.employeeId))]);
+        const unavailable = new Set([...existingEmployees.map(employee => employee.id), ...drafts.filter(candidate => candidate.key !== draft.key).map(candidate => Number(candidate.employeeId))]);
         return props.allEmployees.filter(employee => !unavailable.has(employee.id)).map(employee => ({ value: String(employee.id), label: employee.fullName }));
       },
     }];
@@ -187,7 +201,7 @@ export function ProjectEmployeeAgGrid(props: ProjectEmployeeGridProps) {
       result.push({ field, headerName, minWidth, initialFlex, editable: false, value: (record, draft) => employeeFor(record, draft)?.[field] ?? "—" });
     }
     return result;
-  }, [props.allEmployees, props.rows]);
+  }, [props.allEmployees, props.rows, existingEmployees]);
   const patchDraft = (draft: ProjectEmployeeDraft, values: Record<string, string>) => {
     if (values.fullName === undefined) return draft;
     const value = values.fullName.trim();
@@ -198,9 +212,10 @@ export function ProjectEmployeeAgGrid(props: ProjectEmployeeGridProps) {
   };
   return <CatalogSpreadsheetGrid<GridEmployee, ProjectEmployeeDraft>
     rows={props.rows} drafts={props.drafts} columns={columns} scopeKey={props.scopeKey ?? `projectEmployees:${props.preferenceScope?.siteId ?? 0}`}
+    navigationFilter={props.focusedEmployeeId ? { columnId: "fullName", value: String(props.focusedEmployeeId), ready: !props.loading, onCleared: props.onClearEmployeeFocus } : undefined}
     canCreate={props.canCreate ?? !props.readOnly} canUpdate={false} canSelect={!props.selectionDisabled} loading={props.loading} preferenceScope={props.preferenceScope}
     newDraft={key => ({ key, employeeId: "", employeeQuery: "" })} toDraft={employee => ({ key: `project-employee-${employee.id}`, id: employee.id, employeeId: String(employee.id), employeeQuery: employee.fullName })} patchDraft={patchDraft}
-    validateDrafts={(drafts, changedKeys) => validateDistinct(props.rows, drafts, changedKeys, employee => String(employee.id), draft => draft.employeeId, "сотрудник")}
+    validateDrafts={(drafts, changedKeys) => validateDistinct(existingEmployees, drafts, changedKeys, employee => String(employee.id), draft => draft.employeeId, "сотрудник")}
     selectedIds={props.pendingDeletes} onSelectionChange={props.onSelectionChange} onVisibleIdsChange={props.onVisibleIdsChange} onValidationError={props.onValidationError} renderFooter={props.renderFooter}
     onReplaceDrafts={drafts => replaceCompatible(drafts, props.drafts, props.onReplaceDrafts, props.onPatchDraft)}
   />;

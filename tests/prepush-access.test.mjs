@@ -100,7 +100,7 @@ test("audit access cannot bypass hidden pending reports, including historical an
 
   for (const overrides of [{ canViewPendingReports: true }, { role: "engineer" }]) {
     const enabled = structuredClone(permissions);
-    enabled.workers_report_submitted.view = true;
+    for (const resource of ["workers_report", "equipment_report"]) for (const status of ["draft", "submitted", "approved"]) enabled[`${resource}_${status}`].view = true;
     boundary.configure(actor(enabled, overrides), databaseFixture(events));
     const allowed = await auditRoute.GET(new Request("http://localhost/api/audit-log"));
     assert.deepEqual((await allowed.json()).events.map(event => event.id), [9, 8, 7, 6, 5, 4, 3, 2]);

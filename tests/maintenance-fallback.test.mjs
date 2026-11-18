@@ -60,6 +60,7 @@ test("API writes are rejected as JSON and never reflected or processed", async (
     const body = await response.text();
     assert.equal(body.includes(secret), false);
     assert.equal(JSON.parse(body).code, "MAINTENANCE");
+    assert.equal(JSON.parse(body).phase, "unavailable");
     assert.equal((await fetch(`${origin}/api/health`)).status, 503);
   });
 });
@@ -80,7 +81,8 @@ test("Traefik errors wrapper preserves API JSON and strips original sensitive UR
     for (const original of [`/api/personnel-report?token=${secret}`, `https://resurs-otchet.ru/api/data?token=${secret}`, encodeURIComponent(`/api/timesheet?token=${secret}`)]) {
       const response = await fetch(`${origin}/maintenance?request=${encodeURIComponent(original)}`);
       assert.equal(response.status, 503);
-      assert.equal((await response.json()).code, "MAINTENANCE");
+      const body = await response.json();
+      assert.equal(body.code, "MAINTENANCE"); assert.equal(body.phase, "unavailable");
     }
     const status = await fetch(`${origin}/maintenance?request=${encodeURIComponent("/api/maintenance/status")}`);
     assert.equal((await status.json()).maintenance, true);

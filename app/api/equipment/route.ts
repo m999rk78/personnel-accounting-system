@@ -27,6 +27,7 @@ type EquipmentTimesheetMark = {
   downtimeHours: number;
   note: string;
   updatedBy: string;
+  revision?: string;
 };
 
 type EquipmentPlanConflict = {
@@ -48,11 +49,12 @@ function positiveInteger(value: unknown) {
 
 function validDate(value: unknown): value is string {
   return typeof value === "string" && /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(value)
-    && !Number.isNaN(Date.parse(`${value}T00:00:00Z`));
+    && !value.startsWith("0000") && Number.isFinite(Date.parse(`${value}T00:00:00Z`))
+    && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 }
 
 function validMonth(value: unknown): value is string {
-  return typeof value === "string" && /^\d{4}-(0[1-9]|1[0-2])$/.test(value);
+  return typeof value === "string" && /^\d{4}-(0[1-9]|1[0-2])$/.test(value) && !value.startsWith("0000");
 }
 
 function nextMonthStart(month: string) {
@@ -510,7 +512,7 @@ async function handleGET(request: Request) {
           ORDER BY ee.work_date, eu.equipment_type, eu.model, ee.id`).bind(siteId, monthStart, monthEnd),
         db.prepare(`SELECT equipment_id AS "equipmentId", work_date AS "workDate",
           productive_hours AS "productiveHours", downtime_hours AS "downtimeHours",
-          note, created_by AS "updatedBy"
+          note, created_by AS "updatedBy", id::text || ':' || xmin::text || ':' || updated_at::text AS revision
           FROM equipment_timesheet_marks
           WHERE site_id = ? AND work_date >= ? AND work_date < ?
           ORDER BY work_date, equipment_id`).bind(siteId, monthStart, monthEnd),
@@ -713,6 +715,10 @@ async function handlePOST(request: Request): Promise<Response> {
     if (payload.action === "save-timesheet-mark") {
       if (!hasPermission(authUser.permissions, "equipment_timesheet", "view")) return errorResponse("Нет доступа к табелю техники.", 403);
       if (!validDate(payload.workDate)) return errorResponse("Некорректная дата табеля.", 400);
+      const guardedWrite = Object.hasOwn(payload, "expectedRevision");
+      if (guardedWrite && payload.expectedRevision !== null && typeof payload.expectedRevision !== "string") {
+        return errorResponse("Некорректная версия отметки. Обновите табель.", 400);
+      }
       const workDate = payload.workDate;
       const equipmentId = positiveInteger(payload.equipmentId);
       if (!equipmentId) return errorResponse("Не выбрана единица техники.", 400);
@@ -726,6 +732,11 @@ async function handlePOST(request: Request): Promise<Response> {
         await transaction.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(`equipment-hours:${workDate}:${equipmentId}`).first();
         const existingMark = await transaction.prepare("SELECT id FROM equipment_timesheet_marks WHERE site_id = ? AND equipment_id = ? AND work_date = ?")
           .bind(siteId, equipmentId, workDate).first<{ id: number }>();
+        const readRevision = () => transaction.prepare("SELECT id::text || ':' || xmin::text || ':' || updated_at::text AS revision FROM equipment_timesheet_marks WHERE site_id = ? AND equipment_id = ? AND work_date = ?")
+          .bind(siteId, equipmentId, workDate).first<{ revision: string }>();
+        if (guardedWrite && payload.expectedRevision !== (existingMark ? (await readRevision())?.revision ?? null : null)) {
+          return errorResponse("Эта ячейка уже изменена. Обновите табель и проверьте актуальное значение перед повторной правкой.", 409);
+        }
         if (payload.clear === true) {
           if (!existingMark) return Response.json({ deleted: false, equipmentId, workDate });
           if (!hasPermission(authUser.permissions, "equipment_timesheet", "delete")) return errorResponse("Нет права удалять отметки табеля техники.", 403);
@@ -753,6 +764,7 @@ async function handlePOST(request: Request): Promise<Response> {
             note = EXCLUDED.note, created_by = EXCLUDED.created_by, updated_at = CURRENT_TIMESTAMP`)
           .bind(siteId, equipmentId, workDate, productiveHours, downtimeHours, note, authUser.fullName).run();
         const mark: EquipmentTimesheetMark = { equipmentId, workDate, productiveHours, downtimeHours, note, updatedBy: authUser.fullName };
+        if (guardedWrite) mark.revision = (await readRevision())?.revision;
         return Response.json({ mark });
       });
     }

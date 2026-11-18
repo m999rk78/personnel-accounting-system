@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
 import type { ColDef, GridApi, IFilterParams, PostProcessPopupParams } from "ag-grid-community";
 import { gridTheme } from "./gridTheme";
@@ -9,12 +9,16 @@ import { compareGridValues } from "./gridFilterModel";
 import { enterpriseFilterParams, type EnterpriseFilterOptions } from "./GridEnterpriseFilters";
 import type { TimesheetFiltersContextValue } from "./TimesheetColumnFilter";
 import { IMPORT_ORDER_COLUMN, importOrderColumnState, shouldApplyImportOrder } from "./importOrderSorting";
+import { useGridFilterEscape } from "./useGridFilterEscape";
+import { useGridNavigationFilter, type GridNavigationFilter } from "./useGridNavigationFilter";
 
 export type TimesheetFilterColumn<T> = {
   colId: string;
   headerName: string;
   kind?: "text" | "number" | "date";
   getValue: (row: T) => unknown;
+  getFilterValue?: (row: T) => string;
+  formatFilterValue?: (value: unknown) => string;
   valueFormatter?: (value: unknown) => string;
   presets?: readonly { value: string; label: string; matches: (row: T) => boolean }[];
 };
@@ -22,14 +26,16 @@ type Snapshot = { keys: string[] | null; filters: string[]; sorts: { id: string;
 const EMPTY: Snapshot = { keys: null, filters: [], sorts: [] };
 
 /** One native AG row model supplies filters/sorts to the existing spreadsheet cells. */
-export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, importOrder, presentation = "full", includeConditions = true }: { rows: readonly T[]; columns: readonly TimesheetFilterColumn<T>[]; getRowId: (row: T) => string; resetKey: string; importOrder?: { rank: (row: T) => number; activation: number; ready: boolean; defaultSort: boolean }; presentation?: EnterpriseFilterOptions["presentation"]; includeConditions?: boolean }) {
+export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, importOrder, navigationFilter, presentation = "full", includeConditions = true }: { rows: readonly T[]; columns: readonly TimesheetFilterColumn<T>[]; getRowId: (row: T) => string; resetKey: string; importOrder?: { rank: (row: T) => number; activation: number; ready: boolean; defaultSort: boolean }; navigationFilter?: GridNavigationFilter; presentation?: EnterpriseFilterOptions["presentation"]; includeConditions?: boolean }) {
   const apiRef = useRef<GridApi<T> | null>(null);
   const [api, setApi] = useState<GridApi<T> | null>(null);
+  const navigation = useGridNavigationFilter({ api, navigationFilter });
   const anchor = useRef<{ columnId: string; trigger: HTMLElement } | null>(null);
   const popup = useRef<HTMLElement | null>(null);
   const [native, setNative] = useState(false);
   const [snapshot, setSnapshot] = useState<Snapshot>(EMPTY);
   const [openColumnId, setOpenColumnId] = useState<string | null>(null);
+  const trackFilterEscape = useGridFilterEscape<T>();
   const publish = useCallback((api: GridApi<T>) => {
     if (api.isDestroyed()) return;
     const keys: string[] = [];
@@ -41,9 +47,22 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
     setSnapshot(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
   }, []);
   const importRank = importOrder?.rank;
+  const currentColumns = useRef(columns);
+  useLayoutEffect(() => { currentColumns.current = columns; }, [columns]);
+  const identityColumnsKey = JSON.stringify(columns.filter(column => column.getFilterValue).map(column => column.colId));
+  const identityBindings = useMemo(() => new Map((JSON.parse(identityColumnsKey) as string[]).map(colId => {
+    const definition = () => currentColumns.current.find(column => column.colId === colId);
+    const format = (value: unknown) => definition()?.formatFilterValue?.(value) ?? definition()?.valueFormatter?.(value) ?? String(value ?? "");
+    return [colId, {
+      get: (params: { data?: T }) => params.data ? definition()?.getFilterValue?.(params.data) ?? null : null,
+      format: ({ value }: { value: unknown }) => format(value),
+      compare: (left: unknown, right: unknown) => compareGridValues(format(left), format(right)),
+    }] as const;
+  })), [identityColumnsKey]);
   const definitions = useMemo<ColDef<T>[]>(() => [...columns.map((column): ColDef<T> => ({
     colId: column.colId, headerName: column.headerName, sortable: true, cellDataType: false,
     valueGetter: params => params.data ? column.getValue(params.data) : null,
+    ...(column.getFilterValue ? { filterValueGetter: identityBindings.get(column.colId)!.get } : {}),
     valueFormatter: params => column.valueFormatter?.(params.value) ?? (params.value == null || params.value === "" ? "(Пустые)" : String(params.value)),
     comparator: compareGridValues,
     filter: native ? "agMultiColumnFilter" : column.kind === "number" ? "agNumberColumnFilter" : column.kind === "date" ? "agDateColumnFilter" : "agTextColumnFilter",
@@ -51,7 +70,8 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
       presentation,
       includeConditions,
       kind: column.kind ?? "text",
-      valueFormatter: ({ value }) => column.valueFormatter?.(value) ?? (value == null || value === "" ? "(Пустые)" : String(value)),
+      valueFormatter: identityBindings.get(column.colId)?.format ?? (({ value }) => column.valueFormatter?.(value) ?? (value == null || value === "" ? "(Пустые)" : String(value))),
+      ...(column.getFilterValue ? { comparator: identityBindings.get(column.colId)!.compare, defaultToNothingSelected: true } : {}),
       ...(column.presets?.length ? { stateFilter: {
         values: column.presets.map(preset => ({ value: preset.value, label: preset.label })),
         getValue: (data: unknown) => data ? column.presets!.filter(preset => preset.matches(data as T)).map(preset => preset.value) : [],
@@ -61,7 +81,7 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
     colId: IMPORT_ORDER_COLUMN, headerName: "Порядок импорта", hide: true, lockVisible: true, suppressColumnsToolPanel: true,
     sortable: true, filter: false, valueGetter: (params: { data?: T }) => params.data ? importRank(params.data) : null,
     comparator: (left: number, right: number) => left - right,
-  }] : [])], [columns, native, importRank, presentation, includeConditions]);
+  }] : [])], [columns, native, importRank, presentation, includeConditions, identityBindings]);
   const previousImportActivation = useRef(0);
   const defaultImportApplied = useRef<GridApi<T> | null>(null);
   const importActivation = importOrder?.activation ?? 0;
@@ -82,7 +102,8 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
     api.applyColumnState({ defaultState: { sort: null, sortIndex: null } });
     anchor.current = null; popup.current = null;
     setOpenColumnId(null); publish(api);
-  }, [publish]);
+    navigationFilter?.onCleared?.();
+  }, [publish, navigationFilter]);
   const open = useCallback((columnId: string, trigger: HTMLElement, wasOpen?: boolean) => {
     const api = apiRef.current;
     if (!api || api.isDestroyed()) return;
@@ -113,13 +134,15 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
     if (ePopup.style.top !== top) ePopup.style.top = top;
     if (ePopup.style.zIndex !== "1200") ePopup.style.zIndex = "1200";
   }, [presentation]);
-  const positionPopup = useCallback(({ ePopup }: PostProcessPopupParams<T>) => {
+  const positionPopup = useCallback((params: PostProcessPopupParams<T>) => {
+    const { ePopup } = params;
     const target = anchor.current;
     if (!target || !ePopup.classList.contains("ag-filter-menu")) return;
+    trackFilterEscape(params, target.trigger);
     popup.current = ePopup;
     updatePopupPosition();
     setOpenColumnId(target.columnId);
-  }, [updatePopupPosition]);
+  }, [trackFilterEscape, updatePopupPosition]);
   useEffect(() => {
     if (!openColumnId) return;
     let frame = 0;
@@ -129,14 +152,6 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
     const repositionOnScroll = (event: Event) => {
       if (event.target instanceof Node && popup.current?.contains(event.target) || event.target instanceof Element && event.target.closest(".timesheet-filter-engine,.ag-popup,.custom-select-menu")) return;
       schedule();
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
-      if (event.target instanceof Element && event.target.closest(".custom-select-menu")) return;
-      const api = apiRef.current;
-      if (!api || api.isDestroyed()) return;
-      api.doFilterAction({ colId: openColumnId, action: "cancel" });
-      api.hideColumnFilter();
     };
     // AG Grid also repositions menus after scrolling/rendering; keep the external
     // table header as the anchor, including when new conditions change the height.
@@ -149,14 +164,12 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
     schedule();
     window.addEventListener("scroll", repositionOnScroll, true);
     window.addEventListener("resize", schedule);
-    document.addEventListener("keydown", closeOnEscape);
     return () => {
       cancelAnimationFrame(frame);
       positioning.disconnect();
       resize.disconnect();
       window.removeEventListener("scroll", repositionOnScroll, true);
       window.removeEventListener("resize", schedule);
-      document.removeEventListener("keydown", closeOnEscape);
     };
   }, [openColumnId, updatePopupPosition, snapshot.filters]);
   const byId = useMemo(() => new Map(rows.map(row => [getRowId(row), row])), [rows, getRowId]);
@@ -172,7 +185,7 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
     }
     if (!api.isDestroyed()) { api.onFilterChanged(); publish(api); }
   }, [dayColumnIds, publish]);
-  const visibleRows = snapshot.keys === null ? [...rows] : snapshot.keys.flatMap(key => { const row = byId.get(key); return row ? [row] : []; });
+  const visibleRows = navigation.pending || navigation.error ? [] : snapshot.keys === null ? [...rows] : snapshot.keys.flatMap(key => { const row = byId.get(key); return row ? [row] : []; });
   const context = useMemo<TimesheetFiltersContextValue>(() => ({
     open, openColumnId, presentation, activeColumns: new Set(snapshot.filters),
     sorts: new Map(snapshot.sorts.map(sort => [sort.id, { direction: sort.direction, priority: sort.priority }])),
@@ -205,5 +218,5 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
       }
     }}
     onGridPreDestroyed={() => { popup.current = null; anchor.current = null; apiRef.current = null; }}/></div>;
-  return { rows: visibleRows, context, controller, columnActions, dayFilterIds, clearDayFilters, activeCount: snapshot.filters.length + snapshot.sorts.length, isActive: snapshot.filters.length > 0 || snapshot.sorts.length > 0, reset };
+  return { rows: visibleRows, context, controller, columnActions, dayFilterIds, clearDayFilters, navigationPending: navigation.pending, navigationError: navigation.error, activeCount: snapshot.filters.length + snapshot.sorts.length, isActive: snapshot.filters.length > 0 || snapshot.sorts.length > 0 || Boolean(navigation.pending || navigation.error), reset };
 }

@@ -1,0 +1,23 @@
+.table-status-toast {
+  position:fixed;
+  z-index:430;
+  top:12px;
+  right:16px;
+  max-width:calc(100% - 32px);
+  min-height:32px;
+  display:flex;
+  align-items:center;
+  padding:6px 11px;
+  border:1px solid #b8cdf8;
+  border-radius:8px;
+  background:#f5f8ff;
+  color:#26579d;
+  box-shadow:0 5px 16px rgba(37,99,235,.12);
+  font-size:11px;
+  font-weight:750;
+  overflow-wrap:anywhere;
+  pointer-events:none;
+}
+
+dialog > .table-status-toast { position:absolute; }
+.table-clipboard-fallback { position:fixed; top:0; left:0; opacity:0; width:1px; height:1px; pointer-events:none; }

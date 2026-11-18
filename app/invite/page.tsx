@@ -1,8 +1,8 @@
 "use client";
 /* eslint-disable @next/next/no-img-element -- используется оригинальный SVG-логотип */
+/* eslint-disable @next/next/no-html-link-for-pages -- возвращаемся к авторизации полной загрузкой страницы без клиентского prefetch */
 
 import { FormEvent, useEffect, useRef, useState } from "react";
-import Link from "next/link";
 
 type InvitedUser = { fullName: string; email: string };
 
@@ -46,12 +46,12 @@ export default function InvitationPage() {
 
   return <main className="auth-page"><section className="auth-card" aria-labelledby="invite-title">
     <img src="/tps-logo.svg" alt="Югмонтажстрой" />
-    <div className="auth-heading"><span>Приглашение</span><h1 id="invite-title">Создание пароля</h1><p>{user ? `${user.fullName}, задайте пароль для входа под адресом ${user.email}.` : "Проверяем ссылку приглашения."}</p></div>
+    <div className="auth-heading"><span>Приглашение</span><h1 id="invite-title">Создание пароля</h1><p>{user ? `${user.fullName}, задайте пароль для входа под адресом ${user.email}.` : checking ? "Проверяем ссылку приглашения." : "Запросите новое приглашение у администратора."}</p></div>
     {checking ? <div className="auth-inline-loading"><div className="auth-spinner" />Проверяем приглашение…</div> : user ? <form onSubmit={submit}>
       <label><span>Новый пароль</span><input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={10} maxLength={128} required /></label>
       <label><span>Повторите пароль</span><input type="password" autoComplete="new-password" value={repeatPassword} onChange={(event) => setRepeatPassword(event.target.value)} minLength={10} maxLength={128} required /></label>
       {error && <div className="auth-error" role="alert">{error}</div>}
       <button className="auth-submit" type="submit" disabled={saving}>{saving ? "Создаём пароль…" : "Создать пароль и войти"}</button>
-    </form> : <><div className="auth-error" role="alert">{error}</div><Link className="auth-link" href="/login">Перейти ко входу</Link></>}
+    </form> : <><div className="auth-error" role="alert">{error}</div><a className="auth-link" href="/login">Перейти ко входу</a></>}
   </section></main>;
 }

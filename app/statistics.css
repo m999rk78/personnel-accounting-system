@@ -131,10 +131,26 @@
 .statistics-card-heading { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:4px 12px; padding:11px 14px; }
 .statistics-card-heading h2 { margin:0; color:#18181b; font-size:16px; font-weight:720; }
 .statistics-card-note { color:#52525b; font-size:12px; }
+.statistics-breakdown-heading { justify-content:flex-start; overflow:visible; border-bottom:0; border-radius:10px 10px 0 0; }
+.statistics-breakdown-heading .statistics-card-note { margin-inline-start:auto; }
+.statistics-group-tabs { padding:3px; gap:2px; }
+.statistics-group-tabs button { padding:5px 10px; white-space:nowrap; }
+.statistics-breakdown-chart { border-top:0; border-radius:0 0 10px 10px; }
+.statistics-breakdown-chart .statistics-empty { border:0; }
 .statistics-chart { min-width:0; height:clamp(420px, 58vh, 680px); margin:0 6px 6px; }
 .statistics-grid { width:100%; min-width:0; }
+.statistics-grid .localized-grid { height:auto; }
+.statistics-grid-scroll { height:clamp(260px, 50vh, 560px); }
+.statistics-grid-scroll .localized-grid { height:100%; }
 .statistics-grid .ag-root-wrapper { border:0; border-top:1px solid #e4e4e7; border-radius:0; }
 .statistics-grid-total { font-weight:750; }
+.statistics-grid-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:8px 12px; margin-inline-start:auto; }
+.statistics-selection-sum { display:inline-flex; align-items:center; gap:6px; padding:5px 9px; border:1px solid #ead7ad; border-radius:6px; background:#fff8e8; color:#785314; font-size:12px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.statistics-selection-sum strong { color:#27272a; font-weight:700; }
+.statistics-copy-button { display:inline-flex; align-items:center; gap:6px; min-height:30px; padding:5px 9px; border:1px solid #dedee3; border-radius:6px; background:#fff; color:#3f3f46; font:inherit; font-size:12px; font-weight:600; cursor:pointer; }
+.statistics-copy-button svg { width:15px; height:15px; flex:none; }
+.statistics-copy-button:hover { background:#f4f4f5; }
+.statistics-copy-button:disabled { opacity:.5; cursor:default; }
 
 .statistics-empty {
   display:grid;

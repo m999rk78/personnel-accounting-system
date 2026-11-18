@@ -56,6 +56,11 @@ try {
     if (request.method() === "GET") {
       if (pathname === "/api/data") return route.fulfill({ json: data });
       if (pathname === "/api/table-order") return route.fulfill({ json: { ids: [], canWrite: false, hasSavedOrder: false } });
+      if (pathname === "/api/audit-log") return route.fulfill({ json: { events: ["reports", "timesheets"].map((category, index) => ({
+        id: index + 1, actorUserId: 1, actorName: "Учебный сотрудник", actorRole: "superadmin", category, actionKey: "test",
+        entityType: "report", entityId: String(index + 1), siteId: 1, siteName: sites[0].name, summary: `Тест ${category}`,
+        beforeData: null, afterData: null, createdAt: "2026-11-04T12:00:00Z",
+      })) } });
     }
     unexpectedRequests.push(`${request.method()} ${pathname}`);
     return route.fulfill({ status: 404, json: { error: "Этот API не подключён к стенду." } });
@@ -102,6 +107,28 @@ try {
     console.log(`PASS: ${heading} keeps the live filter open and focused for every character`);
   }
 
+  await page.goto(`${base}/workspace-header.html?route=${encodeURIComponent("/settings/general/activity")}`);
+  const auditFilter = page.getByRole("button", { name: "Раздел журнала", exact: true });
+  const auditOptions = page.getByRole("listbox", { name: "Раздел журнала", exact: true });
+  await page.locator(".audit-log-event").nth(1).waitFor();
+  await auditFilter.click();
+  await auditOptions.getByRole("option", { name: "Табели", exact: true }).click();
+  await expectCells(".audit-log-event", 1);
+  await auditFilter.click();
+  await auditOptions.waitFor();
+  await auditFilter.focus();
+  await page.keyboard.press("Escape");
+  await auditOptions.waitFor({ state: "hidden" });
+  assert.equal(await auditFilter.getAttribute("aria-expanded"), "false");
+  assert.equal(await auditFilter.innerText(), "Табели");
+  await expectCells(".audit-log-event", 1);
+  await auditFilter.click();
+  const selectedAuditOption = auditOptions.getByRole("option", { name: "Табели", exact: true });
+  await selectedAuditOption.press("Escape");
+  await auditOptions.waitFor({ state: "hidden" });
+  await page.waitForFunction(trigger => document.activeElement === trigger, await auditFilter.elementHandle());
+  console.log("PASS: the audit log filter closes from the trigger and options without clearing its selection");
+
   await page.goto(`${base}/report-filter-search.html`);
   for (const { report, column, query, count } of [
     { report: "Отчёт персонала", column: "ФИО", query: "иванов", count: 6 },
@@ -146,6 +173,22 @@ try {
   await expectCells(cells, 1);
   assert.match(await page.locator(cells).innerText(), /^Александров/);
   console.log("PASS: the full filter remains focused and only applies when requested");
+
+  const fullFilter = page.getByRole("button", { name: "Фильтр: Сотрудник", exact: true });
+  await fullFilter.press("Enter");
+  const pendingSort = popup.getByRole("button", { name: /По возрастанию/ }).first();
+  await pendingSort.click();
+  const direction = popup.getByRole("button", { name: "Направление сортировки 1", exact: true });
+  await direction.click();
+  const sortOptions = page.getByRole("listbox", { name: "Направление сортировки 1", exact: true });
+  await sortOptions.getByRole("option", { name: /По возрастанию/ }).press("Escape");
+  await sortOptions.waitFor({ state: "hidden" });
+  assert.equal(await popup.count(), 1, "The first Escape belongs to the nested sort dropdown");
+  assert.equal(await pendingSort.getAttribute("aria-pressed"), "true", "Closing the dropdown does not cancel the parent's draft");
+  await page.keyboard.press("Escape");
+  await popup.waitFor({ state: "hidden" });
+  await expectCells(cells, 1);
+  console.log("PASS: nested dropdown consumes Escape before the column filter, and the applied filter survives both");
 
   await page.goto(`${base}/unified-filters.html?many=1`);
   await page.getByRole("button", { name: "Фильтр: Сотрудник", exact: true }).click();

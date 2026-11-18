@@ -20,6 +20,11 @@ function request(changes = {}) {
   return new Request(`http://localhost/api/statistics?${params}`);
 }
 
+function allTimeRequest(changes = {}) {
+  const params = new URLSearchParams({ siteId: "7", kind: "personnel", period: "all", ...changes });
+  return new Request(`http://localhost/api/statistics?${params}`);
+}
+
 function actor(role = "foreman") {
   return { id: 17, role, projectAccess: { mode: "selected", siteIds: [7] }, permissions: rolePermissionTemplate(role) };
 }
@@ -133,4 +138,68 @@ test("statistics validates dates before reading and rejects inactive projects", 
   assert.deepEqual(calls, []);
   assert.equal((await GET(request())).status, 404);
   assert.equal(calls.length, 1);
+});
+
+test("all-time statistics omit the date predicate but keep the project and active approved rows", async () => {
+  for (const [kind, table] of [["personnel", "placement_entries"], ["equipment", "equipment_entries"]]) {
+    const calls = configure(actor());
+    const response = await GET(allTimeRequest({ kind }));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "private, no-store");
+    assert.deepEqual(await response.json(), { rows: [] });
+    assert.deepEqual(calls.map(call => call.values), [[7], [7]]);
+    assert.ok(calls[1].sql.includes(`FROM ${table} entry`));
+    assert.match(calls[1].sql, /entry\.site_id = \? AND entry\.deleted_at IS NULL/);
+    assert.doesNotMatch(calls[1].sql, /entry\.work_date/);
+  }
+});
+
+test("all-time statistics reject ambiguous periods and respect existing project and tab permissions", async () => {
+  const user = actor();
+  user.permissions.equipment_statistics.view = false;
+  const calls = configure(user);
+  for (const changes of [{ period: "" }, { period: "future" }, { from: "2026-11-01" }, { to: "" }]) {
+    assert.equal((await GET(allTimeRequest(changes))).status, 400);
+  }
+  const duplicate = new URL(allTimeRequest().url);
+  duplicate.searchParams.append("period", "all");
+  assert.equal((await GET(new Request(duplicate))).status, 400);
+  assert.equal((await GET(allTimeRequest({ siteId: "8" }))).status, 403);
+  assert.equal((await GET(allTimeRequest({ kind: "equipment" }))).status, 403);
+  assert.deepEqual(calls, []);
+});
+
+test("the day grouping returns chronologically ordered work dates with one aggregate query", async () => {
+  const calls = configure(actor(), { results: [
+    { workDate: "2026-11-11", title: "Перевозка материалов", hours: 12 },
+    { workDate: "2026-11-01", title: "ПРОСТОЙ техники", hours: 5 },
+    { workDate: "2026-11-01", title: "Перевозка материалов", hours: 3 },
+  ] });
+  const response = await GET(request({ kind: "equipment", groupBy: "day" }));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "private, no-store");
+  assert.deepEqual((await response.json()).rows, [
+    { workDate: "2026-11-01", welders: 0, installers: 0, other: 0, productive: 3, downtime: 5, total: 8 },
+    { workDate: "2026-11-11", welders: 0, installers: 0, other: 0, productive: 12, downtime: 0, total: 12 },
+  ]);
+  assert.deepEqual(calls.map(call => call.values), [[7], [7, "2026-11-01", "2026-11-11"]]);
+  assert.match(calls[1].sql, /GROUP BY entry\.work_date, subwork\.name/);
+});
+
+test("day grouping supports all time and shares validation, project and permission checks", async () => {
+  const user = actor();
+  user.permissions.equipment_statistics.view = false;
+  const calls = configure(user);
+  assert.equal((await GET(allTimeRequest({ groupBy: "day" }))).status, 200);
+  assert.deepEqual(calls.map(call => call.values), [[7], [7]]);
+  assert.match(calls[1].sql, /GROUP BY entry\.work_date, entry\.position_snapshot/);
+  assert.doesNotMatch(calls[1].sql, /BETWEEN/);
+  assert.equal((await GET(allTimeRequest({ groupBy: "day", siteId: "8" }))).status, 403);
+  assert.equal((await GET(allTimeRequest({ groupBy: "day", kind: "equipment" }))).status, 403);
+  assert.equal((await GET(request({ groupBy: "day", from: "2025-01-01" }))).status, 400);
+  assert.equal((await GET(request({ groupBy: "week" }))).status, 400);
+  const duplicate = new URL(request({ groupBy: "day" }).url);
+  duplicate.searchParams.append("groupBy", "zone");
+  assert.equal((await GET(new Request(duplicate))).status, 400);
+  assert.equal(calls.length, 2, "Invalid or unauthorized requests cannot query hours");
 });

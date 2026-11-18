@@ -4,8 +4,9 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
-import { isReportWorkDate, moveUnsavedReportDay } from "../app/reportDateChanges.ts";
+import { isReportWorkDate, moveUnsavedReportDay, moveUnsavedReportRow } from "../app/reportDateChanges.ts";
 import { draftHistoryReducer } from "../app/personnelSpreadsheet.ts";
+import { isPersonnelReportDraft } from "../app/personnelReportActions.ts";
 import { personnelReportImportTarget, personnelReportNewKey } from "../app/personnelReportSessions.ts";
 import { equipmentReportImportTarget, equipmentReportNewKey } from "../app/equipmentReportSessions.ts";
 import { parseCalendarDate, calendarDate, calendarMonthDays, shiftCalendarDate, shiftCalendarMonth, calendarMonthGrid, calendarKeyDate } from "../app/reportDateCalendar.ts";
@@ -64,6 +65,55 @@ test("date transfer validates original identities and row limits and participate
   assert.equal(undone.present, original);
   const redone = draftHistoryReducer(undone, { type: "redo" });
   assert.equal(redone.present, moved.present); assert.deepEqual(redone.present["new:2026-10-30"], original["new:2026-11-02"]);
+});
+
+test("moving one unsaved row preserves other edits, identities and a single undo/redo step", () => {
+  const saved = Object.freeze({ key: "report-17-101", reportRowId: 101, hours: "9" });
+  const moved = Object.freeze({ key: "new-row", hours: "", inputValues: { hours: "8," }, importBatchId: "file-1", createdAt: "2026-11-18T10:00:00Z" });
+  const otherNew = Object.freeze({ key: "other-new", note: "Оставить здесь" });
+  const destination = Object.freeze({ key: "report-18-102", reportRowId: 102, note: "Не перезаписывать" });
+  const original = Object.freeze({ 17: Object.freeze([moved, saved, otherNew]), 18: Object.freeze([destination]), other: Object.freeze([{ key: "other" }]) });
+  const history = draftHistoryReducer({ present: original, past: [], future: [] }, { type: "change", update: current => moveUnsavedReportRow(current, "17", "18", moved.key, [{ ...destination, note: "Старая версия" }]) });
+  assert.deepEqual(history.present[17], [saved, otherNew]);
+  assert.deepEqual(history.present[18], [moved, destination]);
+  assert.equal(history.present[18][0], moved); assert.equal(history.present[18][1], destination);
+  assert.equal(history.present.other, original.other);
+  const undone = draftHistoryReducer(history, { type: "undo" }); assert.equal(undone.present, original);
+  assert.equal(draftHistoryReducer(undone, { type: "redo" }).present, history.present);
+});
+
+test("single-row date transfer rejects persisted identities, duplicates and overflow without changing the source", () => {
+  const row = { key: "new-row" }, original = { 17: [row] };
+  assert.throws(() => moveUnsavedReportRow({ 17: [{ ...row, reportRowId: 101 }] }, "17", "new:2026-10-30", row.key), /несохранённую/);
+  assert.throws(() => moveUnsavedReportRow({ 17: [{ key: "report-17-101" }] }, "17", "new:2026-10-30", "report-17-101"), /несохранённую/);
+  assert.throws(() => moveUnsavedReportRow({ 17: [row, row] }, "17", "18", row.key), /несохранённую/);
+  assert.throws(() => moveUnsavedReportRow(original, "17", "18", row.key, [row]), /уже присутствует/);
+  assert.throws(() => moveUnsavedReportRow(original, "17", "18", row.key, Array.from({ length: 1000 }, (_, id) => ({ key: `target-${id}` }))), /1000 строк/);
+  assert.deepEqual(original, { 17: [row] });
+});
+
+test("a single-row transfer drops only an exactly unchanged source and undo restores its original group", () => {
+  const saved = { key: "report-17-101", reportRowId: 101, hours: "8", note: "" };
+  const moved = { key: "new-row", hours: "4" };
+  const original = { 17: [moved, saved] };
+  const history = draftHistoryReducer({ present: original, past: [], future: [] }, {
+    type: "change", update: current => moveUnsavedReportRow(current, "17", "new:2026-10-30", moved.key, [], [{ ...saved }]),
+  });
+  assert.equal(Object.hasOwn(history.present, "17"), false);
+  assert.deepEqual(history.present["new:2026-10-30"], [moved]);
+  const undone = draftHistoryReducer(history, { type: "undo" }); assert.equal(undone.present, original);
+  assert.equal(draftHistoryReducer(undone, { type: "redo" }).present, history.present);
+  for (const remaining of [
+    [{ ...saved, hours: "9" }],
+    [{ ...saved, inputValues: { hours: "8," } }],
+    [{ ...saved, updatedAt: "2026-11-18T10:00:00Z" }],
+    [saved, { key: "another-new-row" }],
+  ]) {
+    const result = moveUnsavedReportRow({ 17: [moved, ...remaining] }, "17", "new:2026-10-30", moved.key, [], [saved]);
+    assert.deepEqual(result[17], remaining, "Any content or metadata difference preserves the original source edit");
+  }
+  const second = { ...saved, key: "report-17-102", reportRowId: 102 };
+  assert.deepEqual(moveUnsavedReportRow({ 17: [moved, second, saved] }, "17", "18", moved.key, [], [saved, second])[17], [second, saved]);
 });
 
 async function appendHarness(kind, settings = {}) {
@@ -182,7 +232,8 @@ async function changeHarness(kind, settings = {}) {
   const requests = [], history = [], busy = [], remembered = [], notices = [];
   let sessions = settings.sessions ?? {}, entrySessions = {}, data = settings.data ?? { reports: settings.reports ?? [], entries: [] };
   const bindings = {
-    locked: false, fetching: false, props: { loading: false }, isReportWorkDate, moveUnsavedReportDay,
+    locked: false, fetching: false, props: { loading: false }, permissions: { create: true }, isReportWorkDate, moveUnsavedReportDay, moveUnsavedReportRow,
+    isPersonnelReportDraft, isEquipmentReportDraft: isPersonnelReportDraft,
     ownerByRow: new Map([[row.rowKey, "new:2026-11-02"]]), reports: [], data, currentUser: { id: 9, fullName: "Тестовый прораб" },
     personnelReportImportTarget, equipmentReportImportTarget, sessions, siteId: 7,
     keyOf: report => String(report.id), entryKey: entry => `entry-${entry.id}`, canEdit: () => true,
@@ -231,6 +282,106 @@ for (const kind of ["Personnel", "Equipment"]) {
     const dirty = await changeHarness(kind, { ...settings, edits: { 17: [{ key: "unsaved", hours: "9" }] } });
     await assert.rejects(dirty.change("2026-10-30"), /Сначала сохраните изменения/); assert.deepEqual(dirty.result().requests, []);
     const readOnly = await changeHarness(kind); await assert.rejects(readOnly.change("2026-10-30", { editable: false })); assert.deepEqual(readOnly.result().requests, []);
+  });
+
+  test(`${kind} a newly appended row leaves a saved draft alone without moving the saved report or other new rows`, async () => {
+    const report = { id: 17, revision: 4, workDate: "2026-11-02", siteId: 7, ownerUserId: 9, status: "draft", rows: [{ id: 101, reportId: 17 }] };
+    const saved = { key: "report-17-101", reportRowId: 101, hours: "9" }, row = { key: "row-1", hours: "", inputValues: { hours: "8," } }, otherNew = { key: "row-2" };
+    const edits = { 17: [row, saved, otherNew], unrelated: [{ key: "keep" }] }, sessions = { 17: report };
+    const harness = await changeHarness(kind, { reports: [report], ownerByRow: new Map([[row.key, "17"]]), edits, sessions });
+    await harness.change("2026-10-30", { draft: row });
+    const result = harness.result();
+    assert.deepEqual(result.state[17], [saved, otherNew]); assert.deepEqual(result.state["new:2026-10-30"], [row]);
+    assert.equal(result.state["new:2026-10-30"][0], row); assert.equal(result.state.unrelated, edits.unrelated);
+    assert.deepEqual(result.requests, []); assert.deepEqual(result.history, []); assert.deepEqual(result.busy, []);
+    assert.equal(result.sessions, sessions); assert.equal(result.data.reports[0], report); assert.equal(report.revision, 4);
+    assert.deepEqual(result.remembered, ["17", "new:2026-10-30"]);
+    assert.match(result.notices.at(-1), /Дата новой строки изменена/);
+  });
+
+  test(`${kind} an unsaved row can join an edited destination draft without rebasing its session`, async () => {
+    const source = { id: 17, revision: 4, workDate: "2026-11-02", siteId: 7, ownerUserId: 9, status: "rejected", rows: [] };
+    const destination = { ...source, id: 18, revision: 2, status: "draft", workDate: "2026-10-30", rows: [{ id: 102, reportId: 18 }] };
+    const row = { key: "row-1", importBatchId: "file-1" }, editedTarget = { key: "report-18-102", reportRowId: 102, hours: "7" };
+    const edits = { 17: [row], 18: [editedTarget] }, sessions = { 17: source, 18: destination };
+    const harness = await changeHarness(kind, { reports: [source, destination], ownerByRow: new Map([[row.key, "17"]]), edits, sessions });
+    await harness.change(destination.workDate, { draft: row, status: "rejected" });
+    const result = harness.result();
+    assert.equal(Object.hasOwn(result.state, "17"), false); assert.deepEqual(result.state[18], [row, editedTarget]);
+    assert.equal(result.state[18][1], editedTarget); assert.equal(result.sessions[18], destination);
+    assert.deepEqual(result.requests, []); assert.deepEqual(result.remembered, ["17", "18"]);
+  });
+
+  test(`${kind} single-row transfer respects destination status and permissions without mutating either draft`, async () => {
+    const source = { id: 17, revision: 4, workDate: "2026-11-02", siteId: 7, ownerUserId: 9, status: "draft", rows: [] };
+    const destination = { ...source, id: 18, workDate: "2026-10-30", status: "submitted" };
+    const row = { key: "row-1" }, edits = { 17: [row] }, sessions = { 17: source };
+    for (const settings of [
+      { reports: [source, destination] },
+      { reports: [source, { ...destination, status: "draft" }], canEdit: report => report.id === source.id },
+      { reports: [source], permissions: { create: false } },
+      { reports: [source, { ...destination, status: "draft" }], permissions: { create: false } },
+    ]) {
+      const harness = await changeHarness(kind, { ownerByRow: new Map([[row.key, "17"]]), edits, sessions, ...settings });
+      await assert.rejects(harness.change(destination.workDate, { draft: row }), /на проверку|Нет права/);
+      const result = harness.result(); assert.equal(result.state, edits); assert.equal(result.sessions, sessions);
+      assert.deepEqual(result.requests, []); assert.deepEqual(result.remembered, []); assert.deepEqual(result.history, []);
+    }
+  });
+
+  test(`${kind} moving the only appended row leaves a clean saved source out of the next save while retaining its frozen session`, async () => {
+    const source = { id: 17, revision: 4, workDate: "2026-11-02", siteId: 7, ownerUserId: 9, status: "draft", rows: [{ id: 101, reportId: 17 }] };
+    const saved = { ...source.rows[0], key: "saved-101" }, row = { key: "row-1" };
+    const edits = { 17: [row, saved] }, sessions = { 17: source };
+    const harness = await changeHarness(kind, { reports: [source], ownerByRow: new Map([[row.key, "17"]]), edits, sessions });
+    await harness.change("2026-10-30", { draft: row });
+    const result = harness.result();
+    assert.deepEqual(Object.keys(result.state), ["new:2026-10-30"]);
+    assert.equal(result.sessions[17], source, "Undo still has the original source version");
+    assert.equal(result.data.reports[0], source); assert.deepEqual(result.requests, []);
+    assert.deepEqual(result.state["new:2026-10-30"], [row]);
+  });
+
+  test(`${kind} the first row in a visually empty saved draft moves from November 18 to 16 for either owner with identical permissions`, async () => {
+    for (const ownerUserId of [9, 10]) for (const existingDestination of [false, true]) {
+      const source = { id: 17, revision: 4, workDate: "2026-11-18", siteId: 7, ownerUserId, status: "draft", rows: [] };
+      const destination = { ...source, id: 18, revision: 2, workDate: "2026-11-16" };
+      const row = { key: "row-1", ...(kind === "Personnel" ? { employeeId: "25", employeeQuery: "Первый сотрудник" } : { equipmentId: "25", equipmentQuery: "Первая единица техники" }), hours: "", note: "" };
+      const edits = { 17: [row] }, sessions = { 17: source };
+      const harness = await changeHarness(kind, {
+        reports: existingDestination ? [source, destination] : [source],
+        currentUser: { id: ownerUserId, fullName: `Прораб ${ownerUserId}` }, permissions: { create: true, update: true },
+        ownerByRow: new Map([[row.key, "17"]]), edits, sessions,
+      });
+      await harness.change("2026-11-16", { workDate: "2026-11-18", draft: row });
+      const result = harness.result(), targetKey = existingDestination ? "18" : "new:2026-11-16";
+      assert.deepEqual(result.state, { [targetKey]: [row] });
+      assert.equal(result.state[targetKey][0], row); assert.equal(result.sessions[17], source);
+      assert.deepEqual(source.rows, []); assert.equal(source.workDate, "2026-11-18"); assert.equal(source.revision, 4);
+      assert.deepEqual(destination.rows, []); assert.equal(destination.revision, 2);
+      assert.deepEqual(result.requests, []); assert.deepEqual(result.remembered, ["17", targetKey]);
+      const moved = draftHistoryReducer({ present: edits, past: [], future: [] }, { type: "change", update: result.state });
+      const undone = draftHistoryReducer(moved, { type: "undo" }); assert.equal(undone.present, edits);
+      assert.equal(draftHistoryReducer(undone, { type: "redo" }).present, result.state);
+    }
+  });
+
+  test(`${kind} persisted rows and unowned or reviewed source reports still cannot bypass the dirty-report guard`, async () => {
+    const source = { id: 17, revision: 4, workDate: "2026-11-02", siteId: 7, ownerUserId: 9, status: "draft", rows: [] };
+    const row = { key: "row-1" };
+    for (const [report, draft, patch] of [
+      [source, { ...row, reportRowId: 101 }, {}],
+      [{ ...source, ownerUserId: 10 }, row, {}],
+      [{ ...source, siteId: 8 }, row, {}],
+      [{ ...source, status: "submitted" }, row, {}],
+      [{ ...source, status: "approved" }, row, {}],
+      [source, row, { entry: { id: 101 } }],
+    ]) {
+      const edits = { 17: [draft] };
+      const harness = await changeHarness(kind, { reports: [report], ownerByRow: new Map([[row.key, "17"]]), edits });
+      await assert.rejects(harness.change("2026-10-30", { draft, ...patch }), /Сначала сохраните изменения/);
+      assert.equal(harness.result().state, edits); assert.deepEqual(harness.result().requests, []);
+    }
   });
 }
 

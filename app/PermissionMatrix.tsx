@@ -38,7 +38,7 @@ export function PermissionMatrix({ label, value, disabled = false, onChange, cel
     return PERMISSION_CATALOG.filter(item => matches(item) || item.parent && PERMISSION_CATALOG.some(parent => parent.key === item.parent && matches(parent)) || PERMISSION_CATALOG.some(child => child.parent === item.key && matches(child)));
   }, [query]);
   const clipboardRows = useMemo(() => permissionTableClipboardRows(definitions, normalized, compact, cellPolicy), [definitions, normalized, compact, cellPolicy]);
-  const { ref: selectionRef, className: selectionClass, handlers: selectionHandlers } = useNativeTableSelectAll({ rows: clipboardRows, headers: PERMISSION_TABLE_CLIPBOARD_HEADERS, resetKey: `${label}:${query}` });
+  const { ref: selectionRef, className: selectionClass, handlers: selectionHandlers, copyToast } = useNativeTableSelectAll({ rows: clipboardRows, headers: PERMISSION_TABLE_CLIPBOARD_HEADERS, resetKey: `${label}:${query}` });
   return <div ref={selectionRef} className={`permission-matrix${compact ? " compact" : ""} ${selectionClass}`} role="grid" aria-label={label} tabIndex={0} {...selectionHandlers}>
     <div className="permission-matrix-header" role="row"><span role="columnheader">Раздел системы</span>{PERMISSION_ACTIONS.map(action => <span role="columnheader" data-compact-label={COMPACT_ACTION_LABELS[action]} key={action}>{PERMISSION_ACTION_LABELS[action]}</span>)}</div>
     {Object.entries(PERMISSION_GROUP_LABELS).filter(([group]) => definitions.some(item => item.group === group)).map(([group, title]) => <section className="permission-group" key={group}>
@@ -59,5 +59,6 @@ export function PermissionMatrix({ label, value, disabled = false, onChange, cel
       </div>)}
     </section>)}
     {!definitions.length && <p className="roles-no-results">Разделы не найдены</p>}
+    {copyToast}
   </div>;
 }

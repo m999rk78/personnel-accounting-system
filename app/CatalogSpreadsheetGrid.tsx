@@ -11,6 +11,8 @@ import { applyCatalogBatch, removeCatalogDrafts, type CatalogDraft, type Catalog
 import { useCatalogDraftHistory } from "./useCatalogDraftHistory";
 import { useCatalogGridPreferences } from "./useCatalogGridPreferences";
 import { useWorkspaceTableOrder } from "./TableRowMoves";
+import { useGridNavigationFilter, type GridNavigationFilter } from "./useGridNavigationFilter";
+import { compareGridValues } from "./gridFilterModel";
 import { gridTheme } from "./gridTheme";
 import { AgTablePageScroll } from "./TablePageScroll";
 import "./catalogSpreadsheet.css";
@@ -21,6 +23,8 @@ export type CatalogColumn<R, D> = {
   field: string; headerName: string; minWidth?: number; initialWidth?: number; initialFlex?: number; pinned?: "left";
   editable?: boolean | ((record: R | undefined, draft: D | undefined) => boolean);
   value: (record: R | undefined, draft: D | undefined) => string;
+  getFilterValue?: (record: R | undefined, draft: D | undefined) => string;
+  formatFilterValue?: (value: unknown) => string;
   editValue?: (draft: D) => string;
   options?: (draft: D, drafts: D[]) => CustomSelectOption[];
 };
@@ -28,6 +32,7 @@ export type CatalogSpreadsheetGridProps<R extends { id: number }, D extends Cata
   rows: R[]; drafts: D[]; columns: CatalogColumn<R, D>[]; scopeKey: string;
   canCreate: boolean; canUpdate: boolean; canSelect: boolean; loading?: boolean;
   preferenceScope?: { userId: number; siteId?: number };
+  navigationFilter?: GridNavigationFilter;
   newDraft: (key: string) => D; toDraft: (record: R) => D;
   patchDraft: (draft: D, values: Record<string, string>, drafts: D[]) => D;
   validateDrafts?: (drafts: D[], changedKeys: string[]) => void;
@@ -57,6 +62,9 @@ function CatalogGridWorkspace<R extends { id: number }, D extends CatalogDraft>(
   useLayoutEffect(() => { current.current = { ...props, byId, byKey, fields, selectedDraftKeys }; }, [props, byId, byKey, fields, selectedDraftKeys]);
   const shell = useRef<HTMLDivElement>(null), api = useRef<GridApi<Row> | null>(null);
   const [pageApi, setPageApi] = useState<GridApi<Row> | null>(null);
+  const navigation = useGridNavigationFilter({ api: pageApi, navigationFilter: props.navigationFilter });
+  const navigationBlocked = navigation.pending || Boolean(navigation.error);
+  const navigationBlockedRef = useRef(navigationBlocked);
   const history = useCatalogDraftHistory(props.drafts, props.onReplaceDrafts);
   const historyRef = useRef(history);
   useLayoutEffect(() => { historyRef.current = history; }, [history]);
@@ -138,19 +146,48 @@ function CatalogGridWorkspace<R extends { id: number }, D extends CatalogDraft>(
     }
     return <span className="ag-editable-cell-display" title={display}><span>{display || (canWrite(row, field) ? "Не заполнено" : "—")}</span>{column.options && canWrite(row, field) && <button type="button" className="ag-editable-cell-menu" aria-label={`Открыть список: ${column.headerName}`} onClick={event => { event.stopPropagation(); open(row, field); }}><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3" /></svg></button>}</span>;
   }, [editor, resolveDraft, applyRange, canWrite, open]);
-  const columns = useMemo<ColDef<Row>[]>(() => props.columns.map(column => ({ colId: column.field, headerName: column.headerName, minWidth: column.minWidth ?? 140, initialWidth: column.initialWidth, initialFlex: column.initialFlex, pinned: column.pinned, lockPinned: Boolean(column.pinned), cellRenderer: renderer })), [props.columns, renderer]);
+  // Keep identity getter/formatter references stable while records or drafts
+  // refresh, otherwise AG Grid can discard the user's active Set filter.
+  const identityFilterFields = props.columns.filter(column => column.getFilterValue).map(column => column.field).join("\u0000");
+  const identityFilterBindings = useMemo(() => new Map<string, Pick<ColDef<Row>, "filterValueGetter" | "filterParams">>(
+    (identityFilterFields ? identityFilterFields.split("\u0000") : []).map(field => {
+      const format = (value: unknown) => current.current.fields.get(field)?.formatFilterValue?.(value) ?? (value == null || value === "" ? "(Пустые)" : String(value));
+      return [field, {
+        filterValueGetter: params => params.data ? current.current.fields.get(field)?.getFilterValue?.(params.data.record, resolveDraft(params.data)) ?? "" : "",
+        filterParams: { defaultToNothingSelected: true, valueFormatter: ({ value }: { value: unknown }) => format(value), comparator: (left: unknown, right: unknown) => compareGridValues(format(left), format(right)) },
+      }];
+    }),
+  ), [identityFilterFields, resolveDraft]);
+  const columns = useMemo<ColDef<Row>[]>(() => props.columns.map(column => ({
+      colId: column.field, headerName: column.headerName, minWidth: column.minWidth ?? 140,
+      initialWidth: column.initialWidth, initialFlex: column.initialFlex, pinned: column.pinned,
+      lockPinned: Boolean(column.pinned), cellRenderer: renderer,
+      ...(column.getFilterValue ? identityFilterBindings.get(column.field) : {}),
+  })), [props.columns, renderer, identityFilterBindings]);
   const defaults = useMemo<ColDef<Row>>(() => ({ headerComponentParams: { innerHeaderComponent: SpreadsheetFilterHeader }, valueGetter: params => { const row = params.data; return row ? current.current.fields.get(params.column.getColId())?.value(row.record, resolveDraft(row)) ?? "" : ""; }, filter: personnelColumnFilter, filterParams: { ...personnelFilterParams, presentation: "checklist" }, resizable: true, sortable: true, suppressHeaderMenuButton: true, suppressHeaderFilterButton: true, suppressMovable: true }), [resolveDraft]);
   const getRowOrderId = useCallback((row: Row) => row.record?.id, []);
-  const visible = useCallback((grid: GridApi<Row>) => { const ids: number[] = []; grid.forEachNodeAfterFilterAndSort(node => { if (node.data?.record) ids.push(node.data.record.id); }); current.current.onVisibleIdsChange?.(ids); }, []);
+  const visible = useCallback((grid: GridApi<Row>) => {
+    if (grid.isDestroyed()) return;
+    const ids: number[] = [];
+    if (!navigationBlockedRef.current) grid.forEachNodeAfterFilterAndSort(node => { if (node.data?.record) ids.push(node.data.record.id); });
+    current.current.onVisibleIdsChange?.(ids);
+  }, []);
+  useLayoutEffect(() => {
+    navigationBlockedRef.current = navigationBlocked;
+    // The filter event can precede completion of the navigation request. Publish
+    // again once it is ready so exports use the actual filtered row IDs.
+    if (api.current && !api.current.isDestroyed()) visible(api.current);
+  }, [navigationBlocked, pageApi, visible]);
   const newFirst = useCallback(({ nodes }: PostSortRowsParams<Row>) => { const ranks = new Map(current.current.drafts.filter(draft => draft.id === undefined).map((draft, index) => [`catalog-new-${draft.key}`, index])); const newRows = nodes.filter(node => ranks.has(node.data?.rowKey ?? "")).sort((a, b) => ranks.get(a.data!.rowKey)! - ranks.get(b.data!.rowKey)!); if (newRows.length) nodes.splice(0, nodes.length, ...newRows, ...nodes.filter(node => !ranks.has(node.data?.rowKey ?? ""))); }, []);
   const selection = useMemo(() => {
     if (!props.canCreate && !props.canSelect) return undefined;
     const selectable = (row?: Row) => Boolean(row?.record ? current.current.canSelect : row?.draft && current.current.canCreate);
     return { mode: "multiRow" as const, checkboxes: (params: { data?: Row }) => selectable(params.data), headerCheckbox: true, selectAll: "filtered" as const, enableClickSelection: false as const, hideDisabledCheckboxes: true, isRowSelectable: (node: { data?: Row }) => selectable(node.data) };
   }, [props.canCreate, props.canSelect]);
-  return <AgTablePageScroll gridRoot={shell} api={pageApi} label="Горизонтальная прокрутка справочника" footer={props.renderFooter && <CatalogFooter render={props.renderFooter} selection={{ selectedDraftCount: selectedDraftKeys.length, removeSelectedDrafts, clearSelection }} />}><div ref={shell} className="ag-grid-shell ag-admin-grid ag-reference-grid ag-catalog-grid"><LocalizedGrid<Row>
+  return <>{navigation.error && <div className="message error" role="alert"><span>{navigation.error}</span><button type="button" onClick={props.navigationFilter?.onCleared}>Сбросить фильтр</button></div>}<AgTablePageScroll gridRoot={shell} api={pageApi} label="Горизонтальная прокрутка справочника" footer={props.renderFooter && <CatalogFooter render={props.renderFooter} selection={{ selectedDraftCount: selectedDraftKeys.length, removeSelectedDrafts, clearSelection }} />}><div ref={shell} className="ag-grid-shell ag-admin-grid ag-reference-grid ag-catalog-grid"><LocalizedGrid<Row>
     theme={gridTheme} rowData={rows} columnDefs={columns} defaultColDef={defaults} getRowId={params => params.data.rowKey} getRowOrderId={getRowOrderId}
-    rowHeight={44} headerHeight={46} animateRows={false} postSortRows={newFirst} loading={props.loading}
+    formatFilterSummaryValue={(columnId, value) => fields.get(columnId)?.formatFilterValue?.(value) ?? (value == null || value === "" ? "(Пустые)" : String(value))}
+    rowHeight={44} headerHeight={46} animateRows={false} postSortRows={newFirst} loading={props.loading || navigation.pending || Boolean(navigation.error)}
     suppressHorizontalScroll scrollbarWidth={0}
     rowOrderBlocked={editorHasDraft || props.drafts.length > 0} rowOrderAutoSwitchSort preserveSavedSort={preferences.hasSavedSort} spreadsheetToolbar={false} showSortSummary={false}
     rowClassRules={{ "editable-row": params => Boolean(params.data && resolveDraft(params.data)) }}
@@ -162,5 +199,5 @@ function CatalogGridWorkspace<R extends { id: number }, D extends CatalogDraft>(
     onCellDoubleClicked={event => { if (event.data && !interactive(event.event)) open(event.data, event.column.getColId()); }}
     onSpreadsheetBatch={applyRange} canWriteSpreadsheetCell={canWrite} spreadsheetHistory={history}
     onSpreadsheetEdit={({ row, columnId, initialValue }) => open(row, columnId, initialValue)} onSpreadsheetCancelEdit={() => setEditor(null)} suppressCellFocus
-  /></div></AgTablePageScroll>;
+  /></div></AgTablePageScroll></>;
 }

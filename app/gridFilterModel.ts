@@ -147,16 +147,16 @@ export function describePersonnelFilter(model: PersonnelFilterModel): string {
 }
 
 /** Summaries support both our fallback and the native AG Grid filter models. */
-export function describeGridFilter(value: unknown): string {
+export function describeGridFilter(value: unknown, formatValue?: (value: unknown) => string): string {
   if (!value || typeof value !== "object") return "Все значения";
   const model = value as { filterType?: string; filterModels?: unknown[]; values?: (string | null)[]; conditions?: unknown[]; operator?: string; type?: string; filter?: unknown; filterTo?: unknown; dateFrom?: string; dateTo?: string };
   if (model.filterType === "personnel") return describePersonnelFilter(value as PersonnelFilterModel);
-  if (model.filterType === "multi") return (model.filterModels ?? []).filter(Boolean).map(describeGridFilter).filter(Boolean).join("; ") || "Все значения";
+  if (model.filterType === "multi") return (model.filterModels ?? []).filter(Boolean).map(model => describeGridFilter(model, formatValue)).filter(Boolean).join("; ") || "Все значения";
   if (model.filterType === "set") {
     const values = model.values ?? [];
-    return !values.length ? "Ничего не выбрано" : values.length <= 2 ? values.map(value => value || "(Пустые)").join(", ") : `Выбрано значений: ${values.length}`;
+    return !values.length ? "Ничего не выбрано" : values.length <= 2 ? values.map(value => formatValue ? formatValue(value) : value || "(Пустые)").join(", ") : `Выбрано значений: ${values.length}`;
   }
-  if (model.conditions) return model.conditions.map(describeGridFilter).join(model.operator === "OR" ? " ИЛИ " : " И ");
+  if (model.conditions) return model.conditions.map(model => describeGridFilter(model, formatValue)).join(model.operator === "OR" ? " ИЛИ " : " И ");
   const operations = model.filterType === "date" ? dateOperations : model.filterType === "number" ? numberOperations : textOperations;
   const label = operations.find(([key]) => key === model.type)?.[1] ?? "Условие";
   if (model.type === "blank" || model.type === "notBlank") return label;

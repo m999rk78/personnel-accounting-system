@@ -1,0 +1,12 @@
+[Unit]
+Description=Hourly freshness check for Personnel Accounting backups
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=120
+AccuracySec=1min
+Persistent=true
+Unit=personnel-s3-backup-notify.service
+
+[Install]
+WantedBy=timers.target

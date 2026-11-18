@@ -107,6 +107,8 @@ test("Enterprise filter chips describe the selected values and all date range bo
   assert.equal(describeGridFilter(filter), "Иванов, Петров; За период «30.09.2026» — «02.10.2026»");
   assert.equal(describeGridFilter({ filterType: "set", values: [] }), "Ничего не выбрано");
   assert.equal(describeGridFilter({ filterType: "multi", filterModels: [null, null, null] }), "Все значения");
+  const identityFilter = { filterType: "multi", filterModels: [null, { filterType: "set", values: ["7"] }] };
+  assert.equal(describeGridFilter(identityFilter, value => value === "7" ? "Кран · А001" : String(value)), "Кран · А001", "Entity navigation chips show readable labels, not database IDs");
 });
 
 test("Enterprise combined conditions retain AND/OR and numeric zero in the summary", () => {

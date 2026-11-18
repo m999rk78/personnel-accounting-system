@@ -16,7 +16,9 @@ function harness(presentation = "full") {
   let cursor = 0;
   const calls = [], configured = [];
   const rows = [{ id: 1 }, { id: 2 }];
-  const columns = ["fullName", "2026-11-06", "2026-11-08", "difference"].map(colId => ({ colId, headerName: colId, getValue: row => row.id }));
+  const columns = ["fullName", "2026-11-06", "2026-11-08", "difference"].map(colId => ({ colId, headerName: colId, getValue: row => row.id,
+    ...(colId === "fullName" ? { getFilterValue: row => String(row.id), formatFilterValue: value => `Сотрудник ${value}` } : {}),
+  }));
   let model = {};
   const api = {
     isDestroyed: () => false, isModuleRegistered: () => true,
@@ -39,7 +41,9 @@ function harness(presentation = "full") {
   const body = {};
   const environment = {
     createElement, AgGridReact: () => null,
-    useState, useRef, useCallback: callback => callback, useMemo: calculate => calculate(), useEffect() {},
+    useState, useRef, useCallback: callback => callback, useMemo: calculate => calculate(), useEffect() {}, useLayoutEffect() {},
+    useGridFilterEscape: () => () => {},
+    useGridNavigationFilter: () => ({ pending: false, error: "" }),
     EMPTY: { keys: null, filters: [], sorts: [] }, gridTheme: {}, gridLocaleRu: {}, compareGridValues() {},
     enterpriseFilterParams: (_params, options) => { configured.push(options); return {}; },
     IMPORT_ORDER_COLUMN: "__importOrder", document: { body, activeElement: body },
@@ -76,6 +80,9 @@ test("timesheet presentation is opt-in and does not convert equipment filters", 
     ui.controller(view).columnDefs[0].filterParams({});
     assert.equal(ui.configured[0].presentation, presentation);
     assert.equal(view.context.presentation, presentation);
+    assert.equal(ui.configured[0].defaultToNothingSelected, true, "An explicit ID selection must survive a one-row roster");
+    assert.equal(ui.configured[0].valueFormatter({ value: "2" }), "Сотрудник 2");
+    assert.equal(ui.controller(view).columnDefs[0].filterValueGetter({ data: { id: 2 } }), "2");
   }
 });
 

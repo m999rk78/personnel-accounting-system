@@ -2,7 +2,8 @@
 
 import { AgCharts, BarSeriesModule, CartesianChartModule, CategoryAxisModule, LegendModule, NumberAxisModule, type AgCartesianChartOptions } from "ag-charts-community";
 import { useEffect, useRef, useState } from "react";
-import type { StatisticsRow } from "./statisticsTypes";
+import { formatStatisticsDate } from "./statisticsPeriod";
+import type { StatisticsBreakdownRow, StatisticsGrouping } from "./statisticsTypes";
 import { formatTimesheetHours } from "./timesheetFormatting";
 
 export type StatisticsSeries = {
@@ -18,12 +19,13 @@ function shortZone(name: string) {
   return name.length > 18 ? `${name.slice(0, 12)}…${name.slice(-5)}` : name;
 }
 
-export function StatisticsChart({ rows, series, maxHours }: { rows: StatisticsRow[]; series: readonly StatisticsSeries[]; maxHours: number }) {
+export function StatisticsChart({ groupBy, rows, series, maxHours }: { groupBy: StatisticsGrouping; rows: StatisticsBreakdownRow[]; series: readonly StatisticsSeries[]; maxHours: number }) {
   const container = useRef<HTMLDivElement>(null);
   const [chartWidth, setChartWidth] = useState(0);
-  const spacePerZone = Math.max(1, (chartWidth - 96) / Math.max(1, rows.length));
-  const barWidth = Math.max(1, Math.min(32, Math.floor(spacePerZone * 0.55)));
-  const labelRotation = spacePerZone < 110 ? -90 : 0;
+  const byDay = groupBy === "day";
+  const spacePerCategory = Math.max(1, (chartWidth - 96) / Math.max(1, rows.length));
+  const barWidth = Math.max(1, Math.min(32, Math.floor(spacePerCategory * 0.55)));
+  const labelRotation = spacePerCategory < (byDay ? 75 : 110) ? -90 : 0;
 
   useEffect(() => {
     if (!container.current) return;
@@ -34,8 +36,10 @@ export function StatisticsChart({ rows, series, maxHours }: { rows: StatisticsRo
 
   useEffect(() => {
     if (!container.current || !chartWidth) return;
-    const data = rows.map(row => ({ ...row, category: String(row.zoneId ?? "unassigned") }));
-    const labels = new Map(data.map(row => [row.category, shortZone(row.zone)]));
+    const data = rows.map(row => "workDate" in row
+      ? { ...row, category: row.workDate, label: formatStatisticsDate(row.workDate) }
+      : { ...row, category: String(row.zoneId ?? "unassigned"), label: row.zone });
+    const labels = new Map(data.map(row => [row.category, byDay ? row.label : shortZone(row.label)]));
     const options: AgCartesianChartOptions<(typeof data)[number]> = {
       container: container.current,
       data,
@@ -64,17 +68,17 @@ export function StatisticsChart({ rows, series, maxHours }: { rows: StatisticsRo
       },
       series: series.map(({ key, name, color }) => ({
         type: "bar", direction: "vertical", stacked: true,
-        xKey: "category", xName: "Зона", yKey: key, yName: name,
+        xKey: "category", xName: byDay ? "Дата" : "Зона", yKey: key, yName: name,
         fill: color, strokeWidth: 0, width: barWidth,
         tooltip: { renderer: ({ datum }) => ({
-          heading: datum.zone,
-          data: [{ label: name, value: `${formatTimesheetHours(datum[key])} ч` }, { label: "Всего по зоне", value: `${formatTimesheetHours(datum.total)} ч` }],
+          heading: datum.label,
+          data: [{ label: name, value: `${formatTimesheetHours(datum[key])} ч` }, { label: byDay ? "Всего за день" : "Всего по зоне", value: `${formatTimesheetHours(datum.total)} ч` }],
         }) },
       })),
     };
     const chart = AgCharts.create(options, { modules });
     return () => chart.destroy();
-  }, [rows, series, maxHours, chartWidth, barWidth, labelRotation]);
+  }, [rows, series, maxHours, byDay, chartWidth, barWidth, labelRotation]);
 
-  return <div ref={container} className="statistics-chart" role="region" aria-label="Столбчатый график часов по зонам" />;
+  return <div ref={container} className="statistics-chart" role="region" aria-label={byDay ? "Столбчатый график часов по дням" : "Столбчатый график часов по зонам"} />;
 }

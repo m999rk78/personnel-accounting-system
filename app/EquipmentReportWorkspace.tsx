@@ -6,7 +6,7 @@ import { createPortal } from "react-dom";
 import type { GridEquipmentUnit, GridEquipmentEntry, GridOption } from "./AgDataGrids";
 import { draftHistoryReducer, type DraftHistory, type DraftHistoryAction } from "./personnelSpreadsheet";
 import { pasteEquipmentCells, equipmentCellErrors, equipmentEditableFields, equipmentImportedUnitOrder, equipmentOptionFields, timestampEquipmentDraft, type EquipmentImportBatch, type EquipmentSpreadsheetDraft as GridDraftRow } from "./equipmentSpreadsheet";
-import type { EquipmentReportGridRow } from "./EquipmentReportGrid";
+import type { EquipmentReportGridProps, EquipmentReportGridRow } from "./EquipmentReportGrid";
 import type { EquipmentReport, EquipmentReportApprovedEntry, EquipmentReportData, EquipmentReportEntrySaveRequest, EquipmentReportDraftRow, EquipmentReportSaveRequest, EquipmentReportTransitionRequest, EquipmentReportRow, EquipmentReportValidationIssue, EquipmentReportValidationRequest, EquipmentReportValidationTarget } from "./equipmentReportTypes";
 import { freezeEquipmentReportSessions, mergeEquipmentReportSessions, equipmentReportImportTarget, equipmentReportNewDate, equipmentReportNewKey, equipmentReportSaveIdentity } from "./equipmentReportSessions";
 import { defaultPersonnelReportSubmissions as defaultEquipmentReportSubmissions, selectPersonnelReportSubmissions as selectEquipmentReportSubmissions, personnelReportReviewIssue as equipmentReportReviewIssue, isPersonnelReportDraft as isEquipmentReportDraft, personnelReportMatchesView as equipmentReportMatchesView, type PersonnelReportView as EquipmentReportView } from "./personnelReportActions";
@@ -23,7 +23,7 @@ import { equipmentExcelWorkTypePairs, equipmentReportExcelRows } from "./equipme
 import { CustomSelect } from "./CustomSelect";
 import { notifyTableImportOrder, useWorkspaceTableOrder } from "./TableRowMoves";
 import { isUnsavedEquipmentReportOrderId, orderEquipmentReportCrewRows, equipmentReportOrderScope } from "./equipmentReportRowOrder";
-import { isReportWorkDate, moveUnsavedReportDay } from "./reportDateChanges";
+import { isReportWorkDate, moveUnsavedReportDay, moveUnsavedReportRow } from "./reportDateChanges";
 import { equipmentDraftContent, type EquipmentDraftPendingInput } from "./equipmentReportDraftContent";
 import { useEquipmentReportDraftAutosave } from "./useEquipmentReportDraftAutosave";
 import type { EquipmentReportDraftSnapshot } from "./equipmentReportDraftBuffer";
@@ -62,6 +62,8 @@ export type EquipmentReportWorkspaceProps = {
   units: GridEquipmentUnit[]; shifts: GridOption[]; zones: GridOption[]; mainWorkTypes: GridOption[]; subworkTypes: GridOption[];
   loading: boolean;
   onDirtyChange?: (dirty: boolean) => void;
+  equipmentNavigationTargets?: EquipmentReportGridProps["equipmentNavigationTargets"];
+  onNavigateEquipment?: EquipmentReportGridProps["onNavigateEquipment"];
 };
 
 export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
@@ -109,8 +111,8 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
     dispatchEdits({ type: "reset", value: { ...manualEdits, ...snapshot?.edits } });
     setSessions(current => ({ ...Object.fromEntries(Object.entries(current).filter(([, report]) => !isEquipmentReportDraft(report.status))), ...snapshot?.sessions }));
     setImportBatches(snapshot?.importBatches ?? []);
+    // Restoring draft data keeps the current tab, including the initial Approved view.
     setPendingInput(null);
-    if (snapshot && Object.keys(snapshot.edits).length) { setWorkflowView("draft"); setFocusedReportKey(null); setSelected([]); setVisible(null); }
   }, [edits, autosaveContent]);
   const autosave = useEquipmentReportDraftAutosave({ userId: currentUser.id, siteId, enabled: permissions.view && (permissions.create || permissions.update), content: autosaveContent, onRestore: restoreDraft });
   const hasDraftContent = Object.keys(autosaveContent.edits).length > 0;
@@ -218,8 +220,10 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
       const drafts = edits[keyOf(report)] ?? report.rows.map(report.status === "approved" ? toApprovedDraft : toDraft);
       return drafts.map(draft => {
         const snapshot = report.rows.find(row => `report-${row.reportId}-${row.id}` === draft.key);
+        const dateScopeLabel = !snapshot && draft.reportRowId === undefined && isEquipmentReportDraft(report.status) && report.ownerUserId === currentUser.id
+          ? "Эта новая строка" : drafts.length > 1 ? `Весь отчёт · строк: ${drafts.length}` : undefined;
         const entry = snapshot ? { ...snapshot, id: snapshot.approvedEntryId ?? snapshot.id, equipmentId: snapshot.equipmentId ?? 0, shiftId: snapshot.shiftId ?? 0, zoneId: snapshot.zoneId ?? 0, mainWorkTypeId: snapshot.mainWorkTypeId ?? 0, subworkTypeId: snapshot.subworkTypeId ?? 0, hours: snapshot.hours ?? 0, revision: report.revision, responsibleUserId: report.ownerUserId, responsibleUserName: report.ownerName } : undefined;
-        return { rowKey: draft.key, workDate: report.workDate, createdAt: draft.createdAt ?? report.createdAt, updatedAt: draft.updatedAt ?? report.updatedAt, rowOrder: snapshot?.rowOrder, status: report.status, draft, entry, dateEditable: canEdit(report), dateScopeLabel: drafts.length > 1 ? `Весь отчёт · строк: ${drafts.length}` : undefined, editable: canEdit(report) && !locked, proposalId: report.id, responsibleUserName: report.ownerName, responsibleUserId: report.ownerUserId, reviewNote: report.reviewComment };
+        return { rowKey: draft.key, workDate: report.workDate, createdAt: draft.createdAt ?? report.createdAt, updatedAt: draft.updatedAt ?? report.updatedAt, rowOrder: snapshot?.rowOrder, status: report.status, draft, entry, dateEditable: canEdit(report), dateScopeLabel, editable: canEdit(report) && !locked, proposalId: report.id, responsibleUserName: report.ownerName, responsibleUserId: report.ownerUserId, reviewNote: report.reviewComment };
       });
     });
     const fresh = newDraftGroups.flatMap(group => group.drafts.map(draft => ({ rowKey: draft.key, draftGroupKey: group.key, workDate: group.workDate, createdAt: draft.createdAt, updatedAt: draft.updatedAt, status: "draft" as const, draft, dateEditable: permissions.create, dateScopeLabel: group.drafts.length > 1 ? `Весь отчёт · строк: ${group.drafts.length}` : undefined, editable: permissions.create && !locked, responsibleUserName: currentUser.fullName, responsibleUserId: currentUser.id })));
@@ -354,6 +358,20 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
       setEdits(next);
       setFocusedReportKey(null); setSelected([]); setRequiredReports([]);
       setNotice(`Дата черновика изменена на ${displayDate(workDate)}. Сохраните изменения.`);
+      return;
+    }
+    // Adding a local row to an existing day must not force moving that entire saved report.
+    if (sourceReport && isEquipmentReportDraft(sourceReport.status) && sourceReport.ownerUserId === currentUser.id && sourceReport.siteId === siteId
+      && row.draft && row.draft.reportRowId === undefined && !row.entry && canEdit(sourceReport)) {
+      const key = equipmentReportImportTarget(reports, sessions, siteId, currentUser.id, workDate);
+      const report = reports.find(item => keyOf(item) === key);
+      if (report && !canEdit(report)) throw new Error("Нет права изменять отчёт на выбранную дату.");
+      if (!permissions.create) throw new Error("Нет права добавлять строки в черновики отчётов.");
+      const next = moveUnsavedReportRow(edits, sourceKey, key, row.rowKey, report?.rows.map(toDraft), sourceReport.rows.map(toDraft));
+      rememberSessions([sourceKey, key]);
+      setEdits(next);
+      setFocusedReportKey(null); setSelected([]); setRequiredReports([]); setError("");
+      setNotice(`Дата новой строки изменена на ${displayDate(workDate)}. Сохраните изменения.`);
       return;
     }
     if (edits[target.key]) throw new Error("Сначала сохраните изменения этого отчёта, затем измените его дату.");
@@ -641,7 +659,9 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
   </div>;
   const footerStatus = hasManualEdits
     ? <span className="personnel-report-dirty-caption"><i aria-hidden="true" />Есть несохранённые изменения</span>
-    : (hasDraftContent || !autosave.ready) ? <span className={`personnel-report-autosave status-${autosave.status}`}>{autosave.message}</span> : null;
+    : activeView === "draft" && (hasDraftContent || !autosave.ready)
+      ? <span className={`personnel-report-autosave status-${autosave.status}`}>{autosave.message}</span>
+      : null;
   const footerActions = <div className="toolbar-actions personnel-report-editor-actions">
     {permissions.create && <button className="add-row-button" type="button" disabled={locked || props.loading || fetching} onClick={() => { changeWorkflow("draft"); appendOnDate([makeDraft()]); }}>Добавить строку</button>}
     {(permissions.create || permissions.update || canEditSubmitted || canEditApproved) && <>
@@ -668,8 +688,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
       {equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits)) && <p className="personnel-report-dialog-error">{equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits))}</p>}
     </section>}
     {!activeReview && focusedItem && <div className="personnel-report-focused-caption"><span><strong>{displayDate(focusedItem.workDate)} · {focusedItem.ownerName}</strong> · строк: {focusedItem.rowCount} · {focusedItem.hours} ч{focusedItem.report?.reviewComment && <small className="personnel-report-return-comment">Комментарий инженера: {focusedItem.report.reviewComment}</small>}</span><button type="button" onClick={() => changeWorkflow(workflowView)}>Показать все даты</button></div>}
-    {canEditApproved && activeView === "approved" && <div className="personnel-report-focused-caption"><span>Подтверждённые записи можно исправлять прямо в таблице. Нажмите «Сохранить изменения» — табель обновится, статус останется «Подтверждён».</span></div>}
-    <Suspense fallback={<p role="status">Загружаем таблицу…</p>}><ReportGrid rows={displayedRows} sizingRows={rows} preferenceScope={{ userId: currentUser.id, siteId }} selectionScope={activeView} today={today} loading={props.loading || fetching || importing || !autosave.ready} canCreate={permissions.create && !locked} canReview={canReview} units={props.units} shifts={props.shifts} zones={props.zones} mainWorkTypes={props.mainWorkTypes} subworkTypes={props.subworkTypes} dailyTimesheetMarks={data?.availabilityMarks} onChangeDate={changeReportDate} onPatchDraft={patchDraft} onPendingDraftInput={(rowKey, field, value) => setPendingInput(value === null ? null : { rowKey, field, value })} onApplyRange={applyRange} requiredRowKeys={requiredRowKeys} emptyMessage={activeView === "submitted" ? "Нет отчётов на проверке" : activeView === "draft" ? "У вас пока нет черновиков" : "Нет подтверждённых отчётов"} history={{ undo: () => { if (!locked) dispatchEdits({ type: "undo" }); }, redo: () => { if (!locked) dispatchEdits({ type: "redo" }); }, canUndo: !locked && history.past.length > 0, canRedo: !locked && history.future.length > 0 }} onSelectionChange={setSelected} onCopyRows={copyRows} onRemoveDraft={permissions.delete ? removeDrafts : undefined} onValidationError={setError} onVisibleRowsChange={setVisible} footerStatus={footerStatus} footerActions={footerActions} /></Suspense>
+    <Suspense fallback={<p role="status">Загружаем таблицу…</p>}><ReportGrid rows={displayedRows} sizingRows={rows} preferenceScope={{ userId: currentUser.id, siteId }} selectionScope={activeView} today={today} loading={props.loading || fetching || importing || !autosave.ready} canCreate={permissions.create && !locked} canReview={canReview} units={props.units} shifts={props.shifts} zones={props.zones} mainWorkTypes={props.mainWorkTypes} subworkTypes={props.subworkTypes} dailyTimesheetMarks={data?.availabilityMarks} onChangeDate={changeReportDate} onPatchDraft={patchDraft} onPendingDraftInput={(rowKey, field, value) => setPendingInput(value === null ? null : { rowKey, field, value })} onApplyRange={applyRange} requiredRowKeys={requiredRowKeys} emptyMessage={activeView === "submitted" ? "Нет отчётов на проверке" : activeView === "draft" ? "У вас пока нет черновиков" : "Нет подтверждённых отчётов"} history={{ undo: () => { if (!locked) dispatchEdits({ type: "undo" }); }, redo: () => { if (!locked) dispatchEdits({ type: "redo" }); }, canUndo: !locked && history.past.length > 0, canRedo: !locked && history.future.length > 0 }} onSelectionChange={setSelected} onCopyRows={copyRows} equipmentNavigationTargets={props.equipmentNavigationTargets} onNavigateEquipment={props.onNavigateEquipment} navigationDisabled={locked} onRemoveDraft={permissions.delete ? removeDrafts : undefined} onValidationError={setError} onVisibleRowsChange={setVisible} footerStatus={footerStatus} footerActions={footerActions} /></Suspense>
     {sendOpen && <ReportDialog titleId="personnel-send-title" onClose={() => setSendOpen(false)} busy={locked} className="personnel-report-send-modal">
       <header className="personnel-report-dialog-heading"><div><h2 id="personnel-send-title">Отправить отчёты на проверку</h2><p>Выберите даты. Сначала сохраним изменения, затем отправим выбранные отчёты на проверку.</p></div><button type="button" className="personnel-report-dialog-close" aria-label="Закрыть отправку отчётов" disabled={locked} onClick={() => setSendOpen(false)}>×</button></header>
       <div className="personnel-report-send-select"><label><input type="checkbox" aria-label="Выбрать все отчёты для отправки" checked={submissionItems.length > 0 && selectedSubmissions.length === submissionItems.length} disabled={locked || !submissionItems.length} onChange={event => setSendKeys(event.target.checked ? submissionItems.map(item => item.key) : [])} />Выбрать все даты</label><span>{selectedSubmissions.length} отч. · {selectedSubmissionRows} строк · {selectedSubmissionHours} ч</span></div>

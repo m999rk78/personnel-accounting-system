@@ -48,7 +48,7 @@ export function MaintenanceBoundary({ children }: { children: ReactNode }) {
 
   return <>
     {children}
-    <dialog ref={dialog} className="maintenance-dialog" aria-label="Технические работы" aria-modal="true"
+    <dialog ref={dialog} className="maintenance-dialog" aria-labelledby="maintenance-title" aria-modal="true"
       onCancel={event => event.preventDefault()} onKeyDown={event => event.stopPropagation()}>
       {state.kind && <MaintenanceView kind={state.kind} checking={state.checking} onRetry={() => void client.current?.check()} />}
     </dialog>

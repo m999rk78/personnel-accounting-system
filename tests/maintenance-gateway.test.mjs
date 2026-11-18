@@ -37,7 +37,8 @@ test("starting gateway serves standalone HTML and JSON503 without hitting applic
   assert.equal(page.status, 503); assert.match(await page.text(), /Технические работы/);
   assert.equal(page.headers.get("x-personnel-maintenance"), "1"); assert.equal(page.headers.get("retry-after"), "5");
   const api = await fetch(`${f.url}/api/personnel-report`, { method: "POST", body: "{}" });
-  assert.equal(api.status, 503); assert.equal((await api.json()).code, "MAINTENANCE");
+  assert.equal(api.status, 503);
+  const blocked = await api.json(); assert.equal(blocked.code, "MAINTENANCE"); assert.equal(blocked.phase, "starting");
   const status = await fetch(`${f.url}/api/maintenance/status`);
   assert.equal(status.status, 200); assert.match(status.headers.get("cache-control"), /no-store/);
   assert.deepEqual(await status.json(), { maintenance: true, phase: "starting", retryAfterSeconds: 5 });
@@ -50,6 +51,7 @@ test("maintenance blocks all API methods and pages, keeps readiness healthy, and
   const f = await fixture(t, (req, res) => { paths.push(req.url); res.end('{"status":"ok"}'); });
   writeMaintenanceState(f.stateFile, true);
   for (const method of ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"]) assert.equal((await fetch(`${f.url}/api/data`, { method })).status, 503);
+  assert.equal((await (await fetch(`${f.url}/api/data`)).json()).phase, "maintenance");
   const head = await fetch(`${f.url}/settings/general`, { method: "HEAD" }); assert.equal(head.status, 503); assert.equal(await head.text(), "");
   assert.equal((await fetch(`${f.url}/__maintenance/control/status`)).status, 404);
   assert.equal((await fetch(`${f.url}/api/health`)).status, 200);
@@ -86,6 +88,26 @@ test("browser disconnect does not falsely mark a still-running upstream save dra
   assert.equal(result.inFlightRequests, 0); assert.equal(result.uncertainRequests, 0);
 });
 
+test("aborted partial browser uploads keep healthy traffic open but remain unsafe to drain", async t => {
+  const received = deferred();
+  const f = await fixture(t, (req, res) => {
+    if (req.method === "POST") { req.on("data", () => received.resolve()); req.on("end", () => res.end("saved")); }
+    else res.end('{"status":"ok"}');
+  });
+  const browser = request(`${f.url}/api/data`, { method: "POST", headers: { "Content-Length": "100" } });
+  browser.on("error", () => {}); browser.write("partial");
+  await received.promise; browser.destroy();
+  await until(() => f.gateway.snapshot().uncertainRequests === 1);
+  const status = f.gateway.snapshot();
+  assert.equal(status.phase, "ready"); assert.equal(status.maintenance, false);
+  assert.equal(status.inFlightRequests, 0); assert.equal(status.inFlightWrites, 0); assert.equal(status.uncertainWrites, 1);
+  assert.equal((await fetch(`${f.url}/api/data`)).status, 200);
+  await assert.rejects(f.gateway.waitForDrain(), /Нельзя подтвердить/);
+  await assert.rejects(controlMaintenance("on", f.controlOptions), /неизвестным результатом/);
+  await assert.rejects(controlMaintenance("off", f.controlOptions), /неизвестным результатом/);
+  assert.equal(f.gateway.snapshot().maintenance, true);
+});
+
 test("drain timeout fails the deployment command while leaving maintenance enabled", async t => {
   const admitted = deferred(); const release = deferred();
   const f = await fixture(t, async (_req, res) => { admitted.resolve(); await release.promise; res.end("complete"); });
@@ -99,7 +121,9 @@ test("ambiguous upstream failures are never retried or called safely drained", a
   let writes = 0;
   const f = await fixture(t, (req) => { writes++; req.socket.destroy(); });
   const response = await fetch(`${f.url}/api/data`, { method: "POST" }); assert.equal(response.status, 503);
+  assert.equal((await response.json()).phase, "unavailable");
   assert.equal(writes, 1); assert.equal(f.gateway.snapshot().uncertainRequests, 1);
+  assert.equal(f.gateway.snapshot().phase, "unavailable");
   await assert.rejects(controlMaintenance("on", f.controlOptions), /неизвестным результатом/);
   await assert.rejects(f.gateway.waitForDrain(), /Нельзя подтвердить/);
 });
@@ -223,4 +247,73 @@ test("production health monitor recovers a transient proxy failure without clear
   const control = await (await fetch(`http://127.0.0.1:${controlPort}/status`)).json();
   assert.equal(control.backendReady, true); assert.equal(control.maintenance, true); assert.equal(control.uncertainRequests, 1);
   backend.kill(); assert.equal(await running, 1);
+});
+
+test("production monitor tolerates isolated failures, closes after consecutive failures, and logs only transitions", async t => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const directory = await mkdtemp(join(tmpdir(), "personnel-production-monitor-"));
+  await mkdir(join(directory, "dist/client/_next/static/chunks"), { recursive: true });
+  await writeFile(join(directory, "dist/client/_next/static/chunks/test-Ab12cd34.js"), "export const ready=true;");
+  await mkdir(join(directory, "public")); await writeFile(join(directory, "public/maintenance.html"), "<h1>Технические работы</h1>");
+  await writeFile(join(directory, "server.js"), "// Standalone image layout");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const ports = new Set(); while (ports.size < 3) ports.add(await reservePort());
+  const [port, backendPort, controlPort] = [...ports];
+  const stateFile = join(directory, "maintenance.json");
+  const originalFetch = globalThis.fetch;
+  let healthResult = 503; let healthChecks = 0;
+  t.mock.method(globalThis, "fetch", async (input, options) => {
+    if (input !== `http://127.0.0.1:${backendPort}/api/health`) return originalFetch(input, options);
+    healthChecks++;
+    if (healthResult === "timeout") throw new DOMException("Timed out", "TimeoutError");
+    return new Response(null, { status: healthResult });
+  });
+  const signals = new EventEmitter(); const logs = [];
+  const running = startProduction({ cwd: directory, env: { PORT: String(port), HOST: "127.0.0.1", MAINTENANCE_BACKEND_PORT: String(backendPort), MAINTENANCE_CONTROL_PORT: String(controlPort), MAINTENANCE_STATE_FILE: stateFile }, signals, log: { log: message => logs.push(message), error: message => logs.push(message) }, spawnProcess(_node, args) {
+    const child = new EventEmitter();
+    if (args[0].endsWith("apply-postgres-migrations.mjs")) { queueMicrotask(() => child.emit("exit", 0)); return child; }
+    const backendServer = createServer((_req, res) => res.end('{"status":"ok"}'));
+    backendServer.listen(backendPort, "127.0.0.1");
+    child.kill = () => { backendServer.closeIdleConnections(); backendServer.close(() => child.emit("exit", 0)); return true; };
+    return child;
+  } });
+  const url = `http://127.0.0.1:${port}`;
+  const phase = async () => (await (await fetch(`${url}/api/maintenance/status`)).json()).phase;
+  const check = async result => {
+    healthResult = result;
+    const previous = healthChecks;
+    t.mock.timers.tick(2000);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(healthChecks, previous + 1);
+    return phase();
+  };
+  try {
+    await until(() => healthChecks > 0);
+    assert.equal(await phase(), "starting");
+    assert.equal((await fetch(`${url}/api/data`)).status, 503);
+    healthResult = 200;
+    await until(async () => await phase() === "ready");
+    logs.length = 0;
+    assert.equal(await check("timeout"), "ready");
+    assert.equal(await check(503), "ready");
+    assert.equal(await check(200), "ready");
+    assert.equal(await check(503), "ready");
+    assert.equal(await check(503), "ready");
+    assert.deepEqual(logs, []);
+    assert.equal(await check("timeout"), "unavailable");
+    assert.equal((await fetch(`${url}/api/data`)).status, 503);
+    assert.match(logs[0], /lost after 3 consecutive failed probes \(timeout\)/);
+    assert.equal(await check(503), "unavailable"); assert.equal(logs.length, 1);
+    assert.equal(await check(200), "ready");
+    assert.match(logs[1], /restored.*previous failed probes: 4/);
+    assert.equal(await check(200), "ready"); assert.equal(logs.length, 2);
+    writeMaintenanceState(stateFile, true);
+    assert.equal(await check(503), "maintenance");
+    assert.equal(await check(200), "maintenance");
+    assert.equal((await fetch(`${url}/api/data`)).status, 503);
+    assert.equal(logs.length, 2);
+  } finally {
+    signals.emit("SIGTERM");
+    assert.equal(await running, 0);
+  }
 });

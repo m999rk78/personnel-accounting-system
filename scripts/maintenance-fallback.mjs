@@ -51,7 +51,7 @@ export function createMaintenanceFallbackServer({ html, archiveRoot, retryAfterS
       return sendJson(200, { maintenance: true, phase: "unavailable", retryAfterSeconds });
     }
     if (path === "/api" || path.startsWith("/api/")) {
-      return sendJson(503, { code: "MAINTENANCE", maintenance: true, error: "Сейчас ведутся технические работы. Доступ скоро возобновится." });
+      return sendJson(503, { code: "MAINTENANCE", maintenance: true, phase: "unavailable", error: "Сейчас ведутся технические работы. Доступ скоро возобновится." });
     }
     response.statusCode = 503;
     response.setHeader("Content-Type", "text/html; charset=utf-8");

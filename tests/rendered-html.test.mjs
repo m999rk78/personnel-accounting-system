@@ -494,7 +494,7 @@ test("offers permission-aware right-click actions throughout system tables", asy
   const clipboard = await readFile(new URL("../app/useTimesheetClipboard.ts", import.meta.url), "utf8");
   const timesheet = await readFile(new URL("../app/TimesheetView.tsx", import.meta.url), "utf8");
   const equipment = await readFile(new URL("../app/EquipmentAccountingView.tsx", import.meta.url), "utf8");
-  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/tableContextMenu.css", import.meta.url), "utf8");
   const reportGrid = await readFile(new URL("../app/PersonnelReportGrid.tsx", import.meta.url), "utf8");
 
   assert.match(reportGrid, /Скопировать строку на сегодня/);

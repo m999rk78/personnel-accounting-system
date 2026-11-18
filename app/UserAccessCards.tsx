@@ -159,7 +159,7 @@ export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onEd
   const filters = useTimesheetFilters({ rows: searchedRows, columns: userFilterColumns, getRowId: userFilterRowId, resetKey: "users-list", presentation: "checklist" });
   const visibleRows = layout === "list" ? filters.rows : searchedRows;
   const clipboardRows = useMemo(() => userTableClipboardRows(visibleRows), [visibleRows]);
-  const { ref: selectionRef, className: selectionClass, handlers: selectionHandlers } = useNativeTableSelectAll({ rows: clipboardRows, headers: USER_TABLE_CLIPBOARD_HEADERS, resetKey: layout, enabled: layout === "list" && !editorOpen && !detailUser });
+  const { ref: selectionRef, className: selectionClass, handlers: selectionHandlers, copyToast } = useNativeTableSelectAll({ rows: clipboardRows, headers: USER_TABLE_CLIPBOARD_HEADERS, resetKey: layout, enabled: layout === "list" && !editorOpen && !detailUser });
   const activeCount = rows.filter((user) => user.status === "active").length;
   const invitedCount = rows.length - activeCount;
   const adminCount = rows.filter((user) => user.role === "superadmin").length;
@@ -229,5 +229,6 @@ export function UserAccessCards({ rows, drafts, sites, selectedIds, onEdit, onEd
     </div>}
     {detailUser && !editorOpen && <UserDetailsDialog user={detailUser} sites={sites} onClose={() => setDetailUser(null)} onEdit={mayUpdate ? () => { setDetailUser(null); onEdit(detailUser); } : undefined} onEditRole={mayUpdate && onEditRole ? () => { setDetailUser(null); onEditRole(detailUser); } : undefined} onOpenPermissions={onOpenPermissions ? () => { setDetailUser(null); onOpenPermissions(detailUser.id); } : undefined} />}
     {mayShowEditor && drafts.length > 0 && <UserEditorDialog drafts={drafts} sites={sites} saving={saving} roleOnly={roleOnly} error={error} onPatch={onPatchDraft} onCancel={onCancelEditing} onSave={onSave} roles={roles} rolesLoading={rolesLoading} rolesError={rolesError} onRetryRoles={() => setRolesReload(current => current + 1)} />}
+    {copyToast}
   </section></TimesheetFiltersProvider>;
 }

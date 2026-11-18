@@ -19,6 +19,8 @@ type CustomSelectProps = {
   onChange: (value: string) => void;
   ariaLabel: string;
   className?: string;
+  menuClassName?: string;
+  menuMinWidth?: number;
   disabled?: boolean;
   autoOpen?: boolean;
   searchable?: boolean;
@@ -27,7 +29,7 @@ type CustomSelectProps = {
   onInvalidQuery?: (query: string) => void;
 };
 
-export function CustomSelect({ value, options, onChange, ariaLabel, className = "", disabled = false, autoOpen = false, searchable = false, initialQuery = "", requireExactQueryOnEnter = false, onInvalidQuery }: CustomSelectProps) {
+export function CustomSelect({ value, options, onChange, ariaLabel, className = "", menuClassName = "", menuMinWidth, disabled = false, autoOpen = false, searchable = false, initialQuery = "", requireExactQueryOnEnter = false, onInvalidQuery }: CustomSelectProps) {
   const listboxId = useId();
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -50,8 +52,8 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
   const updatePosition = useCallback(() => {
     if (!trigger.current) return;
     const rect = trigger.current.getBoundingClientRect();
-    setPosition(choiceMenuPosition(rect, { width: window.innerWidth, height: window.innerHeight }, choiceMenuWidth(trigger.current, options.map((option) => option.label))));
-  }, [options]);
+    setPosition(choiceMenuPosition(rect, { width: window.innerWidth, height: window.innerHeight }, choiceMenuWidth(trigger.current, options.map((option) => option.label), menuMinWidth)));
+  }, [menuMinWidth, options]);
 
   const close = useCallback((restoreFocus = false) => {
     setOpen(false);
@@ -91,24 +93,38 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
       if (event.target instanceof Node && menu.current?.contains(event.target)) return;
       updatePosition();
     };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const focusedSelect = target?.closest(".custom-select-menu, .custom-select-toggle[aria-expanded='true']");
+      if (focusedSelect && focusedSelect !== menu.current && focusedSelect !== trigger.current) return;
+      // The dropdown may be open while focus is still on the trigger or has
+      // moved outside. Close it before a containing filter/editor handles Esc.
+      event.preventDefault();
+      event.stopPropagation();
+      close(true);
+    };
     window.addEventListener("resize", handleViewportChange);
     window.addEventListener("scroll", handleViewportChange, true);
     document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape, true);
     return () => {
       window.removeEventListener("resize", handleViewportChange);
       window.removeEventListener("scroll", handleViewportChange, true);
       document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape, true);
     };
   }, [close, open, updatePosition]);
 
   useEffect(() => {
     if (!open || !position) return;
-    requestAnimationFrame(() => {
+    const frame = requestAnimationFrame(() => {
       if (searchable) {
         searchInput.current?.focus();
         optionButtons.current[activeIndex]?.scrollIntoView({ block: "nearest" });
       } else optionButtons.current[activeIndex]?.focus();
     });
+    return () => cancelAnimationFrame(frame);
   }, [activeIndex, open, position, searchable]);
 
   function moveActive(direction: 1 | -1) {
@@ -149,9 +165,6 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
     } else if (event.key === "Enter" && activeIndex >= 0 && options[activeIndex]) {
       event.preventDefault();
       choose(options[activeIndex]);
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      close(true);
     } else if (event.key === "Tab") close();
   }
 
@@ -162,9 +175,6 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
     } else if (event.key === "Home" || event.key === "End") {
       event.preventDefault();
       setActiveIndex(event.key === "Home" ? enabledIndexes[0] : enabledIndexes.at(-1)!);
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      close(true);
     } else if (event.key === "Tab") {
       close();
     }
@@ -173,7 +183,7 @@ export function CustomSelect({ value, options, onChange, ariaLabel, className = 
   const popup = open && position ? createPortal(
     <div
       ref={menu}
-      className="custom-select-menu ag-custom-component-popup"
+      className={["custom-select-menu", "ag-custom-component-popup", menuClassName].filter(Boolean).join(" ")}
       role="presentation"
       data-placement={position.placement}
       style={{ top: position.top, bottom: position.bottom, left: position.left, width: position.width, maxHeight: position.maxHeight }}

@@ -140,7 +140,7 @@ test("equipment writes preserve split hours, manual zero, clear and sparse-day u
     const old = { equipmentId: 7, workDate: "2026-11-10", productiveHours: 0, downtimeHours: 2, note: "Исходный простой" };
     const state = writeHarness({ visibleDays: [2, 10], marks: [old] });
     const write = state.single({ equipmentId: 7, workDate: "2026-11-10" }, markValue); state.respond(0); assert.equal(await write, true);
-    assert.deepEqual(state.undo, [[{ rowIndex: 0, columnIndex: 1, value: "П 2", note: "Исходный простой" }]]);
+    assert.deepEqual(state.undo, [[{ rowIndex: 0, columnIndex: 1, value: "П 2", note: "Исходный простой", expectedRevision: null, previousRevision: null }]]);
     if (markValue.clear) assert.deepEqual(state.result().marks, []);
     else { assert.equal(state.result().marks[0].productiveHours, markValue.productiveHours); assert.equal(state.result().marks[0].downtimeHours, markValue.downtimeHours); }
   }
@@ -151,8 +151,77 @@ test("equipment batches hold refresh busy until every request settles and retry 
   const write = state.bulk(changes); assert.equal(state.markWrites.current, 1); assert.equal(state.markRevision.current, 1);
   state.requests[0].reject(new Error("Конфликт")); for (let i = 0; i < 8; i++) await Promise.resolve();
   assert.equal(state.markWrites.current, 1); state.respond(1);
-  assert.deepEqual(await write, { savedChanges: [changes[1]], failedChanges: [changes[0]] }); assert.equal(state.markWrites.current, 0); assert.equal(state.flushes(), 1);
+  assert.deepEqual(await write, { savedChanges: [changes[1]], failedChanges: [changes[0]], revisions: [{ rowIndex: 0, columnIndex: 1, expectedRevision: null, previousRevision: null }] }); assert.equal(state.markWrites.current, 0); assert.equal(state.flushes(), 1);
   assert.equal(state.result().marks[0].downtimeHours, 3); const retry = state.batch.retry();
   assert.equal(state.requests.length, 3); assert.equal(state.markWrites.current, 1); assert.equal(state.markRevision.current, 2); state.respond(2); await retry;
   assert.equal(state.result().marks.length, 2); assert.equal(state.markWrites.current, 0); assert.equal(state.batch.getSnapshot().status.failed, 0);
+});
+
+test("single equipment edits preserve server revisions for safe Undo", async () => {
+  const old = { equipmentId: 7, workDate: "2026-11-01", productiveHours: 8, downtimeHours: 0, note: "Примечание", revision: "r1" };
+  const state = writeHarness({ marks: [old] });
+  const pending = state.single({ equipmentId: 7, workDate: old.workDate }, value);
+  assert.equal(state.requests[0].body.expectedRevision, "r1");
+  state.requests[0].resolve({ mark: { ...old, productiveHours: 4, downtimeHours: 2, revision: "r2" } });
+  assert.equal(await pending, true);
+  assert.equal(state.result().marks[0].revision, "r2");
+  assert.deepEqual(state.undo[0], [{ rowIndex: 0, columnIndex: 0, value: "8", note: "Примечание", expectedRevision: "r2", previousRevision: "r1" }]);
+});
+
+test("equipment retry retains its original revision and comment, while Undo uses its recorded version", async () => {
+  const old = { equipmentId: 7, workDate: "2026-11-01", productiveHours: 8, downtimeHours: 0, note: "Сохранённый комментарий", revision: "r1" };
+  const state = writeHarness({ marks: [old] });
+  const change = { rowIndex: 0, columnIndex: 0, value: "6" };
+  const pending = state.bulk([change]);
+  assert.equal(state.requests[0].body.expectedRevision, "r1");
+  assert.equal(state.requests[0].body.note, old.note);
+  state.requests[0].reject(new Error("Эта ячейка уже изменена"));
+  assert.deepEqual(await pending, { savedChanges: [], failedChanges: [change] });
+  old.revision = "r9";
+  const retry = state.batch.retry();
+  assert.equal(state.requests[1].body.expectedRevision, "r1", "Retry must not silently adopt a newer value and overwrite it");
+  state.requests[1].reject(new Error("Эта ячейка уже изменена"));
+  await retry;
+  assert.equal(state.batch.getSnapshot().status.failed, 1);
+  const undo = state.bulk([{ ...change, expectedRevision: "r2" }], { operation: "undo", historyId: 1 });
+  assert.equal(state.requests[2].body.expectedRevision, "r2", "Undo must not rely on a newer refreshed mark");
+  state.requests[2].resolve({ mark: { ...old, productiveHours: 6, revision: "r3" } });
+  const outcome = await undo;
+  assert.deepEqual(outcome.revisions, [{ rowIndex: 0, columnIndex: 0, expectedRevision: "r3", previousRevision: "r2" }]);
+});
+
+test("equipment 409 is surfaced only in the originating view and does not pretend to save", async () => {
+  const callback = nodes.find(node => ts.isVariableDeclaration(node) && node.name.getText(source) === "post").initializer.arguments[0];
+  for (const moved of [false, true]) {
+    let respond;
+    const messages = [], activeScope = { current: "2:month:2026-11" }, activeScopeVersion = { current: 0 };
+    const post = bind(`const post = ${callback.getText(source)};`, "post", {
+      activeScope, activeScopeVersion, siteId: 2,
+      setTimesheetMarkConflict: message => messages.push(message),
+      fetch: () => new Promise(resolve => { respond = resolve; }),
+    });
+    const pending = post({ action: "save-timesheet-mark", equipmentId: 7, workDate: "2026-11-01", expectedRevision: "r1" });
+    if (moved) activeScopeVersion.current++;
+    respond({ status: 409, ok: false, json: async () => ({ error: "Эта ячейка уже изменена" }) });
+    await assert.rejects(pending, /Эта ячейка уже изменена/);
+    assert.deepEqual(messages, moved ? [] : ["Эта ячейка уже изменена"]);
+  }
+});
+
+test("equipment conflict reload preserves edits on Cancel and clears them only after confirmation", async () => {
+  for (const accept of [false, true]) {
+    const trace = [], timesheetInlineCancelPending = { current: false }, timesheetInlineSession = { current: 4 };
+    const reload = bind(declaration("reloadConflictedEquipmentTimesheet"), "reloadConflictedEquipmentTimesheet", {
+      navigationBusy: false, dirty: true, activeScope: { current: "2:month:2026-11" },
+      confirmMonthChange: async () => accept,
+      timesheetInlineCancelPending, timesheetInlineSession,
+      setTimesheetInlineEditor: value => trace.push(["inline", value]), setTimesheetEditor: value => trace.push(["editor", value]),
+      batchSave: { getSnapshot: () => ({ status: { failures: [{ key: "7:2026-11-01" }] } }), clearCell: key => trace.push(["clear", key]) },
+      setReloadKey: update => trace.push(["reload", update(1)]),
+    });
+    await reload();
+    assert.deepEqual(trace, accept ? [["inline", null], ["editor", null], ["clear", "7:2026-11-01"], ["reload", 2]] : []);
+    assert.equal(timesheetInlineCancelPending.current, accept);
+    assert.equal(timesheetInlineSession.current, accept ? 5 : 4);
+  }
 });

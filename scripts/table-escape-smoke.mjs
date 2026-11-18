@@ -36,6 +36,7 @@ try {
     if (request.method() !== "GET") { writes.push(`${request.method()} ${url.pathname}`); return route.fulfill({ status: 500, json: { error: "Escape must not save data" } }); }
     let body;
     if (url.pathname === "/api/table-order") body = { ids: [], canWrite: true, hasSavedOrder: false };
+    else if (url.pathname === "/api/personnel-report-draft" || url.pathname === "/api/equipment-report-draft") body = { revision: 0, snapshot: null };
     else if (url.pathname.endsWith("-report")) body = { reports: [], entries: entries(url.pathname === "/api/equipment-report"), canReview: true, availabilityMarks: [], from: null, to: null };
     else if (url.pathname === "/api/timesheet") body = { siteId: 1, siteName: sites[0].name, month: "2026-11", canEdit: true, canCreate: true, canUpdate: true, canDelete: true, employees, entries: [], marks: [] };
     else if (url.pathname === "/api/equipment") body = { siteId: 1, siteName: sites[0].name, workDate: "2026-11-04", month: "2026-11", canEditDaily: true, canCreateDaily: true, canUpdateDaily: true, canDeleteDaily: true, canEditTimesheet: true, canCreateTimesheet: true, canUpdateTimesheet: true, canDeleteTimesheet: true, canManageRegistry: true, canCreateRegistry: true, canUpdateRegistry: true, canDeleteRegistry: true, canManageAssignments: true, canCreateAssignments: true, canUpdateAssignments: true, canDeleteAssignments: true, currentUserRole: "superadmin", currentUserName: "Проверка Escape", reportSubmitted: false, foremanProgress: [], units, availableUnits: units, sites, entries: [], marks: [], dailyTimesheetMarks: [], filledDates: [], ...options };
@@ -80,6 +81,15 @@ try {
     await dataCell.click(); await page.keyboard.press("Shift+ArrowDown"); await settle();
     assert.ok(await page.locator(".page-content .ag-excel-selected,.page-content .ag-cell-range-selected").count(), `${path}: cell selection present`);
     await outsideFocus(); await page.keyboard.press("Escape"); await noAGSelection();
+    const columnFilter = page.locator('.page-content .ag-header button[aria-label^="Фильтр"]').first();
+    await columnFilter.click();
+    const columnPopup = page.locator(".ag-filter-menu").first();
+    await columnPopup.waitFor();
+    // AG's native handler does not close the popup after focus leaves it.
+    await outsideFocus(); await page.keyboard.press("Escape");
+    await columnPopup.waitFor({ state: "detached" });
+    await page.waitForFunction(button => button.getAttribute("aria-expanded") === "false", await columnFilter.elementHandle());
+    assert.equal(await columnFilter.evaluate(button => document.activeElement === button), true, `${path}: Escape restores header focus`);
     console.log(`PASS: ${path}: focused checkbox, outside focus, row and cell selection cleared`);
   }
 
@@ -104,9 +114,15 @@ try {
   assert.ok(await page.locator(".ag-row-selected").count(), "Closing filter keeps row selection");
   await outsideFocus(); await page.keyboard.press("Escape"); await noAGSelection();
   console.log("PASS: first Escape belongs to filter; next Escape clears selection");
+  await filter.click(); await filterPanel.waitFor();
+  await filterPanel.locator(".grid-checklist-option").filter({ hasText: "Сотрудник 1" }).getByRole("checkbox").check();
+  await filterInput.press("Escape"); await filterPanel.waitFor({ state: "detached" });
+  assert.equal(await nameCell.innerText(), "Сотрудник 1", "Esc preserves applied checklist values");
+  assert.equal(await page.locator('.ag-row [col-id="fullName"]').filter({ hasText: "Сотрудник 2" }).count(), 0);
+  console.log("PASS: Escape keeps immediately applied checklist values");
 
   for (const kind of ["workers", "equipment"]) {
-    await open(`/timesheets/${kind}?month=2026-11`, kind === "workers" ? "Табель рабочих" : "Табель техники");
+    await open(`/timesheets/${kind}?month=2026-11`, kind === "workers" ? "Табель персонала" : "Табель техники");
     const cell = page.locator('[data-timesheet-row="0"][data-timesheet-column="0"]'); await cell.waitFor();
     const rowHandle = page.locator(".table-row-number-handle").first();
     await rowHandle.click(); assert.ok(await page.locator(".table-row-move-selected").count());
@@ -118,10 +134,24 @@ try {
     await page.waitForFunction(() => !document.querySelector(".timesheet-cell-selected,.table-row-move-selected"));
     await cell.dblclick(); const editor = cell.locator("input"); await editor.waitFor();
     await editor.fill("9"); await editor.press("Escape"); await editor.waitFor({ state: "detached" });
+    const filter = page.locator(".timesheet-header-filter").first();
+    await filter.click();
+    const menu = page.locator(".ag-filter-menu").first();
+    await menu.waitFor();
+    await outsideFocus(); await page.keyboard.press("Escape");
+    await menu.waitFor({ state: "detached" });
+    await page.waitForFunction(button => button.getAttribute("aria-expanded") === "false", await filter.elementHandle());
+    assert.equal(await filter.evaluate(button => document.activeElement === button), true);
     console.log(`PASS: ${kind} timesheet: row/cell/outside Escape clears; editor Escape cancels`);
   }
 
   await open("/settings/general/users", "Пользователи и права");
+  const userFilter = page.locator(".users-table .timesheet-header-filter").first();
+  await userFilter.click();
+  const userFilterPopup = page.locator(".ag-filter-menu").first();
+  await userFilterPopup.waitFor();
+  await outsideFocus(); await page.keyboard.press("Escape");
+  await userFilterPopup.waitFor({ state: "detached" });
   const allUsers = page.getByRole("checkbox", { name: "Выбрать всех пользователей", exact: true });
   await allUsers.check(); assert.equal(await page.locator(".users-table tbody input:checked").count(), 3);
   await allUsers.press("Escape"); assert.equal(await page.locator(".users-table tbody input:checked").count(), 0);

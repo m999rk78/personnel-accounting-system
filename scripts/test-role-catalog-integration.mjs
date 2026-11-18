@@ -20,7 +20,9 @@ const scoped = { ...executor, async transaction(callback) {
   catch (error) { await connection.query("ROLLBACK TO SAVEPOINT role_catalog_operation"); await connection.query("RELEASE SAVEPOINT role_catalog_operation"); throw error; }
 } };
 let roleSource = transpile(await readFile(new URL("../app/customRolesServer.ts", import.meta.url), "utf8"));
-roleSource = roleSource.replaceAll('"../db/client"', JSON.stringify(dataUrl("export function getDatabase(){throw new Error('A fixture executor is required')};"))).replaceAll('"./customRoles.ts"', JSON.stringify(new URL("../app/customRoles.ts", import.meta.url).href));
+roleSource = roleSource.replaceAll('"../db/client"', JSON.stringify(dataUrl("export function getDatabase(){throw new Error('A fixture executor is required')};")))
+  .replaceAll('"./customRoles.ts"', JSON.stringify(new URL("../app/customRoles.ts", import.meta.url).href))
+  .replaceAll('"./permissionModel.ts"', JSON.stringify(new URL("../app/permissionModel.ts", import.meta.url).href));
 const roles = await import(dataUrl(roleSource));
 try {
   await connection.query("BEGIN");

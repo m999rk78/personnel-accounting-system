@@ -223,7 +223,7 @@ export function buildEquipmentTimesheetRange(months: EquipmentTimesheetMonthData
         if (!mark && productive === 0 && downtime === 0) return "";
         if (productive && downtime) return `${productive} / П ${downtime}`;
         if (downtime) return `П ${downtime}`;
-        return productive || "";
+        return productive;
       });
       const productiveHours = sum(dailyProductiveHours);
       const downtimeHours = sum(dailyDowntimeHours);

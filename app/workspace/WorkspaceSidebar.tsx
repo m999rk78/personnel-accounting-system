@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { userRoleLabel } from "../userAccessModel";
 import { SidebarToggleButton } from "../SidebarToggleButton";
 import type { Site, CurrentUser, View, DirectoryFocus } from "./types";
+import type { SidebarSection } from "./useSidebarPreferences";
 
 type AppIconName = "user" | "workersReport" | "equipmentReport" | "workersTimesheet" | "equipmentTimesheet" | "statistics" | "settings" | "generalSettings" | "projectSettings";
 
@@ -58,6 +59,8 @@ type WorkspaceSidebarProps = {
   sidebarOpen: boolean;
   toggleSidebar: () => void;
   sidebarToggleRef: RefObject<HTMLButtonElement | null>;
+  sectionState: Record<SidebarSection, boolean>;
+  toggleSection: (section: SidebarSection) => void;
   visibleSites: Site[];
   siteId: number;
   activeSite: Site | undefined;
@@ -77,35 +80,45 @@ type WorkspaceSidebarProps = {
   openProfile: () => void;
 };
 
-export function WorkspaceSidebar({ sidebarOpen, toggleSidebar, sidebarToggleRef, visibleSites, siteId, activeSite, mayViewAllProjects, mayViewWorkersReport, mayViewWorkersTimesheet, mayViewEquipmentReport, mayViewEquipmentTimesheet, statisticsView, mayAccessGeneralSettings, mayAccessProjectSettings, view, navigateTo, fallbackView, changeSite, currentUser, openProfile }: WorkspaceSidebarProps) {
-  const [equipmentOpen, setEquipmentOpen] = useState(true);
-  const [personnelOpen, setPersonnelOpen] = useState(true);
-  const [settingsOpen, setSettingsOpen] = useState(true);
+export function WorkspaceSidebar({ sidebarOpen, toggleSidebar, sidebarToggleRef, sectionState, toggleSection, visibleSites, siteId, activeSite, mayViewAllProjects, mayViewWorkersReport, mayViewWorkersTimesheet, mayViewEquipmentReport, mayViewEquipmentTimesheet, statisticsView, mayAccessGeneralSettings, mayAccessProjectSettings, view, navigateTo, fallbackView, changeSite, currentUser, openProfile }: WorkspaceSidebarProps) {
+  const { personnel: personnelOpen, equipment: equipmentOpen, settings: settingsOpen } = sectionState;
   const statisticsActive = view === "personnelStatistics" || view === "equipmentStatistics";
   return <aside className="sidebar" id="primary-sidebar">
-    <div className="brand-project-row"><button type="button" className="brand" onClick={() => { setEquipmentOpen(true); setPersonnelOpen(true); navigateTo(fallbackView); }} aria-label="Открыть доступный раздел" title="Открыть доступный раздел"><img src="/tps-logo.svg" alt="" /></button>{mayViewAllProjects ? <ProjectSwitcher sites={visibleSites} value={siteId} onChange={changeSite} /> : <div className="project-fixed-card top-project-select" title={activeSite?.name ?? "Нет доступа к проектам"}>{activeSite?.name ?? "Нет доступа к проектам"}</div>}</div>
+    <div className="brand-project-row"><button type="button" className="brand" onClick={() => navigateTo(fallbackView)} aria-label="Открыть доступный раздел" title="Открыть доступный раздел"><img src="/tps-logo.svg" alt="" /></button>{mayViewAllProjects ? <ProjectSwitcher sites={visibleSites} value={siteId} onChange={changeSite} /> : <div className="project-fixed-card top-project-select" title={activeSite?.name ?? "Нет доступа к проектам"}>{activeSite?.name ?? "Нет доступа к проектам"}</div>}</div>
     <div className="sidebar-product-title"><span>Ресурсный отчёт</span><SidebarToggleButton expanded={sidebarOpen} onToggle={toggleSidebar} buttonRef={sidebarToggleRef} /></div>
     <nav aria-label="Основная навигация">
       {(mayViewWorkersReport || mayViewWorkersTimesheet) && <div className="nav-group">
-        <button type="button" className="nav-heading" onClick={() => setPersonnelOpen((open) => !open)} aria-expanded={personnelOpen} aria-controls="personnel-navigation" aria-label={personnelOpen ? "Свернуть раздел «Персонал»" : "Развернуть раздел «Персонал»"}><span className="nav-heading-icon"><AppIcon name="workersReport" /></span><span>Персонал</span><SidebarChevron open={personnelOpen} /></button>
-        {(personnelOpen || !sidebarOpen) && <div className="nav-sub" id="personnel-navigation">{mayViewWorkersReport && <button className={view === "placement" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("placement")} aria-label="Отчёт персонала" title="Отчёт персонала"><span className="nav-item-icon"><AppIcon name="workersReport" /></span>Отчёт персонала</button>}{mayViewWorkersTimesheet && <button className={view === "timesheet" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("timesheet")} aria-label="Табель персонала" title="Табель персонала"><span className="nav-item-icon"><AppIcon name="workersTimesheet" /></span>Табель персонала</button>}</div>}
+        <button type="button" className="nav-heading" onClick={() => toggleSection("personnel")} aria-expanded={personnelOpen} aria-controls="personnel-navigation" aria-label={personnelOpen ? "Свернуть раздел «Персонал»" : "Развернуть раздел «Персонал»"}><span className="nav-heading-icon"><AppIcon name="workersReport" /></span><span>Персонал</span><SidebarChevron open={personnelOpen} /></button>
+        <div className="nav-sub" id="personnel-navigation" data-expanded={personnelOpen} inert={sidebarOpen && !personnelOpen}>
+          <div className="nav-sub-items">
+            {mayViewWorkersReport && <button className={view === "placement" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("placement")} aria-label="Отчёт персонала" title="Отчёт персонала"><span className="nav-item-icon"><AppIcon name="workersReport" /></span><span className="nav-label">Отчёт персонала</span></button>}
+            {mayViewWorkersTimesheet && <button className={view === "timesheet" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("timesheet")} aria-label="Табель персонала" title="Табель персонала"><span className="nav-item-icon"><AppIcon name="workersTimesheet" /></span><span className="nav-label">Табель персонала</span></button>}
+          </div>
+        </div>
       </div>}
       {(mayViewEquipmentReport || mayViewEquipmentTimesheet) && <div className="nav-group">
-        <button type="button" className="nav-heading" onClick={() => setEquipmentOpen((open) => !open)} aria-expanded={equipmentOpen} aria-controls="equipment-navigation" aria-label={equipmentOpen ? "Свернуть раздел «Техника»" : "Развернуть раздел «Техника»"}><span className="nav-heading-icon"><AppIcon name="equipmentReport" /></span><span>Техника</span><SidebarChevron open={equipmentOpen} /></button>
-        {(equipmentOpen || !sidebarOpen) && <div className="nav-sub" id="equipment-navigation">{mayViewEquipmentReport && <button className={view === "equipment" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("equipment")} aria-label="Отчёт техники" title="Отчёт техники"><span className="nav-item-icon"><AppIcon name="equipmentReport" /></span>Отчёт техники</button>}{mayViewEquipmentTimesheet && <button className={view === "equipmentTimesheet" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("equipmentTimesheet")} aria-label="Табель техники" title="Табель техники"><span className="nav-item-icon"><AppIcon name="equipmentTimesheet" /></span>Табель техники</button>}</div>}
+        <button type="button" className="nav-heading" onClick={() => toggleSection("equipment")} aria-expanded={equipmentOpen} aria-controls="equipment-navigation" aria-label={equipmentOpen ? "Свернуть раздел «Техника»" : "Развернуть раздел «Техника»"}><span className="nav-heading-icon"><AppIcon name="equipmentReport" /></span><span>Техника</span><SidebarChevron open={equipmentOpen} /></button>
+        <div className="nav-sub" id="equipment-navigation" data-expanded={equipmentOpen} inert={sidebarOpen && !equipmentOpen}>
+          <div className="nav-sub-items">
+            {mayViewEquipmentReport && <button className={view === "equipment" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("equipment")} aria-label="Отчёт техники" title="Отчёт техники"><span className="nav-item-icon"><AppIcon name="equipmentReport" /></span><span className="nav-label">Отчёт техники</span></button>}
+            {mayViewEquipmentTimesheet && <button className={view === "equipmentTimesheet" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("equipmentTimesheet")} aria-label="Табель техники" title="Табель техники"><span className="nav-item-icon"><AppIcon name="equipmentTimesheet" /></span><span className="nav-label">Табель техники</span></button>}
+          </div>
+        </div>
       </div>}
       {statisticsView && <div className="nav-group">
         <button type="button" className={statisticsActive ? "nav-heading nav-section-link active" : "nav-heading nav-section-link"} onClick={() => { void navigateTo(statisticsActive ? view : statisticsView); }} aria-current={statisticsActive ? "page" : undefined} aria-label="Статистика" title="Статистика">
-          <span className="nav-heading-icon"><AppIcon name="statistics" /></span>Статистика
+          <span className="nav-heading-icon"><AppIcon name="statistics" /></span><span className="nav-label">Статистика</span>
         </button>
       </div>}
     </nav>
     <div className="sidebar-bottom">{(mayAccessGeneralSettings || mayAccessProjectSettings) && <div className="nav-group settings-group">
-      <button type="button" className="nav-heading" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen} aria-controls="settings-navigation" aria-label={settingsOpen ? "Свернуть раздел «Настройки»" : "Развернуть раздел «Настройки»"}><span className="nav-heading-icon"><AppIcon name="settings" /></span><span>Настройки</span><SidebarChevron open={settingsOpen} /></button>
-      {(settingsOpen || !sidebarOpen) && <div className="nav-sub" id="settings-navigation">
-        {mayAccessGeneralSettings && <button className={view === "settings" || view === "users" || view === "employees" || view === "positions" || view === "projects" || view === "equipmentRegistry" || view === "auditLog" || view === "accessRights" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("settings")} aria-label="Общие настройки" title="Общие настройки"><span className="nav-item-icon"><AppIcon name="generalSettings" /></span>Общие</button>}
-        {mayAccessProjectSettings && <button className={view === "projectSettings" || view === "projectEmployees" || view === "projectEquipment" || view === "directories" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("projectSettings")} aria-label="Настройки проекта" title="Настройки проекта"><span className="nav-item-icon"><AppIcon name="projectSettings" /></span>Настройки проекта</button>}
-      </div>}
+      <button type="button" className="nav-heading" onClick={() => toggleSection("settings")} aria-expanded={settingsOpen} aria-controls="settings-navigation" aria-label={settingsOpen ? "Свернуть раздел «Настройки»" : "Развернуть раздел «Настройки»"}><span className="nav-heading-icon"><AppIcon name="settings" /></span><span>Настройки</span><SidebarChevron open={settingsOpen} /></button>
+      <div className="nav-sub" id="settings-navigation" data-expanded={settingsOpen} inert={sidebarOpen && !settingsOpen}>
+        <div className="nav-sub-items">
+          {mayAccessGeneralSettings && <button className={view === "settings" || view === "users" || view === "employees" || view === "positions" || view === "projects" || view === "equipmentRegistry" || view === "auditLog" || view === "accessRights" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("settings")} aria-label="Общие настройки" title="Общие настройки"><span className="nav-item-icon"><AppIcon name="generalSettings" /></span><span className="nav-label">Общие</span></button>}
+          {mayAccessProjectSettings && <button className={view === "projectSettings" || view === "projectEmployees" || view === "projectEquipment" || view === "directories" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("projectSettings")} aria-label="Настройки проекта" title="Настройки проекта"><span className="nav-item-icon"><AppIcon name="projectSettings" /></span><span className="nav-label">Настройки проекта</span></button>}
+        </div>
+      </div>
     </div>}
       <div className="sidebar-user"><div><strong>{currentUser.fullName}</strong><small>{userRoleLabel(currentUser)}</small></div><button className="profile-button" onClick={openProfile} title="Профиль" aria-label="Открыть профиль пользователя"><AppIcon name="user" /></button></div>
     </div>

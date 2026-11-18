@@ -7,6 +7,8 @@ export type WorkspaceLocation = {
   directoryFocus: WorkspaceDirectoryFocus;
   date: string;
   month: string;
+  employeeId?: number;
+  equipmentId?: number;
   recognized: boolean;
 };
 
@@ -54,16 +56,30 @@ export function validMonth(value: string | null | undefined): value is string {
   return Boolean(value && /^\d{4}-(0[1-9]|1[0-2])$/.test(value));
 }
 
+export function isEmployeeNavigationTarget(view: WorkspaceView, employeeId: number | null | undefined): employeeId is number {
+  return (view === "timesheet" || view === "employees" || view === "projectEmployees")
+    && Number.isSafeInteger(employeeId) && Number(employeeId) > 0;
+}
+
+export function isEquipmentNavigationTarget(view: WorkspaceView, equipmentId: number | null | undefined): equipmentId is number {
+  return (view === "equipmentTimesheet" || view === "equipmentRegistry" || view === "projectEquipment")
+    && Number.isSafeInteger(equipmentId) && Number(equipmentId) > 0;
+}
+
 export function parseWorkspaceLocation(pathname: string, search: string, fallbackDate: string): WorkspaceLocation {
   const route = ROUTE_BY_PATH.get(normalizedPath(pathname));
   const params = new URLSearchParams(search);
   const date = validDate(params.get("date")) ? params.get("date")! : fallbackDate;
   const month = validMonth(params.get("month")) ? params.get("month")! : date.slice(0, 7);
+  const employeeId = Number(params.get("employeeId"));
+  const equipmentId = Number(params.get("equipmentId"));
   return {
     view: route?.view ?? "placement",
     directoryFocus: route?.directoryFocus ?? "all",
     date,
     month,
+    ...(isEmployeeNavigationTarget(route?.view ?? "placement", employeeId) ? { employeeId } : {}),
+    ...(isEquipmentNavigationTarget(route?.view ?? "placement", equipmentId) ? { equipmentId } : {}),
     recognized: Boolean(route),
   };
 }
@@ -76,11 +92,14 @@ export function workspacePath(view: WorkspaceView, directoryFocus: WorkspaceDire
   return ROUTES.find((route) => route.view === view)?.path ?? "/reports/workers";
 }
 
-export function workspaceUrl(view: WorkspaceView, directoryFocus: WorkspaceDirectoryFocus, date: string, month: string) {
+export function workspaceUrl(view: WorkspaceView, directoryFocus: WorkspaceDirectoryFocus, date: string, month: string, employeeId?: number | null, equipmentId?: number | null) {
   const path = workspacePath(view, directoryFocus);
-  if (view === "placement" || view === "equipment") return `${path}?date=${encodeURIComponent(date)}`;
-  if (view === "timesheet" || view === "equipmentTimesheet") return `${path}?month=${encodeURIComponent(month)}`;
-  return path;
+  const params = new URLSearchParams();
+  if (view === "placement" || view === "equipment") params.set("date", date);
+  if (view === "timesheet" || view === "equipmentTimesheet") params.set("month", month);
+  if (isEmployeeNavigationTarget(view, employeeId)) params.set("employeeId", String(employeeId));
+  if (isEquipmentNavigationTarget(view, equipmentId)) params.set("equipmentId", String(equipmentId));
+  return params.size ? `${path}?${params}` : path;
 }
 
 export function workspaceTitle(view: WorkspaceView, directoryFocus: WorkspaceDirectoryFocus = "all") {
