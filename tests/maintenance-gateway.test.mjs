@@ -27,7 +27,7 @@ async function fixture(t, handler = (_req, res) => { res.writeHead(200, { "Conte
   const { address, controlAddress } = await gateway.listen({ host: "127.0.0.1", port: 0, controlPort: 0 });
   const url = `http://127.0.0.1:${address.port}`;
   t.after(async () => { await gateway.close(); await close(upstream); await rm(directory, { recursive: true, force: true }); });
-  return { gateway, url, stateFile, directory, controlOptions: { stateFile, publicPort: address.port, controlPort: controlAddress.port, timeoutMs: 1000 } };
+  return { gateway, upstream, url, stateFile, directory, controlOptions: { stateFile, publicPort: address.port, controlPort: controlAddress.port, timeoutMs: 1000 } };
 }
 
 test("starting gateway serves standalone HTML and JSON503 without hitting application", async t => {
@@ -87,6 +87,41 @@ test("browser disconnect does not falsely mark a still-running upstream save dra
   release.resolve(); const result = await waiting;
   assert.equal(result.inFlightRequests, 0); assert.equal(result.uncertainRequests, 0);
 });
+
+for (const method of ["GET", "POST"]) {
+  test(`${method} disconnect before upstream headers drains the large response without losing track of pending work`, async t => {
+    const admitted = deferred(); const release = deferred(); const browserClosed = deferred();
+    let requests = 0;
+    const f = await fixture(t, async (req, res) => {
+      requests++;
+      req.resume(); await new Promise(resolve => req.on("end", resolve));
+      admitted.resolve();
+      await release.promise;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ saved: method === "POST", payload: "x".repeat(1024 * 1024) }));
+    });
+    f.gateway.server.once("request", (_req, res) => res.once("close", () => browserClosed.resolve()));
+    const browser = request(`${f.url}/api/data`, { method }); browser.on("error", () => {});
+    browser.end(method === "POST" ? "complete write payload" : undefined);
+    try {
+      await admitted.promise;
+      browser.destroy(); await browserClosed.promise;
+      // Closing the client must not pretend the backend operation has completed.
+      assert.equal(f.gateway.snapshot().inFlightRequests, 1);
+      assert.equal(f.gateway.snapshot().inFlightWrites, method === "POST" ? 1 : 0);
+      const draining = f.gateway.waitForDrain({ timeoutMs: 2000 });
+      release.resolve();
+      await draining;
+      const status = f.gateway.snapshot();
+      assert.equal(requests, 1);
+      assert.equal(status.inFlightRequests, 0); assert.equal(status.inFlightWrites, 0);
+      assert.equal(status.uncertainRequests, 0); assert.equal(status.uncertainWrites, 0);
+      assert.equal(status.backendReady, true);
+    } finally {
+      release.resolve(); browser.destroy(); f.upstream.closeAllConnections();
+    }
+  });
+}
 
 test("aborted partial browser uploads keep healthy traffic open but remain unsafe to drain", async t => {
   const received = deferred();

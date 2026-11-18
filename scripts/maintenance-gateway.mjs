@@ -87,14 +87,17 @@ export function createMaintenanceGateway({ upstream, stateFile, html, htmlPath, 
       if (unsafe) { activeWrites--; if (uncertain) uncertainWrites++; }
     };
     const proxy = httpRequest(target, { method: req.method, path: req.url, headers: copyHeaders(req.headers) }, response => {
-      if (!res.destroyed) res.writeHead(response.statusCode ?? 502, copyHeaders(response.headers));
       response.on("end", () => finish());
       response.on("aborted", () => { finish(true); if (!res.destroyed) res.destroy(); });
       response.on("error", () => { finish(true); if (!res.destroyed) res.destroy(); });
       // Keep consuming upstream even if the browser disconnects. Its write may
       // still be running, and the deployment must wait for its actual response.
-      response.pipe(res);
+      // The browser can close before upstream headers arrive. In that case its
+      // close event has already fired; piping into it would stall a large body.
+      if (res.destroyed) { response.resume(); return; }
       res.once("close", () => { response.unpipe(res); response.resume(); });
+      res.writeHead(response.statusCode ?? 502, copyHeaders(response.headers));
+      response.pipe(res);
     });
     proxy.on("error", () => { finish(true); if (!clientAborted && phase === "ready") phase = "unavailable"; unavailable(req, res); });
     const abortIncompleteRequest = () => {
