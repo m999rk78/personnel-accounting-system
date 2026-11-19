@@ -37,6 +37,7 @@ import { workspaceNavigationDiscards, pendingWorkspaceGridInput, normalize, newK
 import type { Option, Site, PositionRecord, AppUser, CurrentUser, View, UserDraft, EmployeeDraft, EmployeeBulkChanges, ProjectEmployeeDraft, PositionDraft, DirectoryEntity, DirectoryFocus, DirectoryDraft, SiteDraft } from "./workspace/types";
 import type { StatisticsKind } from "./statisticsTypes";
 import type { ReportSourceFilter } from "./reportSourceFilter";
+import { beginAuthMutation } from "./authClientCoordination";
 
 const PersonnelReportWorkspace = lazy(() => import("./PersonnelReportWorkspace").then(module => ({ default: module.PersonnelReportWorkspace })));
 const EquipmentReportPage = lazy(() => import("./EquipmentReportPage").then(module => ({ default: module.EquipmentReportPage })));
@@ -323,8 +324,17 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   }, [directoryFocus, view, viewAllowed]);
 
   async function logout() {
-    await fetch("/api/auth/logout", { method: "POST" });
-    window.location.replace("/login");
+    if (profileSaving) return;
+    const finishAuthMutation = beginAuthMutation();
+    setProfileSaving(true);
+    setProfileError("");
+    try {
+      const response = await fetch("/api/auth/logout", { method: "POST" });
+      if (!response.ok) throw new Error("Не удалось завершить сеанс. Попробуйте ещё раз.");
+      window.location.replace("/login");
+    } catch (logoutError) {
+      setProfileError(logoutError instanceof Error ? logoutError.message : "Не удалось завершить сеанс.");
+    } finally { finishAuthMutation(); setProfileSaving(false); }
   }
   function openProfile() {
     setCurrentPassword(""); setNewPassword(""); setRepeatPassword(""); setProfileError(""); setProfileNotice(""); setProfileOpen(true);
@@ -333,6 +343,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     event.preventDefault();
     setProfileError(""); setProfileNotice("");
     if (newPassword !== repeatPassword) { setProfileError("Новые пароли не совпадают."); return; }
+    const finishAuthMutation = beginAuthMutation();
     setProfileSaving(true);
     try {
       const response = await fetch("/api/auth/password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ currentPassword, newPassword }) });
@@ -342,7 +353,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       setCurrentPassword(""); setNewPassword(""); setRepeatPassword(""); setProfileNotice("Пароль изменён. Остальные сеансы завершены.");
     } catch (passwordError) {
       setProfileError(passwordError instanceof Error ? passwordError.message : "Не удалось изменить пароль.");
-    } finally { setProfileSaving(false); }
+    } finally { finishAuthMutation(); setProfileSaving(false); }
   }
   async function changeSite(nextSiteId: number) {
     if (bitrixBulkRunning.current || navigationState.current.busy || childNavigationBusyRef.current) return;

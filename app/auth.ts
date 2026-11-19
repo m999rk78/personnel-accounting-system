@@ -180,13 +180,29 @@ export async function getAuthUser(request: Request): Promise<AuthUser | null> {
   return { ...user, ...access, ...projectSettings, ...(customRole ? { customRoleName: customRole.name, roleTemplate: customRole.permissions } : { customRoleName: null }) };
 }
 
+function sessionCookie(token: string, request: Request) {
+  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
+  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86400}${secure}`;
+}
+
 export async function createSession(userId: number, request: Request) {
   const token = randomToken();
   const tokenHash = await sha256(token);
   await database().prepare("INSERT INTO user_sessions (user_id, token_hash, expires_at) VALUES (?, ?, DATETIME('now', ?))")
     .bind(userId, tokenHash, `+${SESSION_DAYS} days`).run();
-  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
-  return `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86400}${secure}`;
+  return sessionCookie(token, request);
+}
+
+/** Activity extends only a still-valid session; an expired or revoked token must log in again. */
+export async function refreshAuthSession(request: Request, userId: number) {
+  const token = cookieValue(request, SESSION_COOKIE);
+  if (!token) return null;
+  const result = await database().prepare(`UPDATE user_sessions
+    SET expires_at = DATETIME('now', ?)
+    WHERE token_hash = ? AND user_id = ? AND revoked_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+      AND EXISTS (SELECT 1 FROM app_users WHERE id = user_sessions.user_id AND active = 1)`)
+    .bind(`+${SESSION_DAYS} days`, await sha256(token), userId).run();
+  return result.meta.changes ? sessionCookie(token, request) : null;
 }
 
 export async function revokeSession(request: Request) {
