@@ -27,6 +27,8 @@ import { isReportWorkDate, moveUnsavedReportDay, moveUnsavedReportRow } from "./
 import { equipmentDraftContent, type EquipmentDraftPendingInput } from "./equipmentReportDraftContent";
 import { useEquipmentReportDraftAutosave } from "./useEquipmentReportDraftAutosave";
 import type { EquipmentReportDraftSnapshot } from "./equipmentReportDraftBuffer";
+import { reportRowMatchesSource, type ReportSourceFilter } from "./reportSourceFilter";
+import { ReportSourceNotice } from "./ReportSourceNotice";
 import "./personnelReport.css";
 
 const ReportGrid = lazy(() => import("./EquipmentReportGrid").then(module => ({ default: module.EquipmentReportGrid })));
@@ -62,6 +64,8 @@ export type EquipmentReportWorkspaceProps = {
   units: GridEquipmentUnit[]; shifts: GridOption[]; zones: GridOption[]; mainWorkTypes: GridOption[]; subworkTypes: GridOption[];
   loading: boolean;
   onDirtyChange?: (dirty: boolean) => void;
+  reportSource?: ReportSourceFilter;
+  onClearReportSource?: () => void;
   equipmentNavigationTargets?: EquipmentReportGridProps["equipmentNavigationTargets"];
   onNavigateEquipment?: EquipmentReportGridProps["onNavigateEquipment"];
 };
@@ -580,7 +584,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
       const approved = equipmentReportExcelRows(displayedRows, visible, selected, Object.keys(edits));
       const dates = [...new Set(approved.map(entry => entry.workDate))].sort();
       const range = dates.length === 1 ? dates[0] : `${dates[0]}–${dates.at(-1)}`;
-      const headers = ["Дата", "Уникальное наименование единицы", "Тип", "Марка", "Модель", "ГРЗ / Инв. №", "Организация", "Прораб", "Смена", "Зона", "Вид работы", "Подвид работы", "Часы", "Примечание"];
+      const headers = ["Дата", "Уникальное наименование единицы", "Тип", "Марка", "Модель", "ГРЗ / Инв. №", "Организация", "Заполнил", "Смена", "Зона", "Вид работы", "Подвид работы", "Часы", "Примечание"];
       const values = approved.map(entry => [entry.workDate, equipmentExcelName(entry), entry.equipmentType, entry.brand, entry.model, entry.registrationNumber, entry.organization, entry.responsibleUserName ?? "", entry.shiftName, entry.zoneName, entry.mainWorkTypeName, entry.subworkTypeName, entry.hours, entry.note]);
       openExcelExportPreview({ version: 1, title: "Подтверждённые отчёты техники", description: `${props.siteName} · ${range} · строк: ${values.length}`, fileName: excelFileName("Отчёт техники", [props.siteName, range]), headers, rows: values, workbook: { kind: "table", sheetName: "Отчёты техники", workbookTitle: `Отчёт техники — ${props.siteName}`, rows: values } });
     } catch (failure) { setError(failure instanceof Error ? failure.message : "Не удалось открыть предпросмотр Excel."); }
@@ -599,7 +603,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
   const activeReview = activeView === "submitted" ? reviewItems.find(item => item.key === focusedReportKey) ?? reviewItems[0] : undefined;
   const focusedKey = activeReview?.key ?? (activeView === workflowView ? focusedReportKey : null);
   const focusedItem = reportItems.find(item => item.key === focusedKey);
-  const displayedRows = rows.filter(row => statusAccess[activeView].view && equipmentReportMatchesView({ status: row.status, ownerUserId: row.responsibleUserId }, activeView, currentUser.id) && (!focusedKey || (row.proposalId ? String(row.proposalId) : row.draftGroupKey) === focusedKey));
+  const displayedRows = rows.filter(row => statusAccess[activeView].view && (activeView !== "approved" || reportRowMatchesSource(row, props.reportSource)) && equipmentReportMatchesView({ status: row.status, ownerUserId: row.responsibleUserId }, activeView, currentUser.id) && (!focusedKey || (row.proposalId ? String(row.proposalId) : row.draftGroupKey) === focusedKey));
   const requiredRowKeys = rows.filter(row => requiredReports.includes(ownerByRow.get(row.rowKey) ?? "")).map(row => row.rowKey);
   const changeWorkflow = (view: EquipmentReportView, key: string | null = null) => { setWorkflowView(view); setFocusedReportKey(key); setSelected([]); setVisible(null); };
   const openSend = (keys?: string[]) => { const chosen = keys ?? defaultEquipmentReportSubmissions(submissionItems, currentUser.id); setSendKeys(chosen); setRequiredReports(chosen); setSendValidation(null); setError(""); setSendOpen(true); };
@@ -687,6 +691,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
       <p className="personnel-report-review-scope">В таблице только этот отчёт. Строк: {activeReview.rowCount} · {activeReview.hours} ч.{canEditSubmitted && " Проверяется целиком, отдельно от других прорабов и дат."}</p>
       {equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits)) && <p className="personnel-report-dialog-error">{equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits))}</p>}
     </section>}
+    {activeView === "approved" && props.reportSource && <ReportSourceNotice source={props.reportSource} zones={props.zones} onClear={props.onClearReportSource} />}
     {!activeReview && focusedItem && <div className="personnel-report-focused-caption"><span><strong>{displayDate(focusedItem.workDate)} · {focusedItem.ownerName}</strong> · строк: {focusedItem.rowCount} · {focusedItem.hours} ч{focusedItem.report?.reviewComment && <small className="personnel-report-return-comment">Комментарий инженера: {focusedItem.report.reviewComment}</small>}</span><button type="button" onClick={() => changeWorkflow(workflowView)}>Показать все даты</button></div>}
     <Suspense fallback={<p role="status">Загружаем таблицу…</p>}><ReportGrid rows={displayedRows} sizingRows={rows} preferenceScope={{ userId: currentUser.id, siteId }} selectionScope={activeView} today={today} loading={props.loading || fetching || importing || !autosave.ready} canCreate={permissions.create && !locked} canReview={canReview} units={props.units} shifts={props.shifts} zones={props.zones} mainWorkTypes={props.mainWorkTypes} subworkTypes={props.subworkTypes} dailyTimesheetMarks={data?.availabilityMarks} onChangeDate={changeReportDate} onPatchDraft={patchDraft} onPendingDraftInput={(rowKey, field, value) => setPendingInput(value === null ? null : { rowKey, field, value })} onApplyRange={applyRange} requiredRowKeys={requiredRowKeys} emptyMessage={activeView === "submitted" ? "Нет отчётов на проверке" : activeView === "draft" ? "У вас пока нет черновиков" : "Нет подтверждённых отчётов"} history={{ undo: () => { if (!locked) dispatchEdits({ type: "undo" }); }, redo: () => { if (!locked) dispatchEdits({ type: "redo" }); }, canUndo: !locked && history.past.length > 0, canRedo: !locked && history.future.length > 0 }} onSelectionChange={setSelected} onCopyRows={copyRows} equipmentNavigationTargets={props.equipmentNavigationTargets} onNavigateEquipment={props.onNavigateEquipment} navigationDisabled={locked} onRemoveDraft={permissions.delete ? removeDrafts : undefined} onValidationError={setError} onVisibleRowsChange={setVisible} footerStatus={footerStatus} footerActions={footerActions} /></Suspense>
     {sendOpen && <ReportDialog titleId="personnel-send-title" onClose={() => setSendOpen(false)} busy={locked} className="personnel-report-send-modal">

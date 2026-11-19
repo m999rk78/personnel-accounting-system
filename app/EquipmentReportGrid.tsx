@@ -19,6 +19,7 @@ import { useCatalogGridPreferences } from "./useCatalogGridPreferences";
 import { EQUIPMENT_REPORT_COLUMN_SIZING, equipmentReportColumnWidths } from "./equipmentReportColumnSizing";
 import { approvedReportRowTone, gridTheme } from "./gridTheme";
 import { AgTablePageScroll } from "./TablePageScroll";
+import { formatReportAuthorName } from "./reportAuthorDisplay";
 import "./personnelReportGrid.css";
 
 export type { EquipmentReportStatus } from "./equipmentReportTypes";
@@ -153,7 +154,7 @@ export function EquipmentReportGrid(props: EquipmentReportGridProps) {
       const family = window.getComputedStyle(sizingHost.current ?? document.body).fontFamily;
       const options = Object.fromEntries((["shifts", "zones", "mainWorkTypes", "subworkTypes"] as const).map(field => [field, new Map(current[field].map(option => [option.id, option]))])) as CatalogIndex["options"];
       const index: CatalogIndex = { units: new Map(current.units.map(unit => [unit.id, unit])), options };
-      const values = source.map(row => Object.fromEntries(Object.keys(EQUIPMENT_REPORT_COLUMN_SIZING).map(field => [field, valueFor(row, field, current, index)])));
+      const values = source.map(row => Object.fromEntries(Object.keys(EQUIPMENT_REPORT_COLUMN_SIZING).map(field => [field, field === "responsibleUserName" ? formatReportAuthorName(valueFor(row, field, current, index)) : valueFor(row, field, current, index)])));
       const widths = equipmentReportColumnWidths(values, (text, bold) => {
         context.font = `${bold ? 650 : 400} 13px ${family}`;
         return context.measureText(text).width;
@@ -287,6 +288,7 @@ export function EquipmentReportGrid(props: EquipmentReportGridProps) {
     if (!row) return null;
     const field = params.column?.getColId() as EditableField;
     const value = params.value ?? "";
+    if (String(field) === "responsibleUserName") return <span title={String(value)}>{params.valueFormatted || "—"}</span>;
     if (String(field) === "workDate" && (row.dateEditable ?? row.editable) && propsRef.current.onChangeDate) return <ReportDatePicker workDate={row.workDate} scopeLabel={row.dateScopeLabel} disabled={!row.editable} onChange={workDate => propsRef.current.onChangeDate!(row, workDate)} />;
     const issue = canEdit(row) && row.draft ? equipmentCellErrors(row.draft, propsRef.current, (propsRef.current.requireComplete || propsRef.current.requiredRowKeys?.includes(row.rowKey)), row.workDate)[field] : undefined;
     const unavailable = field === "equipment" ? equipmentUnavailableFor(propsRef.current, row.draft?.equipmentId || row.entry?.equipmentId || "", row.workDate) : undefined;
@@ -323,7 +325,10 @@ export function EquipmentReportGrid(props: EquipmentReportGridProps) {
       })),
       { ...column("equipment", "Техника", 250, 2), pinned: "left", initialWidth: 280 },
       column("status", "Статус", 140),
-      column("responsibleUserName", "Ответственный", 190),
+      { ...column("responsibleUserName", "Заполнил", 140), initialWidth: 160, initialFlex: undefined,
+        headerTooltip: "Автор исходного отчёта", valueFormatter: ({ value }) => formatReportAuthorName(value),
+        // Keep names distinct and searchable even when their initials coincide.
+        filterValueGetter: valueGetter("responsibleUserName") },
       column("organization", "Организация", 160),
       column("equipmentType", "Тип техники", 150),
       column("brand", "Марка", 130),

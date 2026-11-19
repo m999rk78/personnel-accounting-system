@@ -3,6 +3,9 @@ import { getAuthUser, type AuthUser } from "./auth";
 
 export type AuditCategory = "reports" | "timesheets" | "directories" | "access" | "equipment" | "integration" | "account";
 
+type AuditReference = { kind: string; id: number | string; label: string; siteId?: number; workDate?: string; entityId?: number };
+type AuditContext = { version: 1; references: AuditReference[]; before?: unknown; rowLabels?: AuditReference[] };
+
 type AuditDraft = {
   actor: AuthUser;
   category: AuditCategory;
@@ -15,6 +18,7 @@ type AuditDraft = {
   beforeData: unknown;
   requestedData: unknown;
   requestPath: string;
+  context?: AuditContext;
 };
 
 let auditSchemaPromise: Promise<void> | null = null;
@@ -66,19 +70,19 @@ function sensitiveKey(key: string) {
   return /password|token|secret|webhook|invitationurl|cookie/i.test(key);
 }
 
-function safeAuditValue(value: unknown, key = "", depth = 0): unknown {
+function safeAuditValue(value: unknown, key = "", depth = 0, maxDepth = 5): unknown {
   if (sensitiveKey(key)) return undefined;
   if (value === null || typeof value === "number" || typeof value === "boolean") return value;
   if (typeof value === "string") return value.slice(0, 1_000);
-  if (depth >= 5) return "[вложенные данные скрыты]";
+  if (depth >= maxDepth) return "[вложенные данные скрыты]";
   if (Array.isArray(value)) {
-    const items = value.slice(0, 200).map((item) => safeAuditValue(item, key, depth + 1));
+    const items = value.slice(0, 200).map((item) => safeAuditValue(item, key, depth + 1, maxDepth));
     return value.length > 200 ? { total: value.length, items, truncated: true } : items;
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value)
       .filter(([entryKey]) => !sensitiveKey(entryKey))
-      .map(([entryKey, entryValue]) => [entryKey, safeAuditValue(entryValue, entryKey, depth + 1)]));
+      .map(([entryKey, entryValue]) => [entryKey, safeAuditValue(entryValue, entryKey, depth + 1, maxDepth)]));
   }
   return String(value ?? "").slice(0, 1_000);
 }
@@ -107,7 +111,10 @@ function firstWorkDate(payload: Record<string, unknown>) {
 }
 
 function firstSiteId(payload: Record<string, unknown>, url: URL) {
-  const direct = positiveInteger(payload.siteId) ?? positiveInteger(url.searchParams.get("siteId"));
+  const action = String(payload.action ?? "");
+  const assigned = ["create-employee", "update-employee", "save-unit"].includes(action) ? payload.projectSiteId
+    : ["create-user", "update-user", "assign-site"].includes(action) ? payload.assignedSiteId : null;
+  const direct = positiveInteger(payload.siteId) ?? positiveInteger(assigned) ?? positiveInteger(url.searchParams.get("siteId"));
   if (direct) return direct;
   for (const key of ["submitOwnReport", "finalizeReport"]) {
     const nested = payload[key];
@@ -260,7 +267,12 @@ function actionDescription(path: string, method: string, payload: Record<string,
   };
   const description = descriptions[action];
   if (!description) return null;
-  return { category: description[0], actionKey: description[1], entityType: description[3], entityId: String(id ?? payload.userId ?? payload.positionId ?? payload.siteId ?? payload.directoryId ?? ""), summary: description[2] };
+  const targetId = description[3] === "directory" ? payload.directoryId
+    : description[3] === "user" ? payload.userId
+    : description[3] === "position" ? payload.positionId
+    : description[3] === "project" ? payload.siteId
+    : payload.employeeId ?? id;
+  return { category: description[0], actionKey: description[1], entityType: description[3], entityId: String(targetId ?? ""), summary: description[2] };
 }
 
 async function previousState(path: string, method: string, payload: Record<string, unknown>) {
@@ -356,6 +368,208 @@ async function previousState(path: string, method: string, payload: Record<strin
   return null;
 }
 
+// Only explicit, non-secret columns are captured here. These snapshots are kept
+// separately from legacy before_data, whose catalog IDs once referred to reports.
+// Labels belong to the time of the event; reading the log never substitutes a
+// renamed or reassigned entity's current details for historical facts.
+const AUDIT_CATALOGS: Record<string, { table: string; fields: string; label: (row: Record<string, unknown>) => string }> = {
+  employee: { table: "employees", fields: 'id, full_name AS "fullName", employment_type AS "employmentType", department, position, availability_status AS "availabilityStatus", site_id AS "projectSiteId"', label: row => String(row.fullName ?? "") },
+  equipment: { table: "equipment_units", fields: 'id, equipment_type AS "equipmentType", brand, model, registration_number AS "registrationNumber", organization, note', label: row => [row.equipmentType, row.brand, row.model].filter(Boolean).join(" ") + (row.registrationNumber ? ` // ${row.registrationNumber}` : "") },
+  user: { table: "app_users", fields: 'id, full_name AS "fullName", email, role, assigned_site_id AS "assignedSiteId"', label: row => String(row.fullName ?? "") },
+  project: { table: "sites", fields: "id, name, code, timezone, active", label: row => String(row.name ?? "") },
+  position: { table: "position_catalog", fields: 'id, employment_type AS "employmentType", department, position', label: row => String(row.position ?? "") },
+  shift: { table: "shifts", fields: 'id, name, site_id AS "siteId"', label: row => String(row.name ?? "") },
+  zone: { table: "zones", fields: 'id, name, site_id AS "siteId"', label: row => String(row.name ?? "") },
+  workType: { table: "main_work_types", fields: 'id, name, site_id AS "siteId"', label: row => String(row.name ?? "") },
+  subworkType: { table: "subwork_types", fields: 'id, name, site_id AS "siteId", main_work_type_id AS "mainWorkTypeId"', label: row => String(row.name ?? "") },
+  master: { table: "masters", fields: 'id, name, site_id AS "siteId"', label: row => String(row.name ?? "") },
+  directory: { table: "personnel_options", fields: "id, name, kind", label: row => String(row.name ?? "") },
+};
+const AUDIT_DIRECTORY_KINDS: Record<string, string> = { employmentType: "directory", department: "directory", position: "directory", shift: "shift", zone: "zone", mainWorkType: "workType", subworkType: "subworkType", master: "master" };
+const AUDIT_ORDER_KINDS: Record<string, string> = { employees: "employee", "project-personnel": "employee", equipment: "equipment", "project-equipment": "equipment", users: "user", projects: "project", positions: "position", "directory-zone": "zone", "directory-mainWorkType": "workType", "directory-subworkType": "subworkType", "directory-master": "master" };
+
+async function auditContext(path: string, payload: Record<string, unknown>, beforeData: unknown, entityType: string, entityId: string): Promise<AuditContext | undefined> {
+  const db = getDatabase();
+  const ids = new Map<string, Set<number>>();
+  const references = new Map<string, AuditReference>();
+  const rowsByKind = new Map<string, Record<string, unknown>[]>();
+  const addId = (kind: string, raw: unknown) => {
+    const id = positiveInteger(raw);
+    if (!id || !AUDIT_CATALOGS[kind]) return;
+    if (!ids.has(kind)) ids.set(kind, new Set());
+    if (ids.get(kind)!.size < 200) ids.get(kind)!.add(id);
+  };
+  const addReference = (kind: string, id: number, label: unknown, extra: Pick<AuditReference, "siteId" | "workDate"> = {}) => {
+    if (typeof label !== "string" || !label.trim()) return;
+    const key = `${kind}:${id}`;
+    if (!references.has(key)) references.set(key, { kind, id, label: label.slice(0, 1000), ...extra });
+  };
+  const fields: Record<string, string> = { employeeId: "employee", equipmentId: "equipment", siteId: "project", projectSiteId: "project", assignedSiteId: "project", userId: "user", ownerUserId: "user", responsibleUserId: "user", shiftId: "shift", zoneId: "zone", mainWorkTypeId: "workType", subworkTypeId: "subworkType", masterId: "master", positionId: "position" };
+  const collect = (value: unknown, depth = 0) => {
+    if (!value || typeof value !== "object" || depth > 6) return;
+    if (Array.isArray(value)) { value.slice(0, 200).forEach(row => collect(row, depth + 1)); return; }
+    const row = value as Record<string, unknown>;
+    for (const [key, child] of Object.entries(row)) {
+      if (sensitiveKey(key)) continue;
+      const camelKey = key.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
+      if (fields[camelKey]) addId(fields[camelKey], child);
+      else if (camelKey === "employeeIds" && Array.isArray(child)) child.slice(0, 200).forEach(id => addId("employee", id));
+      else if (camelKey === "siteIds" && Array.isArray(child)) child.slice(0, 200).forEach(id => addId("project", id));
+      if (child && typeof child === "object") collect(child, depth + 1);
+    }
+    const workDate = String(row.workDate ?? row.work_date ?? "");
+    const siteId = positiveInteger(row.siteId ?? row.site_id) ?? undefined;
+    const employeeId = positiveInteger(row.employeeId ?? row.employee_id);
+    const equipmentId = positiveInteger(row.equipmentId ?? row.equipment_id);
+    if (employeeId) addReference("employee", employeeId, row.employeeName ?? row.employee_name_snapshot, { siteId, ...(workDate ? { workDate } : {}) });
+    if (equipmentId) addReference("equipment", equipmentId, row.equipmentName ?? row.equipment_name_snapshot, { siteId, ...(workDate ? { workDate } : {}) });
+  };
+  collect(beforeData);
+  const action = String(payload.action ?? "");
+  const catalogMutation = path === "/api/data" && Boolean(action || payload.entity) || path === "/api/equipment" && ["save-unit", "delete-unit", "assign-unit-project", "remove-unit-project"].includes(action);
+  let catalogKind = catalogMutation ? entityType : "";
+  const directoryKind = String(payload.entity === "directory" ? payload.kind : payload.entity ?? "");
+  if (catalogKind === "directory") catalogKind = AUDIT_DIRECTORY_KINDS[directoryKind] ?? "";
+  const deletingCatalog = path === "/api/data" && !action && payload.entity;
+  const affectedRaw = deletingCatalog ? [payload.id, ...(Array.isArray(payload.ids) ? payload.ids : [])]
+    : action === "save-directory-items" ? (Array.isArray(payload.directories) ? payload.directories.map(row => row && typeof row === "object" ? (row as Record<string, unknown>).directoryId : null) : [])
+    : catalogKind === "employee" ? [["update-employee", "assign-employee-project", "update-bitrix24-employee", "delete-bitrix24-employee", "acknowledge-bitrix24-difference"].includes(action) ? payload.employeeId : null]
+    : catalogKind === "equipment" ? [["save-unit", "delete-unit"].includes(action) ? payload.id : payload.equipmentId]
+    : catalogKind === "user" ? [["update-user", "assign-site"].includes(action) ? payload.userId : null]
+    : catalogKind === "project" ? [action === "update-site" ? payload.siteId : null]
+    : catalogKind === "position" ? [action === "update-position" ? payload.positionId : null]
+    : catalogKind ? [action === "update-directory" ? payload.directoryId : null] : [];
+  const affectedIds = affectedRaw.map(positiveInteger).filter((id): id is number => id !== null).slice(0, 200);
+  // Do not resolve arbitrary, ignored IDs supplied alongside a valid action:
+  // that would turn the log into a lookup for otherwise unrelated records.
+  const pick = (value: unknown, keys: string[]) => value && typeof value === "object"
+    ? Object.fromEntries(keys.filter(key => key in (value as Record<string, unknown>)).map(key => [key, (value as Record<string, unknown>)[key]])) : {};
+  const reportMutation = !catalogMutation && (path === "/api/personnel-report" || path === "/api/equipment-report" || path === "/api/data" || path === "/api/equipment");
+  if (path === "/api/equipment" && action === "save-timesheet-mark") collect(pick(payload, ["siteId", "equipmentId"]));
+  else if (reportMutation) {
+    const rowKeys = ["siteId", path.includes("equipment") ? "equipmentId" : "employeeId", "shiftId", "zoneId", "mainWorkTypeId", "subworkTypeId", ...(path.includes("equipment") ? [] : ["masterId"]), "responsibleUserId"];
+    collect(pick(payload, ["siteId"]));
+    const isWorkflow = path === "/api/personnel-report" || path === "/api/equipment-report";
+    if (isWorkflow && action === "save-approved-entry") collect(pick(payload.row, rowKeys));
+    const collections = isWorkflow ? action === "save" ? ["rows"] : []
+      : path === "/api/equipment" ? action === "import-entries" ? ["entries"] : [] : ["entries", "creates", "updates"];
+    for (const key of collections) if (Array.isArray(payload[key])) collect((payload[key] as unknown[]).slice(0, 200).map(row => pick(row, rowKeys)));
+    if (path === "/api/equipment" && action === "save-entry" || path === "/api/data" && !collections.some(key => Array.isArray(payload[key]))) collect(pick(payload, rowKeys));
+  } else if (path === "/api/timesheet") collect(pick(payload, ["siteId", "employeeId"]));
+  else if (path === "/api/access-rights") collect(pick(payload, ["userId"]));
+  else if (catalogMutation) {
+    collect(pick(payload, ["siteId"]));
+    if (["create-employee", "update-employee", "save-unit"].includes(action)) collect(pick(payload, ["projectSiteId"]));
+    if (["create-user", "update-user", "assign-site"].includes(action)) {
+      collect(pick(payload, ["assignedSiteId"]));
+      collect(pick(payload.projectAccess, ["siteIds"]));
+    }
+    if (directoryKind === "master" && ["create-directory", "save-directory-items"].includes(action)) {
+      collect(pick(payload, ["employeeId"]));
+      if (Array.isArray(payload.directories)) collect(payload.directories.slice(0, 200).map(row => pick(row, ["employeeId"])));
+    }
+    if (directoryKind === "subworkType" && ["create-directory", "update-directory", "save-directory-items"].includes(action)) {
+      collect(pick(payload, ["mainWorkTypeId"]));
+      if (Array.isArray(payload.directories)) collect(payload.directories.slice(0, 200).map(row => pick(row, ["mainWorkTypeId"])));
+    }
+  }
+  if (catalogKind) affectedIds.forEach(id => addId(catalogKind, id));
+  if (entityType === "employee_timesheet") addId("employee", entityId);
+  if (entityType === "equipment_timesheet") addId("equipment", entityId);
+  const orderIds = path === "/api/table-order" ? [...(Array.isArray(payload.movingIds) ? payload.movingIds.slice(0, 200) : []), payload.targetId].filter(value => value !== undefined) : [];
+  const scope = String(payload.scope ?? "");
+  const orderKind = AUDIT_ORDER_KINDS[scope];
+  if (orderKind) orderIds.forEach(id => addId(orderKind, id));
+  if (scope === "directory-work-types") for (const token of orderIds) {
+    const match = String(token).match(/^(parent|child)-(\d+)$/);
+    if (match) addId(match[1] === "parent" ? "workType" : "subworkType", match[2]);
+  }
+  const reportRowLabels: AuditReference[] = [];
+  if ((scope === "personnel-report-rows" || scope === "equipment-report-rows") && orderIds.length) {
+    const equipment = scope === "equipment-report-rows";
+    const kind = equipment ? "equipment" : "employee";
+    const approvedIds: number[] = [], draftIds: number[] = [];
+    for (const token of orderIds) {
+      const match = String(token).match(/^\d{4}-\d{2}-\d{2}\/(approved-(\d+)|report-(\d+)-(\d+))$/);
+      if (match?.[2]) approvedIds.push(Number(match[2]));
+      if (match?.[4]) draftIds.push(Number(match[4]));
+    }
+    const readRows = async (draft: boolean, selected: number[]): Promise<Array<Record<string, unknown> & { token: string }>> => {
+      if (!selected.length) return [];
+      const prefix = equipment ? "equipment" : "personnel";
+      const table = draft ? `${prefix}_report_rows` : equipment ? "equipment_entries" : "placement_entries";
+      const result = await db.prepare(`SELECT row.id, ${draft ? "report.id" : "NULL"} AS "reportId", ${draft ? "report" : "row"}.site_id AS "siteId", ${draft ? "report" : "row"}.work_date AS "workDate",
+        row.${kind}_id AS "entityId", row.${kind}_name_snapshot AS label
+        FROM ${table} row ${draft ? `JOIN ${prefix}_reports report ON report.id = row.report_id` : ""}
+        WHERE row.id = ANY(?::integer[]) AND ${draft ? "report" : "row"}.site_id = ?`).bind(selected, positiveInteger(payload.siteId)).all<Record<string, unknown>>();
+      return result.results.map(row => ({ ...row, token: `${row.workDate}/${draft ? `report-${row.reportId}-${row.id}` : `approved-${row.id}`}` }));
+    };
+    const results = await Promise.allSettled([readRows(false, approvedIds), readRows(true, draftIds)]);
+    for (const result of results) {
+      if (result.status === "rejected") { console.error("Audit row label lookup failed", result.reason); continue; }
+      for (const row of result.value) {
+        const entityId = positiveInteger(row.entityId);
+        if (!entityId || !orderIds.includes(row.token) || typeof row.label !== "string" || !row.label.trim()) continue;
+        const extra = { siteId: positiveInteger(row.siteId) ?? undefined, workDate: String(row.workDate) };
+        addId(kind, entityId);
+        addReference(kind, entityId, row.label, extra);
+        reportRowLabels.push({ kind, id: row.token, entityId, label: row.label, ...extra });
+      }
+    }
+  }
+
+  let before: unknown;
+  // Batch each entity type once, even for a bulk report or a 200-row move.
+  const loadKind = async (kind: string, selected: Set<number>) => {
+    const config = AUDIT_CATALOGS[kind];
+    const result = await db.prepare(`SELECT ${config.fields} FROM ${config.table} WHERE id = ANY(?::integer[]) ORDER BY id`).bind([...selected]).all<Record<string, unknown>>();
+    rowsByKind.set(kind, result.results);
+    for (const row of result.results) {
+      const id = positiveInteger(row.id);
+      if (!id) continue;
+      addReference(kind, id, config.label(row), { siteId: positiveInteger(row.siteId) ?? undefined });
+    }
+  };
+  const assignments = new Map<number, Record<string, unknown>[]>();
+  if ((catalogKind === "employee" || catalogKind === "equipment") && affectedIds.length) {
+    const employee = catalogKind === "employee";
+    const result = await db.prepare(`SELECT assignment.${employee ? "employee_id" : "equipment_id"} AS "entityId", assignment.site_id AS "siteId", site.name AS "siteName",
+      assignment.${employee ? "start_date" : "assigned_at"} AS "startDate", assignment.${employee ? "end_date" : "ended_at"} AS "endDate"
+      FROM ${employee ? "employee" : "equipment"}_project_assignments assignment JOIN sites site ON site.id = assignment.site_id
+      WHERE assignment.${employee ? "employee_id" : "equipment_id"} = ANY(?::integer[]) AND assignment.active = 1 ORDER BY assignment.id`).bind(affectedIds).all<Record<string, unknown>>();
+    for (const row of result.results) {
+      const entityId = positiveInteger(row.entityId), siteId = positiveInteger(row.siteId);
+      if (!entityId || !siteId) continue;
+      const { entityId: _entityId, ...assignment } = row;
+      void _entityId;
+      assignments.set(entityId, [...(assignments.get(entityId) ?? []), assignment]);
+      addId("project", siteId);
+      addReference("project", siteId, row.siteName);
+    }
+  }
+  const loads = await Promise.allSettled([...ids].map(([kind, selected]) => loadKind(kind, selected)));
+  // Enrichment failure must never suppress the original successful audit event.
+  for (const result of loads) if (result.status === "rejected") console.error("Audit reference lookup failed", result.reason);
+  if (catalogKind && affectedIds.length) {
+    const affected = (rowsByKind.get(catalogKind) ?? []).filter(row => affectedIds.includes(Number(row.id))).map(row => ({ ...row, ...((catalogKind === "employee" || catalogKind === "equipment") ? { assignments: assignments.get(Number(row.id)) ?? [] } : {}) }));
+    if (affected.length === 1) before = affected[0];
+    else if (affected.length) before = { [catalogKind === "employee" ? "employees" : catalogKind === "equipment" ? "equipment" : "items"]: affected };
+  }
+  // A user's previous assigned project can differ from the requested one.
+  const previousProjectIds = (rowsByKind.get(catalogKind) ?? []).map(row => positiveInteger(row.projectSiteId ?? row.assignedSiteId)).filter((id): id is number => id !== null && !references.has(`project:${id}`));
+  if (previousProjectIds.length) await loadKind("project", new Set(previousProjectIds));
+  const rowLabels: AuditReference[] = [...reportRowLabels];
+  for (const token of orderIds) {
+    const workTypeMatch = scope === "directory-work-types" ? String(token).match(/^(parent|child)-(\d+)$/) : null;
+    const kind = workTypeMatch ? workTypeMatch[1] === "parent" ? "workType" : "subworkType" : orderKind;
+    const id = workTypeMatch ? Number(workTypeMatch[2]) : Number(token);
+    const reference = references.get(`${kind}:${id}`);
+    if (reference) rowLabels.push({ ...reference, id: token as string | number });
+  }
+  if (!references.size && before === undefined && !rowLabels.length) return undefined;
+  return { version: 1, references: [...references.values()].slice(0, 200), ...(before !== undefined ? { before } : {}), ...(rowLabels.length ? { rowLabels } : {}) };
+}
+
 export async function prepareAuditEvent(request: Request): Promise<AuditDraft | null> {
   try {
     if (request.method === "GET") return null;
@@ -373,6 +587,9 @@ export async function prepareAuditEvent(request: Request): Promise<AuditDraft | 
       ? positiveInteger(beforeData.siteId) : null;
     const siteId = firstSiteId(payload, url) ?? reportSiteId;
     const site = siteId ? await getDatabase().prepare("SELECT name FROM sites WHERE id = ?").bind(siteId).first<{ name: string }>() : null;
+    let context: AuditContext | undefined;
+    try { context = await auditContext(url.pathname, payload, beforeData, description.entityType, description.entityId); }
+    catch (error) { console.error("Audit context lookup failed", error); }
     return {
       actor,
       ...description,
@@ -381,6 +598,7 @@ export async function prepareAuditEvent(request: Request): Promise<AuditDraft | 
       beforeData: safeAuditValue(beforeData),
       requestedData: safeAuditValue(payload),
       requestPath: url.pathname,
+      ...(context ? { context } : {}),
     };
   } catch (error) {
     console.error("Audit preparation failed", error);
@@ -397,7 +615,27 @@ async function finishAuditEvent(draft: AuditDraft, response: Response) {
     if (report && typeof report === "object" && "id" in report) draft.entityId = String(report.id);
   }
   if (draft.entityType === "custom_role" && responseData && typeof responseData === "object" && "id" in responseData) draft.entityId = String(responseData.id);
-  const afterData = safeAuditValue({ requested: draft.requestedData, result: responseData });
+  if (AUDIT_CATALOGS[draft.entityType] && responseData && typeof responseData === "object" && "id" in responseData) {
+    const id = positiveInteger(responseData.id);
+    if (id) {
+      draft.entityId = String(id);
+      const requested = draft.requestedData && typeof draft.requestedData === "object" ? draft.requestedData as Record<string, unknown> : {};
+      const kind = draft.entityType === "directory" ? AUDIT_DIRECTORY_KINDS[String(requested.entity)] ?? "directory" : draft.entityType;
+      const label = AUDIT_CATALOGS[kind].label(requested);
+      if (label) {
+        draft.context ??= { version: 1, references: [] };
+        if (!draft.context.references.some(reference => reference.kind === kind && reference.id === id)) {
+          draft.context.references.push({ kind, id, label });
+        }
+      }
+    }
+  }
+  // Context uses explicit server-owned columns; keep nested bulk assignments
+  // readable while retaining the existing limit for arbitrary request/result.
+  const afterData = {
+    ...safeAuditValue({ requested: draft.requestedData, result: responseData }) as Record<string, unknown>,
+    ...(draft.context ? { context: safeAuditValue(draft.context, "", 0, 7) } : {}),
+  };
   await getDatabase().prepare(`INSERT INTO audit_events
     (actor_user_id, actor_name, actor_role, category, action_key, entity_type, entity_id, site_id, site_name, summary, before_data, after_data, request_path)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, ?::jsonb, ?)`)

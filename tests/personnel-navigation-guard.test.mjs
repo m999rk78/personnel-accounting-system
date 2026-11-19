@@ -65,7 +65,7 @@ function harness({ view = "directories", focus = "zone", month = "2026-11", empl
   };
   const resetCallback = declaration("discardSettingsEdits").initializer.arguments[0].getText(ast);
   const setterNames = [...new Set(resetCallback.match(/\bset[A-Z]\w*/g))];
-  for (const name of [...setterNames, "setPersonnelReportDirty", "setEquipmentReportDirty", "setWorkTypesDirty", "setDraftRows", "setEditingRows", "setPreviousDayReport", "setSelectedRosterDraftKeys", "setPendingDeletes", "setDeleteConfirmationOpen", "setWorkDate", "setReportRangeEnd", "setError", "setNotice"]) environment[name] = value => {
+  for (const name of [...setterNames, "setPersonnelReportDirty", "setEquipmentReportDirty", "setWorkTypesDirty", "setDraftRows", "setEditingRows", "setPreviousDayReport", "setSelectedRosterDraftKeys", "setPendingDeletes", "setDeleteConfirmationOpen", "setWorkDate", "setReportRangeEnd", "setReportSource", "setError", "setNotice"]) environment[name] = value => {
     trace.resets.push(name);
     if (name === "setDirectoryDrafts") trace.drafts = value;
   };
@@ -74,6 +74,7 @@ function harness({ view = "directories", focus = "zone", month = "2026-11", empl
   environment.setSelectedMonth = value => { trace.month = value; };
   environment.setFocusedEmployeeId = value => { trace.employeeId = value; };
   environment.setFocusedEquipmentId = value => { trace.equipmentId = value; };
+  environment.setReportSource = value => { trace.reportSource = value; };
   environment.setSiteId = value => { trace.selectedSite = value; };
   environment.getNavigationDiscards = bind("getNavigationDiscards", environment, true);
   environment.discardSettingsEdits = bind("discardSettingsEdits", environment, true);
@@ -90,6 +91,19 @@ for (const accepted of [false, true]) test(`actual sidebar navigation ${accepted
   assert.equal(await navigating, accepted);
   assert.deepEqual(ui.trace.drafts, accepted ? [] : [{ key: "new-zone", entity: "zone", name: "Новая зона без сохранения" }]);
   assert.equal(ui.trace.view, accepted ? "placement" : "directories");
+});
+
+for (const accepted of [false, true]) test(`statistics source navigation ${accepted ? "opens the scoped report after approval" : "preserves the current scope on Cancel"}`, async () => {
+  const ui = harness({ view: "placement" });
+  const source = { from: "2026-11-03", to: "2026-11-03", zoneId: 9 };
+  const navigating = ui.navigate("placement", "all", undefined, source);
+  assert.equal(ui.trace.prompts.length, 1);
+  assert.equal(ui.trace.reportSource, undefined);
+  assert.equal(ui.trace.resets.length, 0);
+  ui.answer.resolve(accepted);
+  assert.equal(await navigating, accepted);
+  assert.deepEqual(ui.trace.reportSource, accepted ? source : undefined);
+  assert.deepEqual(ui.trace.pushes, accepted ? ["/reports/workers?date=2026-11-03&source=statistics&from=2026-11-03&to=2026-11-03&zoneId=9"] : []);
 });
 
 test("actual settings sidebar and Back button handlers cannot clear drafts before async navigation is accepted", async () => {

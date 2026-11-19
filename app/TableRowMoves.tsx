@@ -9,6 +9,7 @@ import { personnelReportOrderScope } from "./personnelReportRowOrder";
 import { equipmentReportOrderScope } from "./equipmentReportRowOrder";
 import { nativeRowDragIds, nativeRowDropIds, nativeSelectedRowIds, selectNativeRow, type NativeRowSelection } from "./nativeRowSelection";
 import { startRowDragAutoScroll } from "./rowDragAutoScroll";
+import { createRowDropIndicator, rowDropPlacement } from "./rowDropIndicator";
 
 const EMPTY_ORDER: RowOrderId[] = [];
 const EMPTY_IMPORT_ORDER: number[] = [];
@@ -175,7 +176,13 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
   const selected = nativeSelectedRowIds(selection, key, context.ids);
   const dragged = useRef<NativeRowSelection>({ key: "", ids: [] });
   const dragScroll = useRef<ReturnType<typeof startRowDragAutoScroll>>(null);
-  const stopDragScroll = useCallback(() => { dragScroll.current?.stop(); dragScroll.current = null; }, []);
+  const dropIndicator = useRef<ReturnType<typeof createRowDropIndicator>>(null);
+  const dropPreviewCleanup = useRef<(() => void) | null>(null);
+  const clearDropPreview = useCallback(() => {
+    dropPreviewCleanup.current?.(); dropPreviewCleanup.current = null;
+    dropIndicator.current?.destroy(); dropIndicator.current = null;
+  }, []);
+  const stopDragScroll = useCallback(() => { dragScroll.current?.stop(); dragScroll.current = null; clearDropPreview(); }, [clearDropPreview]);
   const trailingClick = useRef<{ key: string; id: number } | null>(null);
   const selectionRevision = useRef(0);
   const [menuState, setMenu] = useState<{ key: string; id: number; x: number; y: number } | null>(null);
@@ -190,7 +197,11 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
   const menu = menuState?.key === key && context.ids.includes(menuState.id) ? menuState : null;
   const moves = useRowMoveActions(order, disabled || editing, key);
   const blocked = disabled || editing || !order?.canWrite || order.busy || access?.select === false;
-  useEffect(() => stopDragScroll, [key, blocked, stopDragScroll]);
+  const availableRowsKey = context.ids.join(",");
+  useEffect(() => {
+    dragged.current = { key, ids: [] };
+    return stopDragScroll;
+  }, [key, blocked, availableRowsKey, stopDragScroll]);
   const canSelect = Boolean(order?.canWrite) && access?.select !== false;
   const clearSelection = () => {
     stopDragScroll();
@@ -216,16 +227,25 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
     trailingClick.current = null;
     event.preventDefault(); event.stopPropagation();
   };
+  const previewRowDrop = (event: React.DragEvent, id: number) => {
+    const movingIds = nativeRowDropIds(dragged.current, key, context.ids, id, blocked);
+    if (!movingIds.length) { dropIndicator.current?.clear(); return; }
+    event.preventDefault(); event.dataTransfer.dropEffect = "move";
+    const row = event.currentTarget as HTMLElement;
+    dropIndicator.current?.show({ row, placement: rowDropPlacement(event.clientY, row.getBoundingClientRect()), count: movingIds.length, rowNumber: context.ids.indexOf(id) + 1 });
+  };
   const rowProps = (id: number) => ({
+    "data-row-drop-id": id,
     className: selected.includes(id) ? "table-row-move-selected" : undefined,
-    onDragOver: (event: React.DragEvent) => { if (nativeRowDropIds(dragged.current, key, context.ids, id, blocked).length) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; } },
+    onDragEnter: (event: React.DragEvent) => previewRowDrop(event, id),
+    onDragOver: (event: React.DragEvent) => previewRowDrop(event, id),
     onDrop: (event: React.DragEvent) => {
       stopDragScroll();
       const movingIds = nativeRowDropIds(dragged.current, key, context.ids, id, blocked);
       if (!movingIds.length) return;
       event.preventDefault(); event.stopPropagation();
       const rect = event.currentTarget.getBoundingClientRect();
-      const placement = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+      const placement = rowDropPlacement(event.clientY, rect);
       dragged.current = { key, ids: [] };
       const revision = selectionRevision.current;
       void order?.move({ movingIds, placement, targetId: id }).then(saved => {
@@ -249,11 +269,50 @@ export function useNativeRowMoves(order: ReturnType<typeof useTableRowOrder> | n
         event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", movingIds.join(","));
         stopDragScroll();
         const shell = event.currentTarget.closest<HTMLElement>(".timesheet-grid-shell");
+        const owner = shell ?? event.currentTarget.closest<HTMLElement>("table");
+        if (owner) {
+          const doc = owner.ownerDocument;
+          const view = doc.defaultView;
+          const indicator = createRowDropIndicator(owner);
+          dropIndicator.current = indicator;
+          let point = { clientX: event.clientX, clientY: event.clientY };
+          let frame: number | null = null;
+          const update = () => {
+            frame = null;
+            const hit = doc.elementFromPoint(point.clientX, point.clientY);
+            const row = hit?.closest<HTMLElement>("tr[data-row-drop-id]");
+            const targetId = Number(row?.dataset.rowDropId);
+            const ids = nativeRowDropIds(dragged.current, key, context.ids, targetId, blocked);
+            if (!row || !owner.contains(row) || !ids.length || hit?.closest("thead, tfoot")) { indicator.clear(); return; }
+            indicator.show({ row, placement: rowDropPlacement(point.clientY, row.getBoundingClientRect()), count: ids.length, rowNumber: context.ids.indexOf(targetId) + 1 });
+          };
+          const over = (next: DragEvent) => { point = { clientX: next.clientX, clientY: next.clientY }; update(); };
+          const scroll = () => { if (view && frame === null) frame = view.requestAnimationFrame(update); };
+          const leave = (next: DragEvent) => { if (!next.relatedTarget || !owner.contains(next.relatedTarget as Node)) indicator.clear(); };
+          const escape = (next: KeyboardEvent) => { if (next.key === "Escape") { dragged.current = { key, ids: [] }; clearDropPreview(); } };
+          doc.addEventListener("dragover", over, true);
+          doc.addEventListener("scroll", scroll, true);
+          doc.addEventListener("keydown", escape, true);
+          doc.addEventListener("drop", clearDropPreview, true);
+          doc.addEventListener("dragend", clearDropPreview, true);
+          owner.addEventListener("dragleave", leave);
+          view?.addEventListener("blur", clearDropPreview);
+          dropPreviewCleanup.current = () => {
+            if (frame !== null) view?.cancelAnimationFrame(frame);
+            doc.removeEventListener("dragover", over, true);
+            doc.removeEventListener("scroll", scroll, true);
+            doc.removeEventListener("keydown", escape, true);
+            doc.removeEventListener("drop", clearDropPreview, true);
+            doc.removeEventListener("dragend", clearDropPreview, true);
+            owner.removeEventListener("dragleave", leave);
+            view?.removeEventListener("blur", clearDropPreview);
+          };
+        }
         if (shell) {
           const snapshot = dragged.current;
           let session: ReturnType<typeof startRowDragAutoScroll> = null;
           session = startRowDragAutoScroll(shell, event, "native", () => {
-            if (dragScroll.current === session) dragScroll.current = null;
+            if (dragScroll.current === session) { dragScroll.current = null; clearDropPreview(); }
             if (dragged.current === snapshot) dragged.current = { key, ids: [] };
           });
           dragScroll.current = session;

@@ -28,6 +28,7 @@ try {
   const units = range(id => ({ id, name: `Кран ${id}`, equipmentType: "Кран", brand: "Тест", model: `Модель ${id}`, registrationNumber: `ТЕСТ${id}`, inventoryNumber: `TEST-${id}`, organization: "Учебная организация", siteId: 1, siteName: sites[0].name, availabilityStatus: "active", unavailableFrom: null, note: "" }));
   const users = range(id => ({ id, fullName: `Пользователь ${id}`, email: `user${id}@example.invalid`, role: "engineer", assignedSiteId: null, projectAccess: { mode: "all", siteIds: [] }, status: "active" }));
   const options = { shifts: [{ id: 1, name: "день" }], zones: range(id => ({ id, name: `Зона ${id}` })), mainWorkTypes: range(id => ({ id, name: `Работа ${id}` })), subworkTypes: range(id => ({ id, name: `Подработа ${id}`, mainWorkTypeId: id })), masters: employees.map(employee => ({ id: employee.id, name: employee.fullName, employeeId: employee.id })) };
+  options.subworkTypes.push({ id: 4, name: "Подработа А", mainWorkTypeId: 1 }, { id: 5, name: "Подработа Б", mainWorkTypeId: 1 });
   const stamp = "2026-11-04T10:00:00.000Z";
   const entries = equipment => range(id => ({ id, siteId: 1, workDate: "2026-11-04", shiftId: 1, zoneId: 1, mainWorkTypeId: 1, subworkTypeId: 1, masterId: 1, hours: 8, note: "", shiftName: "день", zoneName: "Зона 1", mainWorkTypeName: "Работа 1", subworkTypeName: "Подработа 1", masterName: "Сотрудник 1", createdAt: stamp, updatedAt: stamp, rowOrder: id, revision: 1, responsibleUserId: 1, responsibleUserName: "Проверка Escape",
     ...(equipment ? { equipmentId: id, equipmentName: `Кран ${id}`, equipmentType: "Кран", organization: "Учебная организация", brand: "Тест", model: `Модель ${id}`, registrationNumber: `ТЕСТ${id}` } : { employeeId: id, employeeName: `Сотрудник ${id}`, employmentType: "ИТР", department: "МУТТ", positionSnapshot: `Должность ${id}` }) }));
@@ -60,6 +61,45 @@ try {
     await settle();
     await page.waitForFunction(() => document.querySelectorAll(".page-content .ag-row-selected,.page-content .ag-excel-selected,.page-content .ag-cell-range-selected,.page-content .ag-cell-focus,.page-content .ag-selection-checkbox input:checked").length === 0);
   };
+  const waitCount = async (locator, count) => {
+    if (count) await locator.nth(count - 1).waitFor();
+    await locator.nth(count).waitFor({ state: "detached" });
+    assert.equal(await locator.count(), count);
+  };
+  const sortState = () => page.locator(".page-content [aria-sort]").evaluateAll(headers => headers.map(header => ({
+    column: header.getAttribute("col-id") ?? header.textContent,
+    sort: header.getAttribute("aria-sort"),
+  })));
+  async function chooseValue(filter, value) {
+    await filter.click();
+    const panel = page.locator(".ag-filter-menu").first();
+    await panel.waitFor();
+    const search = panel.getByRole("textbox", { name: "Поиск значений фильтра", exact: true });
+    await search.fill(value);
+    await panel.getByRole("checkbox", { name: value, exact: true }).check();
+    return { panel, search };
+  }
+  async function filterEscapeCycle(filter, cells, label, { beforeReset } = {}) {
+    await waitCount(cells, 3);
+    const previousSort = await sortState();
+    const value = (await cells.first().innerText()).trim();
+    const { panel, search } = await chooseValue(filter, value);
+    await waitCount(cells, 1);
+    await search.press("Escape");
+    await panel.waitFor({ state: "detached" });
+    await waitCount(cells, 1);
+    assert.deepEqual(await sortState(), previousSort, `${label}: closing popup preserves sorting`);
+    // A held Escape key is one gesture, not a request to reset immediately.
+    await page.evaluate(() => document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", repeat: true, bubbles: true, cancelable: true })));
+    await settle();
+    await waitCount(cells, 1);
+    await beforeReset?.();
+    await outsideFocus();
+    await page.keyboard.press("Escape");
+    await waitCount(cells, 3);
+    assert.deepEqual(await sortState(), previousSort, `${label}: reset preserves sorting`);
+    console.log(`PASS: ${label}: first Escape closes, repeat keeps filters, second Escape resets filters only`);
+  }
   const routes = [
     ["/settings/general/employees", "Сотрудники"], ["/settings/project/zones", "Зоны"],
     ["/settings/project/work-types", "Виды и подвиды работ"],
@@ -120,6 +160,59 @@ try {
   assert.equal(await nameCell.innerText(), "Сотрудник 1", "Esc preserves applied checklist values");
   assert.equal(await page.locator('.ag-row [col-id="fullName"]').filter({ hasText: "Сотрудник 2" }).count(), 0);
   console.log("PASS: Escape keeps immediately applied checklist values");
+  await outsideFocus(); await page.keyboard.press("Escape");
+  await waitCount(page.locator('.ag-row [col-id="fullName"]').filter({ hasText: /^Сотрудник / }), 3);
+
+  for (const [path, title, column, values] of [
+    ["/settings/general/employees", "Сотрудники", "fullName", /^Сотрудник /],
+    ["/settings/project/zones", "Зоны", "name", /^Зона /],
+    ["/settings/project/work-types", "Виды и подвиды работ", "name", /^Работа /],
+    ["/reports/workers?date=2026-11-04", "Отчёт персонала", "employeeName", /^Сотрудник /],
+    ["/reports/equipment?date=2026-11-04", "Отчёт техники", "equipment", /^Модель /],
+  ]) {
+    await open(path, title);
+    const cells = page.locator(`.page-content .ag-row [col-id="${column}"]`).filter({ hasText: values });
+    const filter = page.locator(`.page-content .ag-header-cell[col-id="${column}"] button[aria-label^="Фильтр"]`).first();
+    if (path.endsWith("employees")) {
+      const header = page.locator('.ag-header-cell[col-id="fullName"]');
+      await header.getByText("ФИО", { exact: true }).click();
+      assert.notEqual(await header.getAttribute("aria-sort"), "none", "Sorting is active before filter reset");
+    }
+    await filterEscapeCycle(filter, cells, title, { beforeReset: path.endsWith("employees") ? async () => {
+      const cell = cells.first();
+      await cell.dblclick();
+      const input = page.locator('.ag-row [col-id="fullName"] input');
+      await input.fill("Отменить, фильтр оставить");
+      await input.press("Escape");
+      await input.waitFor({ state: "detached" });
+      await waitCount(cells, 1);
+      assert.match(await cell.innerText(), /^Сотрудник /);
+      await cell.click({ button: "right" });
+      const menu = page.getByRole("menu").first();
+      await menu.waitFor();
+      await page.keyboard.press("Escape");
+      await menu.waitFor({ state: "detached" });
+      await waitCount(cells, 1);
+    } : undefined });
+  }
+
+  await open("/settings/project/work-types", "Виды и подвиды работ");
+  const parentNames = page.locator(".work-types-master-name");
+  const parentFilter = page.locator('.work-types-master-grid .ag-header-cell[col-id="name"] button[aria-label^="Фильтр"]').first();
+  const parentChoice = await chooseValue(parentFilter, "Работа 1");
+  await parentChoice.search.press("Escape");
+  await parentChoice.panel.waitFor({ state: "detached" });
+  await waitCount(parentNames, 1);
+  await page.locator(".work-types-master-grid .ag-group-contracted").first().click();
+  const detail = page.getByRole("grid", { name: "Таблица подвидов работ", exact: true });
+  await detail.waitFor();
+  const childNames = detail.locator('.ag-row [col-id="name"]').filter({ hasText: /^Подработа / });
+  const childFilter = detail.locator('.ag-header-cell[col-id="name"] button[aria-label^="Фильтр"]');
+  await filterEscapeCycle(childFilter, childNames, "nested work types");
+  await waitCount(parentNames, 1);
+  await parentFilter.focus(); await page.keyboard.press("Escape");
+  await waitCount(parentNames, 3);
+  console.log("PASS: detail reset preserves the parent filter; parent focus owns its own reset");
 
   for (const kind of ["workers", "equipment"]) {
     await open(`/timesheets/${kind}?month=2026-11`, kind === "workers" ? "Табель персонала" : "Табель техники");
@@ -142,6 +235,23 @@ try {
     await menu.waitFor({ state: "detached" });
     await page.waitForFunction(button => button.getAttribute("aria-expanded") === "false", await filter.elementHandle());
     assert.equal(await filter.evaluate(button => document.activeElement === button), true);
+    const label = kind === "workers" ? /^Сотрудник / : /^Модель /;
+    const firstColumnCells = page.locator(kind === "workers" ? ".timesheet-table tbody .timesheet-employee-column > span" : ".timesheet-table tbody .equipment-machine-column > span").filter({ hasText: label });
+    const nameFilter = page.locator(kind === "workers" ? ".timesheet-employee-column .timesheet-header-filter" : ".equipment-machine-column .timesheet-header-filter");
+    // Native timesheets use an invisible AG engine; the visible table still owns Escape.
+    await filterEscapeCycle(nameFilter, firstColumnCells, `${kind} timesheet`, { beforeReset: async () => {
+      await page.getByRole("button", { name: /^Выбрать месяц, сейчас/ }).click();
+      const calendar = page.getByRole("dialog", { name: "Выбор месяца табеля", exact: true });
+      await calendar.waitFor(); await page.keyboard.press("Escape");
+      await calendar.waitFor({ state: "detached" });
+      await waitCount(firstColumnCells, 1);
+      await cell.dblclick();
+      const input = cell.locator("input");
+      await input.fill("9"); await input.press("Escape");
+      await input.waitFor({ state: "detached" });
+      await waitCount(firstColumnCells, 1);
+      assert.equal((await cell.innerText()).trim(), "", "Cancelling the editor does not save its hours");
+    } });
     console.log(`PASS: ${kind} timesheet: row/cell/outside Escape clears; editor Escape cancels`);
   }
 
@@ -152,6 +262,12 @@ try {
   await userFilterPopup.waitFor();
   await outsideFocus(); await page.keyboard.press("Escape");
   await userFilterPopup.waitFor({ state: "detached" });
+  await filterEscapeCycle(userFilter, page.locator(".users-table-identity strong"), "users table", { beforeReset: async () => {
+    await page.getByRole("button", { name: "Открыть пользователя Пользователь 1", exact: true }).click();
+    await page.getByRole("dialog").waitFor(); await page.keyboard.press("Escape");
+    await page.getByRole("dialog").waitFor({ state: "detached" });
+    await waitCount(page.locator(".users-table-identity strong"), 1);
+  } });
   const allUsers = page.getByRole("checkbox", { name: "Выбрать всех пользователей", exact: true });
   await allUsers.check(); assert.equal(await page.locator(".users-table tbody input:checked").count(), 3);
   await allUsers.press("Escape"); assert.equal(await page.locator(".users-table tbody input:checked").count(), 0);

@@ -1,4 +1,13 @@
-.native-table-select-all:focus { outline:none; }
+.native-table-select-all:focus,
+.native-table-row-selection:focus,
+.native-table-cell-selection:focus,
+.native-table-column-selection:focus { outline:none; }
+.native-table-cell-selection [data-native-cell-selected="true"],
+.native-table-column-selection [data-native-column-selected="true"],
+.native-table-row-selection [data-native-row-selected="true"] > td:not(.users-table-selection),
+.native-table-row-selection [data-native-row-selected="true"] > th,
+.native-table-row-selection [data-native-row-selected="true"] > [role="cell"],
+.native-table-row-selection [data-native-row-selected="true"] > .permission-cell,
 .native-table-select-all tbody > tr > td:not(.users-table-selection),
 .native-table-select-all tbody > tr > th,
 .native-table-select-all .users-table > thead > tr > th:not(.users-table-selection),

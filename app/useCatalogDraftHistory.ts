@@ -28,7 +28,20 @@ export function createCatalogDraftHistory<D extends CatalogDraft>() {
       replace = onReplace;
       const value = JSON.stringify(drafts), acknowledgement = expected.lastIndexOf(value);
       if (acknowledgement >= 0) expected.splice(0, acknowledgement + 1);
-      else if (value !== incoming) { present = copy(drafts); signature = value; past = []; future = []; expected.length = 0; }
+      else if (value !== incoming) {
+        // Footer “Add row” changes arrive through the parent, not replace().
+        // Record only pure additions of unsaved rows. Save/cancel (empty rows),
+        // refreshed server values and a different context still reset history.
+        const originals = new Map(present.map(row => [row.key, JSON.stringify(row)]));
+        const incomingRows = new Map(drafts.map(row => [row.key, JSON.stringify(row)]));
+        const added = drafts.filter(row => !originals.has(row.key));
+        const appended = incoming !== undefined && added.length > 0 && added.every(row => row.id === undefined)
+          && drafts.length === present.length + added.length
+          && incomingRows.size === drafts.length
+          && present.every(row => incomingRows.get(row.key) === originals.get(row.key));
+        past = appended ? [...past, copy(present)].slice(-50) : [];
+        present = copy(drafts); signature = value; future = []; expected.length = 0;
+      }
       incoming = value; publish();
     },
     prepare(draft: D) {

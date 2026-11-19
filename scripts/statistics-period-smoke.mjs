@@ -122,8 +122,8 @@ try {
   const zoneData = page.getByRole("region", { name: "Данные по зонам", exact: true });
   const dayData = page.getByRole("region", { name: "Данные по дням", exact: true });
   async function checkDay(kind, period) {
-    await dayData.getByRole("columnheader", { name: "Дата", exact: true }).waitFor();
-    await dayData.getByRole("columnheader", { name: kind === "personnel" ? "Сварщики" : "Простой", exact: true }).waitFor();
+    await dayData.getByRole("button", { name: "Фильтр: Дата", exact: true }).waitFor();
+    await dayData.getByRole("button", { name: kind === "personnel" ? "Фильтр: Сварщики" : "Фильтр: Простой", exact: true }).waitFor();
     await dayData.getByRole("gridcell", { name: "04.11.2026", exact: true }).waitFor();
     const dates = await dayData.getByRole("gridcell", { name: /^\d{2}\.\d{2}\.\d{4}$/ }).allTextContents();
     assert.deepEqual(dates, ["02.11.2026", "04.11.2026"], "Dates are displayed in chronological order even when later totals are larger");

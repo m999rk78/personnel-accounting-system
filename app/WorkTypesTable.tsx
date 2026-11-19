@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { AgGridReact, type CustomCellRendererProps } from "ag-grid-react";
-import type { ColDef, GridApi, GetContextMenuItemsParams, MenuItemDef, ICellRendererParams, IFilterParams, PostSortRowsParams, RowDragEndEvent, SuppressMouseEventHandlingParams } from "ag-grid-community";
+import type { ColDef, GridApi, GetContextMenuItemsParams, MenuItemDef, ICellRendererParams, IFilterParams, PostSortRowsParams, RowDragEvent, SuppressMouseEventHandlingParams } from "ag-grid-community";
 import { gridTheme } from "./gridTheme";
 import { gridLocaleRu } from "./gridLocaleRu";
 import { tableColumnMenuItems } from "./gridColumnMenu";
@@ -21,9 +21,16 @@ import { SpreadsheetFilterHeader } from "./SpreadsheetFilterHeader";
 import { useCatalogGridPreferences } from "./useCatalogGridPreferences";
 import { AgTablePageScroll } from "./TablePageScroll";
 import { isTableSelectAllShortcut, isTableTextEntryTarget } from "./tableSelectAllShortcut";
-import { nativeSpreadsheetSelectionKey, nativeSpreadsheetSelectionValues, spreadsheetDataColumns, spreadsheetDataRowRanges, spreadsheetHeaderValues } from "./gridSpreadsheetRows";
+import { isTableRowSelectionBlocked, tableColumnSelectionIntent, tableRowSelectionIntent } from "./tableRowSelectionShortcut";
+import { findSpreadsheetDataRowIndex, isStructuralSpreadsheetRow, nativeSpreadsheetSelectionKey, nativeSpreadsheetSelectionValues, spreadsheetDataColumns, spreadsheetDataRowRanges, spreadsheetHeaderValues } from "./gridSpreadsheetRows";
 import { serializeSpreadsheetText, stripSpreadsheetHeaderRow } from "./spreadsheetClipboard";
 import { useTableCopyToast, writeTableClipboardText } from "./useTableCopyToast";
+import { createRowDropIndicator } from "./rowDropIndicator";
+import { resolveGridRowDropTarget } from "./gridRowDropTarget";
+import { rowDragPoint, startRowDragAutoScroll } from "./rowDragAutoScroll";
+import type { RowMove } from "./tableRowOrder";
+import { dispatchUndoShortcut, useUndoShortcut } from "./useUndoShortcut";
+import { historyShortcut } from "./undoShortcut";
 
 type Props = {
   masters: WorkTypeRow[];
@@ -56,6 +63,46 @@ const Workspace = createContext<WorkspaceValue | null>(null);
 const MasterGrid = createContext<RefObject<GridApi<WorkTypeRow> | null> | null>(null);
 const EMPTY_ROWS: WorkTypeRow[] = [];
 
+type WholeWorkTypeRows = { anchorId: string; endId: string; columnId: string; rangeKey: string };
+type WholeWorkTypeColumns = { anchorId: string; endId: string; rowId: string; rangeKey: string };
+
+function selectedWorkTypeColumns(grid: GridApi<WorkTypeRow>) {
+  const ids = new Set((grid.getCellRanges() ?? []).flatMap(range => range.columns.map(column => column.getColId())));
+  return spreadsheetDataColumns(grid).filter(column => ids.has(column.getColId()));
+}
+
+/** All displayed records, including virtual rows; the active record stays put. */
+function selectWorkTypeColumnRange(grid: GridApi<WorkTypeRow>, anchorId: string, endId: string, rowId: string): WholeWorkTypeColumns | null {
+  const columns = spreadsheetDataColumns(grid);
+  const anchor = columns.findIndex(column => column.getColId() === anchorId), end = columns.findIndex(column => column.getColId() === endId);
+  const row = grid.getRowNode(rowId);
+  if (anchor < 0 || end < 0 || row?.rowIndex == null || isStructuralSpreadsheetRow(row)) return null;
+  const selected = columns.slice(Math.min(anchor, end), Math.max(anchor, end) + 1);
+  grid.clearCellSelection();
+  for (const range of spreadsheetDataRowRanges(grid)) grid.addCellRange({ ...range, columns: selected });
+  grid.setFocusedCell(row.rowIndex, endId);
+  grid.ensureIndexVisible(row.rowIndex);
+  grid.ensureColumnVisible(endId);
+  return { anchorId, endId, rowId, rangeKey: nativeSpreadsheetSelectionKey(grid) };
+}
+
+/** Split full rows around detail panels so copying and filling never touch them. */
+function selectWorkTypeRowRange(grid: GridApi<WorkTypeRow>, anchorIndex: number, endIndex: number, columnId: string): WholeWorkTypeRows | null {
+  const anchor = grid.getDisplayedRowAtIndex(anchorIndex), end = grid.getDisplayedRowAtIndex(endIndex);
+  const columns = spreadsheetDataColumns(grid);
+  if (!anchor?.id || !end?.id || isStructuralSpreadsheetRow(anchor) || isStructuralSpreadsheetRow(end) || !columns.length) return null;
+  const start = Math.min(anchorIndex, endIndex), finish = Math.max(anchorIndex, endIndex);
+  const focusedColumn = columns.find(column => column.getColId() === columnId) ?? columns[0];
+  grid.clearCellSelection();
+  for (const range of spreadsheetDataRowRanges(grid)) {
+    const rowStartIndex = Math.max(start, range.rowStartIndex), rowEndIndex = Math.min(finish, range.rowEndIndex);
+    if (rowStartIndex <= rowEndIndex) grid.addCellRange({ rowStartIndex, rowEndIndex, columns });
+  }
+  grid.setFocusedCell(endIndex, focusedColumn);
+  grid.ensureIndexVisible(endIndex);
+  return { anchorId: anchor.id, endId: end.id, columnId: focusedColumn.getColId(), rangeKey: nativeSpreadsheetSelectionKey(grid) };
+}
+
 /** AG Grid owns expansion, detail row lifecycle, native editors, selection and clipboard. */
 function WorkTypesDetail({ data }: CustomCellRendererProps<WorkTypeRow>) {
   const workspace = useContext(Workspace)!;
@@ -78,8 +125,10 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
   const preferences = useCatalogGridPreferences({ ...props.preferenceScope, scopeKey: master ? "worktypes:parents" : "worktypes:children", ready: !props.loading && (!order || order.ready) });
   const orderedRows = useMemo(() => order ? order.order(rows, workTypesOrderId) : rows, [rows, order]);
   const [api, setApi] = useState<GridApi<WorkTypeRow> | null>(null);
-  const trackFilterEscape = useGridFilterEscape<WorkTypeRow>();
   const gridElement = useRef<HTMLDivElement>(null);
+  useUndoShortcut({ rootRef: gridElement, undo: props.history.undo, redo: props.history.redo,
+    canUndo: props.history.canUndo, canRedo: props.history.canRedo, disabled: props.disabled });
+  const trackFilterEscape = useGridFilterEscape<WorkTypeRow>({ api, getRoot: () => gridElement.current });
   useEmptyGridRows(gridElement, api, 44);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const selected = useMemo(() => {
@@ -89,12 +138,15 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
   const selectedNew = selected.filter(row => row.id === undefined && !row.unassigned);
   const selectedSaved = selected.filter(row => row.id !== undefined || row.unassigned);
   const selectionIncludesHeaders = useRef<string | null>(null);
+  const wholeRows = useRef<WholeWorkTypeRows | null>(null);
+  const wholeColumns = useRef<WholeWorkTypeColumns | null>(null);
   const lastHeaderClipboard = useRef<string | null>(null);
+  const lastHeaderValues = useRef<string[] | null>(null);
   const paintSelectedHeaders = useCallback((grid: GridApi<WorkTypeRow>) => {
     requestAnimationFrame(() => {
       const root = gridElement.current;
       if (!root || grid.isDestroyed()) return;
-      const selectedIds = new Set(selectionIncludesHeaders.current !== null ? spreadsheetDataColumns(grid).map(column => column.getColId()) : []);
+      const selectedIds = new Set(selectionIncludesHeaders.current !== null ? (wholeColumns.current ? selectedWorkTypeColumns(grid) : spreadsheetDataColumns(grid)).map(column => column.getColId()) : []);
       root.querySelectorAll<HTMLElement>(".ag-header-cell[col-id]").forEach(header => {
         if (header.closest(".work-types-master-grid,.work-types-detail-grid") !== root) return;
         header.classList.toggle("ag-excel-header-selected", selectedIds.has(header.getAttribute("col-id") ?? ""));
@@ -108,10 +160,86 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
       paintSelectedHeaders(api);
     }
   }, [api, paintSelectedHeaders]);
+  const selectWholeRows = useCallback((anchorIndex: number, endIndex: number, columnId: string) => {
+    if (!api || api.isDestroyed() || !api.isModuleRegistered("CellSelectionModule") || api.getEditingCells().length) return false;
+    wholeColumns.current = null;
+    clearSelectedHeaders();
+    wholeRows.current = selectWorkTypeRowRange(api, anchorIndex, endIndex, columnId);
+    return Boolean(wholeRows.current);
+  }, [api, clearSelectedHeaders]);
+  const selectWholeColumns = useCallback((anchorId: string, endId: string, rowId: string) => {
+    if (!api || api.isDestroyed() || !api.isModuleRegistered("CellSelectionModule") || api.getEditingCells().length) return false;
+    wholeRows.current = null;
+    wholeColumns.current = selectWorkTypeColumnRange(api, anchorId, endId, rowId);
+    selectionIncludesHeaders.current = wholeColumns.current?.rangeKey ?? null;
+    api.setGridOption("copyHeadersToClipboard", selectionIncludesHeaders.current !== null);
+    paintSelectedHeaders(api);
+    return Boolean(wholeColumns.current);
+  }, [api, paintSelectedHeaders]);
+  const handleWholeColumnKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const intent = tableColumnSelectionIntent(event.nativeEvent);
+    if (!intent || !api || api.isDestroyed() || !api.isModuleRegistered("CellSelectionModule") || api.getEditingCells().length) return false;
+    const current = wholeColumns.current;
+    if (intent !== "column" && !current) return false;
+    const columns = spreadsheetDataColumns(api), focus = api.getFocusedCell();
+    if (focus?.rowPinned) return false;
+    const headerId = event.target instanceof Element ? event.target.closest<HTMLElement>(".ag-header-cell[col-id]")?.getAttribute("col-id") : undefined;
+    const rangeColumns = api.getCellRanges()?.at(-1)?.columns.filter(column => columns.includes(column));
+    const rowIndex = focus?.rowIndex ?? findSpreadsheetDataRowIndex(api, 0, 1);
+    const rowId = current?.rowId ?? (rowIndex == null ? undefined : api.getDisplayedRowAtIndex(rowIndex)?.id);
+    const anchorId = current?.anchorId ?? headerId ?? wholeRows.current?.columnId ?? rangeColumns?.[0]?.getColId() ?? focus?.column.getColId();
+    let endId = current?.endId ?? headerId ?? wholeRows.current?.columnId ?? rangeColumns?.at(-1)?.getColId() ?? focus?.column.getColId();
+    if (intent !== "column") {
+      const index = columns.findIndex(column => column.getColId() === endId);
+      if (index < 0) { wholeColumns.current = null; clearSelectedHeaders(); return false; }
+      endId = columns[Math.max(0, Math.min(columns.length - 1, index + (intent === "left" ? -1 : 1)))]?.getColId();
+    }
+    if (!rowId || !anchorId || !endId || !selectWholeColumns(anchorId, endId, rowId)) return false;
+    event.preventDefault(); event.stopPropagation();
+    return true;
+  };
+  const handleWholeRowKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const intent = tableRowSelectionIntent(event.nativeEvent);
+    if (!intent || !api || api.isDestroyed() || !api.isModuleRegistered("CellSelectionModule") || api.getEditingCells().length) return false;
+    const current = wholeRows.current;
+    if (intent !== "row" && !current) return false;
+    const focus = api.getFocusedCell();
+    const range = api.getCellRanges()?.at(-1);
+    const columnRow = wholeColumns.current ? api.getRowNode(wholeColumns.current.rowId)?.rowIndex : undefined;
+    const anchorIndex = current ? api.getRowNode(current.anchorId)?.rowIndex : columnRow ?? range?.startRow?.rowIndex ?? focus?.rowIndex;
+    let endIndex = current ? api.getRowNode(current.endId)?.rowIndex : columnRow ?? range?.endRow?.rowIndex ?? focus?.rowIndex;
+    if (anchorIndex == null || endIndex == null || focus?.rowPinned || range?.startRow?.rowPinned || range?.endRow?.rowPinned) { wholeRows.current = null; return false; }
+    if (intent !== "row") {
+      const direction = intent === "up" ? -1 : 1;
+      endIndex = findSpreadsheetDataRowIndex(api, endIndex + direction, direction) ?? endIndex;
+    }
+    const columnId = current?.columnId ?? focus?.column.getColId() ?? spreadsheetDataColumns(api)[0]?.getColId();
+    if (!columnId || !selectWholeRows(anchorIndex, endIndex, columnId)) return false;
+    event.preventDefault(); event.stopPropagation();
+    return true;
+  };
+  const extendWholeColumnsToPointer = (event: React.PointerEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>) => {
+    if (!event.shiftKey || event.button !== 0 || !wholeColumns.current || !api || api.isDestroyed() || !(event.target instanceof Element) || isTableRowSelectionBlocked(event.target)) return false;
+    const columnId = event.target.closest<HTMLElement>(".ag-cell[col-id], .ag-header-cell[col-id]")?.getAttribute("col-id");
+    if (!columnId || !selectWholeColumns(wholeColumns.current.anchorId, columnId, wholeColumns.current.rowId)) return false;
+    event.preventDefault(); event.stopPropagation();
+    return true;
+  };
+  const extendWholeRowsToPointer = (event: React.PointerEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>) => {
+    if (!event.shiftKey || event.button !== 0 || !wholeRows.current || !api || api.isDestroyed() || !(event.target instanceof Element) || isTableRowSelectionBlocked(event.target)) return false;
+    const cell = event.target.closest<HTMLElement>(".ag-cell[col-id]");
+    const row = cell?.closest<HTMLElement>(".ag-row[row-index]");
+    const anchorIndex = api.getRowNode(wholeRows.current.anchorId)?.rowIndex;
+    if (!row || anchorIndex == null || !selectWholeRows(anchorIndex, Number(row.getAttribute("row-index")), wholeRows.current.columnId)) return false;
+    event.preventDefault(); event.stopPropagation();
+    return true;
+  };
   useTableEscapeSelection({
     hasSelection: () => Boolean(selectionIncludesHeaders.current !== null || api && !api.isDestroyed() && (api.getSelectedNodes().length || api.getFocusedCell() || api.isModuleRegistered("CellSelectionModule") && api.getCellRanges()?.length)),
     isEditing: () => Boolean(api && !api.isDestroyed() && api.getEditingCells().length),
     clearSelection: () => {
+      wholeRows.current = null;
+      wholeColumns.current = null;
       clearSelectedHeaders();
       if (!api || api.isDestroyed()) return;
       api.deselectAll();
@@ -284,25 +412,105 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
       ...(id ? moveActions.getActions(id, selected.map(workTypesOrderId).filter((key): key is string => Boolean(key)), () => api?.hidePopupMenu()).flatMap(action => [...(action.separatorBefore ? ["separator" as const] : []), nativeAction(action)]) : []),
     ] satisfies ("separator" | MenuItemDef<WorkTypeRow>)[];
   };
-  const dragEnd = (event: RowDragEndEvent<WorkTypeRow>) => {
-    if (!canDragSelection(event.node.data) || event.node.isSelected() !== true || event.node.detail || !event.overNode?.data || event.overNode.detail || event.overNode.data.unassigned) return;
-    const movingIds = event.nodes.filter(node => node.isSelected() === true && !node.detail && canDragSelection(node.data)).map(node => node.data && workTypesOrderId(node.data)).filter((id): id is string => Boolean(id));
+  const dropIndicator = useRef<ReturnType<typeof createRowDropIndicator> | null>(null);
+  const activeRowDrag = useRef<RowDragEvent<WorkTypeRow> | null>(null);
+  const rowDragCancelled = useRef(false);
+  const rowDragScroll = useRef<ReturnType<typeof startRowDragAutoScroll>>(null);
+  const stopRowDrag = useCallback(() => {
+    activeRowDrag.current = null;
+    dropIndicator.current?.clear();
+    const scroll = rowDragScroll.current;
+    rowDragScroll.current = null;
+    scroll?.stop();
+  }, []);
+  const dragOperation = useCallback((event: RowDragEvent<WorkTypeRow>): RowMove<string> | null => {
+    if (rowDragCancelled.current || event.api !== api || !canDragSelection(event.node.data) || event.node.isSelected() !== true || event.node.detail || !event.overNode?.data || event.overNode.detail || event.overNode.data.unassigned) return null;
+    // Master and detail grids share an order scope, but a drag stays among its siblings.
+    const siblingIds = new Set(rows.map(workTypesOrderId).filter((id): id is string => Boolean(id)));
+    const movingIds = event.nodes.filter(node => node.isSelected() === true && !node.detail && canDragSelection(node.data)).map(node => node.data && workTypesOrderId(node.data)).filter((id): id is string => Boolean(id) && siblingIds.has(id!));
     const targetId = workTypesOrderId(event.overNode.data);
-    if (!movingIds.length || !targetId || movingIds.includes(targetId)) return;
+    if (!movingIds.length || !targetId || !siblingIds.has(targetId) || movingIds.includes(targetId)) return null;
     const placement = event.y < (event.overNode.rowTop ?? 0) + (event.overNode.rowHeight ?? 44) / 2 ? "before" : "after";
-    void move({ movingIds, targetId, placement });
+    return { movingIds, targetId, placement };
+  }, [api, canDragSelection, rows]);
+  const refreshRowDrop = useCallback(() => {
+    const root = gridElement.current;
+    const event = activeRowDrag.current;
+    const target = root && event ? resolveGridRowDropTarget(root, event, dragOperation) : null;
+    if (target && (target.operation.placement === "before" || target.operation.placement === "after")) dropIndicator.current?.show({ row: target.row, placement: target.operation.placement, count: target.operation.movingIds.length, rowNumber: target.rowNumber });
+    else dropIndicator.current?.clear();
+  }, [dragOperation]);
+  const latestRowDropRefresh = useRef(refreshRowDrop);
+  useLayoutEffect(() => { latestRowDropRefresh.current = refreshRowDrop; }, [refreshRowDrop]);
+  useEffect(() => {
+    const root = gridElement.current;
+    const view = root?.ownerDocument.defaultView;
+    if (!root || !view || !api) return;
+    const indicator = createRowDropIndicator(root);
+    dropIndicator.current = indicator;
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { rowDragCancelled.current = true; stopRowDrag(); } };
+    const refresh = () => latestRowDropRefresh.current();
+    root.ownerDocument.addEventListener("keydown", escape, true);
+    root.ownerDocument.addEventListener("scroll", refresh, true);
+    view.addEventListener("blur", stopRowDrag);
+    return () => {
+      stopRowDrag(); indicator.destroy(); dropIndicator.current = null;
+      root.ownerDocument.removeEventListener("keydown", escape, true);
+      root.ownerDocument.removeEventListener("scroll", refresh, true);
+      view.removeEventListener("blur", stopRowDrag);
+    };
+  }, [api, stopRowDrag]);
+  useEffect(() => stopRowDrag, [api, moveBlocked, order?.busy, order?.canWrite, parentKey, stopRowDrag]);
+  const dragMove = (event: RowDragEvent<WorkTypeRow>) => {
+    if (rowDragCancelled.current || !canDragSelection(event.node.data)) { stopRowDrag(); return; }
+    activeRowDrag.current = event;
+    refreshRowDrop();
+    const point = rowDragPoint(event.event);
+    const root = gridElement.current;
+    if (!point || !root) return;
+    if (rowDragScroll.current) rowDragScroll.current.update(point);
+    else {
+      let session: ReturnType<typeof startRowDragAutoScroll> = null;
+      // AG delivers rowDragEnd asynchronously after the native mouseup listener.
+      // Keep the gesture/preview until that event resolves its final destination.
+      session = startRowDragAutoScroll(root, point, "grid", () => { if (rowDragScroll.current === session) rowDragScroll.current = null; });
+      rowDragScroll.current = session;
+    }
+  };
+  const dragEnd = (event: RowDragEvent<WorkTypeRow>) => {
+    const root = gridElement.current;
+    const target = root ? resolveGridRowDropTarget(root, event, dragOperation) : null;
+    stopRowDrag();
+    if (target) void move(target.operation);
   };
   const pendingCount = master ? pending.length : localPending.length;
   const canAdd = props.canCreate && !props.disabled && (master || parentKey !== "unassigned");
   const selectable = (row?: WorkTypeRow) => Boolean(row && !props.disabled && (row.unassigned ? props.canDelete : row.id === undefined ? props.canCreate : props.canUpdate || props.canDelete));
   const grid = <div ref={gridElement} className={`ag-grid-shell ag-admin-grid ag-reference-grid ag-grid-empty-rows ${master ? "work-types-master-grid" : "work-types-detail-grid"}`} role="grid" aria-label={master ? "Таблица видов работ" : "Таблица подвидов работ"} aria-busy={props.disabled} tabIndex={0} onPointerDownCapture={event => {
       if (event.button === 2 || !(event.target instanceof Element) || event.target.closest(".work-types-master-grid,.work-types-detail-grid") !== event.currentTarget) return;
+      if (extendWholeColumnsToPointer(event)) return;
+      if (extendWholeRowsToPointer(event)) return;
+      wholeRows.current = null;
+      wholeColumns.current = null;
+      rowDragCancelled.current = false;
       clearSelectedHeaders();
+    }} onMouseDownCapture={event => {
+      if (event.target instanceof Element && event.target.closest(".work-types-master-grid,.work-types-detail-grid") === event.currentTarget && !extendWholeColumnsToPointer(event)) extendWholeRowsToPointer(event);
+    }} onClickCapture={event => {
+      if (event.target instanceof Element && event.target.closest(".work-types-master-grid,.work-types-detail-grid") === event.currentTarget && !extendWholeColumnsToPointer(event)) extendWholeRowsToPointer(event);
     }} onKeyDownCapture={event => {
       // The nested detail grid owns its shortcut; the master must not overwrite its range.
       if (event.target instanceof Element && event.target.closest(".work-types-master-grid,.work-types-detail-grid") !== event.currentTarget) return;
+      if (historyShortcut(event.nativeEvent)) {
+        // Route before AG Grid consumes the keystroke. The shared dispatcher
+        // leaves native input undo and portalled editors to their owner.
+        if (dispatchUndoShortcut(event.nativeEvent)) event.stopPropagation();
+        return;
+      }
       if (isTableSelectAllShortcut(event.nativeEvent)) {
         event.preventDefault(); event.stopPropagation();
+        wholeRows.current = null;
+        wholeColumns.current = null;
         if (!api || api.isDestroyed() || !api.isModuleRegistered("CellSelectionModule")) return;
         const columns = spreadsheetDataColumns(api);
         api.clearCellSelection();
@@ -323,9 +531,26 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
         event.stopPropagation();
         return;
       }
-      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "Tab"].includes(event.key) && !isTableTextEntryTarget(event.target)) clearSelectedHeaders();
-      if (!(event.ctrlKey || event.metaKey) || event.target instanceof Element && event.target.closest("input,textarea")) return;
-      if (event.code === "KeyZ" || event.code === "KeyY") { event.preventDefault(); event.stopPropagation(); if (event.shiftKey || event.code === "KeyY") latest.current.history.redo(); else latest.current.history.undo(); }
+      if (handleWholeColumnKey(event)) return;
+      if (handleWholeRowKey(event)) return;
+      const navigating = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "Tab"].includes(event.key);
+      const editing = !event.ctrlKey && !event.metaKey && !event.altKey && (event.key === "Enter" || event.key === "F2" || event.key.length === 1 && Boolean(event.key.trim()));
+      if ((navigating || editing) && !isTableTextEntryTarget(event.target)) {
+        const current = wholeRows.current;
+        const columnSelection = wholeColumns.current;
+        wholeRows.current = null;
+        wholeColumns.current = null;
+        if ((current || columnSelection) && api && !api.isDestroyed()) {
+          const rowIndex = api.getRowNode(columnSelection?.rowId ?? current!.endId)?.rowIndex;
+          const columnId = columnSelection?.endId ?? current!.columnId;
+          if (rowIndex != null) {
+            api.clearCellSelection();
+            api.addCellRange({ rowStartIndex: rowIndex, rowEndIndex: rowIndex, columns: [columnId] });
+            api.setFocusedCell(rowIndex, columnId);
+          }
+        }
+        clearSelectedHeaders();
+      }
     }} onCopyCapture={event => {
       if (event.defaultPrevented || isTableTextEntryTarget(event.target) || !api || api.isDestroyed() || !api.isModuleRegistered("CellSelectionModule")) return;
       if (event.target instanceof Element && event.target.closest(".work-types-master-grid,.work-types-detail-grid") !== event.currentTarget) return;
@@ -335,6 +560,7 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
       const text = serializeSpreadsheetText(matrix);
       event.clipboardData.setData("text/plain", text);
       lastHeaderClipboard.current = selectionIncludesHeaders.current !== null ? text : null;
+      lastHeaderValues.current = selectionIncludesHeaders.current !== null ? matrix[0] : null;
       const copiedRows = Math.max(0, matrix.length - (selectionIncludesHeaders.current !== null ? 1 : 0));
       props.showCopyToast(`Скопировано: ${copiedRows} × ${matrix[0]?.length ?? 0}`);
     }}>
@@ -353,10 +579,11 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
         selectionColumnDef={selectionColumnDef}
         cellSelection={{ handle: { mode: "fill" } }} copyHeadersToClipboard={false} suppressClipboardPaste={props.disabled || !props.canCreate && !props.canUpdate}
         processDataFromClipboard={params => {
-          const headers = spreadsheetHeaderValues(params.api, spreadsheetDataColumns(params.api));
+          const copiedOwnHeader = lastHeaderClipboard.current === serializeSpreadsheetText(params.data);
+          const headers = copiedOwnHeader && lastHeaderValues.current ? lastHeaderValues.current : spreadsheetHeaderValues(params.api, wholeColumns.current ? selectedWorkTypeColumns(params.api) : spreadsheetDataColumns(params.api));
           if (selectionIncludesHeaders.current !== null && params.api.getDisplayedRowCount() === 0 && params.data.length === 1
             && params.data[0].length === headers.length && headers.every((header, index) => params.data[0][index] === header)) return null;
-          const includesHeaders = selectionIncludesHeaders.current !== null || lastHeaderClipboard.current === serializeSpreadsheetText(params.data);
+          const includesHeaders = selectionIncludesHeaders.current !== null || copiedOwnHeader;
           return includesHeaders ? stripSpreadsheetHeaderRow(params.data, headers) : params.data;
         }}
         processCellForClipboard={params => params.column.getColId() === "parentKey" ? parentOptions.find(row => row.key === params.value)?.name ?? "Без вида работы" : String(params.value ?? "")}
@@ -375,6 +602,9 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
           if (targets.length > 1) latest.current.onBatchEnd();
         }}
         onCellEditingStarted={event => {
+          wholeRows.current = null;
+          wholeColumns.current = null;
+          clearSelectedHeaders();
           latest.current.onEditingChange(event.api, true);
           if (event.column.getColId() === "name") requestAnimationFrame(() => {
             const masterApi = masterGridRef?.current;
@@ -392,19 +622,22 @@ function WorkTypesEntityGrid({ parentKey }: { parentKey?: string }) {
           assignment.current = []; setAssigningCount(0);
         }}
         onPasteStart={props.onBatchStart} onPasteEnd={props.onBatchEnd} onFillStart={props.onBatchStart} onFillEnd={props.onBatchEnd}
-        getContextMenuItems={contextMenu} columnMenu="new" getMainMenuItems={tableColumnMenuItems} rowDragMultiRow rowDragManaged={false} suppressMoveWhenRowDragging suppressRowDrag={moveBlocked || !order?.canWrite || order.busy} onRowDragEnd={dragEnd}
+        getContextMenuItems={contextMenu} columnMenu="new" getMainMenuItems={tableColumnMenuItems} rowDragMultiRow rowDragManaged={false} suppressMoveWhenRowDragging suppressRowDrag={moveBlocked || !order?.canWrite || order.busy}
+        onRowDragEnter={dragMove} onRowDragMove={dragMove} onRowDragLeave={stopRowDrag} onRowDragEnd={dragEnd} onDragStopped={stopRowDrag} onRowDragCancel={() => { rowDragCancelled.current = true; stopRowDrag(); }}
         onGridReady={({ api: ready }) => { ready.setGridAriaProperty("label", master ? "Виды работ" : "Подвиды работ"); if (master && masterGridRef) masterGridRef.current = ready; preferences.attach(ready); setApi(ready); }}
         onColumnResized={preferences.onColumnResized}
-        onSortChanged={() => { clearSelectedHeaders(); preferences.onSortChanged(); }}
+        onSortChanged={() => { wholeRows.current = null; wholeColumns.current = null; clearSelectedHeaders(); preferences.onSortChanged(); }}
         onCellSelectionChanged={event => {
+          if (wholeRows.current && nativeSpreadsheetSelectionKey(event.api) !== wholeRows.current.rangeKey) wholeRows.current = null;
+          if (wholeColumns.current && nativeSpreadsheetSelectionKey(event.api) !== wholeColumns.current.rangeKey) wholeColumns.current = null;
           if (selectionIncludesHeaders.current !== null && nativeSpreadsheetSelectionKey(event.api) !== selectionIncludesHeaders.current) clearSelectedHeaders();
           else paintSelectedHeaders(event.api);
         }}
-        onBodyScroll={event => paintSelectedHeaders(event.api)}
+        onBodyScroll={event => { paintSelectedHeaders(event.api); refreshRowDrop(); }}
         onDisplayedColumnsChanged={event => paintSelectedHeaders(event.api)}
         onGridSizeChanged={event => queueDetailHeights(event.api)}
         onModelUpdated={event => { let total = 0; event.api.forEachNodeAfterFilter(node => { if (node.data && !node.detail && !node.data.unassigned) total++; }); setVisibleCount(total); queueDetailHeights(event.api); paintSelectedHeaders(event.api); }}
-        onFilterChanged={event => { clearSelectedHeaders(); setFiltered(event.api.isAnyFilterPresent() || Boolean(props.query)); }}
+        onFilterChanged={event => { wholeRows.current = null; wholeColumns.current = null; clearSelectedHeaders(); setFiltered(event.api.isAnyFilterPresent() || Boolean(props.query)); }}
         onSelectionChanged={event => setSelectedKeys(event.api.getSelectedRows().map(row => row.key))}
         popupParent={typeof document === "undefined" ? undefined : document.body}
       />

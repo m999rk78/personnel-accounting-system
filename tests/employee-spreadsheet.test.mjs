@@ -153,6 +153,34 @@ test("read-only columns do not create drafts, ambiguous options fail, and paste 
   assert.equal(new Set(maximum.drafts.map(value => value.key)).size, 1000);
 });
 
+test("employees added through the footer retain undo, while explicit save/cancel resets it", () => {
+  const history = createEmployeeSpreadsheetHistory();
+  let current = [];
+  const onReplaceDrafts = drafts => { current = drafts; };
+  const sync = drafts => { current = drafts; history.synchronize({ drafts, onReplaceDrafts }); };
+  sync([]);
+  const first = draft("added", { fullName: "Новый сотрудник" });
+  sync([first]);
+  history.undo();
+  assert.deepEqual(current, []);
+  history.synchronize({ drafts: current, onReplaceDrafts });
+  history.redo();
+  assert.deepEqual(current, [first]);
+  history.synchronize({ drafts: current, onReplaceDrafts });
+  history.replace([{ ...first, fullName: "Изменённый сотрудник" }]);
+  history.synchronize({ drafts: current, onReplaceDrafts });
+  sync([...current, draft("second")]);
+  history.undo();
+  assert.deepEqual(current, [{ ...first, fullName: "Изменённый сотрудник" }]);
+  history.undo();
+  assert.deepEqual(current, [first]);
+  history.synchronize({ drafts: current, onReplaceDrafts });
+  sync([]);
+  assert.deepEqual(history.getSnapshot(), { canUndo: false, canRedo: false });
+  history.redo();
+  assert.deepEqual(current, []);
+});
+
 test("employee undo keeps rapid own updates and batched acknowledgements intact", () => {
   const history = createEmployeeSpreadsheetHistory();
   const initial = [draft("first")];
@@ -243,7 +271,7 @@ test("preparing an employee preserves redo and cannot introduce new or duplicate
   assert.equal(applied.length, count);
 });
 
-test("external save, cancel or added rows reset history and cannot be undone", () => {
+test("external save, cancel or replacement of the edited employee resets history and cannot be undone", () => {
   for (const external of [[], [draft("added")], [draft("first", { id: 1, fullName: "Открыт на изменение" })]]) {
     const history = createEmployeeSpreadsheetHistory();
     const initial = [draft("first")];

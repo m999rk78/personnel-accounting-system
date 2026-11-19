@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
+import { historyShortcut } from "../app/undoShortcut.ts";
 
 // Execute the actual hook callbacks with native events. React state and DOM layout
 // are irrelevant here; the event target must survive bubbling from an editor.
@@ -46,7 +47,13 @@ function harness() {
     onActivate: (...args) => calls.activate.push(args),
     onType: (...args) => calls.type.push(args),
     shellRef: { current: { querySelector: () => anchor } },
-    undoLastChange: async () => { calls.undo++; },
+    historyShortcut,
+    dispatchUndoShortcut: event => {
+      if (historyShortcut(event) !== "undo") return false;
+      event.preventDefault();
+      calls.undo++;
+      return true;
+    },
   };
   const handlers = new Function(...Object.keys(scope), `${js(declarations.get("isTimesheetInputTarget"))}
     return {

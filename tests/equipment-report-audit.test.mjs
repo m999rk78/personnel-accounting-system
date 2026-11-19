@@ -16,6 +16,7 @@ globalThis[mockKey] = {
       const statement = {
         bind(...args) { values = args; return statement; },
         async first() { state.reads.push(sql); return sql.includes("SELECT name FROM sites") ? { name: "Проект" } : state.before; },
+        async all() { return { results: [] }; },
         async run() { state.events.push({ sql, values }); return { results: [], meta: { changes: 1 } }; },
       };
       return statement;

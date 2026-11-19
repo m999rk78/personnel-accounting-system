@@ -633,6 +633,7 @@ export function TimesheetView({ siteId, initialMonth, today, focusedEmployeeId, 
     shellRef: clipboardShellRef,
     status: clipboardStatus,
     cellClass: clipboardCellClass,
+    headerClass: clipboardHeaderClass,
     cellHandlers: clipboardCellHandlers,
     shellHandlers: clipboardShellHandlers,
     rememberUndo: rememberTimesheetUndo,
@@ -667,9 +668,9 @@ export function TimesheetView({ siteId, initialMonth, today, focusedEmployeeId, 
       if (columnIndex === -1) return employee.position || "—";
       if (columnIndex >= visibleDays.length) {
         const totals = reconciliationRows.get(employee.id) ?? { timesheet: 0, reports: 0, difference: 0 };
-        if (columnIndex === visibleDays.length) return String(totals.timesheet || "—");
-        if (columnIndex === visibleDays.length + 1) return String(totals.reports || "—");
-        return `${totals.difference > 0 ? "+" : ""}${totals.difference || "—"}`;
+        if (columnIndex === visibleDays.length) return String(totals.timesheet);
+        if (columnIndex === visibleDays.length + 1) return String(totals.reports);
+        return `${totals.difference > 0 ? "+" : ""}${totals.difference}`;
       }
       const day = visibleDays[columnIndex];
       if (!day) return "";
@@ -1210,22 +1211,22 @@ export function TimesheetView({ siteId, initialMonth, today, focusedEmployeeId, 
         {columnResize.colGroup}
         <thead>
           <tr>
-            <th className="timesheet-sticky timesheet-number-column" rowSpan={2}>{rowMoves.headerCheckbox}{columnResize.handle("number", "№")}</th>
-            <th className="timesheet-sticky timesheet-type-column" rowSpan={2}><TimesheetFilterableHeading columnId="employmentType" label="Тип">Тип</TimesheetFilterableHeading>{columnResize.handle("employmentType", "Тип")}</th>
-            <th className="timesheet-sticky timesheet-department-column" rowSpan={2}><TimesheetFilterableHeading columnId="department" label="Отдел">Отдел</TimesheetFilterableHeading>{columnResize.handle("department", "Отдел")}</th>
-            <th className="timesheet-sticky timesheet-employee-column" rowSpan={2}><TimesheetFilterableHeading columnId="fullName" label="Сотрудник">Сотрудник</TimesheetFilterableHeading>{columnResize.handle("fullName", "Сотрудник")}</th>
-            <th className="timesheet-sticky timesheet-position-column" rowSpan={2}><TimesheetFilterableHeading columnId="position" label="Должность">Должность</TimesheetFilterableHeading>{columnResize.handle("position", "Должность")}</th>
+            <th className={`timesheet-sticky timesheet-number-column ${clipboardHeaderClass(-5)}`} rowSpan={2}>{rowMoves.headerCheckbox}{columnResize.handle("number", "№")}</th>
+            <th className={`timesheet-sticky timesheet-type-column ${clipboardHeaderClass(-4)}`} rowSpan={2}><TimesheetFilterableHeading columnId="employmentType" label="Тип">Тип</TimesheetFilterableHeading>{columnResize.handle("employmentType", "Тип")}</th>
+            <th className={`timesheet-sticky timesheet-department-column ${clipboardHeaderClass(-3)}`} rowSpan={2}><TimesheetFilterableHeading columnId="department" label="Отдел">Отдел</TimesheetFilterableHeading>{columnResize.handle("department", "Отдел")}</th>
+            <th className={`timesheet-sticky timesheet-employee-column ${clipboardHeaderClass(-2)}`} rowSpan={2}><TimesheetFilterableHeading columnId="fullName" label="Сотрудник">Сотрудник</TimesheetFilterableHeading>{columnResize.handle("fullName", "Сотрудник")}</th>
+            <th className={`timesheet-sticky timesheet-position-column ${clipboardHeaderClass(-1)}`} rowSpan={2}><TimesheetFilterableHeading columnId="position" label="Должность">Должность</TimesheetFilterableHeading>{columnResize.handle("position", "Должность")}</th>
             <th colSpan={visibleDays.length}>Дни месяца</th>
-            <th className="timesheet-total-column timesheet-tabell-total" rowSpan={2}><TimesheetFilterableHeading columnId="timesheet" label="Табель">Табель</TimesheetFilterableHeading>{columnResize.handle("timesheet", "Табель")}</th>
-            <th className="timesheet-total-column timesheet-report-total" rowSpan={2}><TimesheetFilterableHeading columnId="reports" label="Отчёты">Отчёты</TimesheetFilterableHeading>{columnResize.handle("reports", "Отчёты")}</th>
-            <th className="timesheet-total-column timesheet-difference-total" rowSpan={2}><TimesheetFilterableHeading columnId="difference" label="Разница">Разница</TimesheetFilterableHeading>{columnResize.handle("difference", "Разница")}</th>
+            <th className={`timesheet-total-column timesheet-tabell-total ${clipboardHeaderClass(visibleDays.length)}`} rowSpan={2}><TimesheetFilterableHeading columnId="timesheet" label="Табель">Табель</TimesheetFilterableHeading>{columnResize.handle("timesheet", "Табель")}</th>
+            <th className={`timesheet-total-column timesheet-report-total ${clipboardHeaderClass(visibleDays.length + 1)}`} rowSpan={2}><TimesheetFilterableHeading columnId="reports" label="Отчёты">Отчёты</TimesheetFilterableHeading>{columnResize.handle("reports", "Отчёты")}</th>
+            <th className={`timesheet-total-column timesheet-difference-total ${clipboardHeaderClass(visibleDays.length + 2)}`} rowSpan={2}><TimesheetFilterableHeading columnId="difference" label="Разница">Разница</TimesheetFilterableHeading>{columnResize.handle("difference", "Разница")}</th>
           </tr>
           <tr>
-            {visibleDays.map((day) => {
+            {visibleDays.map((day, columnIndex) => {
               const workDate = dateForDay(month, day);
               const weekDay = WEEKDAY_FORMATTER.format(new Date(`${workDate}T00:00:00Z`)).replace(".", "");
               const dayOfWeek = new Date(`${workDate}T00:00:00Z`).getUTCDay();
-              return <th key={workDate} className={[dayOfWeek === 0 || dayOfWeek === 6 ? "weekend" : "", workDate === today ? "today" : "", workDate > today ? "future" : ""].filter(Boolean).join(" ")}><TimesheetFilterableHeading compact columnId={workDate} label={`${day} ${weekDay}`}><span>{day}</span><small>{weekDay}</small></TimesheetFilterableHeading>{columnResize.handle(`day-${day}`, `${day} ${weekDay}`)}</th>;
+              return <th key={workDate} className={[clipboardHeaderClass(columnIndex), dayOfWeek === 0 || dayOfWeek === 6 ? "weekend" : "", workDate === today ? "today" : "", workDate > today ? "future" : ""].filter(Boolean).join(" ")}><TimesheetFilterableHeading compact columnId={workDate} label={`${day} ${weekDay}`}><span>{day}</span><small>{weekDay}</small></TimesheetFilterableHeading>{columnResize.handle(`day-${day}`, `${day} ${weekDay}`)}</th>;
             })}
           </tr>
         </thead>

@@ -1139,6 +1139,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     shellRef: timesheetClipboardShellRef,
     status: timesheetClipboardStatus,
     cellClass: timesheetClipboardCellClass,
+    headerClass: timesheetClipboardHeaderClass,
     cellHandlers: timesheetClipboardCellHandlers,
     shellHandlers: timesheetClipboardShellHandlers,
     rememberUndo: rememberEquipmentTimesheetUndo,
@@ -1169,7 +1170,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
       if (columnIndex === -3) return String(rowIndex + 1);
       if (columnIndex === -2) return unitTitle(row.unit);
       if (columnIndex === -1) return row.unit.organization || "";
-      if (columnIndex >= visibleMonthDays.length) return String([row.productive, row.downtime, row.total][columnIndex - visibleMonthDays.length] || "—");
+      if (columnIndex >= visibleMonthDays.length) return String([row.productive, row.downtime, row.total][columnIndex - visibleMonthDays.length] ?? "");
       const day = visibleMonthDays[columnIndex];
       if (!day) return "";
       const value = row.byDate.get(`${month}-${String(day).padStart(2, "0")}`);
@@ -1748,14 +1749,14 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         <table className="timesheet-table equipment-month-table timesheet-resizable" style={monthColumnResize.tableStyle} aria-rowcount={monthRows.length + 3}>
         {monthColumnResize.colGroup}
         <thead><tr>
-          <th className="timesheet-sticky equipment-number-column" rowSpan={2}>{monthRowMoves.headerCheckbox}{monthColumnResize.handle("number", "№")}</th>
-          <th className="timesheet-sticky equipment-machine-column" rowSpan={2}><TimesheetFilterableHeading columnId="equipment" label="Техника">Техника</TimesheetFilterableHeading>{monthColumnResize.handle("equipment", "Техника")}</th>
-          <th className="timesheet-sticky equipment-organization-column" rowSpan={2}><TimesheetFilterableHeading columnId="organization" label="Организация">Организация</TimesheetFilterableHeading>{monthColumnResize.handle("organization", "Организация")}</th>
+          <th className={`timesheet-sticky equipment-number-column ${timesheetClipboardHeaderClass(-3)}`} rowSpan={2}>{monthRowMoves.headerCheckbox}{monthColumnResize.handle("number", "№")}</th>
+          <th className={`timesheet-sticky equipment-machine-column ${timesheetClipboardHeaderClass(-2)}`} rowSpan={2}><TimesheetFilterableHeading columnId="equipment" label="Техника">Техника</TimesheetFilterableHeading>{monthColumnResize.handle("equipment", "Техника")}</th>
+          <th className={`timesheet-sticky equipment-organization-column ${timesheetClipboardHeaderClass(-1)}`} rowSpan={2}><TimesheetFilterableHeading columnId="organization" label="Организация">Организация</TimesheetFilterableHeading>{monthColumnResize.handle("organization", "Организация")}</th>
           <th colSpan={visibleMonthDays.length}>Дни месяца</th>
-          <th className="timesheet-total-column equipment-work-total" rowSpan={2}><TimesheetFilterableHeading columnId="productive" label="Работа">Работа</TimesheetFilterableHeading>{monthColumnResize.handle("productive", "Работа")}</th>
-          <th className="timesheet-total-column equipment-idle-total" rowSpan={2}><TimesheetFilterableHeading columnId="downtime" label="Простой">Простой</TimesheetFilterableHeading>{monthColumnResize.handle("downtime", "Простой")}</th>
-          <th className="timesheet-total-column equipment-all-total" rowSpan={2}><TimesheetFilterableHeading columnId="total" label="Всего">Всего</TimesheetFilterableHeading>{monthColumnResize.handle("total", "Всего")}</th>
-        </tr><tr>{visibleMonthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; const dateObject = new Date(`${date}T00:00:00Z`); const weekend = [0, 6].includes(dateObject.getUTCDay()); const weekday = WEEKDAY_FORMATTER.format(dateObject).replace(".", ""); return <th key={day} className={[weekend ? "weekend" : "", date === today ? "today" : "", date > today ? "future" : ""].filter(Boolean).join(" ")}><TimesheetFilterableHeading columnId={date} compact label={`${day} ${weekday}`}><span>{day}</span><small>{weekday}</small></TimesheetFilterableHeading>{monthColumnResize.handle(`day-${day}`, `${day} ${weekday}`)}</th>; })}</tr></thead>
+          <th className={`timesheet-total-column equipment-work-total ${timesheetClipboardHeaderClass(visibleMonthDays.length)}`} rowSpan={2}><TimesheetFilterableHeading columnId="productive" label="Работа">Работа</TimesheetFilterableHeading>{monthColumnResize.handle("productive", "Работа")}</th>
+          <th className={`timesheet-total-column equipment-idle-total ${timesheetClipboardHeaderClass(visibleMonthDays.length + 1)}`} rowSpan={2}><TimesheetFilterableHeading columnId="downtime" label="Простой">Простой</TimesheetFilterableHeading>{monthColumnResize.handle("downtime", "Простой")}</th>
+          <th className={`timesheet-total-column equipment-all-total ${timesheetClipboardHeaderClass(visibleMonthDays.length + 2)}`} rowSpan={2}><TimesheetFilterableHeading columnId="total" label="Всего">Всего</TimesheetFilterableHeading>{monthColumnResize.handle("total", "Всего")}</th>
+        </tr><tr>{visibleMonthDays.map((day, columnIndex) => { const date = `${month}-${String(day).padStart(2, "0")}`; const dateObject = new Date(`${date}T00:00:00Z`); const weekend = [0, 6].includes(dateObject.getUTCDay()); const weekday = WEEKDAY_FORMATTER.format(dateObject).replace(".", ""); return <th key={day} className={[timesheetClipboardHeaderClass(columnIndex), weekend ? "weekend" : "", date === today ? "today" : "", date > today ? "future" : ""].filter(Boolean).join(" ")}><TimesheetFilterableHeading columnId={date} compact label={`${day} ${weekday}`}><span>{day}</span><small>{weekday}</small></TimesheetFilterableHeading>{monthColumnResize.handle(`day-${day}`, `${day} ${weekday}`)}</th>; })}</tr></thead>
         <tbody>{monthViewport.top > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} style={{ height: monthViewport.top }} /></tr>}{monthRows.length ? monthRows.slice(monthViewport.start, monthViewport.end).map((row, offset) => { const index = monthViewport.start + offset; return <tr key={row.unit.id} {...monthRowMoves.rowProps(row.unit.id)} data-virtual-row={index} aria-rowindex={index + 3}>
           <td className={`timesheet-sticky equipment-number-column ${timesheetClipboardCellClass(index, -3)}`} {...timesheetClipboardCellHandlers(index, -3)}>{monthRowMoves.handle(row.unit.id, unitTitle(row.unit), index + 1)}</td>
           <th scope="row" className={`timesheet-sticky equipment-machine-column ${timesheetClipboardCellClass(index, -2)}`} {...timesheetClipboardCellHandlers(index, -2)} title={unitTitle(row.unit)}><span>{unitTitle(row.unit)}</span></th>

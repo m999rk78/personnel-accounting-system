@@ -1,3 +1,5 @@
+import type { ReportSourceFilter } from "./reportSourceFilter";
+
 export type WorkspaceView = "placement" | "equipment" | "timesheet" | "equipmentTimesheet" | "personnelStatistics" | "equipmentStatistics" | "equipmentRegistry" | "projectEquipment" | "employees" | "positions" | "projects" | "auditLog" | "accessRights" | "directories" | "settings" | "projectSettings" | "projectEmployees" | "users";
 
 export type WorkspaceDirectoryFocus = "all" | "sites" | "employmentType" | "department" | "position" | "shift" | "zone" | "mainWorkType" | "subworkType" | "master";
@@ -9,6 +11,7 @@ export type WorkspaceLocation = {
   month: string;
   employeeId?: number;
   equipmentId?: number;
+  reportSource?: ReportSourceFilter;
   recognized: boolean;
 };
 
@@ -73,6 +76,16 @@ export function parseWorkspaceLocation(pathname: string, search: string, fallbac
   const month = validMonth(params.get("month")) ? params.get("month")! : date.slice(0, 7);
   const employeeId = Number(params.get("employeeId"));
   const equipmentId = Number(params.get("equipmentId"));
+  const from = params.get("from");
+  const to = params.get("to");
+  const zone = params.get("zoneId");
+  const zoneId = zone === "none" ? null : Number(zone);
+  const sourceRangeValid = from === null && to === null || validDate(from) && validDate(to) && from <= to;
+  const sourceZoneValid = zone === null || zone === "none" || /^\d+$/.test(zone) && Number.isSafeInteger(zoneId) && Number(zoneId) > 0;
+  const reportSource = params.get("source") === "statistics" && (route?.view === "placement" || route?.view === "equipment")
+    && sourceRangeValid && sourceZoneValid
+    ? { ...(from && to ? { from, to } : {}), ...(zone !== null ? { zoneId } : {}) }
+    : undefined;
   return {
     view: route?.view ?? "placement",
     directoryFocus: route?.directoryFocus ?? "all",
@@ -80,6 +93,7 @@ export function parseWorkspaceLocation(pathname: string, search: string, fallbac
     month,
     ...(isEmployeeNavigationTarget(route?.view ?? "placement", employeeId) ? { employeeId } : {}),
     ...(isEquipmentNavigationTarget(route?.view ?? "placement", equipmentId) ? { equipmentId } : {}),
+    ...(reportSource ? { reportSource } : {}),
     recognized: Boolean(route),
   };
 }
@@ -92,13 +106,18 @@ export function workspacePath(view: WorkspaceView, directoryFocus: WorkspaceDire
   return ROUTES.find((route) => route.view === view)?.path ?? "/reports/workers";
 }
 
-export function workspaceUrl(view: WorkspaceView, directoryFocus: WorkspaceDirectoryFocus, date: string, month: string, employeeId?: number | null, equipmentId?: number | null) {
+export function workspaceUrl(view: WorkspaceView, directoryFocus: WorkspaceDirectoryFocus, date: string, month: string, employeeId?: number | null, equipmentId?: number | null, reportSource?: ReportSourceFilter) {
   const path = workspacePath(view, directoryFocus);
   const params = new URLSearchParams();
   if (view === "placement" || view === "equipment") params.set("date", date);
   if (view === "timesheet" || view === "equipmentTimesheet") params.set("month", month);
   if (isEmployeeNavigationTarget(view, employeeId)) params.set("employeeId", String(employeeId));
   if (isEquipmentNavigationTarget(view, equipmentId)) params.set("equipmentId", String(equipmentId));
+  if (reportSource && (view === "placement" || view === "equipment")) {
+    params.set("source", "statistics");
+    if (reportSource.from && reportSource.to) { params.set("from", reportSource.from); params.set("to", reportSource.to); }
+    if (reportSource.zoneId !== undefined) params.set("zoneId", reportSource.zoneId === null ? "none" : String(reportSource.zoneId));
+  }
   return params.size ? `${path}?${params}` : path;
 }
 

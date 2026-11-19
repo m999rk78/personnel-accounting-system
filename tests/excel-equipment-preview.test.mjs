@@ -21,7 +21,7 @@ const compiled = ts.transpileModule(`const Preview = () => (${equipmentTable.get
 
 test("equipment preview displays the same work, downtime, manual zero and empty cells as its workbook", () => {
   const environment = {
-    React, timesheetDayCount: 5, timesheetDates: [], periodText: () => "Период",
+    React, timesheetDayCount: 5, timesheetDates: [], periodText: () => "Период", selectionRowProps: index => ({ "data-native-table-row": index }), selectionColumnProps: index => ({ "data-native-table-column": index }), selectionCellProps: (_row, column) => ({ "data-native-table-column": column, "data-native-cell-selected": false }),
     equipmentTimesheetWorkbook: { monthLabel: "Ноябрь", rows: [{
       equipmentName: "Кран // Тест // А001", equipmentType: "Кран", registrationNumber: "А001",
       dailyValues: ["6 / П 2", "П 8", 4, 0, ""],
@@ -31,6 +31,6 @@ test("equipment preview displays the same work, downtime, manual zero and empty 
   };
   const Preview = new Function(...Object.keys(environment), `${compiled}\nreturn Preview;`)(...Object.values(environment));
   const html = renderToStaticMarkup(React.createElement(Preview));
-  const days = [...html.matchAll(/<td class="excel-timesheet-day">(.*?)<\/td>/g)].map(match => match[1]);
+  const days = [...html.matchAll(/<td\b[^>]*class="excel-timesheet-day"[^>]*>(.*?)<\/td>/g)].map(match => match[1]);
   assert.deepEqual(days, ["6 / П 2", "П 8", "4", "0", ""]);
 });

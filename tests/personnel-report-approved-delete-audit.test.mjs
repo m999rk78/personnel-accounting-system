@@ -15,7 +15,7 @@ const boundaryUrl = asModule(`
     let values=[];
     const statement={bind(...args){values=args;return statement;},
       async first(){return sql.includes('SELECT name FROM sites')?{name:'Учебный проект'}:null;},
-      async all(){reads.push({sql,values});return {results:before};},
+      async all(){reads.push({sql,values});return {results:sql.includes('FROM placement_entries entry')?before:[]};},
       async run(){if(sql.includes('INSERT INTO audit_events'))events.push(values);return {results:[],meta:{changes:1}};}};
     return statement;
   },async batch(){return [];}});
@@ -37,7 +37,7 @@ test("approved row deletion audit records selected published/source records, rev
   assert.equal(event[9], "Удалил подтверждённые строки отчёта персонала: 2");
   assert.deepEqual(JSON.parse(event[10]), boundary.before);
   assert.deepEqual(JSON.parse(event[11]), { requested: payload, result });
-  const read = boundary.reads.at(-1);
+  const read = boundary.reads.find(({sql})=>sql.includes('FROM placement_entries entry'));
   assert.deepEqual(read.values, [[501, 504]]);
   assert.match(read.sql, /LEFT JOIN personnel_report_rows/);
   assert.match(read.sql, /LEFT JOIN personnel_reports/);

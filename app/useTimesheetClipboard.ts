@@ -5,7 +5,10 @@ import { TableContextMenu, type TableContextMenuAction } from "./TableContextMen
 import { useWorkspaceAccess } from "./TableAccessContext";
 import { useTableEscapeSelection } from "./useTableEscapeSelection";
 import { isTableSelectAllShortcut } from "./tableSelectAllShortcut";
+import { tableColumnSelectionIntent, tableRowSelectionIntent } from "./tableRowSelectionShortcut";
 import { useTablePageSelectAll } from "./useTablePageSelectAll";
+import { dispatchUndoShortcut, useUndoShortcut } from "./useUndoShortcut";
+import { historyShortcut } from "./undoShortcut";
 import "./timesheetSelection.css";
 
 export type TimesheetClipboardChange = {
@@ -69,7 +72,8 @@ function partialClipboardStatus(saved: number, failed: number) {
 }
 
 type ClipboardPoint = { rowIndex: number; columnIndex: number };
-type ClipboardSelection = { start: ClipboardPoint | null; end: ClipboardPoint | null; includeHeaders?: boolean };
+type ClipboardRange = { start: ClipboardPoint; end: ClipboardPoint };
+type ClipboardSelection = { start: ClipboardPoint | null; end: ClipboardPoint | null; additionalRanges?: ClipboardRange[]; includeHeaders?: boolean; rowModeColumn?: number; columnModeRow?: number };
 type ClipboardUndoEntry = { id: string; changes: TimesheetClipboardChange[] };
 
 function isTimesheetInputTarget(target: EventTarget | null) {
@@ -139,6 +143,53 @@ function selectionBounds(selection: ClipboardSelection | null) {
     columnStart: Math.min(selection.start.columnIndex, selection.end.columnIndex),
     columnEnd: Math.max(selection.start.columnIndex, selection.end.columnIndex),
   };
+}
+
+function selectionRanges(selection: ClipboardSelection | null): ClipboardRange[] {
+  if (!selection?.start || !selection.end) return [];
+  return [...(selection.additionalRanges ?? []), { start: selection.start, end: selection.end }];
+}
+
+function selectionHasCell(selection: ClipboardSelection | null, rowIndex: number, columnIndex: number) {
+  return selectionRanges(selection).some(range => {
+    const bounds = selectionBounds(range)!;
+    return rowIndex >= bounds.rowStart && rowIndex <= bounds.rowEnd && columnIndex >= bounds.columnStart && columnIndex <= bounds.columnEnd;
+  });
+}
+
+function selectionAxes(selection: ClipboardSelection | null, columns: readonly number[]) {
+  const bounds = selectionRanges(selection).map(range => selectionBounds(range)!);
+  const rows = new Set<number>();
+  for (const range of bounds) {
+    for (let rowIndex = range.rowStart; rowIndex <= range.rowEnd; rowIndex++) rows.add(rowIndex);
+  }
+  return {
+    rows: [...rows].sort((left, right) => left - right),
+    columns: columns.filter(columnIndex => bounds.some(range => columnIndex >= range.columnStart && columnIndex <= range.columnEnd)),
+  };
+}
+
+function removeSelectionCell(selection: ClipboardSelection, point: ClipboardPoint, columns: readonly number[]): ClipboardSelection | null {
+  const ranges: ClipboardRange[] = [];
+  for (const range of selectionRanges(selection)) {
+    const bounds = selectionBounds(range)!;
+    if (point.rowIndex < bounds.rowStart || point.rowIndex > bounds.rowEnd || point.columnIndex < bounds.columnStart || point.columnIndex > bounds.columnEnd) {
+      ranges.push(range);
+      continue;
+    }
+    // Split rectangles instead of storing every selected cell in large tabular ranges.
+    if (point.rowIndex > bounds.rowStart) ranges.push({ start: { rowIndex: bounds.rowStart, columnIndex: bounds.columnStart }, end: { rowIndex: point.rowIndex - 1, columnIndex: bounds.columnEnd } });
+    if (point.rowIndex < bounds.rowEnd) ranges.push({ start: { rowIndex: point.rowIndex + 1, columnIndex: bounds.columnStart }, end: { rowIndex: bounds.rowEnd, columnIndex: bounds.columnEnd } });
+    if (point.columnIndex > bounds.columnStart) ranges.push({ start: { rowIndex: point.rowIndex, columnIndex: bounds.columnStart }, end: { rowIndex: point.rowIndex, columnIndex: point.columnIndex - 1 } });
+    if (point.columnIndex < bounds.columnEnd) ranges.push({ start: { rowIndex: point.rowIndex, columnIndex: point.columnIndex + 1 }, end: { rowIndex: point.rowIndex, columnIndex: bounds.columnEnd } });
+  }
+  const visibleRanges = ranges.flatMap(range => {
+    const bounds = selectionBounds(range)!;
+    const visibleColumns = columns.filter(column => column >= bounds.columnStart && column <= bounds.columnEnd);
+    return visibleColumns.length ? [{ start: { ...range.start, columnIndex: visibleColumns[0] }, end: { ...range.end, columnIndex: visibleColumns.at(-1)! } }] : [];
+  });
+  const active = visibleRanges.pop();
+  return active ? visibleRanges.length ? { ...active, additionalRanges: visibleRanges } : active : null;
 }
 
 export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelection, escapeBlocked = false, getContextActions, shellRef: suppliedShellRef, ensureRowVisible, rowCount, columnCount, columnIndexes, resetKey, getValue, getHeader, canPaste, onPaste, getUndoValue = getValue, getUndoNote, canDelete, onDelete, onActivate, onType }: TimesheetClipboardOptions) {
@@ -256,21 +307,83 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     if (typeof Element !== "undefined" && event.target instanceof Element && event.target.closest("button, input, textarea, select, [contenteditable='true'], [role='combobox']")) return;
     event.preventDefault();
     const point = { rowIndex, columnIndex };
+    const additive = (event.ctrlKey || event.metaKey) && !event.shiftKey;
+    if (additive && selectionHasCell(selectionRef.current, rowIndex, columnIndex)) {
+      const next = removeSelectionCell(selectionRef.current!, point, selectionColumns);
+      dragging.current = false;
+      selectionRef.current = next;
+      setSelection(next);
+      setContextMenu(null);
+      shellRef.current?.focus({ preventScroll: true });
+      return;
+    }
     const start = event.shiftKey && selectionRef.current?.start ? selectionRef.current.start : point;
-    const next = { start, end: point };
+    const rowModeColumn = event.shiftKey ? selectionRef.current?.rowModeColumn : undefined;
+    const columnModeRow = event.shiftKey ? selectionRef.current?.columnModeRow : undefined;
+    const range = columnModeRow !== undefined ? {
+      start: { rowIndex: 0, columnIndex: start.columnIndex },
+      end: { rowIndex: rowCount - 1, columnIndex }, columnModeRow, includeHeaders: true,
+    } : rowModeColumn === undefined ? { start, end: point } : {
+      start: { rowIndex: start.rowIndex, columnIndex: selectionColumns[0] },
+      end: { rowIndex, columnIndex: selectionColumns.at(-1)! }, rowModeColumn,
+    };
+    const additionalRanges = additive ? selectionRanges(selectionRef.current) : event.shiftKey ? selectionRef.current?.additionalRanges : undefined;
+    const next = additionalRanges?.length ? { ...range, additionalRanges } : range;
     dragging.current = true;
     selectionRef.current = next;
     setSelection(next);
     setContextMenu(null);
     shellRef.current?.focus({ preventScroll: true });
-  }, [shellRef]);
+  }, [rowCount, selectionColumns, shellRef]);
 
   const extendSelection = useCallback((rowIndex: number, columnIndex: number) => {
     if (!dragging.current || !selectionRef.current?.start) return;
-    const next = { start: selectionRef.current.start, end: { rowIndex, columnIndex } };
+    const current = selectionRef.current;
+    const next = current.columnModeRow !== undefined
+      ? { ...current, end: { rowIndex: rowCount - 1, columnIndex } }
+      : current.rowModeColumn === undefined
+      ? { ...current, start: current.start, end: { rowIndex, columnIndex } }
+      : { ...current, end: { rowIndex, columnIndex: selectionColumns.at(-1)! } };
     selectionRef.current = next;
     setSelection(next);
-  }, []);
+  }, [rowCount, selectionColumns]);
+
+  const selectWholeRows = useCallback((anchorRow: number, endRow: number, activeColumn: number) => {
+    if (!rowCount || !selectionColumns.length || escapeBlocked || contextMenu) return false;
+    const rowIndex = Math.max(0, Math.min(rowCount - 1, endRow));
+    const next = {
+      start: { rowIndex: Math.max(0, Math.min(rowCount - 1, anchorRow)), columnIndex: selectionColumns[0] },
+      end: { rowIndex, columnIndex: selectionColumns.at(-1)! }, rowModeColumn: activeColumn,
+    };
+    dragging.current = false;
+    selectionRef.current = next;
+    setSelection(next);
+    setContextMenu(null);
+    ensureRowVisible?.(rowIndex);
+    requestAnimationFrame(() => {
+      if (shellRef.current) scrollCellIntoVisibleArea(shellRef.current, { rowIndex, columnIndex: activeColumn });
+    });
+    return true;
+  }, [contextMenu, ensureRowVisible, escapeBlocked, rowCount, selectionColumns, shellRef]);
+
+  const selectWholeColumns = useCallback((anchorColumn: number, endColumn: number, activeRow: number) => {
+    if (!rowCount || !selectionColumns.length || escapeBlocked || contextMenu) return false;
+    if (!selectionColumns.includes(anchorColumn) || !selectionColumns.includes(endColumn)) return false;
+    const rowIndex = Math.max(0, Math.min(rowCount - 1, activeRow));
+    const next = {
+      start: { rowIndex: 0, columnIndex: anchorColumn },
+      end: { rowIndex: rowCount - 1, columnIndex: endColumn }, columnModeRow: rowIndex, includeHeaders: true,
+    };
+    dragging.current = false;
+    selectionRef.current = next;
+    setSelection(next);
+    setContextMenu(null);
+    ensureRowVisible?.(rowIndex);
+    requestAnimationFrame(() => {
+      if (shellRef.current) scrollCellIntoVisibleArea(shellRef.current, { rowIndex, columnIndex: endColumn });
+    });
+    return true;
+  }, [contextMenu, ensureRowVisible, escapeBlocked, rowCount, selectionColumns, shellRef]);
 
   const focusSelection = useCallback((point: ClipboardPoint, extend: boolean) => {
     if (rowCount <= 0 || !selectionColumns.length) return;
@@ -280,8 +393,9 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
       columnIndex,
     };
     const next = {
-      start: extend && selectionRef.current?.start ? selectionRef.current.start : nextPoint,
+      start: extend && selectionRef.current?.start && selectionRef.current.rowModeColumn === undefined && selectionRef.current.columnModeRow === undefined ? selectionRef.current.start : nextPoint,
       end: nextPoint,
+      ...(extend && selectionRef.current?.additionalRanges?.length ? { additionalRanges: selectionRef.current.additionalRanges } : {}),
     };
     dragging.current = false;
     selectionRef.current = next;
@@ -308,15 +422,17 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
   const selectedText = useCallback(() => {
     const bounds = selectionBounds(selectionRef.current);
     if (!bounds && !(selectionRef.current?.includeHeaders && getHeader)) return undefined;
+    const axes = selectionAxes(selectionRef.current, selectionColumns);
+    const columns = bounds ? axes.columns : selectionColumns;
     const rows: string[] = [];
     if (selectionRef.current?.includeHeaders && getHeader) {
-      rows.push(selectionColumns.filter(index => !bounds || index >= bounds.columnStart && index <= bounds.columnEnd)
+      rows.push(columns
         .map(index => getHeader(index).replaceAll("\t", " ").replaceAll(/\r?\n/g, " ")).join("\t"));
     }
-    for (let rowIndex = bounds?.rowStart ?? 0; bounds && rowIndex <= bounds.rowEnd; rowIndex++) {
+    for (const rowIndex of axes.rows) {
       const values: string[] = [];
-      for (const columnIndex of selectionColumns.filter(index => index >= bounds.columnStart && index <= bounds.columnEnd)) {
-        values.push(getValue(rowIndex, columnIndex).replaceAll("\t", " ").replaceAll(/\r?\n/g, " "));
+      for (const columnIndex of columns) {
+        values.push(selectionHasCell(selectionRef.current, rowIndex, columnIndex) ? getValue(rowIndex, columnIndex).replaceAll("\t", " ").replaceAll(/\r?\n/g, " ") : "");
       }
       rows.push(values.join("\t"));
     }
@@ -325,15 +441,14 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
 
   const onCopy = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
     if (isTimesheetInputTarget(event.target)) return;
-    const bounds = selectionBounds(selectionRef.current);
     const text = selectedText();
     if (text === undefined) return;
     event.preventDefault();
     event.clipboardData.setData("text/plain", text);
     const headerRows = selectionRef.current?.includeHeaders && getHeader ? 1 : 0;
     lastHeaderCopy.current = headerRows ? text : null;
-    setStatus(`Скопировано: ${(bounds ? bounds.rowEnd - bounds.rowStart + 1 : 0) + headerRows} × ${selectionColumns.filter(index => !bounds || index >= bounds.columnStart && index <= bounds.columnEnd).length}`);
-  }, [getHeader, selectedText, selectionColumns]);
+    setStatus(`Скопировано: ${text.split("\n").length} × ${text.split("\n", 1)[0].split("\t").length}`);
+  }, [getHeader, selectedText]);
 
   const pasteText = useCallback(async (text: string) => {
     if (mutation.current) return 0;
@@ -358,18 +473,25 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
 
     const sourceRows = matrix.length;
     const sourceColumns = Math.max(...matrix.map((line) => line.length));
-    const selectedRows = bounds.rowEnd - bounds.rowStart + 1;
-    const selectedColumns = selectionColumns.filter(index => index >= bounds.columnStart && index <= bounds.columnEnd).length;
+    const disjoint = Boolean(selectionRef.current?.additionalRanges?.length);
+    if (disjoint && (sourceRows !== 1 || sourceColumns !== 1)) {
+      setStatus("Для вставки таблицы выберите один непрерывный диапазон.");
+      return 0;
+    }
+    const axes = selectionAxes(selectionRef.current, selectionColumns);
+    const selectedRows = disjoint ? axes.rows.length : bounds.rowEnd - bounds.rowStart + 1;
+    const selectedColumns = disjoint ? axes.columns.length : selectionColumns.filter(index => index >= bounds.columnStart && index <= bounds.columnEnd).length;
     const targetColumnStart = selectionColumns.indexOf(bounds.columnStart);
     const targetRows = sourceRows === 1 ? selectedRows : sourceRows;
     const targetColumns = sourceColumns === 1 ? selectedColumns : sourceColumns;
     const changes: TimesheetClipboardChange[] = [];
 
     for (let rowOffset = 0; rowOffset < targetRows; rowOffset++) {
-      const rowIndex = bounds.rowStart + rowOffset;
+      const rowIndex = disjoint ? axes.rows[rowOffset] : bounds.rowStart + rowOffset;
       if (rowIndex >= rowCount) break;
       for (let columnOffset = 0; columnOffset < targetColumns; columnOffset++) {
-        const columnIndex = selectionColumns[targetColumnStart + columnOffset];
+        const columnIndex = disjoint ? axes.columns[columnOffset] : selectionColumns[targetColumnStart + columnOffset];
+        if (disjoint && !selectionHasCell(selectionRef.current, rowIndex, columnIndex)) continue;
         if (columnIndex === undefined || columnIndex < 0 || columnIndex >= columnCount || !canPaste(rowIndex, columnIndex)) continue;
         const value = matrix[rowOffset % sourceRows]?.[columnOffset % sourceColumns];
         if (value === undefined) continue;
@@ -419,8 +541,10 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     const bounds = selectionBounds(selectionRef.current);
     if (!bounds) return 0;
     const changes: TimesheetClipboardChange[] = [];
-    for (let rowIndex = bounds.rowStart; rowIndex <= bounds.rowEnd; rowIndex++) {
-      for (const columnIndex of selectionColumns.filter(index => index >= bounds.columnStart && index <= bounds.columnEnd)) {
+    const axes = selectionAxes(selectionRef.current, selectionColumns);
+    for (const rowIndex of axes.rows) {
+      for (const columnIndex of axes.columns) {
+        if (!selectionHasCell(selectionRef.current, rowIndex, columnIndex)) continue;
         if (rowIndex < rowCount && columnIndex >= 0 && columnIndex < columnCount && canDelete(rowIndex, columnIndex)) {
           changes.push({ rowIndex, columnIndex, value: "" });
         }
@@ -458,8 +582,7 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     event.preventDefault();
     event.stopPropagation();
     const point = { rowIndex, columnIndex };
-    const bounds = selectionBounds(selectionRef.current);
-    const insideSelection = bounds && rowIndex >= bounds.rowStart && rowIndex <= bounds.rowEnd && columnIndex >= bounds.columnStart && columnIndex <= bounds.columnEnd;
+    const insideSelection = selectionHasCell(selectionRef.current, rowIndex, columnIndex);
     const next = insideSelection ? selectionRef.current! : { start: point, end: point };
     selectionRef.current = next;
     setSelection(next);
@@ -505,28 +628,19 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     }
   }, [onPaste]);
 
-  useEffect(() => {
-    const undoOutsideTable = (event: globalThis.KeyboardEvent) => {
-      const target = event.target;
-      const interactive = isTimesheetInputTarget(target);
-      const undoShortcut = (event.ctrlKey || event.metaKey) && !event.shiftKey && (event.code === "KeyZ" || event.key.toLocaleLowerCase("en-US") === "z");
-      if (!undoShortcut || interactive || !undoStack.current.length || (target instanceof Node && shellRef.current?.contains(target))) return;
-      event.preventDefault();
-      void undoLastChange();
-    };
-    document.addEventListener("keydown", undoOutsideTable);
-    return () => document.removeEventListener("keydown", undoOutsideTable);
-  }, [shellRef, undoLastChange]);
+  // Register the existing revision-aware persisted history with the same
+  // single-owner keyboard routing as every other editable table.
+  useUndoShortcut({ rootRef: shellRef, undo: undoLastChange, disabled: escapeBlocked });
 
   const onKeyDown = useCallback(async (event: KeyboardEvent<HTMLDivElement>) => {
     if (isTimesheetInputTarget(event.target)) return;
     if (event.key === "Escape") {
       return;
     }
-    const undoShortcut = (event.ctrlKey || event.metaKey) && !event.shiftKey && (event.code === "KeyZ" || event.key.toLocaleLowerCase("en-US") === "z");
-    if (undoShortcut) {
-      event.preventDefault();
-      await undoLastChange();
+    const selected = selectionRef.current;
+    const activePoint = selected?.end ? { rowIndex: selected.columnModeRow ?? selected.end.rowIndex, columnIndex: selected.rowModeColumn ?? selected.end.columnIndex } : null;
+    if (historyShortcut(event.nativeEvent ?? event)) {
+      dispatchUndoShortcut(event.nativeEvent ?? event);
       return;
     }
     const movement = {
@@ -537,64 +651,96 @@ export function useTimesheetClipboard({ hasSelectedRows = false, onClearRowSelec
     }[event.key];
     if (movement && !event.altKey && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
-      const current = selectionRef.current?.end ?? { rowIndex: 0, columnIndex: 0 };
+      const current = activePoint ?? { rowIndex: 0, columnIndex: 0 };
       const currentColumn = selectionColumns.indexOf(current.columnIndex);
       const nextColumn = selectionColumns[Math.max(0, Math.min(selectionColumns.length - 1, currentColumn + movement.column))] ?? current.columnIndex;
       focusSelection({ rowIndex: current.rowIndex + movement.row, columnIndex: nextColumn }, event.shiftKey);
       return;
     }
     if ((event.key === "Enter" || event.key === "F2") && onActivate) {
-      const current = selectionRef.current?.end;
+      const current = activePoint;
       if (!current) return;
       if (current.columnIndex < 0 || current.columnIndex >= columnCount) return;
       const anchor = shellRef.current?.querySelector<HTMLElement>(`[data-timesheet-row="${current.rowIndex}"][data-timesheet-column="${current.columnIndex}"]`);
       if (!anchor) return;
       event.preventDefault();
+      if (selected?.rowModeColumn !== undefined || selected?.columnModeRow !== undefined || selected?.additionalRanges?.length) focusSelection(current, false);
       onActivate(current.rowIndex, current.columnIndex, anchor);
       return;
     }
     if (event.key.length === 1 && event.key.trim() && !event.altKey && !event.ctrlKey && !event.metaKey && onType) {
-      const current = selectionRef.current?.end;
+      const current = activePoint;
       if (!current) return;
       if (current.columnIndex < 0 || current.columnIndex >= columnCount) return;
       const anchor = shellRef.current?.querySelector<HTMLElement>(`[data-timesheet-row="${current.rowIndex}"][data-timesheet-column="${current.columnIndex}"]`);
       if (!anchor) return;
       event.preventDefault();
+      if (selected?.rowModeColumn !== undefined || selected?.columnModeRow !== undefined || selected?.additionalRanges?.length) focusSelection(current, false);
       onType(current.rowIndex, current.columnIndex, anchor, event.key);
       return;
     }
     if (event.key !== "Delete" && event.key !== "Backspace") return;
     event.preventDefault();
     await deleteSelection();
-  }, [columnCount, deleteSelection, focusSelection, onActivate, onType, selectionColumns, shellRef, undoLastChange]);
+  }, [columnCount, deleteSelection, focusSelection, onActivate, onType, selectionColumns, shellRef]);
 
   const onKeyDownCapture = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+    const intent = tableRowSelectionIntent(event.nativeEvent ?? event);
+    const current = selectionRef.current;
+    if (intent === "row" || intent && current?.rowModeColumn !== undefined) {
+      const end = current?.end ?? { rowIndex: 0, columnIndex: selectionColumns[0] };
+      const activeRow = current?.columnModeRow ?? end.rowIndex;
+      const anchor = current?.columnModeRow ?? current?.start?.rowIndex ?? activeRow;
+      if (!selectWholeRows(anchor, activeRow + (intent === "up" ? -1 : intent === "down" ? 1 : 0), current?.rowModeColumn ?? end.columnIndex)) return;
+      event.preventDefault(); event.stopPropagation();
+      shellRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    const columnIntent = tableColumnSelectionIntent(event.nativeEvent ?? event);
+    if (columnIntent === "column" || columnIntent && current?.columnModeRow !== undefined) {
+      const end = current?.end ?? { rowIndex: 0, columnIndex: selectionColumns[0] };
+      const activeColumn = current?.rowModeColumn ?? end.columnIndex;
+      const anchorColumn = current?.rowModeColumn ?? current?.start?.columnIndex ?? activeColumn;
+      const step = columnIntent === "left" ? -1 : columnIntent === "right" ? 1 : 0;
+      const column = selectionColumns[Math.max(0, Math.min(selectionColumns.length - 1, selectionColumns.indexOf(activeColumn) + step))];
+      if (!selectWholeColumns(anchorColumn, column, current?.columnModeRow ?? end.rowIndex)) return;
+      event.preventDefault(); event.stopPropagation();
+      shellRef.current?.focus({ preventScroll: true });
+      return;
+    }
     if (!isTableSelectAllShortcut(event)) return;
     if (!selectAllCells()) return;
     event.preventDefault();
     event.stopPropagation();
     shellRef.current?.focus({ preventScroll: true });
-  }, [selectAllCells, shellRef]);
+  }, [selectAllCells, selectWholeColumns, selectWholeRows, selectionColumns, shellRef]);
 
   const cellClass = useCallback((rowIndex: number, columnIndex: number) => {
-    const bounds = selectionBounds(selection);
-    if (!bounds || rowIndex < bounds.rowStart || rowIndex > bounds.rowEnd || columnIndex < bounds.columnStart || columnIndex > bounds.columnEnd) return "";
+    if (!selectionHasCell(selection, rowIndex, columnIndex)) return "";
+    const columnPosition = selectionColumns.indexOf(columnIndex);
     return [
       "timesheet-cell-selected",
-      rowIndex === bounds.rowStart ? "timesheet-cell-selection-top" : "",
-      rowIndex === bounds.rowEnd ? "timesheet-cell-selection-bottom" : "",
-      columnIndex === bounds.columnStart ? "timesheet-cell-selection-left" : "",
-      columnIndex === bounds.columnEnd ? "timesheet-cell-selection-right" : "",
+      !selectionHasCell(selection, rowIndex - 1, columnIndex) ? "timesheet-cell-selection-top" : "",
+      !selectionHasCell(selection, rowIndex + 1, columnIndex) ? "timesheet-cell-selection-bottom" : "",
+      columnPosition <= 0 || !selectionHasCell(selection, rowIndex, selectionColumns[columnPosition - 1]) ? "timesheet-cell-selection-left" : "",
+      columnPosition === selectionColumns.length - 1 || !selectionHasCell(selection, rowIndex, selectionColumns[columnPosition + 1]) ? "timesheet-cell-selection-right" : "",
     ].filter(Boolean).join(" ");
+  }, [selection, selectionColumns]);
+
+  const headerClass = useCallback((columnIndex: number) => {
+    if (!selection?.includeHeaders) return "";
+    const bounds = selectionBounds(selection);
+    return !bounds || columnIndex >= bounds.columnStart && columnIndex <= bounds.columnEnd ? "timesheet-column-header-selected" : "";
   }, [selection]);
 
   return {
     shellRef,
     status,
-    activeCell: selection?.end ?? null,
-    headersSelected: Boolean(selection?.includeHeaders && getHeader),
+    activeCell: selection?.end ? { rowIndex: selection.columnModeRow ?? selection.end.rowIndex, columnIndex: selection.rowModeColumn ?? selection.end.columnIndex } : null,
+    headersSelected: Boolean(selection?.includeHeaders && getHeader && selection.columnModeRow === undefined),
     focusCell: (rowIndex: number, columnIndex: number) => focusSelection({ rowIndex, columnIndex }, false),
     cellClass,
+    headerClass,
     cellHandlers: (rowIndex: number, columnIndex: number) => ({
       onMouseDown: (event: MouseEvent<HTMLTableCellElement>) => selectCell(rowIndex, columnIndex, event),
       onMouseEnter: () => extendSelection(rowIndex, columnIndex),

@@ -98,7 +98,7 @@ export function ExcelExportPreviewPage() {
   const tableViewport = useRef<HTMLDivElement>(null);
   const clipboardRows = useMemo(() => excelPreviewClipboardRows(payload), [payload]);
   const clipboardHeaders = useMemo(() => excelPreviewClipboardHeaders(payload), [payload]);
-  const { className: selectionClass, handlers: selectionHandlers, copyToast } = useNativeTableSelectAll({ rows: clipboardRows, headers: clipboardHeaders, resetKey: payload?.fileName ?? "", enabled: ready && !rangeLoading, rootRef: tableViewport });
+  const { className: selectionClass, handlers: selectionHandlers, copyToast, rowProps: selectionRowProps, columnProps: selectionColumnProps, cellProps: selectionCellProps } = useNativeTableSelectAll({ rows: clipboardRows, headers: clipboardHeaders, resetKey: payload?.fileName ?? "", enabled: ready && !rangeLoading, rootRef: tableViewport });
   const pageScrollSource = useMemo<TablePageScrollSource>(() => ({
     getViewport: () => tableViewport.current,
     getContentHeight: () => {
@@ -463,13 +463,13 @@ export function ExcelExportPreviewPage() {
             {personnelPlacement
               ? <tr className="excel-template-total-row"><th colSpan={7} /><th>ИТОГО ПО ФИЛЬТРУ</th><th>{templateTotal}</th><th /></tr>
               : <tr className="excel-template-total-row"><th colSpan={4} /><th>ИТОГО ПО ФИЛЬТРУ</th><th colSpan={2} /><th>{templateTotal}</th></tr>}
-            <tr className="excel-template-header-row">{payload.headers.map((header, index) => <th key={header} className={personnelPlacement && index === payload.headers.length - 1 ? "excel-template-green-header" : ""}>{header}</th>)}</tr>
+            <tr className="excel-template-header-row">{payload.headers.map((header, index) => <th key={header} {...selectionColumnProps(index)} className={personnelPlacement && index === payload.headers.length - 1 ? "excel-template-green-header" : ""}>{header}</th>)}</tr>
             <tr className="excel-template-filter-row">{payload.headers.map((header, index) => <th key={`${header}-${index}`} className={personnelPlacement && index === payload.headers.length - 1 ? "excel-template-green-header" : ""}>−</th>)}</tr>
           </thead>
-          <tbody>{payload.rows.map((row, rowIndex) => <tr key={rowIndex}>{payload.headers.map((_, columnIndex) => {
+          <tbody>{payload.rows.map((row, rowIndex) => <tr key={rowIndex} {...selectionRowProps(rowIndex)}>{payload.headers.map((_, columnIndex) => {
             const value = row[columnIndex];
             const rendered = columnIndex === 0 && typeof value === "string" ? templateDate(value) : value;
-            return <td key={columnIndex} className={columnIndex === hoursColumn ? "excel-template-hours" : ""} title={value === null || value === undefined ? "" : String(value)}>{rendered === "" || rendered === null || rendered === undefined ? "" : rendered}</td>;
+            return <td key={columnIndex} {...selectionCellProps(rowIndex, columnIndex)} className={columnIndex === hoursColumn ? "excel-template-hours" : ""} title={value === null || value === undefined ? "" : String(value)}>{rendered === "" || rendered === null || rendered === undefined ? "" : rendered}</td>;
           })}</tr>)}</tbody>
         </table> : personnelTimesheetWorkbook ? <table className="excel-timesheet-preview-table personnel">
           <colgroup>
@@ -479,18 +479,18 @@ export function ExcelExportPreviewPage() {
           </colgroup>
           <thead>
             <tr className="excel-timesheet-header-row">
-              {["Тип", "Отдел", "Фамилия, имя, отчество", "Должность", "Примечание к должности"].map((header) => <th key={header}>{header}</th>)}
-              {Array.from({ length: timesheetDayCount }, (_, index) => <th key={`date-${index}`} className="excel-timesheet-day">{timesheetDates[index] ? Number(timesheetDates[index].slice(8)) : ""}</th>)}
-              <th>ЧАСЫ</th><th>РАСТ</th><th>Мастер</th>
+              {["Тип", "Отдел", "Фамилия, имя, отчество", "Должность", "Примечание к должности"].map((header, index) => <th key={header} {...selectionColumnProps(index)}>{header}</th>)}
+              {Array.from({ length: timesheetDayCount }, (_, index) => <th key={`date-${index}`} {...selectionColumnProps(index + 5)} className="excel-timesheet-day">{timesheetDates[index] ? Number(timesheetDates[index].slice(8)) : ""}</th>)}
+              <th {...selectionColumnProps(timesheetDayCount + 5)}>ЧАСЫ</th><th {...selectionColumnProps(timesheetDayCount + 6)}>РАСТ</th><th {...selectionColumnProps(timesheetDayCount + 7)}>Мастер</th>
             </tr>
             <tr className="excel-timesheet-filter-row">{Array.from({ length: 8 + timesheetDayCount }, (_, index) => <th key={index}>−</th>)}</tr>
           </thead>
           <tbody>{personnelTimesheetWorkbook.rows.map((row, rowIndex) => {
             const difference = personnelTimesheetExportDifference(row);
-            return <tr key={`${row.fullName}-${rowIndex}`}>
-              <td>{row.employmentType}</td><td>{row.department}</td><td>{row.fullName}</td><td>{row.position}</td><td>{row.positionNote}</td>
-              {Array.from({ length: timesheetDayCount }, (_, index) => <td key={index} className="excel-timesheet-day">{row.dailyValues[index] ?? ""}</td>)}
-              <td className="excel-timesheet-total">{row.timesheetHours}</td><td className={difference ? "excel-timesheet-difference" : "excel-timesheet-total"}>{difference}</td><td>{row.masters}</td>
+            return <tr key={`${row.fullName}-${rowIndex}`} {...selectionRowProps(rowIndex)}>
+              <td {...selectionCellProps(rowIndex, 0)}>{row.employmentType}</td><td {...selectionCellProps(rowIndex, 1)}>{row.department}</td><td {...selectionCellProps(rowIndex, 2)}>{row.fullName}</td><td {...selectionCellProps(rowIndex, 3)}>{row.position}</td><td {...selectionCellProps(rowIndex, 4)}>{row.positionNote}</td>
+              {Array.from({ length: timesheetDayCount }, (_, index) => <td key={index} {...selectionCellProps(rowIndex, index + 5)} className="excel-timesheet-day">{row.dailyValues[index] ?? ""}</td>)}
+              <td {...selectionCellProps(rowIndex, timesheetDayCount + 5)} className="excel-timesheet-total">{row.timesheetHours}</td><td {...selectionCellProps(rowIndex, timesheetDayCount + 6)} className={difference ? "excel-timesheet-difference" : "excel-timesheet-total"}>{difference}</td><td {...selectionCellProps(rowIndex, timesheetDayCount + 7)}>{row.masters}</td>
             </tr>;
           })}</tbody>
         </table> : equipmentTimesheetWorkbook ? <table className="excel-timesheet-preview-table equipment">
@@ -502,23 +502,23 @@ export function ExcelExportPreviewPage() {
           <thead>
             <tr className="excel-timesheet-meta-row"><th>{equipmentTimesheetWorkbook.monthLabel}</th><th>{periodText(timesheetDates[0] ?? "", timesheetDates.at(-1) ?? timesheetDates[0] ?? "")}</th><th>Дни недели:</th>{Array.from({ length: timesheetDayCount }, (_, index) => <th key={index}>{timesheetDates[index] ? new Intl.DateTimeFormat("ru-RU", { timeZone: "UTC", weekday: "short" }).format(new Date(`${timesheetDates[index]}T00:00:00Z`)).replace(".", "") : ""}</th>)}<th colSpan={3} /></tr>
             <tr className="excel-timesheet-spacer-row"><th colSpan={6 + timesheetDayCount} /></tr>
-            <tr className="excel-timesheet-header-row"><th>Тип</th><th>Уникальное наименование единицы</th><th>ГРЗ</th>{Array.from({ length: timesheetDayCount }, (_, index) => <th key={index} className="excel-timesheet-day">{timesheetDates[index] ? Number(timesheetDates[index].slice(8)) : ""}</th>)}<th>ЧАСЫ</th><th>ПРОСТОЙ</th><th>РАСТ</th></tr>
+            <tr className="excel-timesheet-header-row"><th {...selectionColumnProps(0)}>Тип</th><th {...selectionColumnProps(1)}>Уникальное наименование единицы</th><th {...selectionColumnProps(2)}>ГРЗ</th>{Array.from({ length: timesheetDayCount }, (_, index) => <th key={index} {...selectionColumnProps(index + 3)} className="excel-timesheet-day">{timesheetDates[index] ? Number(timesheetDates[index].slice(8)) : ""}</th>)}<th {...selectionColumnProps(timesheetDayCount + 3)}>ЧАСЫ</th><th {...selectionColumnProps(timesheetDayCount + 4)}>ПРОСТОЙ</th><th {...selectionColumnProps(timesheetDayCount + 5)}>РАСТ</th></tr>
             <tr className="excel-timesheet-filter-row">{Array.from({ length: 6 + timesheetDayCount }, (_, index) => <th key={index}>−</th>)}</tr>
           </thead>
           <tbody>{equipmentTimesheetWorkbook.rows.map((row, rowIndex) => {
             const slashParts = row.equipmentName.split("//").map((part) => part.trim());
             const difference = row.productiveHours + row.downtimeHours - (row.reportHours ?? row.totalHours);
-            return <tr key={`${row.equipmentName}-${rowIndex}`}>
-              <td>{row.equipmentType ?? slashParts[0] ?? ""}</td><td>{row.equipmentName}</td><td>{row.registrationNumber ?? slashParts[2] ?? ""}</td>
-              {Array.from({ length: timesheetDayCount }, (_, index) => <td key={index} className="excel-timesheet-day">{row.dailyValues[index] ?? ""}</td>)}
-              <td className="excel-timesheet-total">{row.productiveHours}</td><td className={row.downtimeHours ? "excel-timesheet-downtime" : "excel-timesheet-total"}>{row.downtimeHours}</td><td className={difference ? "excel-timesheet-difference" : "excel-timesheet-total"}>{difference}</td>
+            return <tr key={`${row.equipmentName}-${rowIndex}`} {...selectionRowProps(rowIndex)}>
+              <td {...selectionCellProps(rowIndex, 0)}>{row.equipmentType ?? slashParts[0] ?? ""}</td><td {...selectionCellProps(rowIndex, 1)}>{row.equipmentName}</td><td {...selectionCellProps(rowIndex, 2)}>{row.registrationNumber ?? slashParts[2] ?? ""}</td>
+              {Array.from({ length: timesheetDayCount }, (_, index) => <td key={index} {...selectionCellProps(rowIndex, index + 3)} className="excel-timesheet-day">{row.dailyValues[index] ?? ""}</td>)}
+              <td {...selectionCellProps(rowIndex, timesheetDayCount + 3)} className="excel-timesheet-total">{row.productiveHours}</td><td {...selectionCellProps(rowIndex, timesheetDayCount + 4)} className={row.downtimeHours ? "excel-timesheet-downtime" : "excel-timesheet-total"}>{row.downtimeHours}</td><td {...selectionCellProps(rowIndex, timesheetDayCount + 5)} className={difference ? "excel-timesheet-difference" : "excel-timesheet-total"}>{difference}</td>
             </tr>;
           })}</tbody>
         </table> : <table className="excel-preview-table">
-          <thead><tr><th aria-label="Номер строки">№</th>{payload.headers.map((header) => <th key={header}>{header}</th>)}</tr></thead>
-          <tbody>{payload.rows.map((row, rowIndex) => <tr key={rowIndex}><th scope="row">{rowIndex + 1}</th>{payload.headers.map((_, columnIndex) => {
+          <thead><tr><th aria-label="Номер строки" {...selectionColumnProps(0)}>№</th>{payload.headers.map((header, index) => <th key={header} {...selectionColumnProps(index + 1)}>{header}</th>)}</tr></thead>
+          <tbody>{payload.rows.map((row, rowIndex) => <tr key={rowIndex} {...selectionRowProps(rowIndex)}><th scope="row" {...selectionCellProps(rowIndex, 0)}>{rowIndex + 1}</th>{payload.headers.map((_, columnIndex) => {
             const value = row[columnIndex];
-            return <td key={columnIndex} title={value === null || value === undefined ? "" : String(value)}>{value === "" || value === null || value === undefined ? <span>—</span> : value}</td>;
+            return <td key={columnIndex} {...selectionCellProps(rowIndex, columnIndex + 1)} title={value === null || value === undefined ? "" : String(value)}>{value === "" || value === null || value === undefined ? <span>—</span> : value}</td>;
           })}</tr>)}</tbody>
         </table>}
       </div>

@@ -36,6 +36,44 @@ test("nested custom actions close only after the selected leaf succeeds and reta
   assert.deepEqual(events, ["navigate", "close"]);
 });
 
+test("grid context menus keep the clicked coordinates for measured viewport placement", () => {
+  let callback;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(filters) === "openContextMenu") callback = node.initializer.arguments[0].getText(filters);
+    ts.forEachChild(node, visit);
+  }
+  visit(filters);
+  assert.ok(callback);
+  const root = {};
+  const row = { getAttribute: name => name === "row-index" ? "2" : null };
+  const cell = {
+    getAttribute: name => name === "col-id" ? "workDate" : null,
+    closest: selector => selector === ".ag-root" ? root : row,
+  };
+  class GridTarget {
+    closest(selector) { return selector === ".ag-cell[col-id]" ? cell : null; }
+  }
+  let menu;
+  const environment = {
+    Element: GridTarget,
+    body: { current: { contains: () => true, querySelector: () => root, focus() {} } },
+    api: { hidePopupMenu() {}, getDisplayedRowAtIndex: () => ({ id: "day-3", data: { workDate: "2026-11-03" } }), getCellValue: () => "03.11.2026" },
+    spreadsheetBounds: () => null,
+    selectionRef: { current: null }, lastSelectionRef: { current: null }, selectionIncludesHeaders: { current: false },
+    onSpreadsheetBatch: undefined,
+    isStructuralSpreadsheetRow: () => false,
+    setIncludeSelectedHeaders() {}, setSelection() {}, setContextMenu: value => { menu = value; },
+    window: { innerWidth: 921, innerHeight: 953 },
+  };
+  const open = new Function(...Object.keys(environment), `${compile(`const callback = ${callback};`)} return callback;`)(...Object.values(environment));
+  for (const [x, y] of [[246, 853], [899, 940], [35, 45]]) {
+    open({ target: new GridTarget(), clientX: x, clientY: y, preventDefault() {}, stopPropagation() {} });
+    assert.equal(menu.x, x);
+    assert.equal(menu.y, y);
+    assert.equal(menu.columnId, "workDate");
+  }
+});
+
 const moves = await sourceFile("../app/TableRowMoves.tsx");
 const moveHook = moves.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "useRowMoveActions");
 let getActions;

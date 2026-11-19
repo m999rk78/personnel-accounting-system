@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
-import type { PostProcessPopupParams } from "ag-grid-community";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import type { GridApi, PostProcessPopupParams } from "ag-grid-community";
 import { columnFilterVisibility } from "./columnFilterToggle";
+import { registerTableFilterEscape } from "./tableFilterEscape";
 
 const filterSelector = ".ag-filter-menu";
 const nestedPicker = ".custom-select-menu, .ag-select-list, .ag-menu-list";
@@ -10,11 +11,22 @@ const expandedPicker = ".custom-select-toggle[aria-expanded='true'], .ag-picker-
 
 /** AG's native Escape only works while its popup owns focus. Handle the same
  * Cancel action from an external header/another focus target as well. */
-export function useGridFilterEscape<T>() {
+export function useGridFilterEscape<T>({ api, getRoot }: { api: GridApi<T> | null; getRoot: () => HTMLElement | null }) {
   const active = useRef<{ popup: HTMLElement; close: () => void } | null>(null);
+  const root = useRef(getRoot);
+  useLayoutEffect(() => { root.current = getRoot; }, [getRoot]);
+  useEffect(() => {
+    if (!api || api.isDestroyed()) return;
+    return registerTableFilterEscape({
+      root: () => api.isDestroyed() ? null : root.current(),
+      hasFilters: () => Object.keys(api.getFilterModel()).length > 0,
+      isEditing: () => api.getEditingCells().length > 0,
+      reset: () => api.setFilterModel(null),
+    });
+  }, [api]);
   useEffect(() => {
     function handleEscape(event: KeyboardEvent) {
-      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing || event.repeat) return;
       const current = active.current;
       if (!current?.popup.isConnected) return;
       const target = event.target instanceof Element ? event.target : null;

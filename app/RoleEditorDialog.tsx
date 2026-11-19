@@ -5,6 +5,8 @@ import { PermissionMatrix } from "./PermissionMatrix";
 import { emptyPermissionSet, normalizePermissionSet, patchPermissionSet, permissionSetsEqual, rolePermissionTemplate, type PermissionAction, type PermissionResource, type PermissionSet } from "./permissionModel";
 import type { CustomRole } from "./customRoles";
 import { useConfirmationDialog } from "./useConfirmationDialog";
+import { useDraftUndo } from "./useDraftUndo";
+import { useUndoShortcut } from "./useUndoShortcut";
 import "./customRoles.css";
 
 export function RoleEditorDialog({ onClose, onCreated, previewRole, editable = false }: {
@@ -22,6 +24,9 @@ export function RoleEditorDialog({ onClose, onCreated, previewRole, editable = f
   const [error, setError] = useState("");
   const readOnly = Boolean(previewRole) && !editable;
   const dirty = !readOnly && (name !== (previewRole?.name ?? "") || !permissionSetsEqual(permissions, previewRole?.permissions ?? emptyPermissionSet()));
+  const history = useDraftUndo({ value: { name, permissions }, nativeRootRef: nameRef, nativeTextFields: ["name"], scopeKey: `role-dialog:${previewRole?.id ?? "new"}:${previewRole?.revision ?? 0}`,
+    onChange: next => { setName(next.name); setPermissions(next.permissions); setError(""); } });
+  useUndoShortcut({ rootRef: dialogRef, ...history, disabled: saving || readOnly });
 
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;

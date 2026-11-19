@@ -50,9 +50,16 @@ export function createEmployeeSpreadsheetHistory() {
       const acknowledgement = expected.lastIndexOf(incoming);
       if (acknowledgement >= 0) expected.splice(0, acknowledgement + 1);
       else if (incoming !== incomingSignature) {
+        const originals = new Map(present.map(draft => [draft.key, signature([draft])]));
+        const incomingRows = new Map(drafts.map(draft => [draft.key, signature([draft])]));
+        const added = drafts.filter(draft => !originals.has(draft.key));
+        const appended = incomingSignature !== undefined && added.length > 0 && added.every(draft => draft.id === undefined)
+          && drafts.length === present.length + added.length
+          && incomingRows.size === drafts.length
+          && present.every(draft => incomingRows.get(draft.key) === originals.get(draft.key));
+        past = appended ? [...past, copy(present)].slice(-50) : [];
         present = copy(drafts);
         presentSignature = incoming;
-        past = [];
         future = [];
         expected.length = 0;
       }

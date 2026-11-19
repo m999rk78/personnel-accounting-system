@@ -13,6 +13,7 @@ const boundaryUrl = asModule(`
     let values=[];
     const statement={bind(...args){values=args;return statement;},
       async first(){reads.push(sql);return sql.includes('SELECT name FROM sites')?{name:'Проект'}:before;},
+      async all(){return {results:[]};},
       async run(){if(sql.includes('INSERT INTO audit_events'))events.push(values);return {results:[],meta:{changes:1}};}};
     return statement;
   },async batch(){return [];}});

@@ -35,7 +35,12 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
   const [native, setNative] = useState(false);
   const [snapshot, setSnapshot] = useState<Snapshot>(EMPTY);
   const [openColumnId, setOpenColumnId] = useState<string | null>(null);
-  const trackFilterEscape = useGridFilterEscape<T>();
+  const engine = useRef<HTMLDivElement>(null);
+  const trackFilterEscape = useGridFilterEscape<T>({ api, getRoot: () => {
+    const container = engine.current?.parentElement;
+    // The equipment filter engine also stays mounted in registry views.
+    return container?.querySelector(".timesheet-table, .users-table") ? container : null;
+  } });
   const publish = useCallback((api: GridApi<T>) => {
     if (api.isDestroyed()) return;
     const keys: string[] = [];
@@ -203,7 +208,7 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
     },
     openFilter: (columnId: string, trigger: HTMLElement) => open(columnId, trigger, false),
   }), [api, columns, snapshot.sorts, open, publish]);
-  const controller = <div className="timesheet-filter-engine" aria-hidden="true"><AgGridReact<T> key={resetKey}
+  const controller = <div ref={engine} className="timesheet-filter-engine" aria-hidden="true"><AgGridReact<T> key={resetKey}
     theme={gridTheme} localeText={gridLocaleRu} rowData={rows as T[]} columnDefs={definitions} getRowId={({ data }) => getRowId(data)}
     headerHeight={0} rowHeight={1} rowBuffer={0} suppressCellFocus suppressHeaderFocus suppressColumnVirtualisation
     enableFilterHandlers animateRows={false} popupParent={typeof document === "undefined" ? undefined : document.body} postProcessPopup={positionPopup}

@@ -9,6 +9,32 @@ function positiveInteger(value: string | null, fallback: number) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function restrictContextToProjects(value: unknown, siteIds: readonly number[]) {
+  let data: unknown = value;
+  if (typeof value === "string") { try { data = JSON.parse(value); } catch { return value; } }
+  if (!data || typeof data !== "object" || !("context" in data)) return value;
+  const context = data.context;
+  const allowed = new Set(siteIds);
+  const outsideScope = (item: unknown): boolean => {
+    if (!item || typeof item !== "object") return false;
+    if (Array.isArray(item)) return item.some(outsideScope);
+    const row = item as Record<string, unknown>;
+    for (const key of ["siteId", "site_id", "projectSiteId", "assignedSiteId"]) {
+      const id = Number(row[key]);
+      if (Number.isInteger(id) && id > 0 && !allowed.has(id)) return true;
+    }
+    if (row.kind === "project" && Number(row.id) > 0 && !allowed.has(Number(row.id))) return true;
+    return Object.values(row).some(outsideScope);
+  };
+  if (!outsideScope(context)) return value;
+  // An event saved by an administrator can reference an old, inaccessible
+  // project even when the event itself belongs to this reader's project. Do
+  // not expose those historical names/dates, or present a partial assignment
+  // snapshot as if it were the complete previous state.
+  const restricted = { ...data, context: { version: 1, references: [], restricted: true } };
+  return typeof value === "string" ? JSON.stringify(restricted) : restricted;
+}
+
 export async function GET(request: Request) {
   try {
     const authUser = await getAuthUser(request);
@@ -59,7 +85,8 @@ export async function GET(request: Request) {
           after_data AS "afterData", created_at AS "createdAt"
         FROM audit_events${conditions.length ? ` WHERE ${conditions.join(" AND ")}` : ""} ORDER BY id DESC LIMIT ?`)
       .bind(...(scoped ? [siteIds] : []), ...(beforeId ? [beforeId] : []), limit).all();
-    return Response.json({ events: result.results, hasMore: result.results.length === limit });
+    const events = scoped ? result.results.map(event => ({ ...event, afterData: restrictContextToProjects(event.afterData, siteIds ?? []) })) : result.results;
+    return Response.json({ events, hasMore: result.results.length === limit });
   } catch (error) {
     console.error("Audit log request failed", error);
     return Response.json({ error: error instanceof Error ? error.message : "Не удалось загрузить журнал действий." }, { status: 500 });

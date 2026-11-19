@@ -5,7 +5,7 @@ export const EQUIPMENT_REPORT_COLUMN_SIZING = {
   workDate: { header: "Дата", min: 125, max: 125, cellPadding: 44 },
   equipment: { header: "Техника", min: 280, max: 640, cellPadding: 48 },
   status: { header: "Статус", min: 156, max: 240, cellPadding: 52 },
-  responsibleUserName: { header: "Ответственный", min: 240, max: 560, cellPadding: 40 },
+  responsibleUserName: { header: "Заполнил", min: 160, max: 320, cellPadding: 40 },
   organization: { header: "Организация", min: 160, max: 360, cellPadding: 32 },
   equipmentType: { header: "Тип техники", min: 150, max: 240, cellPadding: 32 },
   brand: { header: "Марка", min: 130, max: 240, cellPadding: 32 },

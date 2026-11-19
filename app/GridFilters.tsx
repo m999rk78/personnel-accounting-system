@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact, useGridFilterDisplay, type AgGridReactProps, type CustomFilterDisplayProps, type CustomFloatingFilterDisplayProps } from "ag-grid-react";
-import type { CellMouseDownEvent, CellMouseOverEvent, ColDef, ColGroupDef, ColumnFilter, GridApi, IFilterParams, IRowNode } from "ag-grid-community";
+import type { CellMouseDownEvent, CellMouseOverEvent, ColDef, ColGroupDef, ColumnFilter, GridApi, IFilterParams, IRowNode, RowDragEvent } from "ag-grid-community";
 import { compareGridValues, describeGridFilter, filterValueKey, isConditionValid, matchesPersonnelFilter, normalizeFilterText, numberOperations, textOperations, dateOperations, filterDateKey, type FilterCondition, type PersonnelFilterModel } from "./gridFilterModel";
 import { gridLocaleRu } from "./gridLocaleRu";
 import { tableColumnMenuItems } from "./gridColumnMenu";
@@ -15,7 +15,7 @@ import { useGridFilterPopup } from "./useGridFilterPopup";
 import { useGridFilterEscape } from "./useGridFilterEscape";
 import { closeTableContextMenus, TableContextMenu, type TableContextMenuAction } from "./TableContextMenu";
 import { useRowMoveActions, useWorkspaceTableOrder } from "./TableRowMoves";
-import { gridRowEntityId, rowMoveIsBlocked, saveManualRowMove, type RowOrderId } from "./tableRowOrder";
+import { gridRowEntityId, rowMoveIsBlocked, saveManualRowMove, type RowMove, type RowOrderId } from "./tableRowOrder";
 import "./gridFilters.css";
 import { parseSpreadsheetText, serializeSpreadsheetText, stripSpreadsheetHeaderRow } from "./spreadsheetClipboard";
 import { useWorkspaceAccess } from "./TableAccessContext";
@@ -24,11 +24,17 @@ import { gridRowSelection } from "./gridRowSelection";
 import { allSpreadsheetCells, findSpreadsheetDataRowIndex, isStructuralSpreadsheetRow, spreadsheetDataColumns, spreadsheetHeaderValues, spreadsheetPointRowIndex, spreadsheetRangeHasStructuralRows } from "./gridSpreadsheetRows";
 import { summarizeSpreadsheetSelection, type SpreadsheetSelectionSummary } from "./gridSelectionSummary";
 import { isTableSelectAllShortcut } from "./tableSelectAllShortcut";
+import { historyShortcut } from "./undoShortcut";
+import { dispatchUndoShortcut, useUndoShortcut } from "./useUndoShortcut";
+import { isTableRowSelectionBlocked, tableColumnSelectionIntent, tableRowSelectionIntent } from "./tableRowSelectionShortcut";
 import { createImportOrderRank, IMPORT_ORDER_COLUMN, importOrderColumnState, importOrderScopes, shouldApplyImportOrder } from "./importOrderSorting";
 import { useEmptyGridRows } from "./useEmptyGridRows";
 import { useTableEscapeSelection } from "./useTableEscapeSelection";
 import { useTableCopyToast, writeTableClipboardText } from "./useTableCopyToast";
 import { rowDragPoint, startRowDragAutoScroll } from "./rowDragAutoScroll";
+import { createRowDropIndicator } from "./rowDropIndicator";
+import { resolveGridRowDropTarget } from "./gridRowDropTarget";
+import { selectedSpreadsheetAreas, selectedSpreadsheetCells, spreadsheetSelectionContains, spreadsheetSelectionValues, toggleSpreadsheetCell, type SpreadsheetPoint, type SpreadsheetSelection } from "./gridMultiSelection";
 
 type FilterRow = { kind: "entry" | "edit" | "draft" };
 type FilterProps = CustomFilterDisplayProps<FilterRow, unknown, PersonnelFilterModel> & {
@@ -254,8 +260,6 @@ function closeContextActionsAfterSelection(actions: TableContextMenuAction[], cl
     : { ...action, onSelect: async () => { await action.onSelect(); close(); } });
 }
 
-type SpreadsheetPoint = { rowIndex: number; columnId: string; rowId?: string };
-type SpreadsheetSelection = { start: SpreadsheetPoint; end: SpreadsheetPoint };
 type LocalizedGridProps<TData extends FilterRow> = AgGridReactProps<TData> & {
   onSpreadsheetPaste?: (payload: SpreadsheetPastePayload<TData>) => boolean;
   onSpreadsheetEdit?: (payload: SpreadsheetEditPayload<TData>) => boolean;
@@ -305,6 +309,42 @@ function spreadsheetBounds<TData>(grid: GridApi<TData>, current: SpreadsheetSele
   };
 }
 
+function wholeSpreadsheetRows<TData>(grid: GridApi<TData>, start: SpreadsheetPoint, end: SpreadsheetPoint, activeColumnId: string): SpreadsheetSelection | null {
+  const columns = spreadsheetColumns(grid);
+  const startIndex = spreadsheetPointRowIndex(grid, start);
+  const endIndex = spreadsheetPointRowIndex(grid, end);
+  if (!columns.length || startIndex === null || endIndex === null) return null;
+  const first = grid.getDisplayedRowAtIndex(startIndex), last = grid.getDisplayedRowAtIndex(endIndex);
+  if (!first?.data || !last?.data || isStructuralSpreadsheetRow(first) || isStructuralSpreadsheetRow(last)) return null;
+  return {
+    start: { rowIndex: startIndex, rowId: first.id, columnId: columns[0].getColId() },
+    end: { rowIndex: endIndex, rowId: last.id, columnId: columns.at(-1)!.getColId() },
+    rowModeColumnId: columns.some(column => column.getColId() === activeColumnId) ? activeColumnId : columns[0].getColId(),
+  };
+}
+
+function spreadsheetActivePoint(current: SpreadsheetSelection, edge: "start" | "end" = "end"): SpreadsheetPoint {
+  if (current.rowModeColumnId) return { ...current.end, columnId: current.rowModeColumnId };
+  if (current.columnModeRow) return { ...current.columnModeRow, columnId: current.end.columnId };
+  return current[edge];
+}
+
+function wholeSpreadsheetColumns<TData>(grid: GridApi<TData>, startColumnId: string, endColumnId: string, activeRow: SpreadsheetPoint): SpreadsheetSelection | null {
+  const columns = spreadsheetColumns(grid);
+  if (![startColumnId, endColumnId].every(id => columns.some(column => column.getColId() === id))) return null;
+  const activeIndex = spreadsheetPointRowIndex(grid, activeRow);
+  const firstIndex = findSpreadsheetDataRowIndex(grid, 0, 1);
+  const lastIndex = findSpreadsheetDataRowIndex(grid, grid.getDisplayedRowCount() - 1, -1);
+  if (activeIndex === null || firstIndex === null || lastIndex === null) return null;
+  const activeNode = grid.getDisplayedRowAtIndex(activeIndex);
+  if (!activeNode?.data || isStructuralSpreadsheetRow(activeNode)) return null;
+  return {
+    start: { rowIndex: firstIndex, rowId: grid.getDisplayedRowAtIndex(firstIndex)?.id, columnId: startColumnId },
+    end: { rowIndex: lastIndex, rowId: grid.getDisplayedRowAtIndex(lastIndex)?.id, columnId: endColumnId },
+    columnModeRow: { rowIndex: activeIndex, rowId: activeNode.id },
+  };
+}
+
 export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: suppliedPaste, onSpreadsheetEdit: suppliedEdit, onSpreadsheetCancelEdit, spreadsheetFocusRequestKey = 0, spreadsheetSelectionResetKey = "", onSpreadsheetSelectionSummary, getSpreadsheetContextActions, getRowOrderId = gridRowEntityId, rowOrderFixedSorts, rowOrderBlocked = false, rowOrderAutoSwitchSort = false, preserveSavedSort = false, onSpreadsheetBatch: suppliedBatch, canWriteSpreadsheetCell, spreadsheetHistory: suppliedHistory, enterpriseFilters = true, showSortSummary = true, formatFilterSummaryValue, spreadsheetToolbar = true, popupParent: requestedPopupParent, ...props }: LocalizedGridProps<TData>) {
   const access = useWorkspaceAccess();
   const onSpreadsheetPaste = access?.edit === false ? undefined : suppliedPaste;
@@ -317,7 +357,6 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     return () => cancelAnimationFrame(frame);
   }, [access?.edit, onSpreadsheetCancelEdit]);
   const [api, setApi] = useState<GridApi<TData> | null>(null);
-  const trackFilterEscape = useGridFilterEscape<TData>();
   const rowNumberFrame = useRef<number | null>(null);
   const refreshRowNumbers = useCallback((grid: GridApi<TData>) => {
     if (grid.isDestroyed() || !grid.getColumn("number")) return;
@@ -439,10 +478,55 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
   const [spreadsheetStatus, setSpreadsheetStatus] = useState("");
   const [contextMenu, setContextMenu] = useState<(SpreadsheetContextPayload<TData> & { x: number; y: number; error: string }) | null>(null);
   const body = useRef<HTMLDivElement>(null);
+  const trackFilterEscape = useGridFilterEscape<TData>({ api, getRoot: () => body.current?.parentElement ?? null });
   const { copyToast, showCopyToast } = useTableCopyToast(body);
   const rowDragScroll = useRef<ReturnType<typeof startRowDragAutoScroll>>(null);
-  const stopRowDragScroll = useCallback(() => { rowDragScroll.current?.stop(); rowDragScroll.current = null; }, []);
+  const rowDropIndicator = useRef<ReturnType<typeof createRowDropIndicator>>(null);
+  const activeRowDrag = useRef<RowDragEvent<TData> | null>(null);
+  const clearRowDropIndicator = useCallback(() => { activeRowDrag.current = null; rowDropIndicator.current?.clear(); }, []);
+  const stopRowDragScroll = useCallback(() => { rowDragScroll.current?.stop(); rowDragScroll.current = null; clearRowDropIndicator(); }, [clearRowDropIndicator]);
   useEffect(() => stopRowDragScroll, [api, rowMoveDisabled, rowOrder?.busy, rowOrder?.canWrite, stopRowDragScroll]);
+  const resolveRowDragMove = useCallback((event: RowDragEvent<TData>): RowMove | null => {
+    if (!canDragSelection() || !selectionDrag || event.node.isSelected() !== true || !event.node.data || !event.overNode?.data) return null;
+    const targetId = getRowOrderId(event.overNode.data);
+    const draggedId = getRowOrderId(event.node.data);
+    if (!targetId || !draggedId) return null;
+    const selectedIds = event.api.getSelectedRows().map(getRowOrderId).filter((id): id is RowOrderId => Boolean(id));
+    const movingIds = [...new Set(selectedIds.includes(draggedId) ? selectedIds : [draggedId])];
+    if (movingIds.includes(targetId)) return null;
+    // Reports keep each day's rows together. Do not advertise a drop which the
+    // server will reject or which cannot match the indicator after saving.
+    if (rowOrder?.scope === "personnel-report-rows" || rowOrder?.scope === "equipment-report-rows") {
+      const date = String(targetId).slice(0, 10);
+      if (movingIds.some(id => String(id).slice(0, 10) !== date)) return null;
+    }
+    const placement = event.y < (event.overNode.rowTop ?? 0) + (event.overNode.rowHeight ?? 44) / 2 ? "before" : "after";
+    return { movingIds, targetId, placement };
+  }, [canDragSelection, selectionDrag, getRowOrderId, rowOrder?.scope]);
+  const paintRowDropIndicator = useCallback(() => {
+    const root = body.current;
+    const event = activeRowDrag.current;
+    const target = root && event && resolveGridRowDropTarget(root, event, resolveRowDragMove);
+    if (!root || !target) { rowDropIndicator.current?.clear(); return; }
+    rowDropIndicator.current ??= createRowDropIndicator(root);
+    rowDropIndicator.current.show({ row: target.row, placement: target.operation.placement, count: target.operation.movingIds.length, rowNumber: target.rowNumber });
+  }, [resolveRowDragMove]);
+  useEffect(() => {
+    const root = body.current;
+    if (!root) return;
+    const document = root.ownerDocument;
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") stopRowDragScroll(); };
+    document.addEventListener("scroll", paintRowDropIndicator, true);
+    document.addEventListener("keydown", escape, true);
+    document.defaultView?.addEventListener("blur", stopRowDragScroll);
+    return () => {
+      document.removeEventListener("scroll", paintRowDropIndicator, true);
+      document.removeEventListener("keydown", escape, true);
+      document.defaultView?.removeEventListener("blur", stopRowDragScroll);
+      stopRowDragScroll();
+      rowDropIndicator.current?.destroy(); rowDropIndicator.current = null;
+    };
+  }, [api, paintRowDropIndicator, stopRowDragScroll]);
   useEmptyGridRows(body, api, props.rowHeight ?? 54);
   const selectionRef = useRef(selection);
   const selectionIncludesHeaders = useRef(false);
@@ -486,8 +570,9 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       root.querySelectorAll(".ag-excel-selected,.ag-excel-top,.ag-excel-right,.ag-excel-bottom,.ag-excel-left").forEach((cell) => cell.classList.remove("ag-excel-selected", "ag-excel-top", "ag-excel-right", "ag-excel-bottom", "ag-excel-left"));
       root.querySelectorAll(".ag-excel-header-selected").forEach(header => header.classList.remove("ag-excel-header-selected"));
       const bounds = spreadsheetBounds(grid, selectionRef.current);
+      const areas = selectionRef.current?.ranges?.length ? selectedSpreadsheetAreas(grid, selectionRef.current) : bounds ? [bounds] : [];
       if (selectionSummaryCallback.current) {
-        const summary = summarizeSpreadsheetSelection(grid, bounds);
+        const summary = summarizeSpreadsheetSelection(grid, selectionRef.current?.ranges?.length ? areas : bounds);
         const previous = lastSelectionSummary.current;
         if (previous === undefined || previous?.count !== summary?.count || previous?.sum !== summary?.sum) {
           lastSelectionSummary.current = summary;
@@ -495,22 +580,23 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
         }
       }
       if (selectionIncludesHeaders.current) {
-        const selectedColumns = new Set((bounds ? bounds.columns.slice(bounds.columnStart, bounds.columnEnd + 1) : spreadsheetColumns(grid)).map(column => column.getColId()));
+        const selectedColumns = new Set((areas.length ? areas.flatMap(area => area.columns.slice(area.columnStart, area.columnEnd + 1)) : selectionRef.current ? [] : spreadsheetColumns(grid)).map(column => column.getColId()));
         root.querySelectorAll<HTMLElement>(".ag-header-cell[col-id]").forEach(header => {
           if (header.closest(".localized-grid-body") === root && selectedColumns.has(header.getAttribute("col-id") ?? "")) header.classList.add("ag-excel-header-selected");
         });
       }
-      if (!bounds) return;
+      if (!areas.length) return;
       root.querySelectorAll<HTMLElement>(".ag-cell[col-id]").forEach((cell) => {
         const row = Number(cell.closest(".ag-row")?.getAttribute("row-index"));
         if (isStructuralSpreadsheetRow(grid.getDisplayedRowAtIndex(row))) return;
-        const column = bounds.columns.findIndex((item) => item.getColId() === cell.getAttribute("col-id"));
-        if (row < bounds.rowStart || row > bounds.rowEnd || column < bounds.columnStart || column > bounds.columnEnd) return;
+        const column = areas[0].columns.findIndex((item) => item.getColId() === cell.getAttribute("col-id"));
+        const contains = (rowIndex: number, columnIndex: number) => areas.some(area => rowIndex >= area.rowStart && rowIndex <= area.rowEnd && columnIndex >= area.columnStart && columnIndex <= area.columnEnd);
+        if (!contains(row, column)) return;
         cell.classList.add("ag-excel-selected");
-        if (row === bounds.rowStart) cell.classList.add("ag-excel-top");
-        if (row === bounds.rowEnd) cell.classList.add("ag-excel-bottom");
-        if (column === bounds.columnStart) cell.classList.add("ag-excel-left");
-        if (column === bounds.columnEnd) cell.classList.add("ag-excel-right");
+        if (!contains(row - 1, column)) cell.classList.add("ag-excel-top");
+        if (!contains(row + 1, column)) cell.classList.add("ag-excel-bottom");
+        if (!contains(row, column - 1)) cell.classList.add("ag-excel-left");
+        if (!contains(row, column + 1)) cell.classList.add("ag-excel-right");
       });
     });
   }, []);
@@ -540,25 +626,44 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     const timeout = window.setTimeout(() => setSpreadsheetStatus(""), 2200);
     return () => window.clearTimeout(timeout);
   }, [spreadsheetStatus]);
-  const selectCell = useCallback((event: CellMouseDownEvent<TData>) => {
-    if (onSpreadsheetBatch) return; // Enhanced tables select synchronously on pointerdown.
-    if (event.rowIndex === null || isStructuralSpreadsheetRow(event.node) || ["actions", "rowOrder", "ag-Grid-SelectionColumn"].includes(event.column.getColId()) || isInteractiveTarget(event.event)) return;
-    const point = { rowIndex: event.rowIndex, columnId: event.column.getColId(), rowId: event.node.id };
+  const selectCell = useCallback((event: Pick<CellMouseDownEvent<TData>, "api" | "rowIndex" | "node" | "column" | "event">) => {
     const mouseEvent = event.event as MouseEvent | undefined;
-    if (mouseEvent?.button === 2 && onSpreadsheetBatch) return;
+    const additive = (mouseEvent?.metaKey || mouseEvent?.ctrlKey) && !mouseEvent.shiftKey;
+    if (event.rowIndex === null || isStructuralSpreadsheetRow(event.node) || ["actions", "rowOrder", "ag-Grid-SelectionColumn"].includes(event.column.getColId()) || !additive && isInteractiveTarget(event.event)) return;
+    const point = { rowIndex: event.rowIndex, columnId: event.column.getColId(), rowId: event.node.id };
+    if (mouseEvent && mouseEvent.button !== 0) return;
+    if ((mouseEvent?.metaKey || mouseEvent?.ctrlKey) && !mouseEvent.shiftKey) {
+      const removing = spreadsheetSelectionContains(event.api, selectionRef.current, point);
+      const next = toggleSpreadsheetCell(event.api, selectionRef.current, point);
+      mouseEvent.preventDefault();
+      dragging.current = !removing;
+      selectionIncludesHeaders.current = false; setIncludeSelectedHeaders(false);
+      selectionRef.current = next; lastSelectionRef.current = next; setSelection(next);
+      body.current?.focus({ preventScroll: true });
+      return;
+    }
     const start = mouseEvent?.shiftKey && selectionRef.current ? selectionRef.current.start : point;
     dragging.current = true;
     selectionIncludesHeaders.current = false;
     setIncludeSelectedHeaders(false);
-    const next = { start, end: point };
+    const current = selectionRef.current;
+    const rowMode = mouseEvent?.shiftKey && current?.rowModeColumnId;
+    const columnMode = mouseEvent?.shiftKey && current?.columnModeRow;
+    const next = columnMode && current ? wholeSpreadsheetColumns(event.api, start.columnId, point.columnId, spreadsheetActivePoint(current))
+      : rowMode ? wholeSpreadsheetRows(event.api, start, point, rowMode) : { start, end: point, ...(mouseEvent?.shiftKey && current?.ranges ? { ranges: current.ranges } : {}) };
+    selectionIncludesHeaders.current = Boolean(next?.columnModeRow);
+    setIncludeSelectedHeaders(selectionIncludesHeaders.current);
     selectionRef.current = next;
     lastSelectionRef.current = next;
     setSelection(next);
     body.current?.focus({ preventScroll: true });
-  }, [onSpreadsheetBatch]);
+  }, []);
   const extendSelection = useCallback((event: CellMouseOverEvent<TData>) => {
     if (!dragging.current || event.rowIndex === null || isStructuralSpreadsheetRow(event.node) || ["actions", "rowOrder", "ag-Grid-SelectionColumn"].includes(event.column.getColId()) || !selectionRef.current) return;
-    const next = { start: selectionRef.current.start, end: { rowIndex: event.rowIndex, columnId: event.column.getColId(), rowId: event.node.id } };
+    const point = { rowIndex: event.rowIndex, columnId: event.column.getColId(), rowId: event.node.id };
+    const current = selectionRef.current;
+    const next = current.columnModeRow ? wholeSpreadsheetColumns(event.api, current.start.columnId, point.columnId, spreadsheetActivePoint(current))
+      : current.rowModeColumnId ? wholeSpreadsheetRows(event.api, current.start, point, current.rowModeColumnId) : { start: current.start, end: point, ...(current.ranges ? { ranges: current.ranges } : {}) };
     selectionRef.current = next;
     lastSelectionRef.current = next;
     setSelection(next);
@@ -590,6 +695,63 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       api.clearFocusedCell();
     },
   });
+  const selectWholeRows = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const intent = tableRowSelectionIntent(event.nativeEvent);
+    if (!intent || !api || api.isDestroyed() || api.getEditingCells().length) return false;
+    const current = selectionRef.current;
+    if (intent !== "row" && !current?.rowModeColumnId) return false;
+    const focused = api.getFocusedCell();
+    const firstIndex = focused?.rowIndex ?? findSpreadsheetDataRowIndex(api, 0, 1);
+    const columns = spreadsheetColumns(api);
+    if (firstIndex === null || !columns.length) { event.preventDefault(); return true; }
+    const fallback = { rowIndex: firstIndex, rowId: api.getDisplayedRowAtIndex(firstIndex)?.id, columnId: focused?.column.getColId() ?? columns[0].getColId() };
+    const active = current ? spreadsheetActivePoint(current) : fallback;
+    const start = current?.columnModeRow ? active : current?.start ?? fallback;
+    const end = current?.columnModeRow ? active : current?.end ?? fallback;
+    const endIndex = spreadsheetPointRowIndex(api, end);
+    if (endIndex === null) { event.preventDefault(); return true; }
+    const targetIndex = intent === "row" ? endIndex : findSpreadsheetDataRowIndex(api, endIndex + (intent === "up" ? -1 : 1), intent === "up" ? -1 : 1) ?? endIndex;
+    const point = { ...end, rowIndex: targetIndex, rowId: api.getDisplayedRowAtIndex(targetIndex)?.id };
+    const next = wholeSpreadsheetRows(api, start, point, current?.rowModeColumnId ?? end.columnId);
+    event.preventDefault();
+    if (!next) return true;
+    dragging.current = false;
+    selectionIncludesHeaders.current = false;
+    setIncludeSelectedHeaders(false);
+    selectionRef.current = next; lastSelectionRef.current = next; setSelection(next);
+    setContextMenu(null);
+    api.ensureIndexVisible(targetIndex);
+    body.current?.focus({ preventScroll: true });
+    return true;
+  }, [api]);
+  const selectWholeColumns = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const intent = tableColumnSelectionIntent(event.nativeEvent);
+    if (!intent || !api || api.isDestroyed() || api.getEditingCells().length) return false;
+    const current = selectionRef.current;
+    if (intent !== "column" && !current?.columnModeRow) return false;
+    const columns = spreadsheetColumns(api);
+    const focused = api.getFocusedCell();
+    const firstIndex = focused?.rowIndex ?? findSpreadsheetDataRowIndex(api, 0, 1);
+    event.preventDefault();
+    if (firstIndex === null || !columns.length) return true;
+    const headerColumnId = typeof Element !== "undefined" && event.target instanceof Element ? event.target.closest(".ag-header-cell[col-id]")?.getAttribute("col-id") : null;
+    const fallback = { rowIndex: firstIndex, rowId: api.getDisplayedRowAtIndex(firstIndex)?.id, columnId: focused?.column.getColId() ?? columns[0].getColId() };
+    const active = current ? spreadsheetActivePoint(current) : fallback;
+    const endId = intent === "column" && headerColumnId ? headerColumnId : active.columnId;
+    const index = columns.findIndex(column => column.getColId() === endId);
+    if (index < 0) return true;
+    const target = columns[Math.max(0, Math.min(columns.length - 1, index + (intent === "left" ? -1 : intent === "right" ? 1 : 0)))];
+    const startId = current && !current.rowModeColumnId && !headerColumnId ? current.start.columnId : endId;
+    const next = wholeSpreadsheetColumns(api, startId, target.getColId(), active);
+    if (!next) return true;
+    dragging.current = false;
+    selectionIncludesHeaders.current = true; setIncludeSelectedHeaders(true);
+    selectionRef.current = next; lastSelectionRef.current = next; setSelection(next);
+    setContextMenu(null);
+    api.ensureColumnVisible(target);
+    body.current?.focus({ preventScroll: true });
+    return true;
+  }, [api]);
   const moveSelection = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!api || isInteractiveTarget(event.nativeEvent) || event.altKey) return false;
     if ((event.ctrlKey || event.metaKey) && (!onSpreadsheetBatch || !event.key.startsWith("Arrow"))) return false;
@@ -604,9 +766,10 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     const columns = spreadsheetColumns(api);
     const rowCount = api.getDisplayedRowCount();
     if (!columns.length || !rowCount) return false;
-    const current = selectionRef.current?.end;
-    const currentRowIndex = current?.rowId ? api.getRowNode(current.rowId)?.rowIndex ?? current.rowIndex : current?.rowIndex;
-    const currentColumnIndex = current ? columns.findIndex((column) => column.getColId() === current.columnId) : -1;
+    const current = selectionRef.current ? spreadsheetActivePoint(selectionRef.current) : undefined;
+    const currentRowIndex = current ? spreadsheetPointRowIndex(api, current) : undefined;
+    if (currentRowIndex === null) { event.preventDefault(); return true; }
+    const currentColumnIndex = current ? columns.findIndex((column) => column.getColId() === (selectionRef.current?.rowModeColumnId ?? current.columnId)) : -1;
     const rowIndex = current && currentRowIndex !== undefined
       ? Math.max(0, Math.min(rowCount - 1, currentRowIndex + movement.row))
       : 0;
@@ -621,8 +784,9 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     const nextColumnIndex = edge && movement.column ? movement.column < 0 ? 0 : columns.length - 1 : columnIndex;
     const point = { rowIndex: nextRowIndex, columnId: columns[nextColumnIndex].getColId(), rowId: api.getDisplayedRowAtIndex(nextRowIndex)?.id };
     const next = {
-      start: event.shiftKey && event.key !== "Tab" && selectionRef.current ? selectionRef.current.start : point,
+      start: event.shiftKey && event.key !== "Tab" && selectionRef.current && !selectionRef.current.rowModeColumnId && !selectionRef.current.columnModeRow ? selectionRef.current.start : point,
       end: point,
+      ...(event.shiftKey && event.key !== "Tab" && selectionRef.current?.ranges ? { ranges: selectionRef.current.ranges } : {}),
     };
     event.preventDefault();
     dragging.current = false;
@@ -662,9 +826,14 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
   }, [clearSelection]);
   const selectedText = useCallback(() => {
     if (!api || !selectionRef.current && !selectionIncludesHeaders.current) return;
+    if (selectionRef.current?.ranges?.length) {
+      const text = serializeSpreadsheetText(spreadsheetSelectionValues(api, selectionRef.current, selectionIncludesHeaders.current));
+      lastHeaderClipboard.current = selectionIncludesHeaders.current ? text : null;
+      return text;
+    }
     const bounds = spreadsheetBounds(api, selectionRef.current);
     if (!bounds) {
-      const text = selectionIncludesHeaders.current ? serializeSpreadsheetText([spreadsheetHeaderValues(api, spreadsheetColumns(api))]) : "";
+      const text = selectionIncludesHeaders.current && !selectionRef.current ? serializeSpreadsheetText([spreadsheetHeaderValues(api, spreadsheetColumns(api))]) : "";
       lastHeaderClipboard.current = selectionIncludesHeaders.current ? text : null;
       return text;
     }
@@ -684,9 +853,14 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     if (text === undefined) return;
     event.preventDefault();
     event.clipboardData.setData("text/plain", text);
+    if (api && selectionRef.current?.ranges?.length) {
+      const count = [...selectedSpreadsheetCells(api, selectionRef.current).values()].reduce((total, ids) => total + ids.size, 0);
+      if (count) showCopyToast(`Скопировано ячеек: ${count}`);
+      return;
+    }
     const bounds = api ? spreadsheetBounds(api, selectionRef.current) : null;
     if (!bounds) {
-      const columns = api && selectionIncludesHeaders.current ? spreadsheetColumns(api).length : 0;
+      const columns = api && selectionIncludesHeaders.current && !selectionRef.current ? spreadsheetColumns(api).length : 0;
       if (columns) showCopyToast(`Скопировано: 1 × ${columns}`);
       return;
     }
@@ -711,11 +885,17 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
   }, [api, onSpreadsheetPaste, previousCellValues, rememberUndo, spreadsheetHistory]);
   const pasteText = useCallback((text: string) => {
     if (!api || (!onSpreadsheetPaste && !onSpreadsheetBatch) || !selectionRef.current) return false;
+    if (selectionRef.current.ranges?.length) {
+      setSpreadsheetStatus("Для вставки выберите одну ячейку или один непрерывный диапазон");
+      return false;
+    }
     const bounds = spreadsheetBounds(api, selectionRef.current);
     if (!bounds) return false;
     const parsed = parseSpreadsheetText(text);
-    const includesHeaders = selectionIncludesHeaders.current || lastHeaderClipboard.current === serializeSpreadsheetText(parsed);
-    const matrix = includesHeaders ? stripSpreadsheetHeaderRow(parsed, spreadsheetHeaderValues(api, spreadsheetColumns(api))) : parsed;
+    const copiedHere = lastHeaderClipboard.current === serializeSpreadsheetText(parsed);
+    const includesHeaders = selectionIncludesHeaders.current || copiedHere;
+    const headers = copiedHere ? parsed[0] ?? [] : spreadsheetHeaderValues(api, selectionRef.current.columnModeRow ? bounds.columns.slice(bounds.columnStart, bounds.columnEnd + 1) : spreadsheetColumns(api));
+    const matrix = includesHeaders ? stripSpreadsheetHeaderRow(parsed, headers) : parsed;
     if (!matrix.length) return false;
     const sourceRows = matrix.length;
     const sourceColumns = matrix.reduce((maximum, line) => Math.max(maximum, line.length), 0);
@@ -775,6 +955,24 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
 
   const changeRange = useCallback((operation: "clear" | "down" | "right", requireAllWritable = false) => {
     if (!api || !onSpreadsheetBatch) return false;
+    if (selectionRef.current?.ranges?.length) {
+      if (operation !== "clear") { setSpreadsheetStatus("Для заполнения выберите один непрерывный диапазон"); return false; }
+      const changes: SpreadsheetBatch<TData>["rows"] = [];
+      for (const [rowIndex, ids] of selectedSpreadsheetCells(api, selectionRef.current)) {
+        const node = api.getDisplayedRowAtIndex(rowIndex);
+        if (!node?.data) continue;
+        const values: Record<string, string> = {};
+        for (const columnId of ids) {
+          if (requireAllWritable && !canWriteSpreadsheetCell?.(node.data, columnId)) { setSpreadsheetStatus("Выделение содержит ячейки, доступные только для просмотра"); return false; }
+          values[columnId] = "";
+        }
+        changes.push({ row: node.data, rowIndex, values });
+      }
+      if (!changes.length) return false;
+      const applied = onSpreadsheetBatch({ rows: changes, source: "clear" });
+      if (applied) setSpreadsheetStatus("Выделенные ячейки очищены");
+      return applied;
+    }
     const bounds = spreadsheetBounds(api, selectionRef.current);
     if (!bounds) return false;
     if (spreadsheetRangeHasStructuralRows(api, bounds.rowStart, bounds.rowEnd)) {
@@ -821,7 +1019,7 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     const point = { rowIndex, columnId, rowId: rowNode.id };
     const existing = spreadsheetBounds(api, selectionRef.current);
     const clickedColumn = existing?.columns.findIndex(column => column.getColId() === columnId) ?? -1;
-    const inside = onSpreadsheetBatch && existing && rowIndex >= existing.rowStart && rowIndex <= existing.rowEnd && clickedColumn >= existing.columnStart && clickedColumn <= existing.columnEnd;
+    const inside = selectionRef.current?.ranges?.length ? spreadsheetSelectionContains(api, selectionRef.current, point) : existing && rowIndex >= existing.rowStart && rowIndex <= existing.rowEnd && clickedColumn >= existing.columnStart && clickedColumn <= existing.columnEnd;
     const next = inside ? selectionRef.current! : { start: point, end: point };
     if (!inside) { selectionIncludesHeaders.current = false; setIncludeSelectedHeaders(false); }
     selectionRef.current = next;
@@ -829,23 +1027,33 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     setSelection(next);
     body.current?.focus({ preventScroll: true });
     setContextMenu({
-      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 256)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 490)),
+      x: event.clientX,
+      y: event.clientY,
       row: rowNode.data,
       rowIndex,
       columnId,
       value: String(api.getCellValue({ rowNode, colKey: columnId, useFormatter: true }) ?? ""),
       error: "",
     });
-  }, [api, onSpreadsheetBatch]);
+  }, [api]);
   const editSelectedCell = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!api || !onSpreadsheetEdit || !selectionRef.current || isInteractiveTarget(event.nativeEvent)) return;
-    const bounds = spreadsheetBounds(api, selectionRef.current);
-    if (!bounds || bounds.rowStart !== bounds.rowEnd || bounds.columnStart !== bounds.columnEnd) return;
-    const rowNode = api.getDisplayedRowAtIndex(bounds.rowStart);
-    const columnId = bounds.columns[bounds.columnStart]?.getColId();
-    if (!rowNode?.data || !columnId || !onSpreadsheetEdit({ row: rowNode.data, rowIndex: bounds.rowStart, columnId })) return;
-    rememberCellUndo(bounds.rowStart, columnId);
+    const current = selectionRef.current;
+    const bounds = spreadsheetBounds(api, current);
+    const wholeAxis = Boolean(current.rowModeColumnId || current.columnModeRow);
+    if (!bounds || !wholeAxis && (bounds.rowStart !== bounds.rowEnd || bounds.columnStart !== bounds.columnEnd)) return;
+    const active = spreadsheetActivePoint(current);
+    const rowIndex = wholeAxis ? spreadsheetPointRowIndex(api, active) : bounds.rowStart;
+    const columnId = wholeAxis ? active.columnId : bounds.columns[bounds.columnStart]?.getColId();
+    const rowNode = rowIndex === null ? null : api.getDisplayedRowAtIndex(rowIndex);
+    if (!rowNode?.data || rowIndex === null || !columnId || !onSpreadsheetEdit({ row: rowNode.data, rowIndex, columnId })) return;
+    if (wholeAxis || current.ranges?.length) {
+      selectionIncludesHeaders.current = false; setIncludeSelectedHeaders(false);
+      const point = { rowIndex, rowId: rowNode.id, columnId };
+      const next = { start: point, end: point };
+      selectionRef.current = next; lastSelectionRef.current = next; setSelection(next);
+    }
+    rememberCellUndo(rowIndex, columnId);
     event.preventDefault();
     setSpreadsheetStatus("Редактирование ячейки");
   }, [api, onSpreadsheetEdit, rememberCellUndo]);
@@ -876,19 +1084,20 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     }
     return true;
   }, [api, onSpreadsheetPaste, onSpreadsheetCancelEdit, spreadsheetHistory]);
-  useEffect(() => {
-    const undoOutsideGrid = (event: KeyboardEvent) => {
-      const target = event.target;
-      const undoShortcut = (event.ctrlKey || event.metaKey) && !event.shiftKey && (event.code === "KeyZ" || event.key.toLocaleLowerCase("en-US") === "z");
-      if (spreadsheetHistory || !undoShortcut || isInteractiveTarget(event) || !undoStack.current.length || (target instanceof Node && body.current?.contains(target))) return;
-      event.preventDefault();
-      undoSpreadsheetChange();
-    };
-    document.addEventListener("keydown", undoOutsideGrid);
-    return () => document.removeEventListener("keydown", undoOutsideGrid);
-  }, [undoSpreadsheetChange, spreadsheetHistory]);
+  useUndoShortcut({
+    rootRef: body,
+    undo: undoSpreadsheetChange,
+    redo: spreadsheetHistory ? () => { onSpreadsheetCancelEdit?.(); spreadsheetHistory.redo(); } : undefined,
+    canUndo: spreadsheetHistory ? spreadsheetHistory.canUndo : Boolean(onSpreadsheetPaste),
+    canRedo: spreadsheetHistory?.canRedo ?? false,
+    disabled: Boolean(props.loading || rowOrder?.busy),
+  });
   const handleSpreadsheetKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.defaultPrevented) return;
+    if (historyShortcut(event.nativeEvent)) {
+      if (dispatchUndoShortcut(event.nativeEvent)) event.stopPropagation();
+      return;
+    }
     if (event.key === "Escape") return; // The shared capture handler clears every selection together.
     if (isTableSelectAllShortcut(event.nativeEvent)) {
       event.preventDefault();
@@ -902,20 +1111,27 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       setSpreadsheetStatus(next ? "Выделены все данные и заголовки таблицы. Ctrl+C или ⌘C — скопировать." : selectionIncludesHeaders.current ? "Выделены заголовки таблицы. Ctrl+C или ⌘C — скопировать." : "В таблице нет данных для выделения.");
       return;
     }
+    if (selectWholeColumns(event) || selectWholeRows(event)) return;
     if (isInteractiveTarget(event.nativeEvent)) return;
     if (onSpreadsheetBatch) {
       const modifier = event.ctrlKey || event.metaKey;
-      if (modifier && (event.code === "KeyY" || event.code === "KeyZ" && event.shiftKey)) { event.preventDefault(); onSpreadsheetCancelEdit?.(); spreadsheetHistory?.redo(); return; }
       if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); changeRange("clear"); return; }
       if (modifier && (event.code === "KeyD" || event.code === "KeyR")) { event.preventDefault(); changeRange(event.code === "KeyD" ? "down" : "right"); return; }
       if (!modifier && !event.altKey && event.key.length === 1 && !event.nativeEvent.isComposing && api && selectionRef.current) {
-        const point = selectionRef.current.start;
-        const node = point.rowId ? api.getRowNode(point.rowId) : api.getDisplayedRowAtIndex(point.rowIndex);
-        if (node?.data && onSpreadsheetEdit?.({ row: node.data, rowIndex: node.rowIndex ?? point.rowIndex, columnId: point.columnId, initialValue: event.key })) { event.preventDefault(); return; }
+        const current = selectionRef.current;
+        const point = spreadsheetActivePoint(current, "start");
+        const rowIndex = spreadsheetPointRowIndex(api, point);
+        const node = rowIndex === null ? null : api.getDisplayedRowAtIndex(rowIndex);
+        if (rowIndex !== null && node?.data && !isStructuralSpreadsheetRow(node) && onSpreadsheetEdit?.({ row: node.data, rowIndex, columnId: point.columnId, initialValue: event.key })) {
+          if (current.rowModeColumnId || current.columnModeRow || current.ranges?.length) {
+            selectionIncludesHeaders.current = false; setIncludeSelectedHeaders(false);
+            const next = { start: point, end: point };
+            selectionRef.current = next; lastSelectionRef.current = next; setSelection(next);
+          }
+          event.preventDefault(); return;
+        }
       }
     }
-    const undoShortcut = (event.ctrlKey || event.metaKey) && !event.shiftKey && (event.code === "KeyZ" || event.key.toLocaleLowerCase("en-US") === "z");
-    if (undoShortcut) { event.preventDefault(); undoSpreadsheetChange(); return; }
     if (moveSelection(event)) return;
     if (event.key === "Enter" || event.key === "F2") editSelectedCell(event);
   };
@@ -933,22 +1149,56 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
     </div>}
     <div className="localized-grid-body ag-grid-empty-rows" ref={body} role="grid" tabIndex={0} onContextMenu={openContextMenu} onPointerDownCapture={(event) => {
       const target = event.target;
-      if (onSpreadsheetBatch && api && target instanceof Element && !isInteractiveTarget(event.nativeEvent) && event.button !== 2) {
+      if (event.button === 0 && event.shiftKey && selectionRef.current?.columnModeRow && api && target instanceof Element && !isTableRowSelectionBlocked(target) && target.closest(".localized-grid-body") === event.currentTarget) {
+        const columnId = target.closest(".ag-cell[col-id], .ag-header-cell[col-id]")?.getAttribute("col-id");
+        const current = selectionRef.current;
+        const next = columnId ? wholeSpreadsheetColumns(api, current.start.columnId, columnId, spreadsheetActivePoint(current)) : null;
+        if (next) {
+          event.preventDefault(); event.stopPropagation();
+          dragging.current = true; selectionRef.current = next; lastSelectionRef.current = next; setSelection(next);
+          body.current?.focus({ preventScroll: true });
+          return;
+        }
+      }
+      if (event.button === 0 && event.shiftKey && selectionRef.current?.rowModeColumnId && api && target instanceof Element && !isTableRowSelectionBlocked(target)) {
+        const row = target.closest<HTMLElement>(".ag-row[row-index]");
+        const rowIndex = Number(row?.getAttribute("row-index"));
+        if (row && target.closest(".localized-grid-body") === event.currentTarget && Number.isInteger(rowIndex)) {
+          const point = { rowIndex, rowId: api.getDisplayedRowAtIndex(rowIndex)?.id, columnId: selectionRef.current.rowModeColumnId };
+          const next = wholeSpreadsheetRows(api, selectionRef.current.start, point, selectionRef.current.rowModeColumnId);
+          if (next) {
+            event.preventDefault(); event.stopPropagation();
+            dragging.current = true; selectionRef.current = next; lastSelectionRef.current = next; setSelection(next);
+            body.current?.focus({ preventScroll: true });
+            return;
+          }
+        }
+      }
+      const additive = (event.metaKey || event.ctrlKey) && !event.shiftKey;
+      const editingInput = target instanceof Element && Boolean(target.closest("input,textarea,select,[contenteditable='true'],[role='textbox']"));
+      if (api && target instanceof Element && !(additive ? editingInput : isInteractiveTarget(event.nativeEvent)) && event.button === 0) {
         const cell = target.closest<HTMLElement>(".ag-cell[col-id]");
         const rowElement = cell?.closest<HTMLElement>(".ag-row[row-index]");
         const columnId = cell?.getAttribute("col-id");
         const rowIndex = Number(rowElement?.getAttribute("row-index"));
-        if (rowElement && columnId && !["actions", "rowOrder", "ag-Grid-SelectionColumn"].includes(columnId) && Number.isInteger(rowIndex) && !isStructuralSpreadsheetRow(api.getDisplayedRowAtIndex(rowIndex))) {
-          const point = { rowIndex, columnId, rowId: api.getDisplayedRowAtIndex(rowIndex)?.id };
-          const next = { start: event.shiftKey && selectionRef.current ? selectionRef.current.start : point, end: point };
-          selectionIncludesHeaders.current = false;
-          setIncludeSelectedHeaders(false);
-          dragging.current = true; selectionRef.current = next; lastSelectionRef.current = next; setSelection(next);
-          body.current?.focus({ preventScroll: true });
+        const node = Number.isInteger(rowIndex) ? api.getDisplayedRowAtIndex(rowIndex) : undefined;
+        const column = columnId ? api.getColumn(columnId) : undefined;
+        if (rowElement && node && column && columnId && !["actions", "rowOrder", "ag-Grid-SelectionColumn"].includes(columnId) && !isStructuralSpreadsheetRow(node)) {
+          // AG cell events are deferred. Capture the native pointer synchronously
+          // so its delayed mousedown cannot revive a drag after pointerup.
+          selectCell({ api, rowIndex, node, column, event: event.nativeEvent });
+          if (additive) { event.preventDefault(); event.stopPropagation(); }
         }
       }
     }} onClickCapture={(event) => {
       const target = event.target;
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && target instanceof Element && !target.closest("input,textarea,select,[contenteditable='true'],[role='textbox']")) {
+        const columnId = target.closest(".ag-cell[col-id]")?.getAttribute("col-id");
+        if (columnId && !["actions", "rowOrder", "ag-Grid-SelectionColumn"].includes(columnId)) { event.preventDefault(); event.stopPropagation(); return; }
+      }
+      if (event.shiftKey && target instanceof Element && !isTableRowSelectionBlocked(target) && (selectionRef.current?.rowModeColumnId && target.closest(".ag-row") || selectionRef.current?.columnModeRow && target.closest(".ag-cell[col-id], .ag-header-cell[col-id]"))) {
+        event.preventDefault(); event.stopPropagation(); return;
+      }
       if (!(target instanceof Element) || !target.closest(".ag-editable-cell-menu")) return;
       const cell = target.closest<HTMLElement>(".ag-cell[col-id]");
       const row = cell?.closest<HTMLElement>(".ag-row[row-index]");
@@ -975,10 +1225,10 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       event.clipboardData.setData("text/plain", text);
       changeRange("clear", true);
     } : undefined} onPaste={pasteSelection} onKeyDown={onSpreadsheetBatch ? undefined : handleSpreadsheetKeyDown} onKeyDownCapture={event => {
-      if (!onSpreadsheetBatch && !isTableSelectAllShortcut(event.nativeEvent)) return;
+      if (!onSpreadsheetBatch && !isTableSelectAllShortcut(event.nativeEvent) && !tableRowSelectionIntent(event.nativeEvent) && !tableColumnSelectionIntent(event.nativeEvent) && !historyShortcut(event.nativeEvent)) return;
       handleSpreadsheetKeyDown(event);
       if (event.defaultPrevented) event.stopPropagation();
-    }} aria-label="Таблица. Ctrl+A или ⌘A выделяет все данные; Ctrl+C или ⌘C копирует выделенное. Стрелки перемещают выбранную ячейку, Shift со стрелками расширяет выделение. Двойной клик, Enter или F2 открывает редактирование. Доступны вставка и отмена через Ctrl+Z как в Excel.">
+    }} aria-label="Таблица. Ctrl/⌘ с кликом добавляет или убирает отдельные ячейки. Ctrl+A или ⌘A выделяет все данные; Ctrl+C или ⌘C копирует выделенное. Стрелки перемещают выбранную ячейку, Shift со стрелками расширяет выделение. Двойной клик, Enter или F2 открывает редактирование. Доступны вставка и отмена через Ctrl+Z как в Excel.">
       {spreadsheetStatus && <span className="sr-only" aria-live="polite">{spreadsheetStatus}</span>}
       {/* AG's global suppression also blocks header menus. Disable only its body
           items: cells use our scoped clipboard menu, headers keep native actions. */}
@@ -992,40 +1242,42 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
       onRowDragEnter={event => {
         const point = rowDragPoint(event.event);
         if (body.current && point && canDragSelection() && event.node.isSelected() === true) {
+          activeRowDrag.current = event;
+          paintRowDropIndicator();
           if (rowDragScroll.current) rowDragScroll.current.update(point);
           else {
             let session: ReturnType<typeof startRowDragAutoScroll> = null;
+            // AG dispatches rowDragEnd asynchronously. Its own completion event
+            // clears the preview; the earlier document mouseup must not erase
+            // the accepted gesture before the final drop callback runs.
             session = startRowDragAutoScroll(body.current, point, "grid", () => { if (rowDragScroll.current === session) rowDragScroll.current = null; });
             rowDragScroll.current = session;
           }
         }
         props.onRowDragEnter?.(event);
       }}
-      onRowDragMove={event => { const point = rowDragPoint(event.event); if (point) rowDragScroll.current?.update(point); props.onRowDragMove?.(event); }}
+      onRowDragMove={event => {
+        if (activeRowDrag.current) { activeRowDrag.current = event; paintRowDropIndicator(); }
+        const point = rowDragPoint(event.event); if (point) rowDragScroll.current?.update(point);
+        props.onRowDragMove?.(event);
+      }}
+      onRowDragLeave={event => { clearRowDropIndicator(); props.onRowDragLeave?.(event); }}
       onRowDragCancel={event => { stopRowDragScroll(); props.onRowDragCancel?.(event); }}
       onDragStopped={event => { stopRowDragScroll(); props.onDragStopped?.(event); }}
       onDragCancelled={event => { stopRowDragScroll(); props.onDragCancelled?.(event); }}
       onRowDragEnd={(event) => {
+        const target = activeRowDrag.current && body.current && resolveGridRowDropTarget(body.current, event, resolveRowDragMove);
         stopRowDragScroll();
-        if (!rowOrder?.canWrite || rowMoveDisabled || rowOrder.busy || !event.overNode?.data || !event.node.data) return;
-        if (!selectionDrag || event.node.isSelected() !== true) return;
-        const targetId = getRowOrderId(event.overNode.data);
-        const draggedId = getRowOrderId(event.node.data);
-        if (!targetId || !draggedId) return;
-        const selectedIds = event.api.getSelectedRows().map(getRowOrderId).filter((id): id is RowOrderId => Boolean(id));
-        const movingIds = [...new Set(selectedIds.includes(draggedId) ? selectedIds : [draggedId])];
-        if (movingIds.includes(targetId)) return;
-        const placement = event.y < (event.overNode.rowTop ?? 0) + (event.overNode.rowHeight ?? 44) / 2 ? "before" : "after";
-        void finishRowMove({ movingIds, placement, targetId });
+        if (target) void finishRowMove(target.operation);
       }}
       onGridReady={(event) => { setApi(event.api); updateSummary(event.api); props.onGridReady?.(event); }}
       onSelectionChanged={event => { if (props.rowSelection) props.onSelectionChanged?.(event); }}
-      onCellMouseDown={(event) => { selectCell(event); props.onCellMouseDown?.(event); }}
+      onCellMouseDown={props.onCellMouseDown}
       onCellMouseOver={(event) => { extendSelection(event); props.onCellMouseOver?.(event); }}
       onCellDoubleClicked={(event) => { if (access?.edit === false) return; if (event.rowIndex !== null && !isInteractiveTarget(event.event)) rememberCellUndo(event.rowIndex, event.column.getColId()); props.onCellDoubleClicked?.(event); }}
-      onBodyScroll={(event) => { paintSelection(event.api); props.onBodyScroll?.(event); }}
+      onBodyScroll={(event) => { paintSelection(event.api); paintRowDropIndicator(); props.onBodyScroll?.(event); }}
       onDisplayedColumnsChanged={event => { paintSelection(event.api); props.onDisplayedColumnsChanged?.(event); }}
-      onModelUpdated={(event) => { updateSummary(event.api); paintSelection(event.api); refreshRowNumbers(event.api); props.onModelUpdated?.(event); }}
+      onModelUpdated={(event) => { updateSummary(event.api); paintSelection(event.api); paintRowDropIndicator(); refreshRowNumbers(event.api); props.onModelUpdated?.(event); }}
       onRowGroupOpened={(event) => { clearSelection(); props.onRowGroupOpened?.(event); }}
       onFilterChanged={(event) => { clearSelection(); updateSummary(event.api); props.onFilterChanged?.(event); }}
       onSortChanged={(event) => { clearSelection(); updateSummary(event.api); props.onSortChanged?.(event); }}
@@ -1056,7 +1308,15 @@ export function LocalizedGrid<TData extends FilterRow>({ onSpreadsheetPaste: sup
           { label: "Заполнить вправо", shortcut: "Ctrl+R", onSelect: () => { changeRange("right"); setContextMenu(null); } },
         ] satisfies TableContextMenuAction[] : []),
         ] },
-        ...(onSpreadsheetEdit ? [{ label: "Редактировать ячейку", shortcut: "Enter", separatorBefore: true, onSelect: () => { if (onSpreadsheetEdit?.(contextMenu)) { rememberCellUndo(contextMenu.rowIndex, contextMenu.columnId); setSpreadsheetStatus("Редактирование ячейки"); setContextMenu(null); } else setContextMenu((current) => current ? { ...current, error: "Эта ячейка недоступна для редактирования." } : current); } }] satisfies TableContextMenuAction[] : []),
+        ...(onSpreadsheetEdit ? [{ label: "Редактировать ячейку", shortcut: "Enter", separatorBefore: true, onSelect: () => {
+          if (onSpreadsheetEdit?.(contextMenu)) {
+            const point = { rowIndex: contextMenu.rowIndex, rowId: api?.getDisplayedRowAtIndex(contextMenu.rowIndex)?.id, columnId: contextMenu.columnId };
+            const next = { start: point, end: point };
+            dragging.current = false; selectionIncludesHeaders.current = false; setIncludeSelectedHeaders(false);
+            selectionRef.current = next; lastSelectionRef.current = next; setSelection(next);
+            rememberCellUndo(contextMenu.rowIndex, contextMenu.columnId); setSpreadsheetStatus("Редактирование ячейки"); setContextMenu(null);
+          } else setContextMenu((current) => current ? { ...current, error: "Эта ячейка недоступна для редактирования." } : current);
+        } }] satisfies TableContextMenuAction[] : []),
         ...(rowSelection ? [{ label: api?.getDisplayedRowAtIndex(contextMenu.rowIndex)?.isSelected() ? "Снять выделение строки" : "Выбрать строку для действий", separatorBefore: true, disabled: api?.getDisplayedRowAtIndex(contextMenu.rowIndex)?.selectable === false, onSelect: () => { const node = api?.getDisplayedRowAtIndex(contextMenu.rowIndex); if (node) node.setSelected(!node.isSelected(), !node.isSelected()); setContextMenu(null); } } satisfies TableContextMenuAction] : []),
         ...(getRowOrderId(contextMenu.row) ? rowMoves.getActions(getRowOrderId(contextMenu.row)!, api?.getSelectedRows().map(getRowOrderId).filter((id): id is RowOrderId => Boolean(id)) ?? [], () => setContextMenu(null)) : []),
       ]}

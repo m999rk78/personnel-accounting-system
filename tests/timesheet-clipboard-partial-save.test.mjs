@@ -8,7 +8,7 @@ import ts from "typescript";
 const path = new URL("../app/useTimesheetClipboard.ts", import.meta.url);
 const parsed = ts.createSourceFile(path.pathname, await readFile(path, "utf8"), ts.ScriptTarget.Latest, true);
 const callbackNames = ["pasteText", "deleteSelection", "undoLastChange", "rememberUndo", "forgetUndo", "createHistoryId"];
-const helperNames = ["matchingClipboardChanges", "clipboardSaveResult", "clipboardUndoChanges", "rebaseClipboardUndoHistory", "partialClipboardStatus", "selectionBounds"];
+const helperNames = ["matchingClipboardChanges", "clipboardSaveResult", "clipboardUndoChanges", "rebaseClipboardUndoHistory", "partialClipboardStatus", "selectionBounds", "selectionRanges", "selectionHasCell", "selectionAxes"];
 const callbacks = new Map();
 const helpers = new Map();
 let resetScope;

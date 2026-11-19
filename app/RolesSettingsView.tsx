@@ -6,6 +6,8 @@ import { emptyPermissionSet, normalizePermissionSet, patchPermissionSet, permiss
 import { PermissionMatrix } from "./PermissionMatrix";
 import { useWorkspaceAccess } from "./TableAccessContext";
 import { useConfirmationDialog } from "./useConfirmationDialog";
+import { useDraftUndo } from "./useDraftUndo";
+import { useUndoShortcut } from "./useUndoShortcut";
 import "./customRoles.css";
 import "./usersRights.css";
 
@@ -32,11 +34,15 @@ export function RolesSettingsView({ onDirtyChange, onBusyChange, onRolesChanged 
   const sequence = useRef(0);
   const busy = useRef(false);
   const nameInput = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLElement>(null);
   const canManage = serverCanManage && (access?.update ?? true);
   const protectedRole = selected?.id === -1;
   const editable = canManage && !protectedRole && !loading && !saving;
   const changed = canManage && !protectedRole && (name !== (selected?.name ?? "") || !permissionSetsEqual(permissions, selected?.permissions ?? emptyPermissionSet()));
   const visibleRoles = [superadmin, ...roles].filter(role => role.name.toLocaleLowerCase("ru-RU").includes(roleQuery.trim().toLocaleLowerCase("ru-RU")));
+  const history = useDraftUndo({ value: { name, permissions }, nativeRootRef: nameInput, nativeTextFields: ["name"], scopeKey: `role-settings:${selected?.id ?? "new"}:${selected?.revision ?? 0}`,
+    onChange: next => { setName(next.name); setPermissions(next.permissions); setNotice(""); setError(""); } });
+  useUndoShortcut({ rootRef, ...history, disabled: !editable });
 
   useLayoutEffect(() => { onDirtyChange?.(changed); return () => onDirtyChange?.(false); }, [changed, onDirtyChange]);
   useLayoutEffect(() => { onBusyChange?.(saving); return () => onBusyChange?.(false); }, [saving, onBusyChange]);
@@ -48,6 +54,7 @@ export function RolesSettingsView({ onDirtyChange, onBusyChange, onRolesChanged 
   }, [changed, saving]);
 
   function showRole(role: CustomRole | null) {
+    history.reset({ name: role?.name ?? "", permissions: normalizePermissionSet(role?.permissions ?? emptyPermissionSet()) });
     setSelected(role);
     setName(role?.name ?? "");
     setPermissions(normalizePermissionSet(role?.permissions ?? emptyPermissionSet()));
@@ -126,7 +133,7 @@ export function RolesSettingsView({ onDirtyChange, onBusyChange, onRolesChanged 
     finally { busy.current = false; setSaving(false); }
   }
 
-  return <section className="roles-workspace" aria-label="Роли и права">
+  return <section ref={rootRef} className="roles-workspace" aria-label="Роли и права">
     <aside className="roles-sidebar">
       <header><div><h2>Роли</h2><span>{roles.length + 1}</span></div><button type="button" className="roles-refresh" onClick={() => void refresh()} disabled={loading || saving} aria-label="Обновить роли" title="Обновить роли">↻</button></header>
       <label className="roles-search"><span className="sr-only">Найти роль</span><input type="search" placeholder="Найти роль…" value={roleQuery} onChange={event => setRoleQuery(event.target.value)} /></label>
@@ -144,7 +151,7 @@ export function RolesSettingsView({ onDirtyChange, onBusyChange, onRolesChanged 
       {protectedRole ? <p className="roles-protected-note"><span aria-hidden="true">◆</span>Полный доступ ко всем разделам. Эту роль нельзя изменить или удалить.</p> : <div className="roles-name-row"><label><span>Название роли</span><input ref={nameInput} value={name} onChange={event => { setName(event.target.value); setNotice(""); }} maxLength={80} required disabled={!editable} placeholder="Например, Руководитель проекта" /></label>{selected && canManage && <button type="button" className="roles-delete" onClick={() => void remove()} disabled={!editable}>Удалить роль</button>}</div>}
       <div className="roles-matrix-toolbar"><label><span className="sr-only">Найти раздел прав</span><input type="search" value={resourceQuery} onChange={event => setResourceQuery(event.target.value)} placeholder="Найти раздел системы…" /></label>{!protectedRole && canManage && <><button type="button" disabled={!editable} onClick={() => { setPermissions(current => Object.fromEntries(Object.entries(current).map(([key, row]) => [key, { ...row, create: false, update: false, delete: false }])) as PermissionSet); setNotice(""); }}>Только просмотр</button><button type="button" disabled={!editable} onClick={() => { setPermissions(rolePermissionTemplate("superadmin")); setNotice(""); }}>Полный доступ</button></>}</div>
       <div className="roles-matrix-scroll"><PermissionMatrix compact label={selected ? `Права роли: ${selected.name}` : "Права новой роли"} value={permissions} disabled={!editable} onChange={editable ? patchPermission : undefined} search={resourceQuery} /></div>
-      <footer className="roles-panel-footer"><span>{protectedRole ? "Защищённая роль" : changed ? "Есть несохранённые изменения" : selected ? "Изменения сохранены" : "Укажите название и выберите права"}</span>{!protectedRole && canManage && <div><button type="button" className="back-button" disabled={saving || !changed && Boolean(selected)} onClick={() => { if (selected) { setName(selected.name); setPermissions(normalizePermissionSet(selected.permissions)); setError(""); } else void selectRole(superadmin); }}>{selected ? "Сбросить изменения" : "Отмена"}</button><button type="submit" className="primary-button" disabled={!editable || !name.trim() || !changed}>{saving ? "Сохраняем…" : selected ? "Сохранить изменения" : "Создать роль"}</button></div>}</footer>
+      <footer className="roles-panel-footer"><span>{protectedRole ? "Защищённая роль" : changed ? "Есть несохранённые изменения" : selected ? "Изменения сохранены" : "Укажите название и выберите права"}</span>{!protectedRole && canManage && <div><button type="button" className="back-button" disabled={saving || !changed && Boolean(selected)} onClick={() => { if (selected) showRole(selected); else void selectRole(superadmin); }}>{selected ? "Сбросить изменения" : "Отмена"}</button><button type="submit" className="primary-button" disabled={!editable || !name.trim() || !changed}>{saving ? "Сохраняем…" : selected ? "Сохранить изменения" : "Создать роль"}</button></div>}</footer>
     </form>
     {dialog}
   </section>;

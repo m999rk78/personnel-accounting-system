@@ -1,5 +1,7 @@
 "use client";
 
+import { formatReportAuthorName } from "./reportAuthorDisplay";
+
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useColumnFilterToggle } from "./useColumnFilterToggle";
@@ -532,6 +534,7 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
     const row = params.data;
     if (!row) return null;
     const field = params.colDef?.field as EquipmentEditableField | "organization" | "responsibleUserName" | undefined;
+    if (field === "responsibleUserName") return <span title={String(params.value ?? "")}>{params.valueFormatted || "—"}</span>;
     const warning = field === "equipment" && row.timesheetConflict
       ? <small className="ag-timesheet-conflict" title={row.timesheetConflict.details}>⚠ {row.timesheetConflict.summary}</small>
       : null;
@@ -597,7 +600,7 @@ export function EquipmentDailyAgGrid(props: EquipmentGridProps) {
       { colId: "number", headerName: "№", width: 66, minWidth: 54, pinned: "left", lockPinned: true, lockPosition: "left", suppressMovable: true, suppressSizeToFit: true, sortable: false, filter: false, valueGetter: valueGetter("number") },
       { field: "equipment", headerName: "Техника", minWidth: 250, flex: 2.1, pinned: "left", lockPinned: true, lockPosition: "left", headerComponentParams: pinnableHeader, valueGetter: valueGetter("equipment"), cellRenderer: editableRenderer },
       { field: "organization", headerName: "Организация", minWidth: 145, flex: 1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("organization"), cellRenderer: editableRenderer },
-      ...(props.showResponsibleUser ? [{ field: "responsibleUserName", headerName: "Ответственный", minWidth: 180, flex: 1.2, headerComponentParams: pinnableHeader, valueGetter: valueGetter("responsibleUserName"), cellRenderer: editableRenderer } satisfies ColDef<EquipmentTableRow>] : []),
+      ...(props.showResponsibleUser ? [{ field: "responsibleUserName", headerName: "Заполнил", minWidth: 140, initialWidth: 160, headerTooltip: "Автор исходного отчёта", headerComponentParams: pinnableHeader, valueGetter: valueGetter("responsibleUserName"), filterValueGetter: valueGetter("responsibleUserName"), valueFormatter: ({ value }) => formatReportAuthorName(value), cellRenderer: editableRenderer } satisfies ColDef<EquipmentTableRow>] : []),
       { field: "shift", headerName: "Смена", minWidth: 115, flex: .75, headerComponentParams: pinnableHeader, valueGetter: valueGetter("shift"), cellRenderer: editableRenderer },
       { field: "zone", headerName: "Зона", minWidth: 140, flex: 1.1, headerComponentParams: pinnableHeader, valueGetter: valueGetter("zone"), cellRenderer: editableRenderer },
       { field: "mainWork", headerName: "Вид работы", minWidth: 180, flex: 1.5, headerComponentParams: pinnableHeader, valueGetter: valueGetter("mainWork"), cellRenderer: editableRenderer },

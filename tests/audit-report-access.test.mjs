@@ -119,6 +119,24 @@ test("legacy unrelated report snapshots are omitted from catalog audit events wi
   h.sql.close();
 });
 
+test("project-scoped readers cannot see historical assignment context from another project", async () => {
+  const context = { version: 1, references: [{kind:"employee",id:11,label:"Иван"},{kind:"project",id:8,label:"Закрытый объект"}],
+    before: {id:11,projectSiteId:8,assignments:[{siteId:8,siteName:"Закрытый объект",startDate:"2026-11-01"}]} };
+  const payload = {requested:{employeeId:11,projectSiteId:7},result:{ok:true},context};
+  const scoped = fixture(rights(), {projectAccess:{mode:"selected",siteIds:[7]}});
+  scoped.sql.prepare("UPDATE audit_events SET after_data = ? WHERE id = 11").run(JSON.stringify(payload));
+  const event = (await get()).events.find(row=>row.id===11);
+  const received = JSON.parse(event.afterData);
+  assert.deepEqual(received.context,{version:1,references:[],restricted:true});
+  assert.deepEqual(received.requested,payload.requested);
+  assert.ok(!JSON.stringify(received).includes("Закрытый объект"));
+  scoped.sql.close();
+  const full = fixture(rolePermissionTemplate("superadmin"));
+  full.sql.prepare("UPDATE audit_events SET after_data = ? WHERE id = 11").run(JSON.stringify(payload));
+  assert.deepEqual(JSON.parse((await get()).events.find(row=>row.id===11).afterData).context,context);
+  full.sql.close();
+});
+
 test("catalog IDs are never treated as report row IDs when preparing audit snapshots", async () => {
   const reads = [];
   boundary.configure({ id: 7, fullName: "Тестовый пользователь", role: "engineer" }, { prepare(query) {
@@ -133,7 +151,7 @@ test("catalog IDs are never treated as report row IDs when preparing audit snaps
     const event = await audit.prepareAuditEvent(new Request("http://localhost/api/equipment", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, id: 23 }) }));
     assert.ok(event); assert.equal(event.beforeData, null, action);
   }
-  assert.deepEqual(reads, [], "Unrelated report rows must never be fetched");
+  assert.ok(reads.every(sql => !/FROM (?:placement_entries|equipment_entries|personnel_reports|equipment_reports)\b/.test(sql)), "Catalog context may load its own records, but must never fetch unrelated report rows");
   const report = await audit.prepareAuditEvent(new Request("http://localhost/api/data?id=23", { method: "DELETE" }));
   assert.deepEqual(report.beforeData, [{ id: 23, hours: 8 }]);
   assert.match(reads.at(-1), /FROM placement_entries/);

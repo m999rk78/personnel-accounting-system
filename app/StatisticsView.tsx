@@ -5,6 +5,7 @@ import { StatisticsChart, type StatisticsSeries } from "./StatisticsChart";
 import { StatisticsPeriodPicker } from "./StatisticsPeriodPicker";
 import { statisticsPeriodQuery, statisticsPresetRange, type StatisticsPeriodSelection } from "./statisticsPeriod";
 import { StatisticsBreakdownTable } from "./StatisticsZoneTable";
+import type { ReportSourceFilter } from "./reportSourceFilter";
 import type { StatisticsBreakdownRow, StatisticsGrouping, StatisticsKind } from "./statisticsTypes";
 import { formatTimesheetHours } from "./timesheetFormatting";
 import "./statistics.css";
@@ -31,6 +32,7 @@ export type StatisticsViewProps = {
   kind: StatisticsKind;
   availableKinds: readonly StatisticsKind[];
   onSelectKind: (kind: StatisticsKind) => void;
+  onOpenReports?: (source: ReportSourceFilter) => void;
 };
 
 function hours(value: number) { return `${formatTimesheetHours(value)} ч`; }
@@ -63,7 +65,7 @@ function moveTab<T extends string>(event: KeyboardEvent<HTMLButtonElement>, inde
   select(target);
 }
 
-export function StatisticsView({ siteId, today, kind, availableKinds, onSelectKind }: StatisticsViewProps) {
+export function StatisticsView({ siteId, today, kind, availableKinds, onSelectKind, onOpenReports }: StatisticsViewProps) {
   const tabId = useId();
   const groupTabId = `${tabId}-group`;
   const [groupBy, setGroupBy] = useState<StatisticsGrouping>("zone");
@@ -84,6 +86,13 @@ export function StatisticsView({ siteId, today, kind, availableKinds, onSelectKi
   }, [rows, search]);
   const maxHours = useMemo(() => visibleRows?.reduce((max, row) => Math.max(max, row.total), 0) ?? 0, [visibleRows]);
   const series = seriesByKind[kind];
+  const reportActionLabel = kind === "personnel" ? "Открыть отчёт персонала" : "Открыть отчёт техники";
+  const openReports = onOpenReports ? (row: StatisticsBreakdownRow) => {
+    const source = "workDate" in row
+      ? { from: row.workDate, to: row.workDate }
+      : { ...(period.preset === "all" ? {} : period.range), zoneId: row.zoneId };
+    onOpenReports(source);
+  } : undefined;
   useEffect(() => {
     const controller = new AbortController();
     async function load() {
@@ -135,10 +144,10 @@ export function StatisticsView({ siteId, today, kind, availableKinds, onSelectKi
           <section className="statistics-card statistics-breakdown-chart" aria-labelledby={`${groupTabId}-heading`}>
             {!current ? <div className="statistics-empty" role="status">Загружаем статистику…</div>
               : "error" in current ? <div className="statistics-empty"><p role="alert">{current.error}</p><button type="button" className="secondary-button" onClick={() => setRefresh(current => current + 1)}>Повторить</button></div>
-              : visibleRows?.length ? <StatisticsChart groupBy={groupBy} rows={visibleRows} series={series} maxHours={maxHours} />
+              : visibleRows?.length ? <StatisticsChart groupBy={groupBy} rows={visibleRows} series={series} maxHours={maxHours} onOpenReports={openReports} reportActionLabel={reportActionLabel} />
               : <div className="statistics-empty" role="status">{current.rows.length ? "Зоны не найдены." : "За выбранный период нет подтверждённых отчётов."}</div>}
           </section>
-          {!!visibleRows?.length && <StatisticsBreakdownTable key={requestKey} groupBy={groupBy} rows={visibleRows} series={series} />}
+          {!!visibleRows?.length && <StatisticsBreakdownTable key={requestKey} groupBy={groupBy} rows={visibleRows} series={series} onOpenReports={openReports} reportActionLabel={reportActionLabel} />}
         </div>
       </div>
     </div>

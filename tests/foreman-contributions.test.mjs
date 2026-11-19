@@ -179,10 +179,10 @@ test("keeps personal submission separate from the engineer's global finalization
 
 });
 
-test("both report grids label the responsible person without a role qualifier", async () => {
+test("both report grids label the original author without a role qualifier", async () => {
   for (const path of ["app/PersonnelReportGrid.tsx", "app/EquipmentReportGrid.tsx"]) {
     const grid = await source(path);
-    assert.match(grid, /column\("responsibleUserName", "Ответственный",/);
+    assert.match(grid, /column\("responsibleUserName", "Заполнил",/);
     assert.doesNotMatch(grid, /Ответственный прораб/);
   }
 });

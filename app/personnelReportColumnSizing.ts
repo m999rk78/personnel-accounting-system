@@ -5,7 +5,7 @@ export const PERSONNEL_REPORT_COLUMN_SIZING = {
   workDate: { header: "Дата", min: 125, max: 125, cellPadding: 44 },
   employeeName: { header: "ФИО", min: 280, max: 560, cellPadding: 48 },
   status: { header: "Статус", min: 156, max: 240, cellPadding: 52 },
-  responsibleUserName: { header: "Ответственный", min: 240, max: 560, cellPadding: 40 },
+  responsibleUserName: { header: "Заполнил", min: 160, max: 320, cellPadding: 40 },
   employmentType: { header: "Тип", min: 80, max: 120, cellPadding: 32 },
   department: { header: "Отдел", min: 116, max: 320, cellPadding: 32 },
   position: { header: "Должность", min: 240, max: 720, cellPadding: 40 },

@@ -13,7 +13,7 @@ type Catalogs = {
   subworkTypes: GridOption[];
 };
 
-type Props = Pick<EquipmentReportWorkspaceProps, "siteId" | "siteName" | "today" | "currentUser" | "permissions" | "onDirtyChange" | "equipmentNavigationTargets" | "onNavigateEquipment">;
+type Props = Pick<EquipmentReportWorkspaceProps, "siteId" | "siteName" | "today" | "currentUser" | "permissions" | "onDirtyChange" | "equipmentNavigationTargets" | "onNavigateEquipment" | "reportSource" | "onClearReportSource">;
 
 export function EquipmentReportPage(props: Props) {
   const [catalogs, setCatalogs] = useState<Catalogs | null>(null);

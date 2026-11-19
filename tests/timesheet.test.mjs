@@ -242,6 +242,7 @@ test("builds the monthly timesheet from saved daily reports with document scroll
   const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
   const pageStyles = await readFile(new URL("../app/tablePageScroll.css", import.meta.url), "utf8");
   const clipboard = await readFile(new URL("../app/useTimesheetClipboard.ts", import.meta.url), "utf8");
+  const undoShortcut = await readFile(new URL("../app/undoShortcut.ts", import.meta.url), "utf8");
   const columnFilter = await readFile(new URL("../app/TimesheetColumnFilter.tsx", import.meta.url), "utf8");
   const filterController = await readFile(new URL("../app/useTimesheetFilters.tsx", import.meta.url), "utf8");
   const nativeFilters = await readFile(new URL("../app/GridEnterpriseFilters.tsx", import.meta.url), "utf8");
@@ -396,7 +397,9 @@ test("builds the monthly timesheet from saved daily reports with document scroll
   assert.match(view, /Стрелки перемещают выбранную ячейку/);
   assert.match(clipboard, /Удалено ручных значений/);
   assert.match(clipboard, /value: ""/);
-  assert.match(clipboard, /event\.ctrlKey \|\| event\.metaKey/);
+  assert.match(clipboard, /import \{ historyShortcut \} from "\.\/undoShortcut"/);
+  assert.match(clipboard, /historyShortcut\(event\.nativeEvent \?\? event\)/);
+  assert.match(undoShortcut, /event\.ctrlKey \|\| event\.metaKey/);
   assert.match(clipboard, /undoStack/);
   assert.match(clipboard, /rememberUndo/);
   assert.match(view, /getUndoNote/);

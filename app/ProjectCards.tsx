@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectAccessUser } from "./roles";
 import { projectForemanCounts } from "./projectUserUsage";
 import { useTableEscapeSelection } from "./useTableEscapeSelection";
+import { useDraftUndo } from "./useDraftUndo";
+import { useUndoShortcut } from "./useUndoShortcut";
 
 type Project = { id: number; name: string; code: string; timezone: string };
 type ProjectDraft = { key: string; id?: number; name: string; code: string; timezone: string };
@@ -44,6 +46,10 @@ function ProjectEditorDialog({ drafts, saving, onPatch, onCancel, onSave }: { dr
   const safeActiveIndex = Math.min(activeIndex, drafts.length - 1);
   const draft = drafts[safeActiveIndex] ?? drafts[0];
   const editing = Boolean(draft.id);
+  const rootRef = useRef<HTMLFormElement>(null);
+  const history = useDraftUndo({ value: draft, nativeRootRef: rootRef, nativeTextFields: ["name"], scopeKey: `project-editor:${draft.key}:${draft.id ?? "new"}`,
+    onChange: next => onPatch(draft.key, { name: next.name, code: next.code, timezone: next.timezone }) });
+  useUndoShortcut({ rootRef, ...history, disabled: saving });
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape" && !saving) onCancel(); };
@@ -52,7 +58,7 @@ function ProjectEditorDialog({ drafts, saving, onPatch, onCancel, onSave }: { dr
   }, [onCancel, saving]);
 
   return <div className="project-editor-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onCancel(); }}>
-    <form className="project-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="project-editor-title" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
+    <form ref={rootRef} className="project-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="project-editor-title" onSubmit={(event) => { event.preventDefault(); onSave(); }}>
       <header className="project-editor-dialog-heading">
         <span className="project-editor-dialog-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 9h2v2H9zM13 9h2v2h-2zM9 14h2v2H9zM13 14h2v2h-2zM10 21v-3h4v3"/></svg></span>
         <div><h2 id="project-editor-title">{editing ? "Редактирование проекта" : "Новый проект"}</h2><p>{editing ? "Измените название объекта — оно обновится во всех разделах системы." : "Создайте объект, чтобы назначать сотрудников и формировать отчёты."}</p></div>

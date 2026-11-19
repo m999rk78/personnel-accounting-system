@@ -14,7 +14,7 @@ const readonly = view => ({ view, create: false, update: false, delete: false })
 const withoutStatistics = permissions => Object.fromEntries(Object.entries(permissions).filter(([key]) => !resources.includes(key)));
 
 test("every catalog resource renders in the actual permission matrix, including statistics search", async () => {
-  const hook = `data:text/javascript,${encodeURIComponent('export function useNativeTableSelectAll(){return {ref:null,className:"",handlers:{}};}')}`;
+  const hook = `data:text/javascript,${encodeURIComponent('export function useNativeTableSelectAll(){return {ref:null,className:"",handlers:{},rowProps:()=>({}),columnProps:()=>({}),cellProps:()=>({})};}')}`;
   const { PermissionMatrix } = await import(await compileModuleGraph(new URL("../app/PermissionMatrix.tsx", import.meta.url), { "./useNativeTableSelectAll": hook }));
   const render = search => renderToStaticMarkup(createElement(PermissionMatrix, { label: "Права", value: emptyPermissionSet(), search, onChange() {} }));
   const all = render("");

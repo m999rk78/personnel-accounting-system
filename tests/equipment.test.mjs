@@ -391,5 +391,5 @@ test("separates the daily equipment report into foreman contributions", async ()
   assert.match(view, /compact allowMultiple addLabel="Добавить технику"/);
   assert.match(view, /compact allowMultiple addLabel="Добавить технику в проект"/);
   assert.match(view, /onRemoveSelectedDrafts=\{\(\) => \{ const count = removeSelectedDrafts\(\)/);
-  assert.match(grids, /headerName: "Ответственный"/);
+  assert.match(grids, /headerName: "Заполнил"/);
 });

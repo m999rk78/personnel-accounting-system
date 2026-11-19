@@ -2,8 +2,9 @@
 
 import { useMemo, useState } from "react";
 import type { ColDef, GridApi, ICellRendererParams } from "ag-grid-community";
-import { LocalizedGrid } from "./GridFilters";
+import { LocalizedGrid, personnelColumnFilter, personnelFilterParams } from "./GridFilters";
 import { gridTheme } from "./gridTheme";
+import { SpreadsheetFilterHeader } from "./SpreadsheetFilterHeader";
 import type { SpreadsheetSelectionSummary } from "./gridSelectionSummary";
 import type { StatisticsSeries } from "./StatisticsChart";
 import { formatStatisticsDate } from "./statisticsPeriod";
@@ -13,16 +14,28 @@ import { formatTimesheetHours } from "./timesheetFormatting";
 import { useTableCopyToast, writeTableClipboardText } from "./useTableCopyToast";
 
 type BreakdownGridRow = StatisticsHours & { kind: "entry"; zoneId?: number | null; zone?: string; workDate?: string };
-const gridColumns: ColDef<BreakdownGridRow> = { sortable: true, resizable: true, flex: 1, editable: false, suppressHeaderMenuButton: true };
+const gridColumns: ColDef<BreakdownGridRow> = {
+  filter: personnelColumnFilter,
+  filterParams: { ...personnelFilterParams, presentation: "checklist" },
+  headerComponentParams: { innerHeaderComponent: SpreadsheetFilterHeader },
+  sortable: true, resizable: true, flex: 1, editable: false,
+  suppressHeaderMenuButton: true, suppressHeaderFilterButton: true,
+};
 const statisticsGridTheme = gridTheme.withParams({ autoHeightMinBodyHeight: 0, cellHorizontalPadding: 8, fontSize: 12, headerFontSize: 12 });
 const rowId = ({ workDate, zoneId }: Pick<BreakdownGridRow, "workDate" | "zoneId">) => workDate ?? String(zoneId ?? "unassigned");
 function HoursCell({ value }: ICellRendererParams<BreakdownGridRow, number>) {
   return typeof value === "number" ? formatTimesheetHours(value) : "";
 }
 
-export function StatisticsBreakdownTable({ groupBy, rows, series }: { groupBy: StatisticsGrouping; rows: StatisticsBreakdownRow[]; series: readonly StatisticsSeries[] }) {
+export function StatisticsBreakdownTable({ groupBy, rows, series, onOpenReports, reportActionLabel }: {
+  groupBy: StatisticsGrouping;
+  rows: StatisticsBreakdownRow[];
+  series: readonly StatisticsSeries[];
+  onOpenReports?: (row: StatisticsBreakdownRow) => void;
+  reportActionLabel?: string;
+}) {
   const byDay = groupBy === "day";
-  const scrollable = byDay && rows.length > 31;
+  const scrollable = rows.length > 31;
   const [api, setApi] = useState<GridApi<BreakdownGridRow> | null>(null);
   const [selectionSummary, setSelectionSummary] = useState<SpreadsheetSelectionSummary | null>(null);
   const { copyToast, showCopyToast } = useTableCopyToast();
@@ -31,16 +44,17 @@ export function StatisticsBreakdownTable({ groupBy, rows, series }: { groupBy: S
   const columns = useMemo<ColDef<BreakdownGridRow>[]>(() => {
     const numeric = (field: StatisticsSeries["key"] | "total", headerName: string, width: number): ColDef<BreakdownGridRow> => ({
       field, headerName, type: "numericColumn", width, minWidth: 72, flex: 0,
+      filterParams: { kind: "number" },
       // Clipboard values have no thousands separators; displayed hours keep their familiar spacing.
       valueFormatter: ({ value }) => statisticsClipboardNumber(value), cellRenderer: HoursCell,
     });
     return [
-      byDay ? { field: "workDate", headerName: "Дата", minWidth: 124, initialSort: "asc",
+      byDay ? { field: "workDate", headerName: "Дата", minWidth: 124, initialSort: "asc", filterParams: { kind: "date" },
         valueFormatter: ({ value }) => typeof value === "string" ? formatStatisticsDate(value) : "" }
-        : { field: "zone", headerName: "Зона", minWidth: 124, tooltipField: "zone" },
+        : { field: "zone", headerName: "Зона", minWidth: 124, tooltipField: "zone", wrapText: true, autoHeight: true, cellClass: "statistics-grid-zone" },
       ...series.map(({ key, name }) => key === "other"
-        ? { ...numeric(key, "Прочие", 80), headerTooltip: name }
-        : numeric(key, name, key === "installers" ? 116 : 96)),
+        ? { ...numeric(key, "Прочие", 88), headerTooltip: name }
+        : numeric(key, name, key === "installers" ? 120 : 104)),
       { ...numeric("total", "Всего", 88), initialSort: byDay ? undefined : "desc", cellClass: ["ag-right-aligned-cell", "statistics-grid-total"] },
     ];
   }, [byDay, series]);
@@ -74,12 +88,16 @@ export function StatisticsBreakdownTable({ groupBy, rows, series }: { groupBy: S
     <div className={scrollable ? "statistics-grid statistics-grid-scroll" : "statistics-grid"}>
       <LocalizedGrid<BreakdownGridRow> theme={statisticsGridTheme} rowData={rowData} columnDefs={columns}
         defaultColDef={gridColumns} rowHeight={28} headerHeight={32} domLayout={scrollable ? "normal" : "autoHeight"}
-        enterpriseFilters={false} showSortSummary={false} spreadsheetToolbar={false}
+        showSortSummary={false} spreadsheetToolbar={false}
         onSpreadsheetSelectionSummary={setSelectionSummary}
         spreadsheetSelectionResetKey={selectionResetKey}
         getRowId={({ data }) => rowId(data)}
         onGridReady={({ api }) => { setApi(api); api.setGridAriaProperty("label", byDay ? "Часы по дням" : "Часы по зонам"); }}
         getSpreadsheetContextActions={({ row, columnId }) => [
+          ...(onOpenReports ? [{ label: reportActionLabel ?? "Перейти в отчёты", onSelect: () => {
+            const sourceRow = rows.find(candidate => rowId(candidate) === rowId(row));
+            if (sourceRow) onOpenReports(sourceRow);
+          } }] : []),
           { label: "Копировать строку", onSelect: () => copy({ kind: "row", rowId: rowId(row) }) },
           { label: "Копировать столбец", onSelect: () => copy({ kind: "column", columnId }) },
         ]} />

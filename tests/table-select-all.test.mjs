@@ -5,6 +5,7 @@ import ts from "typescript";
 import { allSpreadsheetCells, findSpreadsheetDataRowIndex, isStructuralSpreadsheetRow, nativeSpreadsheetSelectionKey, nativeSpreadsheetSelectionValues, spreadsheetDataColumns, spreadsheetDataRowRanges, spreadsheetHeaderValues, spreadsheetPointRowIndex, spreadsheetRangeHasStructuralRows } from "../app/gridSpreadsheetRows.ts";
 import { isTableSelectAllShortcut, isTableTextEntryTarget } from "../app/tableSelectAllShortcut.ts";
 import { parseSpreadsheetText, serializeSpreadsheetText, stripSpreadsheetHeaderRow } from "../app/spreadsheetClipboard.ts";
+import { historyShortcut } from "../app/undoShortcut.ts";
 
 const readSource = async path => ts.createSourceFile(path, await readFile(new URL(path, import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const gridSource = await readSource("../app/GridFilters.tsx");
@@ -19,6 +20,8 @@ function declaration(file, name) {
   return ts.isVariableDeclaration(node) ? node.initializer.getText(file) : node.getText(file);
 }
 function bind(expression, environment) {
+  environment = { wholeColumns: { current: null }, lastHeaderValues: { current: null }, ...environment };
+  environment = { historyShortcut, dispatchUndoShortcut() {}, ...environment };
   const code = ts.transpileModule(`return (${expression});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   return new Function(...Object.keys(environment), code)(...Object.values(environment));
 }
@@ -133,7 +136,7 @@ test("actual WorkTypes native-grid select-all respects nested ownership and sele
   const api = fixture([{ id: "first", data: {} }, { id: "detail", data: {}, detail: true }, { id: "second", data: {} }]);
   const calls = [];
   Object.assign(api, { isModuleRegistered: () => true, clearCellSelection: () => calls.push("clear"), addCellRange: value => calls.push(value), setFocusedCell: (...value) => calls.push(value) });
-  const handler = bind(attr.initializer.expression.getText(workTypesSource), { api, spreadsheetDataColumns, spreadsheetDataRowRanges, isTableSelectAllShortcut, Element: ElementFixture, selectionIncludesHeaders: { current: null }, nativeSpreadsheetSelectionKey, paintSelectedHeaders() {} });
+  const handler = bind(attr.initializer.expression.getText(workTypesSource), { api, spreadsheetDataColumns, spreadsheetDataRowRanges, isTableSelectAllShortcut, Element: ElementFixture, selectionIncludesHeaders: { current: null }, wholeRows: { current: null }, nativeSpreadsheetSelectionKey, paintSelectedHeaders() {} });
   const shell = new ElementFixture(); shell.closest = selector => selector === ".work-types-master-grid,.work-types-detail-grid" ? shell : ElementFixture.prototype.closest.call(shell, selector);
   const event = { ...keyEvent(), target: shell, currentTarget: shell, stopPropagation() { this.stopped = true; } };
   handler(event);
@@ -272,6 +275,32 @@ test("actual LocalizedGrid paste strips an exact full copied header and never cr
   assert.equal(batches.length, 1);
 });
 
+test("whole-column copy includes only selected headers and strips those same headers on a later paste", () => {
+  const ui = localizedHarness();
+  ui.selectionRef.current = { start: { rowIndex: 0, columnId: "hours" }, end: { rowIndex: 1, columnId: "hours" }, columnModeRow: { rowIndex: 1 } };
+  ui.selectionIncludesHeaders.current = true;
+  const batches = [], lastHeaderClipboard = { current: null };
+  const spreadsheetBounds = bind(declaration(gridSource, "spreadsheetBounds"), { spreadsheetColumns: spreadsheetDataColumns, spreadsheetPointRowIndex });
+  const selectedCallback = find(gridSource, node => ts.isVariableDeclaration(node) && node.name.getText(gridSource) === "selectedText").initializer.arguments[0].getText(gridSource);
+  const pasteCallback = find(gridSource, node => ts.isVariableDeclaration(node) && node.name.getText(gridSource) === "pasteText").initializer.arguments[0].getText(gridSource);
+  const environment = { api: ui.api, selectionRef: ui.selectionRef, selectionIncludesHeaders: ui.selectionIncludesHeaders, lastHeaderClipboard, serializeSpreadsheetText,
+    onSpreadsheetPaste: undefined, onSpreadsheetBatch: batch => { batches.push(batch); return true; },
+    spreadsheetBounds, spreadsheetColumns: spreadsheetDataColumns, spreadsheetHeaderValues, parseSpreadsheetText, stripSpreadsheetHeaderRow, isStructuralSpreadsheetRow,
+    spreadsheetRangeHasStructuralRows, setSpreadsheetStatus() {}, body: { current: { focus() {} } },
+  };
+  const copy = bind(selectedCallback, environment), paste = bind(pasteCallback, environment);
+  ui.api.getCellValue = ({ rowNode }) => rowNode.id === "one" ? 0 : 8;
+  const text = copy(); assert.deepEqual(parseSpreadsheetText(text), [["Часы"], ["0"], ["8"]]);
+  // Move to a different column: only the exact clipboard generated here strips its header.
+  ui.selectionRef.current = { start: { rowIndex: 0, columnId: "name" }, end: { rowIndex: 0, columnId: "name" } };
+  ui.selectionIncludesHeaders.current = false;
+  assert.equal(paste(text), true);
+  assert.deepEqual(batches[0].rows.map(row => row.values), [{ name: "0" }, { name: "8" }]);
+  ui.selectionRef.current = { start: { rowIndex: 0, rowId: "removed", columnId: "hours" }, end: { rowIndex: 1, columnId: "hours" } };
+  ui.selectionIncludesHeaders.current = true;
+  assert.equal(copy(), "", "stale selection must not copy all unrelated headers");
+});
+
 test("native full selection includes one flat visible header row, including empty tables, and exact paste matching preserves ordinary inputs", () => {
   const api = fixture(); api.getCellRanges = () => [{ startRow: { rowIndex: 0 }, endRow: { rowIndex: 1 }, columns: api.columns }];
   assert.deepEqual(nativeSpreadsheetSelectionValues(api, { includeHeaders: true })[0], ["Наименование", "Часы"]);
@@ -304,7 +333,7 @@ test("WorkTypes header paint touches only its own data headers and manual range 
   assert.deepEqual(toggles, [["own", "ag-excel-header-selected", true], ["checkbox", "ag-excel-header-selected", false]]);
   const attrs = find(workTypesSource, node => ts.isJsxAttribute(node) && node.name.getText(workTypesSource) === "onCellSelectionChanged");
   let cleared = 0;
-  const changed = bind(attrs.initializer.expression.getText(workTypesSource), { selectionIncludesHeaders: marker, nativeSpreadsheetSelectionKey,
+  const changed = bind(attrs.initializer.expression.getText(workTypesSource), { selectionIncludesHeaders: marker, wholeRows: { current: null }, nativeSpreadsheetSelectionKey,
     clearSelectedHeaders() { marker.current = null; cleared++; }, paintSelectedHeaders() {},
   });
   changed({ api }); assert.equal(cleared, 1);

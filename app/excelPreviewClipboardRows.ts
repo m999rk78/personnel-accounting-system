@@ -28,7 +28,7 @@ export function excelPreviewClipboardRows(payload: ExcelExportPreviewPayload | n
     return workbook.rows.map(row => {
       const parts = row.equipmentName.split("//").map(part => part.trim());
       return [row.equipmentType ?? parts[0] ?? "", row.equipmentName, row.registrationNumber ?? parts[2] ?? "",
-        ...Array.from({ length: dayCount }, (_, index) => row.dailyProductiveHours[index] || ""), row.productiveHours,
+        ...Array.from({ length: dayCount }, (_, index) => row.dailyValues[index] ?? ""), row.productiveHours,
         row.downtimeHours, row.productiveHours + row.downtimeHours - (row.reportHours ?? row.totalHours)];
     });
   }

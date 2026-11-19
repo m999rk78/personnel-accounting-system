@@ -12,3 +12,10 @@
 .table-row-number-handle[aria-pressed="true"] { background:#fff2ce; }
 .table-row-number-handle:focus-visible { outline:2px solid #d59700; outline-offset:1px; }
 .table-order-toast { position:fixed; bottom:18px; right:20px; z-index:430; padding:9px 14px; border:1px solid #bed9c6; border-radius:8px; background:#f1faf4; color:#23623d; box-shadow:0 4px 20px #00000012; font-size:12px; }
+.table-row-drop-indicator { position:fixed; z-index:460; height:3px; margin-top:-1px; border-radius:2px; background:#2563eb; box-shadow:0 0 0 1px #fff; pointer-events:none; }
+.table-row-drop-indicator[hidden] { display:none; }
+.table-row-drop-indicator::before,.table-row-drop-indicator::after { content:""; position:absolute; top:-3px; width:9px; height:9px; border:2px solid #fff; border-radius:50%; background:#2563eb; box-sizing:border-box; }
+.table-row-drop-indicator::before { left:-3px; }
+.table-row-drop-indicator::after { right:-3px; }
+.table-row-drop-label { position:absolute; right:8px; bottom:6px; max-width:calc(100% - 16px); padding:5px 9px; border:1px solid #fff; border-radius:5px; background:#1d4ed8; color:#fff; box-shadow:0 2px 8px #17255426; font:600 12px/16px system-ui,sans-serif; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.table-row-drop-indicator[data-label-side="below"] .table-row-drop-label { top:6px; bottom:auto; }

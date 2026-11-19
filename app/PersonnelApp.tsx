@@ -10,6 +10,7 @@ import { UserPermissionsDialog } from "./UserPermissionsDialog";
 import { AdminGridFooter } from "./AdminGridFooter";
 import { DirectoryAgGrid, EmployeeAgGrid, PositionAgGrid, ProjectEmployeeAgGrid } from "./LazyDataGrids";
 import { AuditLogView } from "./AuditLogView";
+import { auditNavigationAllowed, type AuditNavigationTarget } from "./auditNavigation";
 import { WorkTypesDirectory } from "./WorkTypesDirectory";
 import { useConfirmationDialog } from "./useConfirmationDialog";
 import { CustomSelect } from "./CustomSelect";
@@ -35,6 +36,7 @@ import { useWorkspaceData } from "./workspace/useWorkspaceData";
 import { workspaceNavigationDiscards, pendingWorkspaceGridInput, normalize, newKey } from "./workspace/model";
 import type { Option, Site, PositionRecord, AppUser, CurrentUser, View, UserDraft, EmployeeDraft, EmployeeBulkChanges, ProjectEmployeeDraft, PositionDraft, DirectoryEntity, DirectoryFocus, DirectoryDraft, SiteDraft } from "./workspace/types";
 import type { StatisticsKind } from "./statisticsTypes";
+import type { ReportSourceFilter } from "./reportSourceFilter";
 
 const PersonnelReportWorkspace = lazy(() => import("./PersonnelReportWorkspace").then(module => ({ default: module.PersonnelReportWorkspace })));
 const EquipmentReportPage = lazy(() => import("./EquipmentReportPage").then(module => ({ default: module.EquipmentReportPage })));
@@ -111,6 +113,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const statisticsKind = view === statisticsViews.personnel ? "personnel" : view === statisticsViews.equipment ? "equipment" : null;
   const [focusedEmployeeId, setFocusedEmployeeId] = useState<number | null>(initialView === initialLocation.view ? initialLocation.employeeId ?? null : null);
   const [focusedEquipmentId, setFocusedEquipmentId] = useState<number | null>(initialView === initialLocation.view ? initialLocation.equipmentId ?? null : null);
+  const [reportSource, setReportSource] = useState<ReportSourceFilter | undefined>(initialView === initialLocation.view ? initialLocation.reportSource : undefined);
   const tableAccess = useMemo(() => workspaceTableAccess(effectivePermissions, view), [effectivePermissions, view]);
   const [selectedSiteId, setSiteId] = useState(() => currentUser.assignedSiteId && canAccessProject(currentUser, currentUser.assignedSiteId) ? currentUser.assignedSiteId : projectIds?.[0] ?? (projectIds === null ? 1 : 0));
   const siteId = canAccessProject(currentUser, selectedSiteId) ? selectedSiteId : projectIds?.[0] ?? (projectIds === null ? selectedSiteId : 0);
@@ -210,10 +213,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
   const bitrixReview = useBitrixReview({ data, view, visibleEmployees, visibleSites, selectedEmployeeRows, employeeDrafts, employeeFullRowEditIds, mayCreateEmployees, mayDeleteEmployees, mayInspectBitrix24, mayUpdateEmployees, loadData, requireSavedExcelRows, setEmployeePendingDeletes, setError, setNotice, confirm });
   const { syncingBitrix24, linkingBitrix24, setBitrixCheckResult, bitrixBulkRunning, processingBitrixEmployee, selectedBitrixUpdatableEmployees, selectedBitrixWarningEmployees, inspectBitrix24Remaining, inspectBitrix24Title, inspectBitrix24Connection, updateSelectedEmployeesFromBitrix, acknowledgeSelectedBitrixWarnings } = bitrixReview;
   const settingsDraftsDirty = Boolean(userDrafts.length || employeeDrafts.length || employeeFullRowEditIds.length || positionDrafts.length || positionFullRowEditIds.length || siteDrafts.length || directoryDrafts.length || projectEmployeeDrafts.length || employeeBulkEditOpen && Object.values(employeeBulkChanges).some(Boolean));
-  const navigationState = useRef({ view, focus: directoryFocus, month: selectedMonth, employeeId: focusedEmployeeId, equipmentId: focusedEquipmentId, settings: settingsDraftsDirty, busy: saving || importing });
+  const navigationState = useRef({ view, focus: directoryFocus, month: selectedMonth, employeeId: focusedEmployeeId, equipmentId: focusedEquipmentId, reportSource, settings: settingsDraftsDirty, busy: saving || importing });
   useLayoutEffect(() => {
-    navigationState.current = { view, focus: directoryFocus, month: selectedMonth, employeeId: focusedEmployeeId, equipmentId: focusedEquipmentId, settings: settingsDraftsDirty, busy: saving || importing };
-  }, [view, directoryFocus, selectedMonth, focusedEmployeeId, focusedEquipmentId, settingsDraftsDirty, saving, importing]);
+    navigationState.current = { view, focus: directoryFocus, month: selectedMonth, employeeId: focusedEmployeeId, equipmentId: focusedEquipmentId, reportSource, settings: settingsDraftsDirty, busy: saving || importing };
+  }, [view, directoryFocus, selectedMonth, focusedEmployeeId, focusedEquipmentId, reportSource, settingsDraftsDirty, saving, importing]);
   const getNavigationDiscards = useCallback((nextView: View, nextFocus: DirectoryFocus, changingProject = false) => {
     const pending = pendingWorkspaceGridInput();
     return workspaceNavigationDiscards({ ...navigationState.current,
@@ -245,12 +248,12 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     window.addEventListener("beforeunload", preventLoss);
     return () => window.removeEventListener("beforeunload", preventLoss);
   }, [getNavigationDiscards]);
-  useEffect(() => { personnelReportLocationRef.current = `${window.location.pathname}${window.location.search}`; }, [view, directoryFocus, workDate, selectedMonth, focusedEmployeeId, focusedEquipmentId]);
+  useEffect(() => { personnelReportLocationRef.current = `${window.location.pathname}${window.location.search}`; }, [view, directoryFocus, workDate, selectedMonth, focusedEmployeeId, focusedEquipmentId, reportSource]);
   const initialUrlNormalized = useRef(false);
 
   useEffect(() => {
     const initialFocus = initialView === "directories" ? initialLocation.directoryFocus : "all";
-    const canonicalUrl = viewAllowed(initialView) ? workspaceUrl(initialView, initialFocus, initialLocation.date, initialLocation.month, initialLocation.employeeId, initialLocation.equipmentId) : "/";
+    const canonicalUrl = viewAllowed(initialView) ? workspaceUrl(initialView, initialFocus, initialLocation.date, initialLocation.month, initialLocation.employeeId, initialLocation.equipmentId, initialView === initialLocation.view ? initialLocation.reportSource : undefined) : "/";
     if (!initialUrlNormalized.current && (!initialLocation.recognized || initialView !== initialLocation.view || `${window.location.pathname}${window.location.search}` !== canonicalUrl)) {
       window.history.replaceState({}, "", canonicalUrl);
     }
@@ -270,7 +273,8 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       const periodChanged = (navigationState.current.view === "timesheet" || navigationState.current.view === "equipmentTimesheet") && navigationState.current.month !== location.month;
       const employeeChanged = (navigationState.current.employeeId ?? null) !== (location.employeeId ?? null);
       const equipmentChanged = (navigationState.current.equipmentId ?? null) !== (location.equipmentId ?? null);
-      const discard = getNavigationDiscards(nextView, nextFocus, periodChanged || employeeChanged || equipmentChanged);
+      const reportSourceChanged = JSON.stringify(navigationState.current.reportSource) !== JSON.stringify(location.reportSource);
+      const discard = getNavigationDiscards(nextView, nextFocus, periodChanged || employeeChanged || equipmentChanged || reportSourceChanged);
       if (Object.values(discard).some(Boolean)) {
         const confirmed = await confirm({ title: "Перейти без сохранения?", description: "На текущей странице есть несохранённые изменения. При переходе в другой раздел они будут отменены.", confirmLabel: "Перейти без сохранения" });
         if (!listening || sequence !== locationSequence) return;
@@ -282,9 +286,10 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
         if (discard.equipment) { equipmentReportDirtyRef.current = false; setEquipmentReportDirty(false); }
         if (discard.workTypes) { workTypesDirtyRef.current = false; setWorkTypesDirty(false); }
       }
-      if (navigationState.current.view !== nextView || navigationState.current.focus !== nextFocus || periodChanged || employeeChanged || equipmentChanged) discardSettingsEdits();
+      if (navigationState.current.view !== nextView || navigationState.current.focus !== nextFocus || periodChanged || employeeChanged || equipmentChanged || reportSourceChanged) discardSettingsEdits();
       setFocusedEmployeeId(nextView === location.view ? location.employeeId ?? null : null);
       setFocusedEquipmentId(nextView === location.view ? location.equipmentId ?? null : null);
+      setReportSource(nextView === location.view ? location.reportSource : undefined);
       setSelectedMonth(location.month);
       setDirectoryFocus(nextFocus);
       setView(nextView);
@@ -306,6 +311,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
       setView(fallbackView);
       setFocusedEmployeeId(null);
       setFocusedEquipmentId(null);
+      setReportSource(undefined);
       setDirectoryFocus("all");
       window.history.replaceState({}, "", viewAllowed(fallbackView) ? workspaceUrl(fallbackView, "all", workDate, selectedMonth) : "/");
     }, 0);
@@ -352,6 +358,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     setWorkTypesDirty(false);
     setFocusedEmployeeId(null);
     setFocusedEquipmentId(null);
+    setReportSource(undefined);
     window.history.replaceState({}, "", workspaceUrl(view, directoryFocus, workDate, selectedMonth));
     setSiteId(nextSiteId);
   }
@@ -361,33 +368,63 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
     if (view === "timesheet" || view === "equipmentTimesheet") window.history.replaceState({}, "", workspaceUrl(view, directoryFocus, workDate, nextMonth, focusedEmployeeId, focusedEquipmentId));
   }
 
-  async function navigateTo(nextView: View, nextDirectoryFocus: DirectoryFocus = "all", target?: { employeeId: number; equipmentId?: never; month: string } | { equipmentId: number; employeeId?: never; month: string }) {
+  async function navigateTo(nextView: View, nextDirectoryFocus: DirectoryFocus = "all", target?: { employeeId: number; equipmentId?: never; month: string } | { equipmentId: number; employeeId?: never; month: string }, source?: ReportSourceFilter, auditContext?: { siteId?: number; month?: string }) {
     if (bitrixBulkRunning.current || navigationState.current.busy || childNavigationBusyRef.current) return false;
+    if (auditContext && (!viewAllowed(nextView)
+      || auditContext.siteId !== undefined && !canAccessProject(currentUser, auditContext.siteId)
+      || auditContext.month !== undefined && !validMonth(auditContext.month))) return false;
     if (target && (!viewAllowed(nextView) || !validMonth(target.month)
       || !(isEmployeeNavigationTarget(nextView, target.employeeId) || isEquipmentNavigationTarget(nextView, target.equipmentId)))) return false;
+    if (source && (!viewAllowed(nextView) || nextView !== "placement" && nextView !== "equipment")) return false;
     const allowedView = viewAllowed(nextView) ? nextView : fallbackView;
     const allowedFocus = allowedView === "directories" ? nextDirectoryFocus : "all";
-    const changingContext = Boolean(target && navigationState.current.view === allowedView
-      && (target.month !== selectedMonth || (target.employeeId ?? null) !== focusedEmployeeId || (target.equipmentId ?? null) !== focusedEquipmentId));
+    const changingProject = auditContext?.siteId !== undefined && auditContext.siteId !== siteId;
+    const changingContext = changingProject || navigationState.current.view === allowedView && (Boolean(target
+      && (target.month !== selectedMonth || (target.employeeId ?? null) !== focusedEmployeeId || (target.equipmentId ?? null) !== focusedEquipmentId))
+      || auditContext?.month !== undefined && auditContext.month !== selectedMonth
+      || JSON.stringify(source) !== JSON.stringify(navigationState.current.reportSource));
     const discard = getNavigationDiscards(allowedView, allowedFocus, changingContext);
     if (Object.values(discard).some(Boolean) && !await confirm({ title: "Перейти без сохранения?", description: "На текущей странице есть несохранённые изменения. При переходе в другой раздел они будут отменены.", confirmLabel: "Перейти без сохранения" })) return false;
     if (navigationState.current.view !== allowedView || navigationState.current.focus !== allowedFocus || changingContext) discardSettingsEdits();
     if (discard.report) { personnelReportDirtyRef.current = false; setPersonnelReportDirty(false); }
     if (discard.equipment) { equipmentReportDirtyRef.current = false; setEquipmentReportDirty(false); }
     if (discard.workTypes) { workTypesDirtyRef.current = false; setWorkTypesDirty(false); }
-    const targetMonth = target?.month ?? selectedMonth;
-    const url = workspaceUrl(allowedView, allowedFocus, workDate, targetMonth, target?.employeeId, target?.equipmentId);
+    const targetMonth = target?.month ?? auditContext?.month ?? selectedMonth;
+    const targetDate = source?.from ?? workDate;
+    const url = workspaceUrl(allowedView, allowedFocus, targetDate, targetMonth, target?.employeeId, target?.equipmentId, source);
     setFocusedEmployeeId(target?.employeeId ?? null);
     setFocusedEquipmentId(target?.equipmentId ?? null);
-    if (target) setSelectedMonth(targetMonth);
+    setReportSource(source);
+    if (source?.from) setWorkDate(targetDate);
+    if (target || auditContext?.month !== undefined) setSelectedMonth(targetMonth);
+    if (changingProject) setSiteId(auditContext.siteId!);
     setDirectoryFocus(allowedFocus);
     setView(allowedView);
     if (`${window.location.pathname}${window.location.search}` !== url) window.history.pushState({}, "", url);
     window.scrollTo({ top: 0, behavior: "auto" });
     return true;
   }
+  function canNavigateAuditTarget(target: AuditNavigationTarget) {
+    return auditNavigationAllowed(target, {
+      viewAllowed,
+      projectAllowed: nextSiteId => canAccessProject(currentUser, nextSiteId) && visibleSites.some(site => site.id === nextSiteId),
+    });
+  }
+  async function navigateAuditTarget(target: AuditNavigationTarget) {
+    if (!canNavigateAuditTarget(target)) return false;
+    const month = target.month ?? selectedMonth;
+    const entityTarget = target.employeeId !== undefined ? { employeeId: target.employeeId, month }
+      : target.equipmentId !== undefined ? { equipmentId: target.equipmentId, month } : undefined;
+    return navigateTo(target.view, target.directoryFocus ?? "all", entityTarget, undefined, {
+      siteId: target.siteId ?? undefined, month: target.month,
+    });
+  }
   function clearEmployeeFocus() {
     setFocusedEmployeeId(null);
+    window.history.replaceState({}, "", workspaceUrl(view, directoryFocus, workDate, selectedMonth));
+  }
+  function clearReportSource() {
+    setReportSource(undefined);
     window.history.replaceState({}, "", workspaceUrl(view, directoryFocus, workDate, selectedMonth));
   }
   function clearEquipmentFocus() {
@@ -1015,12 +1052,16 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
 
       {statisticsKind && <Suspense fallback={<p role="status">Загружаем статистику…</p>}>
         <StatisticsView key={`${siteId}:${currentUser.id}`} siteId={siteId} today={initialToday}
-          kind={statisticsKind} availableKinds={availableStatisticsKinds} onSelectKind={kind => { void navigateTo(statisticsViews[kind]); }} />
+          kind={statisticsKind} availableKinds={availableStatisticsKinds} onSelectKind={kind => { void navigateTo(statisticsViews[kind]); }}
+          onOpenReports={(statisticsKind === "personnel"
+            ? mayViewWorkersReport && getReportStatusPermission(effectivePermissions, "workers_report", "approved").view
+            : mayViewEquipmentReport && getReportStatusPermission(effectivePermissions, "equipment_report", "approved").view)
+            ? source => { void navigateTo(statisticsKind === "personnel" ? "placement" : "equipment", "all", undefined, source); } : undefined} />
       </Suspense>}
 
       {mayViewWorkersReport && view === "placement" && <>
         {error && <div className="message error" role="alert"><strong>Не удалось загрузить справочники</strong><span>{error}</span></div>}
-        <Suspense fallback={<p role="status">Загружаем отчёты персонала…</p>}><PersonnelReportWorkspace key={`personnel-reports-${siteId}-${currentUser.id}`} siteId={siteId} siteName={activeSite?.name ?? "Проект"} today={initialToday} currentUser={currentUser} permissions={{ create: mayCreateWorkersReport, update: mayUpdateWorkersReport, delete: mayDeleteWorkersReport }} employees={data?.reportEmployees ?? []} shifts={data?.shifts ?? []} zones={data?.zones ?? []} mainWorkTypes={data?.mainWorkTypes ?? []} subworkTypes={data?.subworkTypes ?? []} masters={data?.masters ?? []} loading={loading} onDirtyChange={setPersonnelReportDirty}
+        <Suspense fallback={<p role="status">Загружаем отчёты персонала…</p>}><PersonnelReportWorkspace key={`personnel-reports-${siteId}-${currentUser.id}`} siteId={siteId} siteName={activeSite?.name ?? "Проект"} today={initialToday} currentUser={currentUser} permissions={{ create: mayCreateWorkersReport, update: mayUpdateWorkersReport, delete: mayDeleteWorkersReport }} employees={data?.reportEmployees ?? []} shifts={data?.shifts ?? []} zones={data?.zones ?? []} mainWorkTypes={data?.mainWorkTypes ?? []} subworkTypes={data?.subworkTypes ?? []} masters={data?.masters ?? []} loading={loading} onDirtyChange={setPersonnelReportDirty} reportSource={reportSource} onClearReportSource={clearReportSource}
           employeeNavigationTargets={[
             ...(mayViewWorkersTimesheet ? [{ view: "timesheet" as const, label: "В табель персонала" }] : []),
             ...(may("employees") ? [{ view: "employees" as const, label: "В справочник сотрудников" }] : []),
@@ -1031,7 +1072,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
 
 
       {mayViewWorkersTimesheet && view === "timesheet" && <TimesheetView key={`personnel-timesheet-${siteId}-${selectedMonth}`} siteId={siteId} initialMonth={selectedMonth} today={initialToday} focusedEmployeeId={focusedEmployeeId} onClearEmployeeFocus={clearEmployeeFocus} onMonthChange={changeTimesheetMonth} onDirtyChange={onNativeTimesheetDirty} onBusyChange={onChildNavigationBusy} />}
-      {mayViewEquipmentReport && view === "equipment" && <Suspense fallback={<p role="status">Загружаем отчёты техники…</p>}><EquipmentReportPage key={`equipment-report-${siteId}-${currentUser.id}`} siteId={siteId} siteName={activeSite?.name ?? "Проект"} today={initialToday} currentUser={currentUser} permissions={{ create: may("equipment_report", "create"), update: may("equipment_report", "update"), delete: may("equipment_report", "delete") }} onDirtyChange={setEquipmentReportDirty} equipmentNavigationTargets={[
+      {mayViewEquipmentReport && view === "equipment" && <Suspense fallback={<p role="status">Загружаем отчёты техники…</p>}><EquipmentReportPage key={`equipment-report-${siteId}-${currentUser.id}`} siteId={siteId} siteName={activeSite?.name ?? "Проект"} today={initialToday} currentUser={currentUser} permissions={{ create: may("equipment_report", "create"), update: may("equipment_report", "update"), delete: may("equipment_report", "delete") }} onDirtyChange={setEquipmentReportDirty} reportSource={reportSource} onClearReportSource={clearReportSource} equipmentNavigationTargets={[
           ...(mayViewEquipmentTimesheet ? [{ view: "equipmentTimesheet" as const, label: "В табель техники" }] : []),
           ...(may("equipment_registry") ? [{ view: "equipmentRegistry" as const, label: "В реестр техники" }] : []),
           ...(may("project_equipment") ? [{ view: "projectEquipment" as const, label: "В технику проекта" }] : []),
@@ -1045,7 +1086,7 @@ export default function PersonnelApp({ initialToday, currentUser }: { initialTod
 
       {view === "settings" && mayAccessGeneralSettings && <section className="settings-home general-settings-home"><p className="settings-scope-description">Общие данные используются во всей системе и не зависят от выбранного проекта.</p><div className="settings-list">{generalSettingsCards.filter((card) => may(card.resource)).map((card) => <button type="button" className="settings-list-item" key={card.title} onClick={() => { if (card.focus) void navigateTo("directories", card.focus); else if (card.view) void navigateTo(card.view); }}><span className="settings-card-icon">{card.icon}</span><span className="settings-row-copy"><strong>{card.title}</strong><span>{card.description}</span></span><span className="settings-list-arrow" aria-hidden="true">›</span></button>)}</div></section>}
 
-      {view === "auditLog" && may("audit_log") && <AuditLogView headerActionsTargetId="audit-log-heading-actions" onBack={() => navigateTo("settings")} />}
+      {view === "auditLog" && may("audit_log") && <AuditLogView headerActionsTargetId="audit-log-heading-actions" onBack={() => navigateTo("settings")} canNavigate={canNavigateAuditTarget} onNavigate={navigateAuditTarget} />}
       {view === "accessRights" && may("access_rights") && <section role="tabpanel" id="users-rights-panel-roles" aria-labelledby="users-rights-tab-roles">{may("system_users") ? <RolesSettingsView onDirtyChange={onAccessRightsDirty} onBusyChange={onChildNavigationBusy} onRolesChanged={invalidateCatalogs} /> : <AccessRightsView onBack={() => { void navigateTo("settings"); }} onDirtyChange={onAccessRightsDirty} onBusyChange={onChildNavigationBusy} />}</section>}
       {view === "projectSettings" && mayAccessProjectSettings && <section className="settings-home">
         <div className="settings-grid">{projectSettingsCards.filter((card) => may(card.resource)).map((card) => <button type="button" key={card.title} onClick={() => { if (card.focus) void navigateTo("directories", card.focus); else if (card.view) void navigateTo(card.view); }}><span className="settings-card-icon">{card.icon}</span><strong>{card.title}</strong><p>{card.description}</p></button>)}</div>

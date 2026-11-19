@@ -23,6 +23,8 @@ import { RoleEditorDialog } from "./RoleEditorDialog";
 import { RoleCatalog } from "./RoleCatalog";
 import type { CustomRole } from "./customRoles";
 import { useConfirmationDialog } from "./useConfirmationDialog";
+import { useDraftUndo } from "./useDraftUndo";
+import { useUndoShortcut } from "./useUndoShortcut";
 import "./customRoles.css";
 
 type AccessUser = {
@@ -76,11 +78,16 @@ export function AccessRightsView({ onBack, onDirtyChange, onBusyChange, initialU
   const [roleEditor, setRoleEditor] = useState<"create" | CustomRole | null>(null);
   const [showRoleCatalog, setShowRoleCatalog] = useState(false);
   const rolesRequestSequence = useRef({ version: 0 });
+  const rootRef = useRef<HTMLElement>(null);
 
   const selectedUser = users.find((user) => user.id === selectedUserId) ?? null;
   const selectedCanManage = canManage && selectedUser?.permissionsManageable !== false;
   const roleTemplate = selectedUser ? limitPermissionsToRole(selectedUser.role, selectedUser.roleTemplate ?? rolePermissionTemplate(selectedUser.role), projectAccess) : emptyPermissionSet();
   const changed = selectedUser ? !permissionSetsEqual(draft, selectedUser.permissions) || (projectAccess.mode !== displayedUserProjectAccess(selectedUser).mode || [...projectAccess.siteIds].sort((a,b) => a-b).join(",") !== displayedUserProjectAccess(selectedUser).siteIds.join(",")) || pendingReports !== (selectedUser.canViewPendingReports ?? selectedUser.role !== "viewer") : false;
+  const history = useDraftUndo({ value: { permissions: draft, projectAccess, pendingReports },
+    scopeKey: JSON.stringify([selectedUserId, selectedUser?.permissions, selectedUser && displayedUserProjectAccess(selectedUser), selectedUser?.canViewPendingReports]),
+    onChange: next => { setDraft(next.permissions); setProjectAccess(next.projectAccess); setPendingReports(next.pendingReports); setNotice(""); setError(""); } });
+  useUndoShortcut({ rootRef, ...history, disabled: loading || saving || !selectedUser || !selectedCanManage || Boolean(roleEditor) });
   useLayoutEffect(() => { onDirtyChange?.(changed); return () => onDirtyChange?.(false); }, [changed, onDirtyChange]);
   useLayoutEffect(() => { onBusyChange?.(saving); return () => onBusyChange?.(false); }, [saving, onBusyChange]);
   const visibleUsers = useMemo(() => {
@@ -98,6 +105,9 @@ export function AccessRightsView({ onBack, onDirtyChange, onBusyChange, initialU
       const nextUsers = (payload.users ?? []).map(user => ({ ...user, permissions: clonePermissions(user.permissions) }));
       const nextSelectedId = selectedUserId && nextUsers.some((user) => user.id === selectedUserId) ? selectedUserId : embedded ? null : nextUsers[0]?.id ?? null;
       const nextSelected = nextUsers.find((user) => user.id === nextSelectedId);
+      history.reset({ permissions: nextSelected ? clonePermissions(nextSelected.permissions) : emptyPermissionSet(),
+        projectAccess: nextSelected ? displayedUserProjectAccess(nextSelected) : { mode: "selected", siteIds: [] },
+        pendingReports: nextSelected?.canViewPendingReports ?? nextSelected?.role !== "viewer" });
       setUsers(nextUsers);
       setSites(payload.sites ?? []);
       setProjectAccess(nextSelected ? displayedUserProjectAccess(nextSelected) : { mode: "selected", siteIds: [] });
@@ -153,6 +163,7 @@ export function AccessRightsView({ onBack, onDirtyChange, onBusyChange, initialU
     if (saving) return;
     if (role.id > 0 && rolesCanManage && changed && !await confirm({ title: "Открыть редактирование роли?", description: "Несохранённые индивидуальные права пользователя будут отменены.", confirmLabel: "Продолжить", cancelLabel: "Остаться" })) return;
     if (role.id > 0 && rolesCanManage && changed && selectedUser) {
+      history.reset({ permissions: clonePermissions(selectedUser.permissions), projectAccess: displayedUserProjectAccess(selectedUser), pendingReports: selectedUser.canViewPendingReports ?? selectedUser.role !== "viewer" });
       setDraft(clonePermissions(selectedUser.permissions)); setProjectAccess(displayedUserProjectAccess(selectedUser)); setPendingReports(selectedUser.canViewPendingReports ?? selectedUser.role !== "viewer");
     }
     setRoleEditor(role);
@@ -202,6 +213,7 @@ export function AccessRightsView({ onBack, onDirtyChange, onBusyChange, initialU
       const nextPermissions = clonePermissions(payload.permissions);
       const nextAccess = payload.projectAccess ?? projectAccess;
       const nextPending = payload.canViewPendingReports ?? pendingReports;
+      history.reset({ permissions: nextPermissions, projectAccess: nextAccess, pendingReports: nextPending });
       setUsers((current) => current.map((user) => user.id === selectedUser.id ? { ...user, permissions: nextPermissions, customized: Boolean(payload.customized), projectAccess: nextAccess, canViewPendingReports: nextPending } : user));
       setDraft(nextPermissions);
       setProjectAccess(nextAccess);
@@ -228,7 +240,7 @@ export function AccessRightsView({ onBack, onDirtyChange, onBusyChange, initialU
     setNotice("");
   }
 
-  return <section className={`access-rights-page${embedded ? " embedded-user-access" : ""}`}>
+  return <section ref={rootRef} className={`access-rights-page${embedded ? " embedded-user-access" : ""}`}>
     <div className="settings-toolbar access-rights-toolbar"><button type="button" className="back-button" onClick={() => void back()} disabled={saving}>{embedded ? "Закрыть" : "← К общим настройкам"}</button><div className="access-rights-toolbar-actions"><button type="button" className="back-button" onClick={() => void refresh()} disabled={loading || saving}>Обновить</button>{!embedded && canManage && rolesCanManage && <button type="button" className="primary-button" disabled={saving || loading} onClick={() => setRoleEditor("create")}><span aria-hidden="true">＋</span>Добавить роль</button>}</div></div>
     {error && <div className="message error inline-message" role="alert"><strong>Не удалось выполнить действие</strong><span>{error}</span></div>}
     {notice && <div className="message success inline-message" role="status"><strong>Готово</strong><span>{notice}</span></div>}

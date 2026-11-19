@@ -105,6 +105,9 @@ test("project overview uses server counts even when personal catalogs are intent
     react: import.meta.resolve("react"), "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"),
     "./projectUserUsage": new URL("../app/projectUserUsage.ts", import.meta.url).href,
     "./useTableEscapeSelection": new URL("../app/useTableEscapeSelection.ts", import.meta.url).href,
+    // This read-only overview never mounts the project editor or its history.
+    "./useDraftUndo": "data:text/javascript,export function useDraftUndo(){throw new Error('Unexpected project editor')}",
+    "./useUndoShortcut": "data:text/javascript,export function useUndoShortcut(){throw new Error('Unexpected project editor')}",
   })) code = code.replaceAll(JSON.stringify(specifier), JSON.stringify(replacement));
   const { ProjectCards } = await import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
   const html = renderToStaticMarkup(createElement(ProjectCards, {

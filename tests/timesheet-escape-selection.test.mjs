@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { nativeRowDropIds } from "../app/nativeRowSelection.ts";
+import { rowDropPlacement } from "../app/rowDropIndicator.ts";
 
 // Run the clipboard hook's real Escape contract without mounting a database-backed
 // page. The shared keyboard hook covers DOM/editor routing in its own tests.
@@ -121,6 +122,7 @@ test("a saved row drop selects its moved block, but cannot restore selection cle
       blocked: false,
       stopDragScroll() {},
       nativeRowDropIds,
+      rowDropPlacement,
       order: { move: operation => { requests.push(operation); return saving; } },
       setSelection: update => { selection = typeof update === "function" ? update(selection) : update; },
     };

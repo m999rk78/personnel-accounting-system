@@ -8,6 +8,7 @@ import { gridTheme } from "../../app/AgDataGrids";
 import { TableOrderProvider, useNativeRowMoves, useWorkspaceTableOrder } from "../../app/TableRowMoves";
 import { WorkspaceAccessProvider } from "../../app/TableAccessContext";
 import { useTableViewport } from "../../app/useTableViewport";
+import { createRowDropIndicator, type RowDropPlacement } from "../../app/rowDropIndicator";
 import "../../app/globals.css";
 
 type Mode = "personnel-timesheet" | "equipment-timesheet" | "personnel-report" | "equipment-report";
@@ -42,12 +43,28 @@ function SavedMoves() {
 function NativeDragTrace({ shellRef }: { shellRef: RefObject<HTMLDivElement | null> }) {
   const output = useRef<HTMLOutputElement>(null);
   const trace = useRef<unknown[]>([]);
+  const preview = useRef<ReturnType<typeof createRowDropIndicator> | null>(null);
+  const showPreview = (placement: RowDropPlacement) => {
+    const shell = shellRef.current;
+    if (!shell) return;
+    const rect = shell.getBoundingClientRect();
+    const top = Math.max(0, rect.top, shell.querySelector("thead")?.getBoundingClientRect().bottom ?? rect.top);
+    const bottom = Math.min(shell.ownerDocument.defaultView?.innerHeight ?? rect.bottom, rect.bottom, shell.querySelector("tfoot")?.getBoundingClientRect().top ?? rect.bottom);
+    const row = [...shell.querySelectorAll<HTMLElement>("tbody tr[data-virtual-row]")].filter(element => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.bottom > top && bounds.top < bottom;
+    })[2];
+    if (!row) { preview.current?.clear(); return; }
+    preview.current ??= createRowDropIndicator(shell);
+    preview.current.show({ row, placement, count: 1, rowNumber: Number(row.dataset.virtualRow) + 1 });
+  };
   useEffect(() => {
     const shell = shellRef.current;
     if (!shell) return;
     const document = shell.ownerDocument;
     const view = document.defaultView;
     const names = ["dragstart", "dragenter", "dragover", "drop", "dragend", "mouseup"];
+    let lastVisibleIndicator: { label: string; placement: string | null; top: number } | null = null;
     const describe = (element: Element | null) => element ? {
       tag: element.tagName.toLowerCase(),
       row: element.closest("[data-virtual-row]")?.getAttribute("data-virtual-row") ?? null,
@@ -55,15 +72,20 @@ function NativeDragTrace({ shellRef }: { shellRef: RefObject<HTMLDivElement | nu
       class: typeof element.className === "string" ? element.className : null,
     } : null;
     const record = (event: Event, phase: string) => {
+      if (event.type === "dragstart" && phase === "document-capture") { preview.current?.clear(); lastVisibleIndicator = null; }
       const target = event.target instanceof Element ? event.target : null;
       const pointer = event instanceof MouseEvent ? event : null;
       const drag = event instanceof DragEvent ? event : null;
       const hit = pointer ? document.elementFromPoint(pointer.clientX, pointer.clientY) : null;
+      const line = document.querySelector<HTMLElement>(".table-row-drop-indicator:not([hidden])");
+      const indicator = line ? { label: line.querySelector(".table-row-drop-label")?.textContent ?? "", placement: line.dataset.placement ?? null, top: line.getBoundingClientRect().top } : null;
+      if (indicator) lastVisibleIndicator = indicator;
       trace.current = [...trace.current.slice(-19), {
         type: event.type, phase, x: pointer?.clientX ?? null, y: pointer?.clientY ?? null,
         defaultPrevented: event.defaultPrevented, effectAllowed: drag?.dataTransfer?.effectAllowed ?? null,
         dropEffect: drag?.dataTransfer?.dropEffect ?? null, rootContains: Boolean(target && shell.contains(target)),
         target: describe(target), hit: describe(hit), rootContainsHit: Boolean(hit && shell.contains(hit)),
+        indicator, lastVisibleIndicator,
       }];
       if (output.current) output.current.value = JSON.stringify(trace.current);
     };
@@ -87,12 +109,21 @@ function NativeDragTrace({ shellRef }: { shellRef: RefObject<HTMLDivElement | nu
         shell.removeEventListener(name, rootBubble);
       }
       view?.removeEventListener("blur", blur);
+      preview.current?.destroy(); preview.current = null;
     };
   }, [shellRef]);
-  return <details style={{ flex: "none", fontSize: 11 }}><summary>Диагностика переноса: последние 20 событий</summary>
-    <button type="button" onClick={() => { trace.current = []; if (output.current) output.current.value = "[]"; }}>Очистить диагностику</button>
-    <output ref={output} aria-label="Диагностика native drag" style={{ display: "block", maxHeight: 100, overflow: "auto", overflowWrap: "anywhere" }}>[]</output>
-  </details>;
+  const previewButtonStyle = { border: "1px solid #cbd5e1", borderRadius: 5, padding: "4px 8px", background: "#fff", color: "#334155", cursor: "pointer" };
+  return <>
+    <div style={{ flex: "none", display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", fontSize: 11 }}>
+      <button type="button" style={previewButtonStyle} onClick={() => showPreview("before")}>Показать указатель перед строкой 3</button>
+      <button type="button" style={previewButtonStyle} onClick={() => showPreview("after")}>Показать указатель после строки 3</button>
+      <button type="button" style={previewButtonStyle} onClick={() => preview.current?.clear()}>Скрыть указатель</button>
+    </div>
+    <details style={{ flex: "none", fontSize: 11 }}><summary>Диагностика переноса: последние 20 событий</summary>
+      <button type="button" onClick={() => { trace.current = []; if (output.current) output.current.value = "[]"; }}>Очистить диагностику</button>
+      <output ref={output} aria-label="Диагностика native drag" style={{ display: "block", maxHeight: 100, overflow: "auto", overflowWrap: "anywhere" }}>[]</output>
+    </details>
+  </>;
 }
 
 function NativeTable({ mode }: { mode: Mode }) {

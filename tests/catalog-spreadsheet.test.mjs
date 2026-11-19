@@ -183,6 +183,35 @@ test("project employee navigation uses a resettable ID filter and keeps all assi
   assert.throws(() => legacy.validateDrafts([duplicate], [blank.key]), /уже есть в таблице/);
 });
 
+test("adding unsaved catalog rows from a footer is undoable without reviving saved or cancelled drafts", () => {
+  const history = createCatalogDraftHistory();
+  let current = [];
+  const replace = rows => { current = rows; };
+  const sync = rows => { current = rows; history.synchronize(rows, replace); };
+  sync([]);
+  const first = draft("added", { name: "Новая зона" });
+  sync([first]);
+  assert.equal(history.getSnapshot().canUndo, true);
+  history.undo();
+  assert.deepEqual(current, []);
+  history.synchronize(current, replace);
+  history.redo();
+  assert.deepEqual(current, [first]);
+  history.synchronize(current, replace);
+  history.replace([{ ...first, name: "Правка" }]);
+  history.synchronize(current, replace);
+  sync([...current, draft("second")]);
+  history.undo();
+  assert.deepEqual(current, [{ ...first, name: "Правка" }]);
+  history.undo();
+  assert.deepEqual(current, [first]);
+  history.synchronize(current, replace);
+  sync([]); // Explicit save/cancel boundary, not an undo.
+  assert.deepEqual(history.getSnapshot(), { canUndo: false, canRedo: false });
+  history.undo();
+  assert.deepEqual(current, []);
+});
+
 test("catalog paste limit allows one thousand rows and rejects larger batches", () => {
   assert.throws(() => run({ rows: Array.from({ length: 1001 }, () => ({ values: { name: "Зона" } })) }), /не более 1000 строк/);
   const result = run({ rows: Array.from({ length: 1000 }, (_, index) => ({ values: { name: `Зона ${index}` } })) });

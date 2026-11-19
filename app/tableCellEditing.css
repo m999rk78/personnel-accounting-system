@@ -1,0 +1,94 @@
+/* The control owns the only editing outline; the cell and editor host are
+   layout wrappers, not additional input boxes. Scope this to table cells so
+   dialogs, filter inputs and dropdown search fields keep their focus styles. */
+.localized-grid .localized-grid-body .ag-cell:has(.ag-cell-editor-host),
+.localized-grid .localized-grid-body .ag-cell.ag-cell-inline-editing,
+.localized-grid .localized-grid-body .ag-cell.ag-cell-popup-editing,
+.ag-grid-shell .ag-cell.ag-cell-inline-editing,
+.ag-grid-shell .ag-cell.ag-cell-popup-editing {
+  border-color: transparent !important;
+  box-shadow: none !important;
+  outline: none;
+}
+
+.localized-grid-body .ag-cell-editor-host {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  max-height: 100%;
+  border: 0;
+  box-shadow: none;
+}
+
+.localized-grid-body .ag-cell-editor-host :is(.ag-inline-control, .custom-select-toggle) {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  min-height: 0;
+  padding-block: 0;
+  border: 1px solid #3b82f6;
+  border-radius: 4px;
+  outline: none;
+  box-shadow: none;
+  font-size: 12px;
+}
+
+/* Native AG Grid text/number/select editors use the same compact treatment. */
+:is(.localized-grid-body, .ag-grid-shell) .ag-cell.ag-cell-inline-editing {
+  --ag-input-height: 30px;
+  --ag-input-border: 1px solid #3b82f6;
+  --ag-input-focus-border: 1px solid #3b82f6;
+  --ag-input-focus-shadow: none;
+  --ag-picker-button-border: 1px solid #3b82f6;
+  --ag-picker-button-focus-border: 1px solid #3b82f6;
+}
+
+:is(.localized-grid-body, .ag-grid-shell) .ag-cell.ag-cell-inline-editing .ag-cell-edit-wrapper {
+  width: 100%;
+  height: 100%;
+  align-items: center;
+}
+
+:is(.localized-grid-body, .ag-grid-shell) .ag-cell.ag-cell-inline-editing .ag-cell-editor {
+  width: 100%;
+  height: 30px;
+  min-height: 0;
+}
+
+:is(.localized-grid-body, .ag-grid-shell) .ag-cell.ag-cell-inline-editing :is(input, textarea) {
+  box-sizing: border-box;
+  height: 30px;
+  min-height: 0;
+  padding: 0 8px;
+  border-radius: 4px;
+  outline: none;
+  box-shadow: none;
+  font-size: 12px;
+}
+
+/* Rich-select cell editors are portalled outside the grid, unlike filter
+   pickers. Keep their input frameless inside the single bordered trigger. */
+.ag-popup-editor .ag-rich-select {
+  --ag-input-height: 30px;
+  --ag-picker-button-border: 1px solid #3b82f6;
+  --ag-picker-button-focus-border: 1px solid #3b82f6;
+}
+
+.ag-popup-editor .ag-rich-select .ag-rich-select-value {
+  box-sizing: border-box;
+  height: 30px;
+  min-height: 0;
+  padding: 0 8px;
+  border-radius: 4px;
+  outline: none;
+  box-shadow: none;
+  font-size: 12px;
+}
+
+.ag-popup-editor .ag-rich-select input {
+  height: 28px;
+  min-height: 0;
+  outline: none;
+}

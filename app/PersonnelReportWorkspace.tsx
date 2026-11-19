@@ -26,6 +26,8 @@ import { personnelDraftContent, type PersonnelDraftPendingInput } from "./person
 import { usePersonnelReportDraftAutosave } from "./usePersonnelReportDraftAutosave";
 import type { PersonnelReportDraftSnapshot } from "./personnelReportDraftBuffer";
 import { personnelReportDeletionPlan, type PersonnelReportDeletionPlan } from "./personnelReportDeletion";
+import { isStatisticsPersonnel, reportRowMatchesSource, type ReportSourceFilter } from "./reportSourceFilter";
+import { ReportSourceNotice } from "./ReportSourceNotice";
 import "./personnelReport.css";
 
 const ReportGrid = lazy(() => import("./PersonnelReportGrid").then(module => ({ default: module.PersonnelReportGrid })));
@@ -62,6 +64,8 @@ export type PersonnelReportWorkspaceProps = {
   employees: GridEmployee[]; shifts: GridOption[]; zones: GridOption[]; mainWorkTypes: GridOption[]; subworkTypes: GridOption[]; masters: GridOption[];
   loading: boolean;
   onDirtyChange?: (dirty: boolean) => void;
+  reportSource?: ReportSourceFilter;
+  onClearReportSource?: () => void;
   employeeNavigationTargets?: PersonnelReportGridProps["employeeNavigationTargets"];
   onNavigateEmployee?: PersonnelReportGridProps["onNavigateEmployee"];
 };
@@ -618,7 +622,7 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
       const approved = personnelReportExcelRows(displayedRows, visible, selected, Object.keys(edits));
       const dates = [...new Set(approved.map(entry => entry.workDate))].sort();
       const range = dates.length === 1 ? dates[0] : `${dates[0]}–${dates.at(-1)}`;
-      const headers = ["Дата", "ФИО", "Тип", "Отдел", "Должность", "Прораб", "Смена", "Зона", "Вид работы", "Подвид работы", "Мастер", "Часы", "Примечание"];
+      const headers = ["Дата", "ФИО", "Тип", "Отдел", "Должность", "Заполнил", "Смена", "Зона", "Вид работы", "Подвид работы", "Мастер", "Часы", "Примечание"];
       const values = approved.map(entry => [entry.workDate, entry.employeeName, entry.employmentType, entry.department, entry.positionSnapshot, entry.responsibleUserName ?? "", entry.shiftName, entry.zoneName, entry.mainWorkTypeName, entry.subworkTypeName, entry.masterName, entry.hours, entry.note]);
       openExcelExportPreview({ version: 1, title: "Подтверждённые отчёты персонала", description: `${props.siteName} · ${range} · строк: ${values.length}`, fileName: excelFileName("Отчёт персонала", [props.siteName, range]), headers, rows: values, workbook: { kind: "table", sheetName: "Отчёты персонала", workbookTitle: `Отчёт персонала — ${props.siteName}`, rows: values } });
     } catch (failure) { setError(failure instanceof Error ? failure.message : "Не удалось открыть предпросмотр Excel."); }
@@ -637,7 +641,10 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
   const activeReview = activeView === "submitted" ? reviewItems.find(item => item.key === focusedReportKey) ?? reviewItems[0] : undefined;
   const focusedKey = activeReview?.key ?? (activeView === workflowView ? focusedReportKey : null);
   const focusedItem = reportItems.find(item => item.key === focusedKey);
-  const displayedRows = rows.filter(row => statusAccess[activeView].view && personnelReportMatchesView({ status: row.status, ownerUserId: row.responsibleUserId }, activeView, currentUser.id) && (!focusedKey || (row.proposalId ? String(row.proposalId) : row.draftGroupKey) === focusedKey));
+  const sourceRows = activeView === "approved" && props.reportSource ? rows.filter(row =>
+    reportRowMatchesSource(row, props.reportSource)
+    && isStatisticsPersonnel(row.entry?.employmentType || props.employees.find(employee => employee.id === row.entry?.employeeId)?.employmentType)) : rows;
+  const displayedRows = sourceRows.filter(row => statusAccess[activeView].view && personnelReportMatchesView({ status: row.status, ownerUserId: row.responsibleUserId }, activeView, currentUser.id) && (!focusedKey || (row.proposalId ? String(row.proposalId) : row.draftGroupKey) === focusedKey));
   const requiredRowKeys = rows.filter(row => requiredReports.includes(ownerByRow.get(row.rowKey) ?? "")).map(row => row.rowKey);
   const changeWorkflow = (view: PersonnelReportView, key: string | null = null) => { setWorkflowView(view); setFocusedReportKey(key); setSelected([]); setVisible(null); };
   const openSend = (keys?: string[]) => { const chosen = keys ?? defaultPersonnelReportSubmissions(submissionItems, currentUser.id); setSendKeys(chosen); setRequiredReports(chosen); setSendValidation(null); setReportsOpen(false); setError(""); setSendOpen(true); };
@@ -726,6 +733,7 @@ export function PersonnelReportWorkspace(props: PersonnelReportWorkspaceProps) {
       <p className="personnel-report-review-scope">В таблице только этот отчёт. Строк: {activeReview.rowCount} · {activeReview.hours} ч.{canEditSubmitted && " Проверяется целиком, отдельно от других прорабов и дат."}</p>
       {personnelReportReviewIssue(activeReview.report.id, Object.keys(edits)) && <p className="personnel-report-dialog-error">{personnelReportReviewIssue(activeReview.report.id, Object.keys(edits))}</p>}
     </section>}
+    {activeView === "approved" && props.reportSource && <ReportSourceNotice source={props.reportSource} zones={props.zones} personnel onClear={props.onClearReportSource} />}
     {!activeReview && focusedItem && <div className="personnel-report-focused-caption"><span><strong>{displayDate(focusedItem.workDate)} · {focusedItem.ownerName}</strong> · строк: {focusedItem.rowCount} · {focusedItem.hours} ч{focusedItem.report?.reviewComment && <small className="personnel-report-return-comment">Комментарий инженера: {focusedItem.report.reviewComment}</small>}</span><button type="button" onClick={() => changeWorkflow(workflowView)}>Показать все даты</button></div>}
     <Suspense fallback={<p role="status">Загружаем таблицу…</p>}><ReportGrid employeeNavigationTargets={props.employeeNavigationTargets} onNavigateEmployee={props.onNavigateEmployee} navigationDisabled={locked} rows={displayedRows} sizingRows={rows} preferenceScope={{ userId: currentUser.id, siteId }} selectionScope={activeView} today={today} loading={props.loading || fetching || importing || !autosave.ready} canCreate={permissions.create && !locked} canReview={canReview} employees={props.employees} shifts={props.shifts} zones={props.zones} mainWorkTypes={props.mainWorkTypes} subworkTypes={props.subworkTypes} masters={props.masters} onChangeDate={changeReportDate} onPatchDraft={patchDraft} onPendingDraftInput={(rowKey, field, value) => setPendingInput(value === null ? null : { rowKey, field, value })} onApplyRange={applyRange} requiredRowKeys={requiredRowKeys} emptyMessage={activeView === "submitted" ? "Нет отчётов на проверке" : activeView === "draft" ? "У вас пока нет черновиков" : "Нет подтверждённых отчётов"} history={{ undo: () => { if (!locked) dispatchEdits({ type: "undo" }); }, redo: () => { if (!locked) dispatchEdits({ type: "redo" }); }, canUndo: !locked && history.past.length > 0, canRedo: !locked && history.future.length > 0 }} onSelectionChange={setSelected} onCopyRows={copyRows} onRemoveDraft={permissions.delete ? removeDrafts : undefined} onRemoveApproved={canDeleteApproved ? beginApprovedDeletion : undefined} onValidationError={setError} onVisibleRowsChange={setVisible} footerStatus={footerStatus} footerActions={footerActions} /></Suspense>
     {deletion && <ReportDialog titleId="personnel-delete-title" onClose={() => setDeletion(null)} busy={locked} className="personnel-report-delete-modal">

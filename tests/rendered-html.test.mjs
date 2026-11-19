@@ -340,7 +340,7 @@ test("edits rows on double click and provides spreadsheet-style copy and paste",
   assert.match(filters, /api\.ensureIndexVisible\(nextRowIndex\)/);
   assert.match(filters, /api\.ensureColumnVisible\(columns\[nextColumnIndex\]\)/);
   assert.match(filters, /rowId: event\.node\.id/);
-  assert.match(filters, /api\.getRowNode\(current\.rowId\)/);
+  assert.match(filters, /spreadsheetPointRowIndex\(api, current\)/);
   assert.match(filters, /event\.key === "Escape"/);
   assert.match(filters, /spreadsheetSelectionResetKey/);
   assert.match(filters, /spreadsheetFocusRequestKey/);

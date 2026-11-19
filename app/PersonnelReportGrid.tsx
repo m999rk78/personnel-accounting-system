@@ -18,6 +18,7 @@ import { PERSONNEL_REPORT_COLUMN_SIZING, personnelReportColumnWidths } from "./p
 import { approvedReportRowTone, gridTheme } from "./gridTheme";
 import { SpreadsheetFilterHeader } from "./SpreadsheetFilterHeader";
 import { AgTablePageScroll } from "./TablePageScroll";
+import { formatReportAuthorName } from "./reportAuthorDisplay";
 import "./personnelReportGrid.css";
 
 export type PersonnelReportStatus = "draft" | "submitted" | "approved" | "rejected";
@@ -159,7 +160,7 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
       const family = window.getComputedStyle(sizingHost.current ?? document.body).fontFamily;
       const options = Object.fromEntries((["shifts", "zones", "mainWorkTypes", "subworkTypes", "masters"] as const).map(field => [field, new Map(current[field].map(option => [option.id, option]))])) as CatalogIndex["options"];
       const index: CatalogIndex = { employees: new Map(current.employees.map(employee => [employee.id, employee])), options };
-      const values = source.map(row => Object.fromEntries(Object.keys(PERSONNEL_REPORT_COLUMN_SIZING).map(field => [field, valueFor(row, field, current, index)])));
+      const values = source.map(row => Object.fromEntries(Object.keys(PERSONNEL_REPORT_COLUMN_SIZING).map(field => [field, field === "responsibleUserName" ? formatReportAuthorName(valueFor(row, field, current, index)) : valueFor(row, field, current, index)])));
       const widths = personnelReportColumnWidths(values, (text, bold) => {
         context.font = `${bold ? 650 : 400} 13px ${family}`;
         return context.measureText(text).width;
@@ -321,6 +322,7 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
     if (!row) return null;
     const field = params.column?.getColId() as EditableField;
     const value = params.value ?? "";
+    if (String(field) === "responsibleUserName") return <span title={String(value)}>{params.valueFormatted || "—"}</span>;
     if (String(field) === "workDate" && (row.dateEditable ?? row.editable) && propsRef.current.onChangeDate) return <ReportDatePicker workDate={row.workDate} scopeLabel={row.dateScopeLabel} disabled={!row.editable} onChange={workDate => propsRef.current.onChangeDate!(row, workDate)} />;
     const issue = canEdit(row) && row.draft ? personnelCellErrors(row.draft, propsRef.current, (propsRef.current.requireComplete || propsRef.current.requiredRowKeys?.includes(row.rowKey)))[field] : undefined;
     if (String(field) === "status") return <span className={`personnel-report-status ${row.status}`} title={row.reviewNote || statusLabels[row.status]}>{statusLabels[row.status]}{row.reviewNote && <span aria-label={row.reviewNote}> · ⓘ</span>}</span>;
@@ -353,7 +355,10 @@ export function PersonnelReportGrid(props: PersonnelReportGridProps) {
       })),
       { ...column("employeeName", "ФИО", 220, 2), pinned: "left", initialWidth: 280 },
       column("status", "Статус", 140),
-      column("responsibleUserName", "Ответственный", 190),
+      { ...column("responsibleUserName", "Заполнил", 140), initialWidth: 160, initialFlex: undefined,
+        headerTooltip: "Автор исходного отчёта", valueFormatter: ({ value }) => formatReportAuthorName(value),
+        // Keep names distinct and searchable even when their initials coincide.
+        filterValueGetter: valueGetter("responsibleUserName") },
       column("employmentType", "Тип", 80, .6),
       column("department", "Отдел", 125, .7),
       column("position", "Должность", 180, 1.4),

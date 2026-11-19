@@ -9,6 +9,8 @@ export const gridTheme = themeQuartz.withParams({
   borderColor: "#dedede",
   browserColorScheme: "light",
   cellHorizontalPadding: 12,
+  cellEditingBorder: false,
+  cellEditingShadow: false,
   fontFamily: "Inter, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
   fontSize: 13,
   foregroundColor: "#27272a",
