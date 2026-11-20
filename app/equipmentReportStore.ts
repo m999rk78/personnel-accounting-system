@@ -3,7 +3,7 @@ import type { AuthUser } from "./auth";
 import { equipmentExcelName } from "./equipmentExcel";
 import { equipmentUnavailableReason } from "./equipmentAvailability";
 import { rememberPersonnelImportOrder as rememberEquipmentImportOrder } from "./personnelImportOrderServer";
-import type { EquipmentReport, EquipmentReportApprovedEntry, EquipmentReportAvailabilityMark, EquipmentReportData, EquipmentReportEntrySaveRequest, EquipmentReportDateRequest, EquipmentReportEntryDateRequest, EquipmentReportRequest, EquipmentReportRow, EquipmentReportRowValidationIssue, EquipmentReportValidationIssue, EquipmentReportValidationRequest, EquipmentReportValidationResult } from "./equipmentReportTypes";
+import type { EquipmentReport, EquipmentReportApprovedEntry, EquipmentReportAvailabilityMark, EquipmentReportData, EquipmentReportDeleteApprovedRequest, EquipmentReportEntrySaveRequest, EquipmentReportDateRequest, EquipmentReportEntryDateRequest, EquipmentReportRequest, EquipmentReportRow, EquipmentReportRowValidationIssue, EquipmentReportValidationIssue, EquipmentReportValidationRequest, EquipmentReportValidationResult } from "./equipmentReportTypes";
 import {
   hasReportStatusPermission, assertCanSaveEquipmentReport, assertEquipmentReportHours, assertEquipmentReportOwner,
   assertEquipmentReportRevision, assertEquipmentReportSiteAccess, canReviewEquipmentReport, canViewPendingReportsFor,
@@ -540,7 +540,81 @@ export async function changeEquipmentReportEntryDate(database: PostgresDatabase,
   });
 }
 
-export async function mutateEquipmentReport(database: PostgresDatabase, user: AuthUser, payload: Exclude<EquipmentReportRequest, EquipmentReportEntrySaveRequest | EquipmentReportValidationRequest | EquipmentReportEntryDateRequest>): Promise<EquipmentReport> {
+export async function deleteEquipmentReportApprovedRows(database: PostgresDatabase, user: AuthUser, payload: EquipmentReportDeleteApprovedRequest): Promise<{ deletedEntryIds: number[] }> {
+  if (!hasReportStatusPermission(user.permissions, "equipment_report", "approved", "delete")) {
+    throw new EquipmentReportError("Нет права удалять подтверждённые записи отчётов техники.", 403, "REPORT_FORBIDDEN");
+  }
+  if (!positiveId(payload.siteId) || !Array.isArray(payload.rows) || !payload.rows.length || payload.rows.length > 5000) {
+    throw new EquipmentReportError("Выберите проект и от 1 до 5000 подтверждённых строк.");
+  }
+  const selected = new Map<number, EquipmentReportDeleteApprovedRequest["rows"][number]>();
+  const expectedReports = new Map<number, number>();
+  for (const row of payload.rows) {
+    if (!row || typeof row !== "object" || !positiveId(row.entryId) || !positiveId(row.revision) || selected.has(row.entryId)
+      || (row.reportId !== undefined || row.reportRevision !== undefined) && (!positiveId(row.reportId) || !positiveId(row.reportRevision))) {
+      throw new EquipmentReportError("Некорректные или повторяющиеся строки для удаления.");
+    }
+    selected.set(row.entryId, row);
+    if (row.reportId !== undefined) {
+      if (expectedReports.has(row.reportId) && expectedReports.get(row.reportId) !== row.reportRevision) {
+        throw new EquipmentReportError("Указаны разные версии одного отчёта. Обновите таблицу.", 409, "STALE_REPORT");
+      }
+      expectedReports.set(row.reportId, row.reportRevision!);
+    }
+  }
+  const entryIds = [...selected.keys()].sort((left, right) => left - right);
+  const reportIds = [...expectedReports.keys()].sort((left, right) => left - right);
+  return database.transaction(async db => {
+    await assertActiveSite(db, user, payload.siteId);
+    // Match save/date-change lock order: every report, then entries, then hour limits.
+    const reports = reportIds.length ? await db.prepare(`SELECT id, site_id AS siteId, work_date AS workDate, status, revision, owner_user_id AS ownerUserId
+      FROM equipment_reports WHERE id = ANY(?) ORDER BY id FOR UPDATE`).bind(reportIds)
+      .all<Pick<EquipmentReport, "id" | "siteId" | "workDate" | "status" | "revision" | "ownerUserId">>() : { results: [] };
+    if (reports.results.length !== reportIds.length) throw new EquipmentReportError("Один из отчётов уже изменён. Обновите таблицу.", 409, "STALE_REPORT");
+    const reportsById = new Map(reports.results.map(report => [report.id, report]));
+    for (const report of reports.results) {
+      if (report.siteId !== payload.siteId) throw new EquipmentReportError("Нет доступа к строкам другого проекта.", 403, "REPORT_FORBIDDEN");
+      if (user.role === "foreman" && report.ownerUserId !== user.id) throw new EquipmentReportError("Прорабу доступны только свои отчёты.", 403, "REPORT_FORBIDDEN");
+      if (report.status !== "approved") throw new EquipmentReportError("Состояние отчёта изменилось. Обновите таблицу.", 409, "STALE_REPORT");
+      assertEquipmentReportRevision(report.revision, expectedReports.get(report.id));
+    }
+    const entries = await db.prepare(`SELECT entry.id, entry.site_id AS siteId, entry.work_date AS workDate,
+      entry.equipment_id AS equipmentId, entry.revision, entry.responsible_user_id AS responsibleUserId, source.id AS reportRowId, source.report_id AS reportId
+      FROM equipment_entries entry LEFT JOIN equipment_report_rows source ON source.approved_entry_id = entry.id
+      WHERE entry.id = ANY(?) AND entry.deleted_at IS NULL ORDER BY entry.id FOR UPDATE OF entry`).bind(entryIds)
+      .all<{ id: number; siteId: number; workDate: string; equipmentId: number; revision: number; responsibleUserId: number | null; reportRowId: number | null; reportId: number | null }>();
+    if (entries.results.length !== entryIds.length) throw new EquipmentReportError("Одна из записей уже удалена или изменена. Обновите таблицу.", 409, "STALE_REPORT");
+    for (const entry of entries.results) {
+      if (entry.siteId !== payload.siteId) throw new EquipmentReportError("Нет доступа к строкам другого проекта.", 403, "REPORT_FORBIDDEN");
+      if (user.role === "foreman" && entry.responsibleUserId !== user.id) throw new EquipmentReportError("Прорабу доступны только свои записи.", 403, "REPORT_FORBIDDEN");
+      const requested = selected.get(entry.id)!;
+      assertEquipmentReportRevision(entry.revision, requested.revision);
+      if ((entry.reportId ?? undefined) !== requested.reportId) throw new EquipmentReportError("Запись относится к другому отчёту. Обновите таблицу.", 409, "STALE_REPORT");
+      if (entry.reportId && reportsById.get(entry.reportId)?.workDate !== entry.workDate) {
+        throw new EquipmentReportError("Дата записи не совпадает с датой отчёта. Обновите таблицу.", 409, "STALE_REPORT");
+      }
+    }
+    const hourKeys = [...new Set(entries.results.map(entry => `${entry.workDate}:${entry.equipmentId}`))].sort();
+    for (const key of hourKeys) await db.prepare("SELECT pg_advisory_xact_lock(hashtext(?))").bind(`equipment-hours:${key}`).first();
+    const deleted = await db.prepare(`UPDATE equipment_entries SET deleted_at = clock_timestamp(), updated_at = clock_timestamp(),
+      updated_by_user_id = ?, revision = revision + 1 WHERE id = ANY(?) AND deleted_at IS NULL RETURNING id`)
+      .bind(user.id, entryIds).all<{ id: number }>();
+    if (deleted.results.length !== entryIds.length) throw new EquipmentReportError("Не все записи удалось удалить. Обновите таблицу.", 409, "STALE_REPORT");
+    const reportRowIds = entries.results.flatMap(entry => entry.reportRowId ? [entry.reportRowId] : []);
+    if (reportRowIds.length) {
+      const removed = await db.prepare("DELETE FROM equipment_report_rows WHERE id = ANY(?) AND approved_entry_id = ANY(?) RETURNING id")
+        .bind(reportRowIds, entryIds).all<{ id: number }>();
+      if (removed.results.length !== reportRowIds.length) throw new EquipmentReportError("Строки отчёта уже изменены. Обновите таблицу.", 409, "STALE_REPORT");
+      const updated = await db.prepare(`UPDATE equipment_reports SET revision = revision + 1, updated_by_user_id = ?, updated_at = clock_timestamp()
+        WHERE id = ANY(?) RETURNING id`).bind(user.id, reportIds).all<{ id: number }>();
+      if (updated.results.length !== reportIds.length) throw new EquipmentReportError("Отчёты уже изменены. Обновите таблицу.", 409, "STALE_REPORT");
+    }
+    // Preserve report/day headers and independent manual timesheet marks, even after the last row.
+    return { deletedEntryIds: entryIds };
+  });
+}
+
+export async function mutateEquipmentReport(database: PostgresDatabase, user: AuthUser, payload: Exclude<EquipmentReportRequest, EquipmentReportEntrySaveRequest | EquipmentReportValidationRequest | EquipmentReportEntryDateRequest | EquipmentReportDeleteApprovedRequest>): Promise<EquipmentReport> {
   if (!(["draft", "submitted", "approved"] as const).some(status => (["create", "update", "delete"] as const).some(action => hasReportStatusPermission(user.permissions, "equipment_report", status, action)))) throw new EquipmentReportError("Нет права изменять отчёты.", 403, "REPORT_FORBIDDEN");
   return database.transaction(async (db) => {
     if (payload.action === "change-date") return changeEquipmentReportDate(db, user, payload);

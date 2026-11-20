@@ -123,6 +123,17 @@ export type EquipmentReportEntrySaveRequest = {
   row: EquipmentReportDraftRow;
 };
 
+export type EquipmentReportDeleteApprovedRequest = {
+  action: "delete-approved-rows";
+  siteId: number;
+  rows: Array<{
+    entryId: number;
+    revision: number;
+    reportId?: number;
+    reportRevision?: number;
+  }>;
+};
+
 export type EquipmentReportRowValidationIssue = {
   rowNumbers?: number[];
   equipmentId?: number;
@@ -155,6 +166,6 @@ export type EquipmentReportValidationRequest = {
 
 export type EquipmentReportValidationResult = { issues: EquipmentReportValidationIssue[] };
 
-export type EquipmentReportRequest = EquipmentReportSaveRequest | EquipmentReportTransitionRequest | EquipmentReportEntrySaveRequest | EquipmentReportValidationRequest | EquipmentReportDateRequest | EquipmentReportEntryDateRequest;
+export type EquipmentReportRequest = EquipmentReportSaveRequest | EquipmentReportTransitionRequest | EquipmentReportEntrySaveRequest | EquipmentReportValidationRequest | EquipmentReportDateRequest | EquipmentReportEntryDateRequest | EquipmentReportDeleteApprovedRequest;
 
 export type EquipmentReportAvailabilityMark = { equipmentId: number; workDate: string; productiveHours: number; downtimeHours: number; note: string };

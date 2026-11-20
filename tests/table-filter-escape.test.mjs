@@ -63,6 +63,7 @@ class FakeElement extends FakeNode {
 
 function harness() {
   const doc = new Events(), view = new Events();
+  const resizeCalls = [], constrainCalls = [];
   doc.body = new FakeElement("body"); doc.body.document = doc;
   doc.activeElement = doc.body; doc.defaultView = view;
   doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
@@ -78,6 +79,8 @@ function harness() {
     getComputedStyle: element => ({ visibility: element.visibility }),
     useRef, useEffect, useLayoutEffect: useEffect, useCallback,
     columnFilterVisibility: () => ({ getAnchor: () => null }),
+    makeFilterPopupResizable: popup => { resizeCalls.push(["install", popup]); return () => resizeCalls.push(["cleanup", popup]); },
+    constrainResizedFilterPopup: popup => { constrainCalls.push(popup); return Boolean(popup.manuallySized); },
   };
   const code = new Function(...Object.keys(environment), `${compiled}; return { createTableFilterEscapeController, useGridFilterEscape, useTableEscapeSelection };`)(...Object.values(environment));
   const controller = code.createTableFilterEscapeController(doc);
@@ -96,7 +99,7 @@ function harness() {
     return state;
   };
   const renderHook = options => { cursor = 0; return code.useGridFilterEscape(options); };
-  return { doc, view, create, fire, owner, renderHook, code, cleanup: () => slots.forEach(slot => slot.cleanup?.()) };
+  return { doc, view, create, fire, owner, renderHook, code, resizeCalls, constrainCalls, cleanup: () => slots.forEach(slot => slot.cleanup?.()) };
 }
 
 test("one Escape resets the active table, consumes the event, and the next reaches selection", () => {
@@ -199,12 +202,15 @@ test("AG Grid mouse-driven drag and column resize own Escape without native drag
 });
 
 function grid(ui) {
+  const events = new Events();
   const state = { destroyed: false, filters: { fullName: { filterType: "set", values: ["Сотрудник"] }, hours: { filterType: "number", type: "greaterThan", filter: 4 } }, editing: [], popup: null, calls: [], sort: [{ colId: "hours", sort: "desc" }] };
   const api = {
+    addEventListener: (name, callback) => events.addEventListener(name, callback),
+    removeEventListener: (name, callback) => events.removeEventListener(name, callback),
     isDestroyed: () => state.destroyed, getFilterModel: () => state.filters, getEditingCells: () => state.editing,
     setFilterModel: value => { state.calls.push(["setFilterModel", value]); state.filters = value ?? {}; },
     doFilterAction: action => state.calls.push(["doFilterAction", action]),
-    hideColumnFilter: () => { state.calls.push(["hideColumnFilter"]); if (state.popup) state.popup.connected = false; },
+    hideColumnFilter: () => { state.calls.push(["hideColumnFilter"]); if (state.popup) state.popup.connected = false; events.emit("columnMenuVisibleChanged", { visible: false, key: "columnFilter" }, false); },
   };
   const open = (track, anchor, checklist = true) => {
     state.popup = ui.create(undefined, "div", { classes: ["ag-menu", "ag-filter-menu"] });
@@ -212,8 +218,113 @@ function grid(ui) {
     track({ api, column: { getColId: () => "fullName" }, ePopup: state.popup, eventSource: anchor }, anchor);
     return ui.create(state.popup, "input");
   };
-  return { state, api, open };
+  return { state, api, open, events };
 }
+
+test("popup resize lifecycle cleans up on close and can attach again to a reused popup", () => {
+  const ui = harness(), root = ui.create(), anchor = ui.create(root, "button"), ag = grid(ui);
+  const track = ui.renderHook({ api: ag.api, getRoot: () => root });
+  ag.open(track, anchor);
+  const popup = ag.state.popup, params = { api: ag.api, column: { getColId: () => "fullName" }, ePopup: popup };
+  track(params, anchor);
+  assert.deepEqual(ui.resizeCalls.map(([action]) => action), ["install"], "repeated AG placement must not duplicate the grip");
+  ag.api.hideColumnFilter();
+  assert.deepEqual(ui.resizeCalls.map(([action]) => action), ["install", "cleanup"]);
+  popup.connected = true;
+  track(params, anchor);
+  assert.deepEqual(ui.resizeCalls.map(([action]) => action), ["install", "cleanup", "install"]);
+  ui.cleanup();
+  assert.deepEqual(ui.resizeCalls.map(([action]) => action), ["install", "cleanup", "install", "cleanup"]);
+  assert.equal(ag.events.count("columnMenuVisibleChanged", false), 0);
+});
+
+test("compact condition submenus receive one resize grip and clean up with their owning filter", () => {
+  for (const ending of ["close", "unmount"]) {
+    const ui = harness(), root = ui.create(), anchor = ui.create(root, "button"), ag = grid(ui);
+    const track = ui.renderHook({ api: ag.api, getRoot: () => root });
+    ag.open(track, anchor, false);
+    const popup = ui.create(undefined, "div", { classes: ["ag-menu"] });
+    ui.create(popup, "div", { classes: ["ag-filter-body-wrapper"] });
+    const params = { api: ag.api, type: "subMenu", ePopup: popup };
+    track(params); track(params);
+    assert.deepEqual(ui.resizeCalls.map(([action]) => action), ["install", "install"]);
+    assert.equal(ui.resizeCalls[1][1], popup);
+    assert.deepEqual(ui.constrainCalls, [popup, popup], "every AG placement must reapply the child popup's chosen geometry");
+    if (ending === "close") ag.api.hideColumnFilter(); else ui.cleanup();
+    assert.deepEqual(ui.resizeCalls.map(([action]) => action), ["install", "install", "cleanup", "cleanup"]);
+    assert.deepEqual(ui.resizeCalls.filter(([action]) => action === "cleanup").map(([, popup]) => popup), [ag.state.popup, popup]);
+    ui.cleanup();
+    assert.equal(ui.resizeCalls.length, 4, "unmounting a closed filter cannot clean the same grip twice");
+  }
+});
+
+test("AG's delayed condition-menu positioning reconstrains an already resized child without replacing its grip", () => {
+  const ui = harness(), root = ui.create(), anchor = ui.create(root, "button"), ag = grid(ui);
+  const track = ui.renderHook({ api: ag.api, getRoot: () => root });
+  ag.open(track, anchor, false);
+  const child = ui.create(undefined, "div", { classes: ["ag-menu"] });
+  ui.create(child, "div", { classes: ["ag-filter-body-wrapper"] });
+  const params = { api: ag.api, type: "subMenu", ePopup: child };
+  track(params);
+  child.manuallySized = true;
+  track(params);
+  assert.deepEqual(ui.constrainCalls, [child, child]);
+  assert.equal(ui.resizeCalls.filter(([action, popup]) => action === "install" && popup === child).length, 1);
+  assert.deepEqual(ag.state.calls, [], "positioning a resized condition popup must not apply or cancel its criteria");
+  ui.cleanup();
+});
+
+test("opening another compact condition popup releases detached child listeners", () => {
+  const ui = harness(), root = ui.create(), anchor = ui.create(root, "button"), ag = grid(ui);
+  const track = ui.renderHook({ api: ag.api, getRoot: () => root });
+  ag.open(track, anchor, false);
+  const first = ui.create(undefined, "div", { classes: ["ag-menu"] });
+  ui.create(first, "div", { classes: ["ag-filter-body-wrapper"] });
+  track({ api: ag.api, type: "subMenu", ePopup: first });
+  first.connected = false;
+  const next = ui.create(undefined, "div", { classes: ["ag-menu"] });
+  ui.create(next, "div", { classes: ["ag-filter-body-wrapper"] });
+  track({ api: ag.api, type: "subMenu", ePopup: next });
+  assert.deepEqual(ui.resizeCalls.slice(1), [["install", first], ["cleanup", first], ["install", next]]);
+  ui.cleanup();
+  assert.equal(ui.resizeCalls.filter(([action, popup]) => action === "cleanup" && popup === first).length, 1);
+  assert.equal(ui.resizeCalls.filter(([action, popup]) => action === "cleanup" && popup === next).length, 1);
+});
+
+test("ordinary option dropdowns, column menus and context menus do not get filter resize controls", () => {
+  const ui = harness(), root = ui.create(), ag = grid(ui);
+  const track = ui.renderHook({ api: ag.api, getRoot: () => root });
+  for (const [type, className] of [["subMenu", "ag-select-list"], ["columnMenu", "ag-menu-list"], ["contextMenu", "ag-filter-body-wrapper"]]) {
+    const popup = ui.create(undefined, "div", { classes: ["ag-menu"], attrs: { role: "menu" } });
+    ui.create(popup, "div", { classes: [className] });
+    track({ api: ag.api, type, ePopup: popup });
+  }
+  assert.deepEqual(ui.resizeCalls, []);
+  ui.cleanup();
+});
+
+test("Escape in a separate condition popup or its resize grip belongs to the child before its parent filter", () => {
+  const ui = harness(), root = ui.create(), anchor = ui.create(root, "button"), ag = grid(ui);
+  const track = ui.renderHook({ api: ag.api, getRoot: () => root });
+  const parentInput = ag.open(track, anchor, false);
+  // AG's condition wrapper is role=presentation, so the generic menu/dialog
+  // exclusions do not identify it. The resize controller's own class does.
+  const child = ui.create(undefined, "div", { classes: ["ag-menu", "resizable-filter-popup"], attrs: { role: "presentation" } });
+  ui.create(child, "div", { classes: ["ag-filter-body-wrapper"] });
+  track({ api: ag.api, type: "subMenu", ePopup: child });
+  const childInput = ui.create(child, "input"), grip = ui.create(child, "button", { classes: ["filter-popup-resize-handle"] });
+  for (const target of [childInput, grip]) {
+    const escape = ui.fire("keydown", target);
+    assert.equal(escape.defaultPrevented, false, "the parent's capture handler must leave Escape for AG's child menu");
+    assert.deepEqual(ag.state.calls, []);
+    assert.equal(ag.state.popup.isConnected, true);
+    assert.equal(Object.keys(ag.state.filters).length, 2);
+  }
+  child.connected = false;
+  ui.fire("keydown", parentInput);
+  assert.deepEqual(ag.state.calls, [["doFilterAction", { colId: "fullName", action: "cancel" }], ["hideColumnFilter"]]);
+  ui.cleanup();
+});
 
 test("real hook closes checklist first, restores focus, then clears all column filters without changing sorts", () => {
   const ui = harness(), root = ui.create(), anchor = ui.create(root, "button"), ag = grid(ui);

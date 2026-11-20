@@ -16,7 +16,7 @@ async function loadTypeScript(path, replacements = {}) {
   return import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 }
 const { PostgresDatabase, PostgresStatement } = await loadTypeScript("../db/client.ts", { pg: import.meta.resolve("pg") });
-const { mutateEquipmentReport, mutateEquipmentReportEntry, listEquipmentReports, validateEquipmentReportSubmissions } = await loadTypeScript("../app/equipmentReportStore.ts", {
+const { mutateEquipmentReport, mutateEquipmentReportEntry, deleteEquipmentReportApprovedRows, listEquipmentReports, validateEquipmentReportSubmissions } = await loadTypeScript("../app/equipmentReportStore.ts", {
   "./equipmentReportWorkflow": new URL("../app/equipmentReportWorkflow.ts", import.meta.url).href,
   "./equipmentExcel": new URL("../app/equipmentExcel.ts", import.meta.url).href,
   "./equipmentAvailability": new URL("../app/equipmentAvailability.ts", import.meta.url).href,
@@ -151,6 +151,62 @@ try {
   assert.equal(edited.hours, 6);
   await assert.rejects(mutateEquipmentReportEntry(scoped, engineer, { action: "save-approved-entry", entryId: publishedId, revision: report.rows[0].approvedEntryRevision, siteId, workDate: report.workDate, row }), code("STALE_REPORT"));
 
+  // Exact approved-row deletions exercise the actual PostgreSQL locks, joins,
+  // source unlinking and optimistic revisions, inside this rolled-back tx.
+  const approve = async (user, workDate, rows) => transition(engineer, await transition(user, await save(user, workDate, rows), "submit"), "approve");
+  const deletionDay = "2026-10-09";
+  let deletionReport = await approve(foreman, deletionDay, [{ ...row, hours: 6 }, { ...row, hours: 4 }]);
+  const otherDeletionReport = await approve(otherForeman, deletionDay, [{ ...row, hours: 3 }]);
+  await connection.query("INSERT INTO equipment_timesheet_marks(site_id,equipment_id,work_date,productive_hours,downtime_hours,note,created_by) VALUES ($1,$2,$3,2,1,'Независимая ручная отметка',$4)", [siteId, equipmentId, deletionDay, marker]);
+  const standaloneDeletionId = await legacy("2026-10-10", 5);
+  await connection.query("UPDATE equipment_entries SET responsible_user_id=$1 WHERE id=$2", [foremanId, standaloneDeletionId]);
+  const foreignDeletionId = await legacy("2026-10-11", 2, otherSiteId);
+  const target = (header, index = 0) => ({ entryId: header.rows[index].approvedEntryId, revision: header.rows[index].approvedEntryRevision, reportId: header.id, reportRevision: header.revision });
+  const request = rows => ({ action: "delete-approved-rows", siteId, rows });
+  const standaloneTarget = { entryId: standaloneDeletionId, revision: Number((await connection.query("SELECT revision FROM equipment_entries WHERE id=$1", [standaloneDeletionId])).rows[0].revision) };
+  const deletionState = async () => Promise.all([
+    "SELECT id,revision,deleted_at,hours,responsible_user_id FROM equipment_entries WHERE site_id=ANY($1) ORDER BY id",
+    "SELECT id,revision,status FROM equipment_reports WHERE site_id=ANY($1) ORDER BY id",
+    "SELECT source.id,source.report_id,source.approved_entry_id,source.row_order FROM equipment_report_rows source JOIN equipment_reports report ON report.id=source.report_id WHERE report.site_id=ANY($1) ORDER BY source.id",
+    "SELECT * FROM equipment_timesheet_marks WHERE site_id=ANY($1) ORDER BY id",
+    "SELECT * FROM equipment_report_days WHERE site_id=ANY($1) ORDER BY site_id,work_date",
+  ].map(async sql => (await connection.query(sql, [[siteId, otherSiteId]])).rows));
+  const initialDeletionState = await deletionState();
+  await assert.rejects(deleteEquipmentReportApprovedRows(scoped, engineer, request([target(deletionReport, 1), { ...standaloneTarget, revision: standaloneTarget.revision + 1 }])), code("STALE_REPORT"));
+  assert.deepEqual(await deletionState(), initialDeletionState, "A stale row rolls back the entire selected set");
+  await assert.rejects(deleteEquipmentReportApprovedRows(scoped, engineer, request([target(deletionReport, 1), { entryId: foreignDeletionId, revision: 1 }])), code("REPORT_FORBIDDEN"));
+  assert.deepEqual(await deletionState(), initialDeletionState, "A foreign-project row cannot partially delete valid rows");
+  await assert.rejects(deleteEquipmentReportApprovedRows(scoped, foreman, request([target(deletionReport, 1)])), code("REPORT_FORBIDDEN"));
+  const grantedForeman = { ...foreman, permissions: rolePermissionTemplate("engineer") };
+  await assert.rejects(deleteEquipmentReportApprovedRows(scoped, grantedForeman, request([target(otherDeletionReport)])), code("REPORT_FORBIDDEN"));
+  assert.deepEqual(await deletionState(), initialDeletionState, "An explicit grant does not bypass foreman ownership");
+  const chosen = target(deletionReport, 1), retained = deletionReport.rows[0];
+  assert.deepEqual(await deleteEquipmentReportApprovedRows(scoped, grantedForeman, request([chosen])), { deletedEntryIds: [chosen.entryId] });
+  deletionReport = await read(deletionReport);
+  assert.deepEqual(deletionReport.rows.map(row => row.id), [retained.id]);
+  assert.equal(deletionReport.status, "approved"); assert.equal(deletionReport.revision, chosen.reportRevision + 1);
+  assert.equal(await total(deletionDay), 9, "Only the selected four report hours disappear");
+  const deletedEntry = (await connection.query("SELECT deleted_at,revision,updated_by_user_id,responsible_user_id,hours FROM equipment_entries WHERE id=$1", [chosen.entryId])).rows[0];
+  assert.ok(deletedEntry.deleted_at); assert.equal(deletedEntry.revision, chosen.revision + 1);
+  assert.equal(deletedEntry.updated_by_user_id, foremanId); assert.equal(deletedEntry.responsible_user_id, foremanId); assert.equal(deletedEntry.hours, 4);
+  assert.equal((await connection.query("SELECT COUNT(*)::int AS count FROM equipment_report_rows WHERE approved_entry_id=$1", [chosen.entryId])).rows[0].count, 0, "The deleted entry's source link is removed");
+  const afterPartialDeletion = await deletionState();
+  assert.deepEqual(afterPartialDeletion[3], initialDeletionState[3], "Independent manual work/downtime marks survive");
+  assert.deepEqual(afterPartialDeletion[4], initialDeletionState[4], "Published-day markers survive");
+  await assert.rejects(deleteEquipmentReportApprovedRows(scoped, engineer, request([chosen])), code("STALE_REPORT"));
+  assert.deepEqual(await deletionState(), afterPartialDeletion, "Repeating a stale confirmation cannot delete another row");
+  const remainingBefore = structuredClone(deletionReport);
+  const lastOther = target(otherDeletionReport);
+  assert.deepEqual(await deleteEquipmentReportApprovedRows(scoped, engineer, request([lastOther, standaloneTarget])), {
+    deletedEntryIds: [lastOther.entryId, standaloneDeletionId].sort((left, right) => left - right),
+  });
+  assert.deepEqual(await read(deletionReport), remainingBefore, "Deleting another report and a standalone entry preserves the retained report");
+  const emptyHeader = await read(otherDeletionReport);
+  assert.equal(emptyHeader.status, "approved"); assert.equal(emptyHeader.revision, otherDeletionReport.revision + 1); assert.equal(emptyHeader.rows.length, 0);
+  assert.equal(await total(deletionDay), 6); assert.equal(await total("2026-10-10"), 0);
+  const afterBulkDeletion = await deletionState();
+  assert.deepEqual(afterBulkDeletion[3], initialDeletionState[3]); assert.deepEqual(afterBulkDeletion[4], initialDeletionState[4]);
+
   // Unchanged historical identities remain editable after catalog retirement;
   // selecting that archived unit in a new draft is still forbidden.
   await connection.query("UPDATE equipment_units SET active=0 WHERE id=$1", [equipmentId]);
@@ -162,7 +218,7 @@ try {
   const historical = await mutateEquipmentReportEntry(scoped, engineer, { action: "save-approved-entry", entryId: edited.id, revision: edited.revision, siteId, workDate: edited.workDate, row: { ...row, hours: 5, note: "История" } });
   assert.equal(historical.hours, 5);
   await assert.rejects(save(foreman, "2026-10-08", [row]), code("INVALID_EQUIPMENT"));
-  process.stdout.write("Equipment report workflow integration passed (all changes rolled back).\n");
+  process.stdout.write("Equipment report workflow and approved-row deletion integration passed (all changes rolled back).\n");
 } finally {
   await connection.query("ROLLBACK");
   connection.release();

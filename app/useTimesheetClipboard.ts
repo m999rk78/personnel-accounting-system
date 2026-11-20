@@ -90,11 +90,12 @@ function scrollCellIntoVisibleArea(shell: HTMLDivElement, point: ClipboardPoint)
   const lastHeaderCell = shell.querySelector<HTMLElement>(".timesheet-table thead tr:last-child th");
   const footerCell = shell.querySelector<HTMLElement>(".timesheet-table tfoot th, .timesheet-table tfoot td");
   const stickyCells = Array.from(cell.closest("tr")?.querySelectorAll<HTMLElement>(".timesheet-sticky") ?? [])
-    .map((stickyCell) => stickyCell.getBoundingClientRect())
-    .filter((rect) => rect.width > 0 && rect.height > 0);
+    .map(stickyCell => ({ rect: stickyCell.getBoundingClientRect(), right: stickyCell.dataset.timesheetPin === "right" }))
+    .filter(({ rect }) => rect.width > 0 && rect.height > 0);
   const visibleTop = Math.max(shellRect.top, lastHeaderCell?.getBoundingClientRect().bottom ?? shellRect.top);
   const visibleBottom = Math.min(shellRect.bottom, footerCell?.getBoundingClientRect().top ?? shellRect.bottom);
-  const visibleLeft = Math.max(shellRect.left, ...stickyCells.map((rect) => rect.right));
+  const visibleLeft = Math.max(shellRect.left, ...stickyCells.filter(cell => !cell.right).map(({ rect }) => rect.right));
+  const visibleRight = Math.min(shellRect.right, ...stickyCells.filter(cell => cell.right).map(({ rect }) => rect.left));
   const verticalOffset = cellRect.top < visibleTop
     ? cellRect.top - visibleTop
     : cellRect.bottom > visibleBottom
@@ -102,8 +103,8 @@ function scrollCellIntoVisibleArea(shell: HTMLDivElement, point: ClipboardPoint)
       : 0;
   const horizontalOffset = cell.classList.contains("timesheet-sticky") ? 0 : cellRect.left < visibleLeft
     ? cellRect.left - visibleLeft
-    : cellRect.right > shellRect.right
-      ? cellRect.right - shellRect.right
+    : cellRect.right > visibleRight
+      ? cellRect.right - visibleRight
       : 0;
 
   if (verticalOffset || horizontalOffset) {

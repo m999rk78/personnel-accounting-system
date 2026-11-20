@@ -8,6 +8,11 @@ function fixture(t) {
   t.after(() => sql.close());
   // Match PostgreSQL's Unicode case conversion while executing the real queries.
   sql.function("upper", value => value?.toUpperCase() ?? null);
+  sql.aggregate("json_agg", {
+    start: () => [],
+    step: (values, value) => { values.push(value); return values; },
+    result: values => JSON.stringify(values),
+  });
   sql.exec(`
     CREATE TABLE employees (id INTEGER PRIMARY KEY, employment_type TEXT, position TEXT, active INTEGER);
     CREATE TABLE zones (id INTEGER PRIMARY KEY, site_id INTEGER, name TEXT, active INTEGER);
@@ -41,7 +46,14 @@ function fixture(t) {
       return {
         bind(...values) {
           queries.push({ query, values });
-          return { async all() { return { results: sql.prepare(query).all(...values) }; } };
+          return {
+            async all() {
+              // node-postgres decodes JSON columns into JavaScript values.
+              const results = sql.prepare(query).all(...values).map(row => row.employeeIds === undefined
+                ? row : { ...row, employeeIds: JSON.parse(row.employeeIds) });
+              return { results };
+            },
+          };
         },
       };
     },
@@ -120,6 +132,56 @@ test("personnel grouping uses saved position and employment history even after e
   assert.equal(rows[2].zone, "Без зоны");
 });
 
+test("personnel counts deduplicate employees across report owners, days, zones and saved position variants", async t => {
+  const { db, queries, personnel } = fixture(t);
+  personnel({ id: 1, date: "2026-11-01", employee: 1, hours: 2, position: "Сварщик" });
+  personnel({ id: 2, date: "2026-11-01", employee: 1, hours: 3, position: "Сварщик", owner: 101 });
+  personnel({ id: 3, date: "2026-11-01", employee: 1, hours: 1, position: "Электрогазосварщик" });
+  personnel({ id: 4, date: "2026-11-02", employee: 1, hours: 4, position: "Монтажник" });
+  personnel({ id: 5, date: "2026-11-01", employee: 2, hours: 8, position: "Монтажник" });
+  personnel({ id: 6, date: "2026-11-01", employee: 3, hours: 0, position: "Кладовщик" });
+  personnel({ id: 7, date: "2026-11-01", employee: 1, zone: 11, hours: 2, position: "Сварщик" });
+  personnel({ id: 8, date: "2026-11-01", employee: 2, zone: null, hours: 1, position: "Монтажник" });
+  personnel({ id: 9, date: "2026-11-01", employee: 4, hours: 10, employment: "ИТР" });
+  personnel({ id: 10, date: "2026-11-01", employee: 4, hours: 10, deleted: "2026-11-02T00:00:00Z" });
+  personnel({ id: 11, date: "2026-11-01", employee: 4, hours: 10, site: 8, zone: 20 });
+  personnel({ id: 12, date: "2026-10-31", employee: 4, hours: 10 });
+
+  const zones = await read(db);
+  assert.deepEqual(zones.map(({ zoneId, personnelCounts }) => ({ zoneId, personnelCounts })), [
+    { zoneId: 10, personnelCounts: { total: 3, welders: 1, installers: 2, other: 1 } },
+    { zoneId: 11, personnelCounts: { total: 1, welders: 1, installers: 0, other: 0 } },
+    { zoneId: null, personnelCounts: { total: 1, welders: 0, installers: 1, other: 0 } },
+  ]);
+  assert.equal(zones[0].total, 18, "Deduplicating people preserves the hours of each published record");
+  assert.ok(zones.every(row => !("employeeIds" in row)), "Only aggregate counts leave the data boundary");
+
+  const days = await readStatisticsByDay(db, 7, "personnel", "2026-11-01", "2026-11-30");
+  assert.deepEqual(days.map(({ workDate, personnelCounts }) => ({ workDate, personnelCounts })), [
+    { workDate: "2026-11-01", personnelCounts: { total: 3, welders: 1, installers: 1, other: 1 } },
+    { workDate: "2026-11-02", personnelCounts: { total: 1, welders: 0, installers: 1, other: 0 } },
+  ]);
+  assert.deepEqual((await readStatisticsRows(db, 7, "personnel"))[0].personnelCounts, { total: 4, welders: 2, installers: 2, other: 1 });
+  assert.equal(queries.length, 3, "Counts share the same aggregate read as hours");
+});
+
+test("personnel count follows published entry corrections and removal without borrowing current directory roles", async t => {
+  const { db, sql, personnel } = fixture(t);
+  personnel({ id: 1, employee: 3, date: "2026-11-01", hours: 4, position: "Сварщик" });
+  personnel({ id: 2, employee: 3, date: "2026-11-01", hours: 4, position: "Сварщик", owner: 101 });
+  assert.deepEqual((await read(db))[0].personnelCounts, { total: 1, welders: 1, installers: 0, other: 0 });
+  sql.exec("UPDATE placement_entries SET position_snapshot = 'Монтажник', work_date = '2026-11-02', zone_id = 11 WHERE id = 1");
+  assert.deepEqual((await readStatisticsByDay(db, 7, "personnel")).map(row => [row.workDate, row.personnelCounts]), [
+    ["2026-11-01", { total: 1, welders: 1, installers: 0, other: 0 }],
+    ["2026-11-02", { total: 1, welders: 0, installers: 1, other: 0 }],
+  ]);
+  sql.exec("UPDATE placement_entries SET deleted_at = '2026-11-03T00:00:00Z' WHERE id = 2");
+  const remaining = await read(db);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].zoneId, 11);
+  assert.deepEqual(remaining[0].personnelCounts, { total: 1, welders: 0, installers: 1, other: 0 });
+});
+
 test("equipment separates working and downtime hours including archived and unassigned zones", async t => {
   const { db, equipment } = fixture(t);
   equipment({ id: 1, hours: 8 });
@@ -135,6 +197,7 @@ test("equipment separates working and downtime hours including archived and unas
     { zoneId: null, productive: 1, downtime: 0, total: 1 },
   ]);
   assert.ok(rows.every(row => row.productive + row.downtime === row.total));
+  assert.ok(rows.every(row => !("personnelCounts" in row)));
 });
 
 test("pending reports and manual timesheet values do not inflate published statistics", async t => {
@@ -169,8 +232,10 @@ test("daily personnel statistics combine all zones by work date, not by current 
 
   const rows = await readStatisticsByDay(db, 7, "personnel", "2026-11-01", "2026-11-30");
   assert.deepEqual(rows, [
-    { workDate: "2026-11-01", welders: 6, installers: 6, other: 0, productive: 0, downtime: 0, total: 12 },
-    { workDate: "2026-11-30", welders: 0, installers: 0, other: 3, productive: 0, downtime: 0, total: 3 },
+    { workDate: "2026-11-01", welders: 6, installers: 6, other: 0, productive: 0, downtime: 0, total: 12,
+      personnelCounts: { total: 3, welders: 2, installers: 1, other: 0 } },
+    { workDate: "2026-11-30", welders: 0, installers: 0, other: 3, productive: 0, downtime: 0, total: 3,
+      personnelCounts: { total: 1, welders: 0, installers: 0, other: 1 } },
   ]);
   const allTimeRows = await readStatisticsByDay(db, 7, "personnel");
   assert.deepEqual(allTimeRows.map(row => [row.workDate, row.total]), [

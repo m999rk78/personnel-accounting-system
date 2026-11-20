@@ -23,7 +23,8 @@ import { useTimesheetFilters, type TimesheetFilterColumn } from "./useTimesheetF
 import { equipmentTimesheetDayPresets, equipmentTimesheetFilterValue, matchesEquipmentTimesheetDayPreset } from "./equipmentTimesheetFilters";
 import { TimesheetCellPopover } from "./TimesheetCellPopover";
 import { TimesheetMonthPicker as EquipmentMonthPicker } from "./TimesheetMonthPicker";
-import { useTimesheetClipboard, type TimesheetClipboardChange, type TimesheetClipboardSaveContext } from "./useTimesheetClipboard";
+import { type TimesheetClipboardChange, type TimesheetClipboardSaveContext } from "./useTimesheetClipboard";
+import { useOrderedTimesheetClipboard as useTimesheetClipboard } from "./useOrderedTimesheetClipboard";
 import { TableStatusToast } from "./useTableCopyToast";
 import { PERSONNEL_TIMESHEET_CODES as EQUIPMENT_TIMESHEET_CODES } from "./personnelTimesheetValues";
 import { useTimesheetBatchSave } from "./useTimesheetBatchSave";
@@ -1127,7 +1128,6 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
   const referencesReady = Boolean(payload?.units.length && payload.shifts.length && payload.zones.length && payload.mainWorkTypes.length && payload.subworkTypes.some(child => payload.mainWorkTypes.some(parent => child.mainWorkTypeId === parent.id)));
   const monthRowOrderKey = useMemo(() => `${siteId}:${section}:${month}:${monthRows.map((row) => row.unit.id).join("|")}:days=${visibleDaysKey}`, [siteId, section, month, monthRows, visibleDaysKey]);
   const clipboardViewScope = useRef(monthRowOrderKey);
-  useLayoutEffect(() => { clipboardViewScope.current = monthRowOrderKey; }, [monthRowOrderKey]);
   const pinnedEquipmentId = timesheetInlineEditor?.equipmentId ?? timesheetEditor?.equipmentId;
   const monthViewport = useTableViewport(monthRows.length, monthRowOrderKey, section === "month" && !loading,
     pinnedEquipmentId === undefined ? undefined : monthRows.findIndex((row) => row.unit.id === pinnedEquipmentId));
@@ -1135,6 +1135,8 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     kind: "equipment", dayCount: monthDays.length, dayNumbers: visibleMonthDays, enabled: section === "month" && Boolean(payload),
   });
   const monthClipboardColumnIndexes = monthColumnResize.columnIds.map(id => ({ number: -3, equipment: -2, organization: -1, productive: visibleMonthDays.length, downtime: visibleMonthDays.length + 1, total: visibleMonthDays.length + 2 }[id] ?? visibleMonthDays.indexOf(Number(id.slice(4)))));
+  const clipboardLayoutScope = `${monthRowOrderKey}:columns=${monthClipboardColumnIndexes.join("|")}`;
+  useLayoutEffect(() => { clipboardViewScope.current = clipboardLayoutScope; }, [clipboardLayoutScope]);
   const {
     shellRef: timesheetClipboardShellRef,
     status: timesheetClipboardStatus,
@@ -1146,6 +1148,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
     activeCell: timesheetClipboardActiveCell,
     headersSelected: timesheetClipboardHeadersSelected,
     focusCell: focusEquipmentTimesheetCell,
+    adjacentColumn: adjacentEquipmentTimesheetColumn,
     contextMenu: timesheetClipboardContextMenu,
     forgetUndo: forgetEquipmentTimesheetUndo,
     notify: notifyEquipmentTimesheetClipboard,
@@ -1224,7 +1227,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
 
   useNativeEmptyColumns(timesheetClipboardShellRef, section === "month" && Boolean(payload));
   const timesheetColumnContextMenu = useNativeTimesheetColumnMenu(timesheetClipboardShellRef, {
-    month, scope: `equipment:${siteId}:${month}`, enabled: section === "month" && Boolean(payload) && !loading, columns: monthFilters.columnActions, widths: monthColumnResize.headerActions,
+    month, scope: `equipment:${siteId}:${month}`, enabled: section === "month" && Boolean(payload) && !loading, columns: monthFilters.columnActions, widths: monthColumnResize.headerActions, pinning: monthColumnResize.pinning,
   });
   useEffect(() => {
     if (timesheetInlineEditor || !timesheetInlineGridFocusPending.current) return;
@@ -1402,7 +1405,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         if (timesheetInlineSession.current !== target.session) return false;
         if (returnFocus && clipboardViewScope.current === editorViewScope) timesheetInlineGridFocusPending.current = true;
         setTimesheetInlineEditor((current) => current?.session === target.session ? null : current);
-        if (move && clipboardViewScope.current === editorViewScope) focusEquipmentTimesheetCell(target.rowIndex + move.row, target.columnIndex + move.column);
+        if (move && clipboardViewScope.current === editorViewScope) focusEquipmentTimesheetCell(target.rowIndex + move.row, adjacentEquipmentTimesheetColumn(target.columnIndex, move.column));
         return true;
       } catch (saveError) {
         if (activeScope.current !== editorScope || activeScopeVersion.current !== editorScopeVersion || timesheetInlineSession.current !== target.session) return false;
@@ -1748,7 +1751,7 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
         <TableStatusToast message={timesheetClipboardStatus} />
         <table className="timesheet-table equipment-month-table timesheet-resizable" style={monthColumnResize.tableStyle} aria-rowcount={monthRows.length + 3}>
         {monthColumnResize.colGroup}
-        <thead><tr>
+        <thead>{monthColumnResize.headers(<>
           <th className={`timesheet-sticky equipment-number-column ${timesheetClipboardHeaderClass(-3)}`} rowSpan={2}>{monthRowMoves.headerCheckbox}{monthColumnResize.handle("number", "№")}</th>
           <th className={`timesheet-sticky equipment-machine-column ${timesheetClipboardHeaderClass(-2)}`} rowSpan={2}><TimesheetFilterableHeading columnId="equipment" label="Техника">Техника</TimesheetFilterableHeading>{monthColumnResize.handle("equipment", "Техника")}</th>
           <th className={`timesheet-sticky equipment-organization-column ${timesheetClipboardHeaderClass(-1)}`} rowSpan={2}><TimesheetFilterableHeading columnId="organization" label="Организация">Организация</TimesheetFilterableHeading>{monthColumnResize.handle("organization", "Организация")}</th>
@@ -1756,8 +1759,8 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
           <th className={`timesheet-total-column equipment-work-total ${timesheetClipboardHeaderClass(visibleMonthDays.length)}`} rowSpan={2}><TimesheetFilterableHeading columnId="productive" label="Работа">Работа</TimesheetFilterableHeading>{monthColumnResize.handle("productive", "Работа")}</th>
           <th className={`timesheet-total-column equipment-idle-total ${timesheetClipboardHeaderClass(visibleMonthDays.length + 1)}`} rowSpan={2}><TimesheetFilterableHeading columnId="downtime" label="Простой">Простой</TimesheetFilterableHeading>{monthColumnResize.handle("downtime", "Простой")}</th>
           <th className={`timesheet-total-column equipment-all-total ${timesheetClipboardHeaderClass(visibleMonthDays.length + 2)}`} rowSpan={2}><TimesheetFilterableHeading columnId="total" label="Всего">Всего</TimesheetFilterableHeading>{monthColumnResize.handle("total", "Всего")}</th>
-        </tr><tr>{visibleMonthDays.map((day, columnIndex) => { const date = `${month}-${String(day).padStart(2, "0")}`; const dateObject = new Date(`${date}T00:00:00Z`); const weekend = [0, 6].includes(dateObject.getUTCDay()); const weekday = WEEKDAY_FORMATTER.format(dateObject).replace(".", ""); return <th key={day} className={[timesheetClipboardHeaderClass(columnIndex), weekend ? "weekend" : "", date === today ? "today" : "", date > today ? "future" : ""].filter(Boolean).join(" ")}><TimesheetFilterableHeading columnId={date} compact label={`${day} ${weekday}`}><span>{day}</span><small>{weekday}</small></TimesheetFilterableHeading>{monthColumnResize.handle(`day-${day}`, `${day} ${weekday}`)}</th>; })}</tr></thead>
-        <tbody>{monthViewport.top > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} style={{ height: monthViewport.top }} /></tr>}{monthRows.length ? monthRows.slice(monthViewport.start, monthViewport.end).map((row, offset) => { const index = monthViewport.start + offset; return <tr key={row.unit.id} {...monthRowMoves.rowProps(row.unit.id)} data-virtual-row={index} aria-rowindex={index + 3}>
+        </>, <>{visibleMonthDays.map((day, columnIndex) => { const date = `${month}-${String(day).padStart(2, "0")}`; const dateObject = new Date(`${date}T00:00:00Z`); const weekend = [0, 6].includes(dateObject.getUTCDay()); const weekday = WEEKDAY_FORMATTER.format(dateObject).replace(".", ""); return <th key={day} className={[timesheetClipboardHeaderClass(columnIndex), weekend ? "weekend" : "", date === today ? "today" : "", date > today ? "future" : ""].filter(Boolean).join(" ")}><TimesheetFilterableHeading columnId={date} compact label={`${day} ${weekday}`}><span>{day}</span><small>{weekday}</small></TimesheetFilterableHeading>{monthColumnResize.handle(`day-${day}`, `${day} ${weekday}`)}</th>; })}</>)}</thead>
+        <tbody>{monthViewport.top > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} style={{ height: monthViewport.top }} /></tr>}{monthRows.length ? monthRows.slice(monthViewport.start, monthViewport.end).map((row, offset) => { const index = monthViewport.start + offset; return <tr key={row.unit.id} {...monthRowMoves.rowProps(row.unit.id)} data-virtual-row={index} aria-rowindex={index + 3}>{monthColumnResize.cells(<>
           <td className={`timesheet-sticky equipment-number-column ${timesheetClipboardCellClass(index, -3)}`} {...timesheetClipboardCellHandlers(index, -3)}>{monthRowMoves.handle(row.unit.id, unitTitle(row.unit), index + 1)}</td>
           <th scope="row" className={`timesheet-sticky equipment-machine-column ${timesheetClipboardCellClass(index, -2)}`} {...timesheetClipboardCellHandlers(index, -2)} title={unitTitle(row.unit)}><span>{unitTitle(row.unit)}</span></th>
           <td className={`timesheet-sticky equipment-organization-column ${timesheetClipboardCellClass(index, -1)}`} {...timesheetClipboardCellHandlers(index, -1)} title={row.unit.organization}>{row.unit.organization}</td>{visibleMonthDays.map((day, columnIndex) => {
@@ -1852,8 +1855,8 @@ export function EquipmentAccountingView({ siteId, initialDate, initialMonth, tod
           </>}{saveState && !isInlineEditing && <span className="timesheet-cell-save-indicator" aria-hidden="true">{saveState.state === "error" ? "!" : saveState.state === "saved" ? "✓" : "·"}</span>}</td>;
         })}<td className={`timesheet-total-column equipment-work-total ${timesheetClipboardCellClass(index, visibleMonthDays.length)}`} {...timesheetClipboardCellHandlers(index, visibleMonthDays.length)}>{row.productive ? formatTimesheetHours(row.productive) : "—"}</td>
           <td className={`timesheet-total-column equipment-idle-total has-difference ${timesheetClipboardCellClass(index, visibleMonthDays.length + 1)}`} {...timesheetClipboardCellHandlers(index, visibleMonthDays.length + 1)}>{row.downtime ? formatTimesheetHours(row.downtime) : "—"}</td>
-          <td className={`timesheet-total-column equipment-all-total ${timesheetClipboardCellClass(index, visibleMonthDays.length + 2)}`} {...timesheetClipboardCellHandlers(index, visibleMonthDays.length + 2)}>{row.total ? formatTimesheetHours(row.total) : "—"}</td></tr>; }) : <tr><td colSpan={monthColumnResize.columnCount}><div className="equipment-table-empty"><strong>{monthFilters.navigationPending ? "Применяем фильтр…" : monthFilters.isActive ? "Нет техники по выбранным фильтрам" : "В этом месяце данных нет"}</strong>{!monthFilters.navigationPending && <span>{monthFilters.isActive ? "Измените или сбросьте фильтры, чтобы увидеть другие строки." : "Записи появятся после заполнения ежедневных отчётов техники."}</span>}</div></td></tr>}{monthViewport.bottom > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} style={{ height: monthViewport.bottom }} /></tr>}{monthRows.length > 0 && <tr className="timesheet-fill-row" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} /></tr>}</tbody>
-        {monthRows.length > 0 && <tfoot><tr><th className="timesheet-sticky timesheet-summary-label" colSpan={3}>Итого по дням</th>{visibleMonthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; const hours = monthDayTotals.get(date); return <td key={date}>{hours ? formatTimesheetHours(hours) : ""}</td>; })}<th className="timesheet-total-column equipment-work-total">{formatTimesheetHours(monthSummary.productive)}</th><th className="timesheet-total-column equipment-idle-total has-difference">{formatTimesheetHours(monthSummary.downtime)}</th><th className="timesheet-total-column equipment-all-total">{formatTimesheetHours(monthSummary.total)}</th></tr></tfoot>}
+          <td className={`timesheet-total-column equipment-all-total ${timesheetClipboardCellClass(index, visibleMonthDays.length + 2)}`} {...timesheetClipboardCellHandlers(index, visibleMonthDays.length + 2)}>{row.total ? formatTimesheetHours(row.total) : "—"}</td></>)}</tr>; }) : <tr><td colSpan={monthColumnResize.columnCount}><div className="equipment-table-empty"><strong>{monthFilters.navigationPending ? "Применяем фильтр…" : monthFilters.isActive ? "Нет техники по выбранным фильтрам" : "В этом месяце данных нет"}</strong>{!monthFilters.navigationPending && <span>{monthFilters.isActive ? "Измените или сбросьте фильтры, чтобы увидеть другие строки." : "Записи появятся после заполнения ежедневных отчётов техники."}</span>}</div></td></tr>}{monthViewport.bottom > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} style={{ height: monthViewport.bottom }} /></tr>}{monthRows.length > 0 && <tr className="timesheet-fill-row" aria-hidden="true"><td colSpan={monthColumnResize.columnCount} /></tr>}</tbody>
+        {monthRows.length > 0 && <tfoot><tr>{monthColumnResize.footer(<><th className="timesheet-sticky timesheet-summary-label" colSpan={3}>Итого по дням</th>{visibleMonthDays.map((day) => { const date = `${month}-${String(day).padStart(2, "0")}`; const hours = monthDayTotals.get(date); return <td key={date}>{hours ? formatTimesheetHours(hours) : ""}</td>; })}<th className="timesheet-total-column equipment-work-total">{formatTimesheetHours(monthSummary.productive)}</th><th className="timesheet-total-column equipment-idle-total has-difference">{formatTimesheetHours(monthSummary.downtime)}</th><th className="timesheet-total-column equipment-all-total">{formatTimesheetHours(monthSummary.total)}</th></>)}</tr></tfoot>}
       </table></div></NativeTimesheetPageScroll>
       {timesheetInfoOpen && <div className="equipment-reference-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setTimesheetInfoOpen(false); }}><section className="equipment-reference-dialog" role="dialog" aria-modal="true" aria-labelledby="equipment-timesheet-reference-title">
         <header><div><span>ТАБЕЛЬ ТЕХНИКИ</span><h2 id="equipment-timesheet-reference-title">Информация и справочник</h2><p>Цвета в таблице и обозначения, которые используются в табеле.</p></div><button type="button" aria-label="Закрыть справочник" onClick={() => setTimesheetInfoOpen(false)}>×</button></header>

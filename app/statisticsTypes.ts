@@ -12,6 +12,7 @@ export type StatisticsHours = {
   total: number;
 };
 
-export type StatisticsRow = StatisticsHours & { zoneId: number | null; zone: string };
-export type StatisticsDayRow = StatisticsHours & { workDate: string };
+export type StatisticsPersonnelCounts = { total: number; welders: number; installers: number; other: number };
+export type StatisticsRow = StatisticsHours & { zoneId: number | null; zone: string; personnelCounts?: StatisticsPersonnelCounts };
+export type StatisticsDayRow = StatisticsHours & { workDate: string; personnelCounts?: StatisticsPersonnelCounts };
 export type StatisticsBreakdownRow = StatisticsRow | StatisticsDayRow;

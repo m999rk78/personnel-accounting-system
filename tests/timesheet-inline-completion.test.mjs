@@ -26,9 +26,9 @@ for (const variant of variants) {
   for (const name of [variant.save, variant.open, "onBlur", "onKeyDown"]) assert.ok(variant.code.has(name), `${variant.file}: actual ${name} must exist`);
 }
 
-function harness(variant, value = "8", mode = "success") {
-  const editor = { session: 4, employeeId: 1, equipmentId: 1, workDate: "2026-11-01", rowIndex: 0, columnIndex: 0, value, error: "", selectAll: false };
-  const state = { editor, writes: 0, focus: 0, moves: 0, waiting: [], persisted: [], moveTargets: [] };
+function harness(variant, value = "8", mode = "success", { columnOrder, columnIndex = 0 } = {}) {
+  const editor = { session: 4, employeeId: 1, equipmentId: 1, workDate: `2026-11-${String(columnIndex + 1).padStart(2, "0")}`, rowIndex: 0, columnIndex, value, error: "", selectAll: false };
+  const state = { editor, writes: 0, focus: 0, moves: 0, waiting: [], persisted: [], moveTargets: [], adjacentCalls: [] };
   const session = { current: editor.session }, cancel = { current: false }, inFlight = { current: null };
   const update = next => { state.editor = typeof next === "function" ? next(state.editor) : next; };
   const persist = async (...args) => {
@@ -44,6 +44,13 @@ function harness(variant, value = "8", mode = "success") {
     inlineSaveInFlight: inFlight, timesheetInlineSaveInFlight: inFlight,
     clipboardViewScope: { current: "1:2026-11:1:days=1|2" },
   };
+  const focus = (...coordinates) => { state.moves++; state.moveTargets.push(coordinates); };
+  const adjacent = (column, delta) => {
+    state.adjacentCalls.push([column, delta]);
+    if (!columnOrder) return column + delta;
+    const index = columnOrder.indexOf(column);
+    return index < 0 ? column : columnOrder[Math.max(0, Math.min(columnOrder.length - 1, index + delta))];
+  };
   const scope = {
     ...refs,
     inlineEditor: editor, timesheetInlineEditor: editor,
@@ -55,8 +62,9 @@ function harness(variant, value = "8", mode = "success") {
     persistMark: persist, persistEquipmentTimesheetMark: persist,
     inlineGridFocusPending: { current: false }, timesheetInlineGridFocusPending: { current: false },
     restoreEquipmentTimesheetFocus: () => { state.focus++; },
-    focusClipboardCell: () => { state.moves++; }, notifyTimesheetClipboard() {},
-    focusEquipmentTimesheetCell: (...coordinates) => { state.moves++; state.moveTargets.push(coordinates); }, notifyEquipmentTimesheetClipboard() {},
+    focusClipboardCell: focus, notifyTimesheetClipboard() {},
+    focusEquipmentTimesheetCell: focus, notifyEquipmentTimesheetClipboard() {},
+    adjacentClipboardColumn: adjacent, adjacentEquipmentTimesheetColumn: adjacent,
     savingMark: false, savingTimesheetMark: false,
     savingBulkMarks: false, savingBulkTimesheetMarks: false, loading: false,
     payload: { canCreate: true, canUpdate: true, canCreateTimesheet: true, canUpdateTimesheet: true, employees: [{ id: 1 }, { id: 2 }] },
@@ -171,6 +179,32 @@ test(`${variant.name}: arrow navigation waits for acknowledgement and writes onc
   env.state.waiting[0].resolve(); await env.settled();
   assert.equal(env.state.editor, null);
   assert.equal(env.state.moves, 1);
+});
+
+for (const [key, columnIndex, target] of [["ArrowRight", 0, 2], ["ArrowLeft", 1, 2], ["ArrowDown", 2, 2]]) {
+test(`${variant.name}: ${key} completes into the displayed neighbour after date columns are pinned`, async () => {
+  const env = harness(variant, "8", "pending", { columnOrder: [0, 2, 1], columnIndex });
+  env.dispatch("keydown", key);
+  assert.equal(env.state.moves, 0);
+  assert.equal(env.state.writes, 1);
+  env.state.waiting[0].resolve();
+  await env.settled();
+  assert.deepEqual(env.state.moveTargets, [[key === "ArrowDown" ? 1 : 0, target]]);
+  assert.deepEqual(env.state.adjacentCalls, [[columnIndex, key === "ArrowRight" ? 1 : key === "ArrowLeft" ? -1 : 0]]);
+  assert.equal(env.state.persisted[0][0].workDate, `2026-11-${String(columnIndex + 1).padStart(2, "0")}`, "The saved date remains the edited source date");
+});
+}
+
+test(`${variant.name}: pinning changes during a pending arrow save do not move into an old visual neighbour`, async () => {
+  const env = harness(variant, "8", "pending", { columnOrder: [0, 2, 1] });
+  env.dispatch("keydown", "ArrowRight");
+  assert.equal(env.state.writes, 1);
+  env.refs.clipboardViewScope.current += ":columns=2,0,1";
+  env.state.waiting[0].resolve();
+  await env.settled();
+  assert.equal(env.state.moves, 0);
+  assert.deepEqual(env.state.adjacentCalls, []);
+  assert.equal(env.state.editor, null);
 });
 }
 

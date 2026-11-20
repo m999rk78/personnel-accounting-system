@@ -10,14 +10,15 @@ import { useGridFilterPopup } from "./useGridFilterPopup";
 import { buildCompactFilterValues, filterCompactFilterValues, type CompactFilterValue } from "./compactFilterValues";
 import "./checklistSetFilter.css";
 
-type ChecklistProps = CustomFilterDisplayProps<unknown, unknown, SetFilterModel>
+type ChecklistContext = { compactFilterPopup?: boolean };
+type ChecklistProps = CustomFilterDisplayProps<unknown, ChecklistContext, SetFilterModel>
   & Pick<ISetFilterParams<unknown, unknown>, "valueFormatter" | "comparator" | "caseSensitive" | "suppressSorting">
   & { isStateChecklist?: boolean; kind?: "text" | "number" | "date" };
 
-export function ChecklistFilterHeader(props: CustomFilterDisplayProps) {
+export function ChecklistFilterHeader(props: CustomFilterDisplayProps<unknown, ChecklistContext>) {
   const { root, attach } = useGridFilterPopup<HTMLDivElement>(props);
   useGridFilterDisplay({ afterGuiAttached: attach });
-  return <header ref={root} className="grid-checklist-filter-heading">
+  return <header ref={root} className={props.context?.compactFilterPopup ? "grid-checklist-filter-heading grid-checklist-filter-heading-compact" : "grid-checklist-filter-heading"}>
     <strong>{props.colDef.headerName || props.column.getColId()}</strong>
     <button type="button" aria-label="Закрыть фильтр" title="Закрыть" onClick={() => props.api.hideColumnFilter()}>
       <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15" /></svg>
@@ -35,6 +36,7 @@ function SelectionCheckbox({ checked, mixed = false, label, children, onChange }
 
 function ChecklistSetFilter(props: ChecklistProps) {
   const { api, column, getValue, doesRowPassOtherFilter, valueFormatter, comparator } = props;
+  const compactPopup = Boolean(props.context?.compactFilterPopup);
   const [search, setSearch] = useState("");
   const [revision, setRevision] = useState(0);
   const [stateOpen, setStateOpen] = useState(Boolean(props.model));
@@ -116,7 +118,7 @@ function ChecklistSetFilter(props: ChecklistProps) {
   </section>;
 
   const valueById = new Map(matching.map(item => [JSON.stringify(item.key), item]));
-  return <section className="grid-checklist-values" aria-label={`Значения: ${props.colDef.headerName || column.getColId()}`}>
+  return <section className={compactPopup ? "grid-checklist-values grid-checklist-values-compact" : "grid-checklist-values"} aria-label={`Значения: ${props.colDef.headerName || column.getColId()}`}>
     <label className="grid-checklist-search"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg>
       <input ref={searchInput} aria-label="Поиск значений фильтра" placeholder="Найти значение…" value={search} onChange={event => {
         const next = event.target.value;
@@ -140,8 +142,8 @@ function ChecklistSetFilter(props: ChecklistProps) {
       values={values.map(item => ({ value: item.key ?? "", count: item.count }))}
       selected={new Set(selectedKeys.map(key => key ?? ""))}
       onChange={selection => apply([...selection].map(value => value === "" ? null : value))}
-      search={search} />
-      : <VirtualChoiceList key={search} items={[...valueById.keys()]} emptyText="Ничего не найдено" renderItem={id => renderValue(valueById.get(id)!)} />}
+      search={search} fitContent={compactPopup} />
+      : <VirtualChoiceList key={search} items={[...valueById.keys()]} fitContent={compactPopup} emptyText="Ничего не найдено" renderItem={id => renderValue(valueById.get(id)!)} />}
   </section>;
 }
 

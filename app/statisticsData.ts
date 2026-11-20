@@ -1,7 +1,7 @@
 import type { PostgresDatabase } from "../db/client";
-import type { StatisticsDayRow, StatisticsGrouping, StatisticsHours, StatisticsKind, StatisticsRow } from "./statisticsTypes";
+import type { StatisticsDayRow, StatisticsGrouping, StatisticsHours, StatisticsKind, StatisticsPersonnelCounts, StatisticsRow } from "./statisticsTypes";
 
-type HoursByTitle = { title: string | null; hours: number };
+type HoursByTitle = { title: string | null; hours: number; employeeIds?: number[] };
 type ZoneHoursByTitle = HoursByTitle & { zoneId: number | null; zone: string | null };
 type DayHoursByTitle = HoursByTitle & { workDate: string };
 type StatisticsRange = [] | [from: string, to: string];
@@ -19,7 +19,8 @@ function statisticsHoursByTitle(kind: StatisticsKind, grouping: StatisticsGroupi
   const { select, groupBy, join } = groupings[grouping];
   const datePredicate = hasRange ? " AND entry.work_date BETWEEN ? AND ?" : "";
   // Both views read the same published report entries, including older records.
-  if (kind === "personnel") return `SELECT ${select}, entry.position_snapshot AS title, SUM(entry.hours) AS hours
+  if (kind === "personnel") return `SELECT ${select}, entry.position_snapshot AS title, SUM(entry.hours) AS hours,
+    JSON_AGG(DISTINCT entry.employee_id) AS "employeeIds"
   FROM placement_entries entry
   JOIN employees employee ON employee.id = entry.employee_id${join}
   WHERE entry.site_id = ?${datePredicate} AND entry.deleted_at IS NULL
@@ -33,20 +34,41 @@ function statisticsHoursByTitle(kind: StatisticsKind, grouping: StatisticsGroupi
   GROUP BY ${groupBy}, subwork.name`;
 }
 
-function hoursGroup(kind: StatisticsKind, title: string | null): "welders" | "installers" | "other" | "productive" | "downtime" {
+function personnelGroup(title: string | null): "welders" | "installers" | "other" {
   const name = title?.toLocaleLowerCase("ru-RU") ?? "";
-  if (kind === "equipment") return name.includes("простой") ? "downtime" : "productive";
   if (name.includes("сварщик")) return "welders";
   if (name.includes("монтажник")) return "installers";
   return "other";
 }
 
+function hoursGroup(kind: StatisticsKind, title: string | null) {
+  if (kind === "equipment") return title?.toLocaleLowerCase("ru-RU").includes("простой") ? "downtime" : "productive";
+  return personnelGroup(title);
+}
+
 const emptyHours: StatisticsHours = { welders: 0, installers: 0, other: 0, productive: 0, downtime: 0, total: 0 };
+type PersonnelSets = Record<keyof StatisticsPersonnelCounts, Set<number>>;
+
+function addPersonnelCounts(row: StatisticsRow | StatisticsDayRow, source: HoursByTitle, people: Map<StatisticsRow | StatisticsDayRow, PersonnelSets>) {
+  if (!source.employeeIds) return;
+  let counts = people.get(row);
+  if (!counts) {
+    counts = { total: new Set(), welders: new Set(), installers: new Set(), other: new Set() };
+    people.set(row, counts);
+  }
+  const group = personnelGroup(source.title);
+  for (const employeeId of source.employeeIds) {
+    counts.total.add(employeeId);
+    counts[group].add(employeeId);
+  }
+  row.personnelCounts = { total: counts.total.size, welders: counts.welders.size, installers: counts.installers.size, other: counts.other.size };
+}
 
 export async function readStatisticsRows(db: Pick<PostgresDatabase, "prepare">, siteId: number, kind: StatisticsKind, ...range: StatisticsRange): Promise<StatisticsRow[]> {
   const sql = statisticsHoursByTitle(kind, "zone", range.length > 0);
   const { results } = await db.prepare(sql).bind(siteId, ...range).all<ZoneHoursByTitle>();
   const zones = new Map<number | null, StatisticsRow>();
+  const people = new Map<StatisticsRow | StatisticsDayRow, PersonnelSets>();
   for (const source of results) {
     let row = zones.get(source.zoneId);
     if (!row) {
@@ -55,6 +77,7 @@ export async function readStatisticsRows(db: Pick<PostgresDatabase, "prepare">, 
     }
     row[hoursGroup(kind, source.title)] += source.hours;
     row.total += source.hours;
+    if (kind === "personnel") addPersonnelCounts(row, source, people);
   }
   return [...zones.values()].sort((left, right) => right.total - left.total || left.zone.localeCompare(right.zone, "ru") || (left.zoneId ?? 0) - (right.zoneId ?? 0));
 }
@@ -63,6 +86,7 @@ export async function readStatisticsByDay(db: Pick<PostgresDatabase, "prepare">,
   const sql = statisticsHoursByTitle(kind, "day", range.length > 0);
   const { results } = await db.prepare(sql).bind(siteId, ...range).all<DayHoursByTitle>();
   const days = new Map<string, StatisticsDayRow>();
+  const people = new Map<StatisticsRow | StatisticsDayRow, PersonnelSets>();
   for (const source of results) {
     let row = days.get(source.workDate);
     if (!row) {
@@ -71,6 +95,7 @@ export async function readStatisticsByDay(db: Pick<PostgresDatabase, "prepare">,
     }
     row[hoursGroup(kind, source.title)] += source.hours;
     row.total += source.hours;
+    if (kind === "personnel") addPersonnelCounts(row, source, people);
   }
   return [...days.values()].sort((left, right) => left.workDate.localeCompare(right.workDate));
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type KeyboardEvent } from "react";
 import { StatisticsChart, type StatisticsSeries } from "./StatisticsChart";
 import { StatisticsPeriodPicker } from "./StatisticsPeriodPicker";
 import { statisticsPeriodQuery, statisticsPresetRange, type StatisticsPeriodSelection } from "./statisticsPeriod";
@@ -74,6 +74,7 @@ export function StatisticsView({ siteId, today, kind, availableKinds, onSelectKi
   const [refresh, setRefresh] = useState(0);
   const [result, setResult] = useState<Result | null>(null);
   const [zoneSearch, setZoneSearch] = useState({ requestKey: "", text: "" });
+  const [tableRows, setTableRows] = useState<{ source: StatisticsBreakdownRow[]; search: string; filtered: StatisticsBreakdownRow[] } | null>(null);
   const scopeQuery = new URLSearchParams({ siteId: String(siteId), kind, ...statisticsPeriodQuery(period) }).toString();
   const query = byDay ? `${scopeQuery}&groupBy=day` : scopeQuery;
   const requestKey = `${query}:${refresh}`;
@@ -84,7 +85,14 @@ export function StatisticsView({ siteId, today, kind, availableKinds, onSelectKi
     const query = search.trim().toLocaleLowerCase("ru-RU");
     return query ? rows?.filter(row => "zone" in row && row.zone.toLocaleLowerCase("ru-RU").includes(query)) ?? null : rows;
   }, [rows, search]);
-  const maxHours = useMemo(() => visibleRows?.reduce((max, row) => Math.max(max, row.total), 0) ?? 0, [visibleRows]);
+  const filteredRows = tableRows?.source === rows && tableRows.search === search ? tableRows.filtered : visibleRows;
+  const updateFilteredRows = useCallback((filtered: StatisticsBreakdownRow[]) => {
+    if (!rows) return;
+    setTableRows(current => current?.source === rows && current.search === search && current.filtered.length === filtered.length && filtered.every((row, index) => row === current.filtered[index])
+      ? current : { source: rows, search, filtered });
+  }, [rows, search]);
+  const clearSearch = useCallback(() => setZoneSearch({ requestKey: scopeQuery, text: "" }), [scopeQuery]);
+  const maxHours = useMemo(() => filteredRows?.reduce((max, row) => Math.max(max, row.total), 0) ?? 0, [filteredRows]);
   const series = seriesByKind[kind];
   const reportActionLabel = kind === "personnel" ? "Открыть отчёт персонала" : "Открыть отчёт техники";
   const openReports = onOpenReports ? (row: StatisticsBreakdownRow) => {
@@ -127,7 +135,7 @@ export function StatisticsView({ siteId, today, kind, availableKinds, onSelectKi
     <div className="statistics-panel" id={`${tabId}-panel`} role="tabpanel" aria-labelledby={`${tabId}-${kind}`}>
       <div className="statistics-toolbar">
         <StatisticsPeriodPicker selection={period} today={today} onChange={setPeriod} />
-        <StatisticsTotals series={series} rows={visibleRows} />
+        <StatisticsTotals series={series} rows={filteredRows} />
       </div>
 
       <div className="statistics-data">
@@ -138,16 +146,16 @@ export function StatisticsView({ siteId, today, kind, availableKinds, onSelectKi
               aria-selected={groupBy === group} aria-controls={`${groupTabId}-panel`} tabIndex={groupBy === group ? 0 : -1}
               onClick={() => setGroupBy(group)} onKeyDown={event => moveTab(event, index, groupings, groupTabId, setGroupBy)}>{groupingNames[group]}</button>)}
           </div>
-          {!!visibleRows?.length && <span className="statistics-card-note">{byDay ? "Дней" : "Зон"} в выборке {formatTimesheetHours(visibleRows.length)}</span>}
+          {!!rows?.length && <span className="statistics-card-note">{byDay ? "Дней" : "Зон"} в выборке {formatTimesheetHours(filteredRows?.length ?? 0)}</span>}
         </div>
         <div className="statistics-results" id={`${groupTabId}-panel`} role="tabpanel" aria-labelledby={`${groupTabId}-${groupBy}`} aria-busy={!current}>
           <section className="statistics-card statistics-breakdown-chart" aria-labelledby={`${groupTabId}-heading`}>
             {!current ? <div className="statistics-empty" role="status">Загружаем статистику…</div>
               : "error" in current ? <div className="statistics-empty"><p role="alert">{current.error}</p><button type="button" className="secondary-button" onClick={() => setRefresh(current => current + 1)}>Повторить</button></div>
-              : visibleRows?.length ? <StatisticsChart groupBy={groupBy} rows={visibleRows} series={series} maxHours={maxHours} onOpenReports={openReports} reportActionLabel={reportActionLabel} />
-              : <div className="statistics-empty" role="status">{current.rows.length ? "Зоны не найдены." : "За выбранный период нет подтверждённых отчётов."}</div>}
+              : filteredRows?.length ? <StatisticsChart groupBy={groupBy} rows={filteredRows} series={series} maxHours={maxHours} onOpenReports={openReports} reportActionLabel={reportActionLabel} />
+              : <div className="statistics-empty" role="status">{visibleRows?.length ? "По выбранным фильтрам нет данных." : current.rows.length ? "Зоны не найдены." : "За выбранный период нет подтверждённых отчётов."}</div>}
           </section>
-          {!!visibleRows?.length && <StatisticsBreakdownTable key={requestKey} groupBy={groupBy} rows={visibleRows} series={series} onOpenReports={openReports} reportActionLabel={reportActionLabel} />}
+          {!!rows?.length && <StatisticsBreakdownTable key={requestKey} groupBy={groupBy} rows={rows} series={series} zoneSearch={search} onFilteredRowsChange={updateFilteredRows} onClearFilters={clearSearch} onOpenReports={openReports} reportActionLabel={reportActionLabel} />}
         </div>
       </div>
     </div>

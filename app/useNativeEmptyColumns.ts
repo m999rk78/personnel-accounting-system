@@ -22,8 +22,13 @@ export function useNativeEmptyColumns(rootRef: RefObject<HTMLElement | null>, en
         headers.forEach(cell => resize.observe(cell));
         observedTable = table;
       }
-      const pinnedRight = Math.max(-Infinity, ...headers.filter(cell => cell.classList.contains("timesheet-sticky")).map(cell => cell.getBoundingClientRect().right));
-      const edges = headers.filter(cell => cell.classList.contains("timesheet-sticky") || cell.getBoundingClientRect().right > pinnedRight + .5).map(cell => cell.getBoundingClientRect().right);
+      const columns = headers.map(cell => ({ rect: cell.getBoundingClientRect(), pin: cell.dataset.timesheetPin === "right" ? "right" : cell.dataset.timesheetPin === "left" ? "left"
+        : cell.dataset.timesheetPin === "none" ? null : cell.classList.contains("timesheet-sticky") ? "left" : null }));
+      const leftEdge = Math.max(-Infinity, ...columns.filter(column => column.pin === "left").map(column => column.rect.right));
+      const rightEdge = Math.min(Infinity, ...columns.filter(column => column.pin === "right").map(column => column.rect.left));
+      const edges = columns.filter(column => column.pin || column.rect.right > leftEdge + .5 && column.rect.right <= rightEdge + .5).map(column => column.rect.right);
+      // The first right-pinned track also draws the edge of the fixed region.
+      if (Number.isFinite(rightEdge)) edges.push(rightEdge);
       const users = table.classList.contains("users-table");
       const targets = users ? [table.closest<HTMLElement>(".users-table-wrap") ?? root] : [...table.querySelectorAll<HTMLElement>(".timesheet-fill-row > td, td:has(> .equipment-table-empty)")];
       const color = users ? "#ededf0" : "#e5e5e8";

@@ -5,7 +5,7 @@
   min-width:0;
 }
 
-.statistics-view { container-type:inline-size; }
+.statistics-view { container-type:inline-size; overflow-anchor:none; }
 
 .statistics-view > .page-heading.statistics-heading {
   flex-direction:row;
@@ -135,22 +135,25 @@
 .statistics-breakdown-heading .statistics-card-note { margin-inline-start:auto; }
 .statistics-group-tabs { padding:3px; gap:2px; }
 .statistics-group-tabs button { padding:5px 10px; white-space:nowrap; }
-.statistics-breakdown-chart { border-top:0; border-radius:0 0 10px 10px; }
-.statistics-breakdown-chart .statistics-empty { border:0; }
+.statistics-breakdown-chart { height:calc(clamp(420px, 58vh, 680px) + 24px); border-top:0; border-radius:0 0 10px 10px; }
+.statistics-breakdown-chart .statistics-chart-scroll { height:100%; }
+.statistics-breakdown-chart .statistics-empty { height:100%; min-height:0; border:0; }
 .statistics-chart { min-width:0; height:clamp(420px, 58vh, 680px); margin:0 6px 6px; }
 .statistics-grid { width:100%; min-width:0; }
 .statistics-grid .localized-grid { height:auto; }
-.statistics-grid-scroll { height:clamp(260px, 50vh, 560px); }
+.statistics-grid .grid-filter-summary { display:none; }
+.statistics-grid-scroll { max-height:clamp(260px, 50vh, 440px); }
 .statistics-grid-scroll .localized-grid { height:100%; }
 .statistics-grid .ag-root-wrapper { border:0; border-top:1px solid #e4e4e7; border-radius:0; }
 .statistics-grid-total { font-weight:750; }
 .statistics-grid .statistics-grid-zone { padding-block:4px; line-height:18px; overflow-wrap:anywhere; }
-.statistics-grid .ag-header-cell { padding-inline:4px; }
-.statistics-grid .ag-pinnable-header { gap:0; }
-.statistics-grid .ag-header-tools { gap:0; }
-.statistics-grid .ag-column-filter { width:14px; height:22px; flex-basis:14px; }
-.statistics-grid .ag-header-cell-label { gap:0; }
-.statistics-grid .ag-sort-indicator-container { gap:0; --ag-icon-size:12px; }
+.statistics-grid.ag-grid-shell .ag-header-cell { padding-inline:6px; }
+.statistics-grid.ag-grid-shell .ag-header-cell .ag-header-cell-label { gap:4px; }
+.statistics-grid.ag-grid-shell .ag-header-cell:has(.ag-column-filter) .ag-header-cell-label { padding-right:22px; }
+.statistics-grid.ag-grid-shell .ag-header-cell .ag-header-tools { height:24px; }
+.statistics-grid.ag-grid-shell .ag-header-cell .ag-column-filter { width:20px; height:24px; flex-basis:20px; }
+.statistics-grid.ag-grid-shell .ag-header-cell .ag-column-filter .app-icon { width:11px; height:11px; }
+.statistics-grid.ag-grid-shell .ag-header-cell .ag-sort-indicator-container { gap:1px; --ag-icon-size:11px; }
 .statistics-grid .ag-sort-indicator-icon { padding-inline:0; }
 .statistics-grid .ag-sort-order { font-size:10px; }
 .statistics-grid-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:8px 12px; margin-inline-start:auto; }

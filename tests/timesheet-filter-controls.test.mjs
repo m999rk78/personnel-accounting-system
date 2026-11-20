@@ -39,10 +39,12 @@ function harness(presentation = "full") {
     return states[key];
   };
   const body = {};
+  let manuallyResized = false;
   const environment = {
     createElement, AgGridReact: () => null,
     useState, useRef, useCallback: callback => callback, useMemo: calculate => calculate(), useEffect() {}, useLayoutEffect() {},
     useGridFilterEscape: () => () => {},
+    constrainResizedFilterPopup: () => manuallyResized,
     useGridNavigationFilter: () => ({ pending: false, error: "" }),
     EMPTY: { keys: null, filters: [], sorts: [] }, gridTheme: {}, gridLocaleRu: {}, compareGridValues() {},
     enterpriseFilterParams: (_params, options) => { configured.push(options); return {}; },
@@ -54,6 +56,7 @@ function harness(presentation = "full") {
   const controller = view => view.controller.props.children.props;
   controller(render()).onGridReady({ api });
   return { render, controller, api, calls, configured, viewport: environment.window,
+    set manuallyResized(value) { manuallyResized = value; },
     set model(value) { model = structuredClone(value); controller(render()).onFilterChanged({ api }); },
     get model() { return model; },
   };
@@ -113,4 +116,16 @@ test("the popup stays beside its trigger without covering the toggle in a short 
     assert.ok(top >= rect.bottom + 6 || top + height <= rect.top - 6);
     assert.ok(parseFloat(ePopup.style.left) + 286 <= 1188);
   }
+});
+
+test("native timesheet positioning preserves the popup size chosen by the user", () => {
+  const ui = harness("compact");
+  ui.manuallyResized = true;
+  const trigger = { getBoundingClientRect: () => ({ top: 100, bottom: 120, left: 500 }), focus() {} };
+  const ePopup = { style: { top: "50px", left: "40px", width: "620px", height: "530px", maxHeight: "876px" },
+    classList: { contains: name => name === "ag-filter-menu" } };
+  ui.render().context.open("2026-11-06", trigger, false);
+  ui.controller(ui.render()).postProcessPopup({ ePopup });
+  assert.deepEqual(ePopup.style, { top: "50px", left: "40px", width: "620px", height: "530px", maxHeight: "876px" });
+  assert.deepEqual(ui.model, {}, "resizing must never apply, clear, or replace filter criteria");
 });

@@ -54,11 +54,12 @@ function buildDateTree(values: readonly DateChoice[], search: string) {
   return { roots, nodes };
 }
 
-export function DateFilterTree({ values, selected, onChange, search }: {
+export function DateFilterTree({ values, selected, onChange, search, fitContent = false }: {
   values: readonly DateChoice[];
   selected: ReadonlySet<string>;
   onChange: (selection: Set<string>) => void;
   search: string;
+  fitContent?: boolean;
 }) {
   // New years and months open automatically; only explicit collapses are retained.
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
@@ -85,7 +86,7 @@ export function DateFilterTree({ values, selected, onChange, search }: {
     return next;
   });
   return <div className="date-filter-tree" role="group" aria-label="Даты: годы, месяцы и дни">
-    <VirtualChoiceList key={search} items={visible} emptyText={search ? "Ничего не найдено. Попробуйте другой запрос." : "Нет значений с учётом остальных фильтров."} renderItem={id => {
+    <VirtualChoiceList key={search} items={visible} fitContent={fitContent} emptyText={search ? "Ничего не найдено. Попробуйте другой запрос." : "Нет значений с учётом остальных фильтров."} renderItem={id => {
       const node = tree.nodes.get(id)!;
       const checkedCount = selectionCounts.get(id) ?? 0;
       const checked = checkedCount === node.values.length;

@@ -11,6 +11,7 @@ import type { TimesheetFiltersContextValue } from "./TimesheetColumnFilter";
 import { IMPORT_ORDER_COLUMN, importOrderColumnState, shouldApplyImportOrder } from "./importOrderSorting";
 import { useGridFilterEscape } from "./useGridFilterEscape";
 import { useGridNavigationFilter, type GridNavigationFilter } from "./useGridNavigationFilter";
+import { constrainResizedFilterPopup } from "./filterPopupResize";
 
 export type TimesheetFilterColumn<T> = {
   colId: string;
@@ -120,6 +121,7 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
     const target = anchor.current;
     const ePopup = popup.current;
     if (!target || !ePopup) return;
+    if (constrainResizedFilterPopup(ePopup)) return;
     const rect = target.trigger.getBoundingClientRect();
     const width = Math.max(0, Math.min(presentation === "checklist" ? 334 : presentation === "compact" ? 286 : 400, window.innerWidth - 24));
     if (ePopup.style.position !== "fixed") ePopup.style.position = "fixed";
@@ -142,8 +144,9 @@ export function useTimesheetFilters<T>({ rows, columns, getRowId, resetKey, impo
   const positionPopup = useCallback((params: PostProcessPopupParams<T>) => {
     const { ePopup } = params;
     const target = anchor.current;
-    if (!target || !ePopup.classList.contains("ag-filter-menu")) return;
+    if (!target) return;
     trackFilterEscape(params, target.trigger);
+    if (!ePopup.classList.contains("ag-filter-menu")) return;
     popup.current = ePopup;
     updatePopupPosition();
     setOpenColumnId(target.columnId);

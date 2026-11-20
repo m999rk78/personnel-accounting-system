@@ -4,6 +4,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { GridApi, PostProcessPopupParams } from "ag-grid-community";
 import { columnFilterVisibility } from "./columnFilterToggle";
 import { registerTableFilterEscape } from "./tableFilterEscape";
+import { constrainResizedFilterPopup, makeFilterPopupResizable } from "./filterPopupResize";
+import "./filterPopupResize.css";
 
 const filterSelector = ".ag-filter-menu";
 const nestedPicker = ".custom-select-menu, .ag-select-list, .ag-menu-list";
@@ -13,8 +15,30 @@ const expandedPicker = ".custom-select-toggle[aria-expanded='true'], .ag-picker-
  * Cancel action from an external header/another focus target as well. */
 export function useGridFilterEscape<T>({ api, getRoot }: { api: GridApi<T> | null; getRoot: () => HTMLElement | null }) {
   const active = useRef<{ popup: HTMLElement; close: () => void } | null>(null);
+  const resizeCleanup = useRef<(() => void) | null>(null);
+  const childResizeCleanups = useRef(new Map<HTMLElement, () => void>());
   const root = useRef(getRoot);
   useLayoutEffect(() => { root.current = getRoot; }, [getRoot]);
+  useEffect(() => {
+    if (!api || api.isDestroyed()) return;
+    const childCleanups = childResizeCleanups.current;
+    const closed = ({ visible, key }: { visible: boolean; key: string }) => {
+      if (key !== "columnFilter" || visible) return;
+      resizeCleanup.current?.();
+      resizeCleanup.current = null;
+      active.current = null;
+      childCleanups.forEach(cleanup => cleanup());
+      childCleanups.clear();
+    };
+    api.addEventListener("columnMenuVisibleChanged", closed);
+    return () => {
+      resizeCleanup.current?.();
+      resizeCleanup.current = null;
+      childCleanups.forEach(cleanup => cleanup());
+      childCleanups.clear();
+      if (!api.isDestroyed()) api.removeEventListener("columnMenuVisibleChanged", closed);
+    };
+  }, [api]);
   useEffect(() => {
     if (!api || api.isDestroyed()) return;
     return registerTableFilterEscape({
@@ -30,6 +54,8 @@ export function useGridFilterEscape<T>({ api, getRoot }: { api: GridApi<T> | nul
       const current = active.current;
       if (!current?.popup.isConnected) return;
       const target = event.target instanceof Element ? event.target : null;
+      const childPopup = target?.closest(".resizable-filter-popup");
+      if (childPopup && childPopup !== current.popup) return;
       const targetFilter = target?.closest(filterSelector);
       const topFilter = Array.from(document.querySelectorAll<HTMLElement>(filterSelector)).at(-1);
       if ((targetFilter ?? topFilter) !== current.popup) return;
@@ -45,8 +71,20 @@ export function useGridFilterEscape<T>({ api, getRoot }: { api: GridApi<T> | nul
     return () => { document.removeEventListener("keydown", handleEscape, true); active.current = null; };
   }, []);
 
-  return useCallback(({ api, column, ePopup, eventSource }: PostProcessPopupParams<T>, trigger?: HTMLElement) => {
+  return useCallback(({ api, column, ePopup, eventSource, type }: PostProcessPopupParams<T>, trigger?: HTMLElement) => {
+    // Compact filters can open separate text/number/date condition windows.
+    // Ordinary condition dropdowns and column/context menus keep their own UI.
+    if (type === "subMenu" && ePopup.querySelector(".ag-filter-body-wrapper")) {
+      for (const [popup, cleanup] of childResizeCleanups.current) {
+        if (!popup.isConnected) { cleanup(); childResizeCleanups.current.delete(popup); }
+      }
+      if (!childResizeCleanups.current.has(ePopup)) childResizeCleanups.current.set(ePopup, makeFilterPopupResizable(ePopup));
+      constrainResizedFilterPopup(ePopup);
+      return;
+    }
     if (!ePopup.matches(filterSelector) || !column || active.current?.popup === ePopup) return;
+    resizeCleanup.current?.();
+    resizeCleanup.current = makeFilterPopupResizable(ePopup);
     const columnId = column.getColId();
     active.current = { popup: ePopup, close: () => {
       if (api.isDestroyed()) return;

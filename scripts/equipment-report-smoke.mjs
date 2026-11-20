@@ -16,6 +16,7 @@ import {
 } from "../app/equipmentReportWorkflow.ts";
 import { equipmentReportOrderScope, isEquipmentReportOrderId, moveEquipmentReportRows, remapEquipmentReportOrder } from "../app/equipmentReportRowOrder.ts";
 import { parseEquipmentReportDraftSnapshot } from "../app/equipmentReportDraftBuffer.ts";
+import { hasReportStatusPermission, rolePermissionTemplate } from "../app/permissionModel.ts";
 
 const TODAY = "2026-10-30";
 const YESTERDAY = "2026-10-29";
@@ -56,8 +57,10 @@ const actors = Object.fromEntries([
   ["engineer", 20, "Ирина Проверяющая", "engineer"], ["superadmin", 30, "Администратор Проверки", "superadmin"],
   ["viewer", 40, "Виктор Наблюдатель", "viewer"], ["viewer_pending", 41, "Вера Расширенный Просмотр", "viewer"],
 ].map(([key, id, fullName, role]) => {
-  const permission = { view: true, create: role !== "viewer", update: role !== "viewer", delete: role !== "viewer" };
-  return [key, { id, fullName, role, assignedSiteId: site.id, projectAccess: { mode: "selected", siteIds: [site.id] }, canViewPendingReports: role !== "viewer" || key === "viewer_pending", permissions: { equipment_report: { ...permission }, equipment_timesheet: { ...permission } } }];
+  const permissions = rolePermissionTemplate(role);
+  // Keep the approved-only and expanded-view fixtures distinct using actual rights.
+  if (key === "viewer") for (const resource of ["workers_report_submitted", "equipment_report_submitted"]) permissions[resource].view = false;
+  return [key, { id, fullName, role, assignedSiteId: site.id, projectAccess: { mode: "selected", siteIds: [site.id] }, canViewPendingReports: role !== "viewer" || key === "viewer_pending", permissions }];
 }));
 const reports = new Map();
 const entries = new Map();
@@ -160,6 +163,48 @@ function checkedRows(input, required = false) {
 function checkMaterialization(rows, date, excluded = []) {
   const issues = [...availabilityIssues(rows, date), ...collectEquipmentReportHourIssues(rows, approvedHours(date, excluded), equipmentNames)];
   if (issues.length) fail(issues[0].message, 409, issues[0].code, { issues });
+}
+function deleteApprovedRows(body, actor) {
+  if (!hasReportStatusPermission(actor.permissions, "equipment_report", "approved", "delete")) fail("Нет права удалять подтверждённые записи.", 403, "REPORT_FORBIDDEN");
+  assertEquipmentReportSiteAccess(actor, body.siteId);
+  if (body.siteId !== site.id) fail("Проект не найден.", 404, "SITE_NOT_FOUND");
+  const positive = value => Number.isSafeInteger(value) && value > 0 && value <= 2_147_483_647;
+  if (!Array.isArray(body.rows) || !body.rows.length || body.rows.length > 5000) fail("Выберите от 1 до 5000 строк.");
+  const selected = new Map(), reportRevisions = new Map();
+  for (const row of body.rows) {
+    if (!row || typeof row !== "object" || !positive(row.entryId) || !positive(row.revision) || selected.has(row.entryId)
+      || (row.reportId !== undefined || row.reportRevision !== undefined) && (!positive(row.reportId) || !positive(row.reportRevision))) fail("Некорректные или повторяющиеся строки для удаления.");
+    if (row.reportId !== undefined) {
+      if (reportRevisions.has(row.reportId) && reportRevisions.get(row.reportId) !== row.reportRevision) fail("Указаны разные версии одного отчёта.", 409, "STALE_REPORT");
+      reportRevisions.set(row.reportId, row.reportRevision);
+    }
+    selected.set(row.entryId, row);
+  }
+  for (const [id, revision] of reportRevisions) {
+    const report = reports.get(id);
+    if (!report || report.status !== "approved") fail("Отчёт уже изменён.", 409, "STALE_REPORT");
+    assertEquipmentReportOwner(actor, report);
+    if (report.siteId !== body.siteId) fail("Нет доступа к строкам другого проекта.", 403, "REPORT_FORBIDDEN");
+    assertEquipmentReportRevision(report.revision, revision);
+  }
+  for (const [id, row] of selected) {
+    const entry = entries.get(id);
+    if (!entry) fail("Запись уже удалена или изменена.", 409, "STALE_REPORT");
+    if (entry.siteId !== body.siteId || actor.role === "foreman" && entry.responsibleUserId !== actor.id) fail("Нет доступа к выбранной записи.", 403, "REPORT_FORBIDDEN");
+    assertEquipmentReportRevision(entry.revision, row.revision);
+    const sources = [...reports.values()].filter(report => report.rows.some(source => source.approvedEntryId === id));
+    if (sources.length > 1 || sources[0]?.id !== row.reportId || sources[0] && sources[0].workDate !== entry.workDate) fail("Связь записи с отчётом уже изменилась.", 409, "STALE_REPORT");
+  }
+  // Validate the whole request before replacing either in-memory collection.
+  const now = new Date().toISOString();
+  const updated = [...reportRevisions.keys()].map(id => {
+    const report = structuredClone(reports.get(id));
+    return { ...report, revision: report.revision + 1, updatedAt: now,
+      rows: report.rows.filter(row => !selected.has(row.approvedEntryId)) };
+  });
+  for (const report of updated) reports.set(report.id, report);
+  for (const id of selected.keys()) entries.delete(id);
+  return { deletedEntryIds: [...selected.keys()].sort((left, right) => left - right) };
 }
 function validateSubmissions(body, actor) {
   assertWritable(actor);
@@ -383,8 +428,31 @@ if (selfTest) {
   const movedEntry = mutateReport({ action: "change-entry-date", siteId: 1, entryId: standalone.id, revision: standalone.revision, workDate: "2026-11-03" }, actors.engineer).entry;
   assert.equal(movedEntry.workDate, "2026-11-03");
   assert.throws(() => mutateReport({ action: "change-date", reportId: moved.id, revision: dated.revision, workDate: "2026-11-04" }, actors.engineer), { code: "STALE_REPORT" });
+  scenario = "default"; resetFixture();
+  const deletionReport = [...reports.values()].find(report => report.status === "approved");
+  const deletionRow = deletionReport.rows[0];
+  const deleteTarget = { entryId: deletionRow.approvedEntryId, revision: deletionRow.approvedEntryRevision, reportId: deletionReport.id, reportRevision: deletionReport.revision };
+  const deletionPayload = { action: "delete-approved-rows", siteId: site.id, rows: [deleteTarget] };
+  const deletionSnapshot = () => JSON.stringify({ reports: [...reports], entries: [...entries], availabilityMarks });
+  const beforeDeletion = deletionSnapshot();
+  assert.throws(() => deleteApprovedRows({ ...deletionPayload, rows: [deleteTarget, { ...deleteTarget, entryId: 999999 }] }, actors.engineer), { code: "STALE_REPORT" });
+  assert.equal(deletionSnapshot(), beforeDeletion, "A stale mixed deletion must not remove an earlier valid row");
+  const grantedForeman = { ...actors.foreman2, permissions: rolePermissionTemplate("engineer") };
+  assert.throws(() => deleteApprovedRows(deletionPayload, grantedForeman), { code: "REPORT_FORBIDDEN" });
+  assert.equal(deletionSnapshot(), beforeDeletion);
+  const remainingId = deletionReport.rows[1].approvedEntryId;
+  const marksBefore = structuredClone(availabilityMarks);
+  assert.deepEqual(deleteApprovedRows(deletionPayload, actors.engineer), { deletedEntryIds: [deleteTarget.entryId] });
+  assert.equal(entries.has(deleteTarget.entryId), false); assert.equal(entries.has(remainingId), true);
+  assert.deepEqual(reports.get(deletionReport.id).rows.map(row => row.approvedEntryId), [remainingId]);
+  assert.equal(reports.get(deletionReport.id).revision, deletionReport.revision + 1);
+  assert.deepEqual(availabilityMarks, marksBefore);
+  const standaloneDelete = [...entries.values()].find(entry => !entry.orderReportId);
+  const reportBeforeLegacy = structuredClone(reports.get(deletionReport.id));
+  assert.deepEqual(deleteApprovedRows({ action: "delete-approved-rows", siteId: site.id, rows: [{ entryId: standaloneDelete.id, revision: standaloneDelete.revision }] }, actors.engineer), { deletedEntryIds: [standaloneDelete.id] });
+  assert.deepEqual(reports.get(deletionReport.id), reportBeforeLegacy, "Deleting a standalone record does not change another report");
   scenario = savedScenario; resetFixture();
-  console.log("Equipment smoke self-test passed: lifecycle, ownership, approved edits, hours cap, marks, publish isolation and viewer read/write boundaries.");
+  console.log("Equipment smoke self-test passed: lifecycle, ownership, approved edits/deletions, atomic deletion conflicts, hours cap, marks, publish isolation and viewer read/write boundaries.");
   process.exit(0);
 }
 const config = {
@@ -437,6 +505,7 @@ const config = {
         }
         assertEquipmentReportSiteAccess(actor, Number(body.siteId ?? url.searchParams.get("siteId")) || site.id);
         if (request.method === "POST") {
+          if (body.action === "delete-approved-rows") { const result = deleteApprovedRows(body, actor); requestCounts.mutations++; return json(response, result); }
           assertWritable(actor);
           if (body.action === "validate-submissions") { requestCounts.validation++; return json(response, validateSubmissions(body, actor)); }
           if (body.action === "save") requestCounts.save++;

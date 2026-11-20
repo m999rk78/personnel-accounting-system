@@ -8,26 +8,34 @@
 .timesheet-resizable .timesheet-position-column { left:var(--timesheet-left-position)!important; }
 .timesheet-resizable .equipment-machine-column { left:var(--timesheet-left-equipment)!important; }
 .timesheet-resizable .equipment-organization-column { left:var(--timesheet-left-organization)!important; }
-.timesheet-grid-shell .timesheet-table.timesheet-resizable .timesheet-summary-label { width:var(--timesheet-sticky-width)!important; min-width:var(--timesheet-sticky-width)!important; max-width:var(--timesheet-sticky-width)!important; }
-.timesheet-resizable thead th { isolation:isolate; }
-.timesheet-resizable thead th.timesheet-sticky { z-index:9; }
+.timesheet-grid-shell .timesheet-table.timesheet-resizable .timesheet-summary-label { width:auto!important; min-width:0!important; max-width:none!important; }
+/* Override legacy total-header layers as well as ordinary date headers. */
+.timesheet-grid-shell .timesheet-table.timesheet-resizable thead th { isolation:isolate; z-index:var(--timesheet-header-layer,100)!important; }
+.timesheet-resizable thead th:has(> .timesheet-column-resize-handle) { overflow:visible; }
+.timesheet-resizable thead th.timesheet-sticky { --timesheet-header-layer:1000; }
+.timesheet-grid-shell .timesheet-table.timesheet-resizable thead th { font-family:inherit; font-size:10px; font-weight:750!important; }
+.timesheet-grid-shell .timesheet-table.timesheet-resizable thead .timesheet-filterable-heading,
+.timesheet-grid-shell .timesheet-table.timesheet-resizable thead .timesheet-filterable-heading-label { font:inherit; color:inherit; }
 /* Keep the filter inside its own track and leave the right edge for resizing. */
-.timesheet-grid-shell .timesheet-table.timesheet-resizable thead th:has(> .timesheet-filterable-heading) { padding-left:2px; padding-right:8px; }
+.timesheet-grid-shell .timesheet-table.timesheet-resizable thead th:has(> .timesheet-filterable-heading) { padding-left:2px; padding-right:10px; }
 .timesheet-resizable thead .timesheet-filterable-heading { box-sizing:border-box; width:100%; padding:0; grid-template-columns:minmax(0,1fr) 20px; column-gap:2px; overflow:visible; }
-.timesheet-resizable thead .timesheet-filterable-heading-label { box-sizing:border-box; width:100%; padding:0; text-align:center; }
+.timesheet-resizable thead .timesheet-filterable-heading-label { box-sizing:border-box; width:100%; padding:0; font:inherit; text-align:center; }
 .timesheet-resizable thead .timesheet-header-filter { position:relative; top:auto; right:auto; bottom:auto; width:20px; height:28px; transform:none; }
 .timesheet-resizable thead .timesheet-header-filter .timesheet-header-filter-icon,.timesheet-resizable thead .timesheet-header-filter .timesheet-header-filter-icon svg { width:14px; height:14px; color:inherit; }
 .timesheet-resizable thead .timesheet-header-filter .timesheet-sort-indicator { top:-4px; right:0; left:auto; color:#8a5b00; font-size:8px; line-height:8px; }
-.timesheet-resizable thead .timesheet-total-column .timesheet-filterable-heading-label { font-size:9px; }
+.timesheet-grid-shell .timesheet-table.timesheet-resizable thead .timesheet-total-column { border-left:0; background:#f7f7f8!important; color:#52525b!important; }
 .timesheet-grid-shell .timesheet-table.timesheet-resizable thead th:has(> .timesheet-filterable-heading.compact) { padding-left:0; }
 .timesheet-resizable thead .timesheet-filterable-heading.compact { grid-template-columns:minmax(0,1fr) 16px; column-gap:2px; }
 .timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-header-filter { width:16px; height:24px; }
 .timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-header-filter-icon,.timesheet-resizable thead .timesheet-filterable-heading.compact .timesheet-header-filter-icon svg { width:12px; height:12px; }
 .timesheet-resizable .timesheet-total-column { text-align:center; }
-.timesheet-resizable .timesheet-column-resize-handle { position:absolute; z-index:12; inset:0 0 0 auto; width:8px; min-width:0; height:100%; margin:0; padding:0; border:0; border-radius:0; background:transparent; cursor:col-resize; touch-action:none; }
-.timesheet-resizable .timesheet-column-resize-handle-left { right:auto; left:0; width:7px; }
-.timesheet-column-resize-handle::after { position:absolute; top:12%; right:0; bottom:12%; width:2px; background:#d39a20; opacity:0; content:""; }
-.timesheet-column-resize-handle-left::after { right:auto; left:0; }
-.timesheet-column-resize-handle:hover::after,.timesheet-column-resize-handle:focus-visible::after,.timesheet-column-resizing .timesheet-column-resize-handle:focus::after { opacity:1; }
-.timesheet-column-resize-handle:focus-visible { outline:2px solid #b77a00; outline-offset:-2px; }
+.timesheet-resizable tbody .timesheet-position-column { text-align:left; }
+/* Keep the grip inside its track so it cannot extend the horizontal scroll range.
+   The pointer controller supplies the hit area on both sides of the divider. */
+.timesheet-resizable .timesheet-column-resize-handle { position:absolute; z-index:12; inset:0 -1px 0 auto; width:6px; min-width:0; height:100%; margin:0; padding:0; border:0; border-radius:0; background:transparent; pointer-events:none; touch-action:none; }
+.timesheet-column-resize-handle::after { position:absolute; top:12%; right:0; bottom:12%; width:1px; background:#d39a20; opacity:0; content:""; }
+.timesheet-column-resize-handle[data-resize-hover]::after,.timesheet-column-resize-handle:focus-visible:not([data-resize-input="pointer"])::after,.timesheet-column-resizing .timesheet-column-resize-handle:focus::after { opacity:1; }
+.timesheet-column-resize-handle:focus-visible { outline:none; }
+.timesheet-column-resize-handle:focus-visible:not([data-resize-input="pointer"])::after { width:2px; background:#b77a00; }
 .timesheet-column-resizing,.timesheet-column-resizing * { cursor:col-resize!important; user-select:none!important; }
+.timesheet-column-edge-hover,.timesheet-column-edge-hover * { cursor:col-resize!important; }

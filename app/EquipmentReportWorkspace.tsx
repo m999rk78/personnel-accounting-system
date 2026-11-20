@@ -29,6 +29,10 @@ import { useEquipmentReportDraftAutosave } from "./useEquipmentReportDraftAutosa
 import type { EquipmentReportDraftSnapshot } from "./equipmentReportDraftBuffer";
 import { reportRowMatchesSource, type ReportSourceFilter } from "./reportSourceFilter";
 import { ReportSourceNotice } from "./ReportSourceNotice";
+import { equipmentReportDeletionPlan, type EquipmentReportDeletionPlan } from "./equipmentReportDeletion";
+import { reportFooterSaveScope } from "./reportFooterActions";
+import { ReportChangesSaveButton } from "./ReportChangesSaveButton";
+import { canModifyReportOwner } from "./reportRowPermissions";
 import "./personnelReport.css";
 
 const ReportGrid = lazy(() => import("./EquipmentReportGrid").then(module => ({ default: module.EquipmentReportGrid })));
@@ -93,6 +97,9 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [deletion, setDeletion] = useState<EquipmentReportDeletionPlan | null>(null);
+  const [deletionError, setDeletionError] = useState("");
+  const deleting = useRef(false);
   const [review, setReview] = useState<{ report: EquipmentReport; action: "approve" | "reject" } | null>(null);
   const [sendOpen, setSendOpen] = useState(false);
   const [sendKeys, setSendKeys] = useState<string[]>([]);
@@ -121,7 +128,9 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
   const autosave = useEquipmentReportDraftAutosave({ userId: currentUser.id, siteId, enabled: permissions.view && (permissions.create || permissions.update), content: autosaveContent, onRestore: restoreDraft });
   const hasDraftContent = Object.keys(autosaveContent.edits).length > 0;
   const hasManualEdits = Object.keys(edits).some(key => !Object.hasOwn(autosaveContent.edits, key));
-  const unprotectedChanges = importing || hasManualEdits || hasDraftContent && !autosave.protected;
+  // Reviewed records are saved manually; protect keystrokes even before the cell commits.
+  const hasPendingManualInput = Boolean(pendingInput && !Object.values(autosaveContent.edits).some(drafts => drafts.some(row => row.key === pendingInput.rowKey)));
+  const unprotectedChanges = importing || hasManualEdits || hasPendingManualInput || hasDraftContent && !autosave.protected;
   const locked = busy || importing || !autosave.ready;
   const checkSubmissionReports = useCallback(async (plan: SubmissionValidationPlan, signal?: AbortSignal) => {
     setSendValidation({ token: plan.token, status: "checking", issues: plan.localIssues });
@@ -180,6 +189,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
   const canReview = Boolean(data?.canReview);
   const canEditSubmitted = canReview && statusAccess.submitted.update;
   const canEditApproved = canReview && statusAccess.approved.update;
+  const canDeleteApproved = statusAccess.approved.delete;
   const canApprove = canEditSubmitted && statusAccess.approved.create;
   const reports = useMemo(() => mergeEquipmentReportSessions(data?.reports ?? [], sessions, Object.keys(edits)).filter(report => statusAccess[isEquipmentReportDraft(report.status) ? "draft" : report.status as "submitted" | "approved"].view && (!isEquipmentReportDraft(report.status) || report.ownerUserId === currentUser.id)), [data, edits, sessions, currentUser.id, statusAccess]);
   const rememberSessions = useCallback((keys: Iterable<string>) => {
@@ -194,7 +204,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
     const workDate = equipmentReportNewDate(key, today);
     return workDate ? [{ key, workDate, drafts }] : [];
   }).sort((left, right) => right.workDate.localeCompare(left.workDate)), [edits, today]);
-  const canEdit = useCallback((report: EquipmentReport) => isEquipmentReportDraft(report.status) ? permissions.update && report.ownerUserId === currentUser.id : report.status === "approved" ? canEditApproved : canEditSubmitted, [permissions.update, currentUser.id, canEditApproved, canEditSubmitted]);
+  const canEdit = useCallback((report: EquipmentReport) => canModifyReportOwner(currentUser, report.ownerUserId) && (isEquipmentReportDraft(report.status) ? permissions.update && report.ownerUserId === currentUser.id : report.status === "approved" ? canEditApproved : canEditSubmitted), [permissions.update, currentUser, canEditApproved, canEditSubmitted]);
   useEffect(() => {
     if (!autosave.ready || !data || fetching || props.loading || !permissions.create || !permissions.update) return;
     if (rowOrder && !rowOrder.ready && !rowOrder.error) return;
@@ -227,7 +237,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
         const dateScopeLabel = !snapshot && draft.reportRowId === undefined && isEquipmentReportDraft(report.status) && report.ownerUserId === currentUser.id
           ? "Эта новая строка" : drafts.length > 1 ? `Весь отчёт · строк: ${drafts.length}` : undefined;
         const entry = snapshot ? { ...snapshot, id: snapshot.approvedEntryId ?? snapshot.id, equipmentId: snapshot.equipmentId ?? 0, shiftId: snapshot.shiftId ?? 0, zoneId: snapshot.zoneId ?? 0, mainWorkTypeId: snapshot.mainWorkTypeId ?? 0, subworkTypeId: snapshot.subworkTypeId ?? 0, hours: snapshot.hours ?? 0, revision: report.revision, responsibleUserId: report.ownerUserId, responsibleUserName: report.ownerName } : undefined;
-        return { rowKey: draft.key, workDate: report.workDate, createdAt: draft.createdAt ?? report.createdAt, updatedAt: draft.updatedAt ?? report.updatedAt, rowOrder: snapshot?.rowOrder, status: report.status, draft, entry, dateEditable: canEdit(report), dateScopeLabel, editable: canEdit(report) && !locked, proposalId: report.id, responsibleUserName: report.ownerName, responsibleUserId: report.ownerUserId, reviewNote: report.reviewComment };
+        return { rowKey: draft.key, workDate: report.workDate, createdAt: draft.createdAt ?? report.createdAt, updatedAt: draft.updatedAt ?? report.updatedAt, rowOrder: snapshot?.rowOrder, status: report.status, draft, entry, dateEditable: canEdit(report), dateScopeLabel, editable: canEdit(report) && !locked, removable: report.status === "approved" ? canDeleteApproved && canModifyReportOwner(currentUser, report.ownerUserId) && !locked : undefined, proposalId: report.id, responsibleUserName: report.ownerName, responsibleUserId: report.ownerUserId, reviewNote: report.reviewComment };
       });
     });
     const fresh = newDraftGroups.flatMap(group => group.drafts.map(draft => ({ rowKey: draft.key, draftGroupKey: group.key, workDate: group.workDate, createdAt: draft.createdAt, updatedAt: draft.updatedAt, status: "draft" as const, draft, dateEditable: permissions.create, dateScopeLabel: group.drafts.length > 1 ? `Весь отчёт · строк: ${group.drafts.length}` : undefined, editable: permissions.create && !locked, responsibleUserName: currentUser.fullName, responsibleUserId: currentUser.id })));
@@ -236,12 +246,13 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
     const approved = (statusAccess.approved.view ? [...entries.values()] : []).filter(entry => !entry.orderReportId || !reports.some(report => report.id === entry.orderReportId)).map(entry => {
       const key = entryKey(entry);
       const draft = edits[key]?.[0] ?? toEntryDraft(entry);
+      const canModify = canModifyReportOwner(currentUser, entry.responsibleUserId);
       return { rowKey: draft.key, draftGroupKey: key, workDate: entry.workDate, createdAt: draft.createdAt, updatedAt: draft.updatedAt, rowOrder: entry.rowOrder, status: "approved" as const,
-        entry: { ...entry, responsibleUserName: entry.responsibleUserName ?? "" } as GridEquipmentEntry, draft: canEditApproved ? draft : undefined,
-        dateEditable: canEditApproved && !entry.orderReportId, editable: canEditApproved && !locked && !entry.orderReportId, removable: false, responsibleUserName: entry.responsibleUserName ?? "", responsibleUserId: entry.responsibleUserId };
+        entry: { ...entry, responsibleUserName: entry.responsibleUserName ?? "" } as GridEquipmentEntry, draft: canEditApproved && canModify ? draft : undefined,
+        dateEditable: canEditApproved && canModify && !entry.orderReportId, editable: canEditApproved && canModify && !locked && !entry.orderReportId, removable: canDeleteApproved && canModify && !locked && !entry.orderReportId, responsibleUserName: entry.responsibleUserName ?? "", responsibleUserId: entry.responsibleUserId };
     });
     return [...(permissions.view ? fresh : []), ...staged, ...approved];
-  }, [data, reports, edits, entrySessions, canEditApproved, statusAccess.approved.view, newDraftGroups, canEdit, locked, permissions.create, permissions.view, currentUser.fullName, currentUser.id]);
+  }, [data, reports, edits, entrySessions, canEditApproved, canDeleteApproved, statusAccess.approved.view, newDraftGroups, canEdit, locked, permissions.create, permissions.view, currentUser]);
   const ownerByRow = useMemo(() => new Map(rows.filter(row => row.draft).map(row => [row.rowKey, row.proposalId ? String(row.proposalId) : row.draftGroupKey!])), [rows]);
   const patchDraft = useCallback((key: string, changes: Partial<GridDraftRow>) => {
     const owner = ownerByRow.get(key);
@@ -342,6 +353,40 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
     });
     setSelected([]);
   };
+  const beginApprovedDeletion = (selectedRows: EquipmentReportGridRow[]) => {
+    if (!canDeleteApproved || locked || fetching || props.loading || !data) return;
+    try {
+      const pendingOwner = pendingInput && ownerByRow.get(pendingInput.rowKey);
+      setDeletion(equipmentReportDeletionPlan(siteId, selectedRows, data.reports, data.entries, [...Object.keys(edits), ...(pendingOwner ? [pendingOwner] : [])]));
+      setDeletionError(""); setError(""); setNotice("");
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "Не удалось выбрать записи для удаления."); }
+  };
+  async function deleteApprovedRows() {
+    if (!deletion || deleting.current || !canDeleteApproved || locked || fetching || props.loading) return;
+    deleting.current = true; setBusy(true); setDeletionError(""); setError(""); setNotice("");
+    try {
+      const response = await fetch("/api/equipment-report", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(deletion.payload) });
+      const result = await response.json() as { deletedEntryIds?: number[]; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "Не удалось удалить записи. Повторите попытку.");
+      const deletedIds = new Set(deletion.payload.rows.map(row => row.entryId));
+      if (!Array.isArray(result.deletedEntryIds) || result.deletedEntryIds.length !== deletedIds.size || new Set(result.deletedEntryIds).size !== deletedIds.size || !result.deletedEntryIds.every(id => deletedIds.has(id))) {
+        throw new Error("Не удалось получить подтверждение удаления. Обновите отчёты, чтобы проверить результат.");
+      }
+      const owners = new Set(deletion.payload.rows.map(row => row.reportId ? String(row.reportId) : `entry-${row.entryId}`));
+      // Keep unrelated drafts, but do not let Undo restore old published snapshots.
+      dispatchEdits({ type: "reset", value: edits });
+      setSessions(current => Object.fromEntries(Object.entries(current).filter(([key]) => !owners.has(key))));
+      setEntrySessions(current => Object.fromEntries(Object.entries(current).filter(([key]) => !owners.has(key))));
+      setData(current => current ? { ...current,
+        entries: current.entries.filter(entry => !deletedIds.has(entry.id)),
+        reports: current.reports.map(report => ({ ...report, rows: report.rows.filter(row => !row.approvedEntryId || !deletedIds.has(row.approvedEntryId)) })),
+      } : current);
+      setSelected([]); setDeletion(null);
+      setNotice(`Удалено записей: ${deletedIds.size}. Часы отчёта в табеле пересчитаны.`);
+      await load();
+    } catch (failure) { setDeletionError(failure instanceof Error ? failure.message : "Не удалось удалить записи. Повторите попытку."); }
+    finally { deleting.current = false; setBusy(false); }
+  }
   async function changeReportDate(row: EquipmentReportGridRow, workDate: string) {
     if (!row.editable || locked || fetching || props.loading) throw new Error("Подождите завершения текущего действия.");
     if (!isReportWorkDate(workDate)) throw new Error("Укажите корректную дату.");
@@ -506,7 +551,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
   }
   async function transition(report: EquipmentReport, action: "approve" | "reject" | "reopen", reviewComment = "") {
     if (locked || fetching || props.loading) return;
-    if (action === "approve" ? !canApprove : action === "reject" ? !canEditSubmitted : !statusAccess.submitted.view || !permissions.update || report.ownerUserId !== currentUser.id) { setError("Нет права выполнять это действие с отчётом."); return; }
+    if (!canModifyReportOwner(currentUser, report.ownerUserId) || (action === "approve" ? !canApprove : action === "reject" ? !canEditSubmitted : !statusAccess.submitted.view || !permissions.update || report.ownerUserId !== currentUser.id)) { setError("Нет права выполнять это действие с отчётом."); return; }
     const issue = equipmentReportReviewIssue(report.id, Object.keys(edits));
     if (issue) { setError(issue); return; }
     setBusy(true); setError(""); setNotice("");
@@ -609,7 +654,7 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
   const openSend = (keys?: string[]) => { const chosen = keys ?? defaultEquipmentReportSubmissions(submissionItems, currentUser.id); setSendKeys(chosen); setRequiredReports(chosen); setSendValidation(null); setError(""); setSendOpen(true); };
   const showReport = (item: typeof reportItems[number]) => { changeWorkflow(item.status === "submitted" ? "submitted" : "draft", item.key); setSendOpen(false); };
   const beginReview = (report: EquipmentReport, action: "approve" | "reject") => {
-    if (action === "approve" ? !canApprove : !canEditSubmitted) { setError("Нет права выполнять это действие с отчётом."); return; }
+    if (!canModifyReportOwner(currentUser, report.ownerUserId) || (action === "approve" ? !canApprove : !canEditSubmitted)) { setError("Нет права выполнять это действие с отчётом."); return; }
     const issue = equipmentReportReviewIssue(report.id, Object.keys(edits));
     if (issue) { setError(issue); return; }
     setError(""); setComment(""); setReview({ report, action });
@@ -661,19 +706,24 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
     ]} />}
     <button type="button" className="personnel-report-refresh" aria-label="Обновить отчёты" title="Обновить отчёты" disabled={fetching || locked} onClick={() => void load()}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5" /><path d="M6.1 6.1A8 8 0 0 1 19.6 10M4.4 14A8 8 0 0 0 17.9 17.9" /></svg></button>
   </div>;
-  const footerStatus = hasManualEdits
+  // Keep Save reachable when an edited zone moves a row outside the source filter.
+  const footerRows = rows.filter(row => activeView === "approved" ? row.status === "approved" : activeView === "submitted" && row.status === "submitted" && String(row.proposalId) === activeReview?.key);
+  const footerSaveScope = reportFooterSaveScope(footerRows, Object.keys(edits), pendingInput?.rowKey);
+  const footerStatus = (activeView === "draft" ? hasManualEdits : footerSaveScope.hasChanges)
     ? <span className="personnel-report-dirty-caption"><i aria-hidden="true" />Есть несохранённые изменения</span>
     : activeView === "draft" && (hasDraftContent || !autosave.ready)
       ? <span className={`personnel-report-autosave status-${autosave.status}`}>{autosave.message}</span>
       : null;
-  const footerActions = <div className="toolbar-actions personnel-report-editor-actions">
+  const footerActions = activeView === "draft" ? <div className="toolbar-actions personnel-report-editor-actions">
     {permissions.create && <button className="add-row-button" type="button" disabled={locked || props.loading || fetching} onClick={() => { changeWorkflow("draft"); appendOnDate([makeDraft()]); }}>Добавить строку</button>}
     {(permissions.create || permissions.update || canEditSubmitted || canEditApproved) && <>
       <button className="secondary-button" type="button" disabled={!dirty || locked} onClick={() => void saveDrafts()}>{importing ? "Импортируем…" : busy ? "Сохраняем…" : "Сохранить изменения"}{unprotectedChanges && !locked && <span className="personnel-report-unsaved-dot" aria-label="Есть несохранённые изменения" />}</button>
-      {permissions.update && statusAccess.submitted.view && !(canEditSubmitted && activeView === "submitted") && <button className="save-edits-button" type="button" disabled={locked || fetching || props.loading || !submissionItems.length} aria-haspopup="dialog" onClick={() => openSend()}>Отправить на проверку…</button>}
+      {permissions.update && statusAccess.submitted.view && <button className="save-edits-button" type="button" disabled={locked || fetching || props.loading || !submissionItems.length} aria-haspopup="dialog" onClick={() => openSend()}>Отправить на проверку…</button>}
     </>}
     {(dirty || history.past.length > 0 || history.future.length > 0) && <button className="personnel-report-discard" aria-label="Отменить изменения" title="Отменить изменения" type="button" disabled={locked} onClick={() => { dispatchEdits({ type: "reset", value: {} }); setSessions({}); setEntrySessions({}); setSelected([]); setRequiredReports([]); }}>Отменить</button>}
-  </div>;
+  </div> : footerSaveScope.hasChanges && (activeView === "approved" ? canEditApproved : canEditSubmitted) ? <div className="toolbar-actions personnel-report-editor-actions">
+    <ReportChangesSaveButton disabled={locked || fetching || props.loading} busy={busy} onSave={() => saveDrafts(undefined, footerSaveScope.saveKeys)} />
+  </div> : null;
   return <section className="personnel-report-workspace equipment-report-workspace" data-draft-autosave-protected={workflowView === "draft" && autosave.protected ? "true" : undefined}>
     {actionsTarget ? createPortal(headerActions, actionsTarget) : headerActions}
     {permissions.create && <input ref={importInput} type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={event => { const file = event.target.files?.[0]; if (file) void importExcel(file); }} />}
@@ -686,14 +736,21 @@ export function EquipmentReportWorkspace(props: EquipmentReportWorkspaceProps) {
       <div className="personnel-report-review-focus-title"><span className="personnel-report-step" aria-hidden="true">✓</span><div><strong>{canEditSubmitted ? "Проверка отчёта" : "Отчёт на проверке"}</strong><p>{canEditSubmitted ? "Выберите прораба и дату. Можно исправить данные прямо в таблице и сохранить перед подтверждением." : permissions.update ? "Выберите отчёт по дате. Свой отчёт можно снять с проверки и вернуть в черновики." : "Выберите прораба и дату для просмотра отчёта."}</p></div><span className="personnel-report-status submitted">На проверке: {submittedCount}</span></div>
       <div className="personnel-report-review-focus-controls">
         <CustomSelect ariaLabel={canEditSubmitted ? "Отчёт для проверки" : "Отчёт на проверке"} value={activeReview.key} onChange={key => changeWorkflow("submitted", key)} options={reviewItems.map(item => ({ value: item.key, label: `${displayDate(item.workDate)} · ${item.ownerName} · строк: ${item.rowCount} · ${item.hours} ч` }))} />
-        <div className="toolbar-actions">{canEditSubmitted && <>{edits[activeReview.key] && <button type="button" className="secondary-button" disabled={locked || fetching} onClick={() => void saveDrafts(undefined, [activeReview.key])}>Сохранить исправления</button>}<button type="button" className="save-edits-button" disabled={!canApprove || locked || fetching || Boolean(equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits)))} onClick={() => beginReview(activeReview.report!, "approve")}>Подтвердить отчёт</button><button type="button" className="secondary-button" disabled={locked || fetching || Boolean(equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits)))} onClick={() => beginReview(activeReview.report!, "reject")}>Вернуть на доработку</button></>}{statusAccess.submitted.view && permissions.update && activeReview.ownerUserId === currentUser.id && <button type="button" className="secondary-button" disabled={locked || fetching || Boolean(equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits)))} onClick={() => void transition(activeReview.report!, "reopen")}>Снять с проверки</button>}</div>
+        <div className="toolbar-actions">{canEditSubmitted && canModifyReportOwner(currentUser, activeReview.ownerUserId) && <>{edits[activeReview.key] && <button type="button" className="secondary-button" disabled={locked || fetching} onClick={() => void saveDrafts(undefined, [activeReview.key])}>Сохранить исправления</button>}<button type="button" className="save-edits-button" disabled={!canApprove || locked || fetching || Boolean(equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits)))} onClick={() => beginReview(activeReview.report!, "approve")}>Подтвердить отчёт</button><button type="button" className="secondary-button" disabled={locked || fetching || Boolean(equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits)))} onClick={() => beginReview(activeReview.report!, "reject")}>Вернуть на доработку</button></>}{statusAccess.submitted.view && permissions.update && activeReview.ownerUserId === currentUser.id && <button type="button" className="secondary-button" disabled={locked || fetching || Boolean(equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits)))} onClick={() => void transition(activeReview.report!, "reopen")}>Снять с проверки</button>}</div>
       </div>
       <p className="personnel-report-review-scope">В таблице только этот отчёт. Строк: {activeReview.rowCount} · {activeReview.hours} ч.{canEditSubmitted && " Проверяется целиком, отдельно от других прорабов и дат."}</p>
       {equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits)) && <p className="personnel-report-dialog-error">{equipmentReportReviewIssue(activeReview.report.id, Object.keys(edits))}</p>}
     </section>}
     {activeView === "approved" && props.reportSource && <ReportSourceNotice source={props.reportSource} zones={props.zones} onClear={props.onClearReportSource} />}
     {!activeReview && focusedItem && <div className="personnel-report-focused-caption"><span><strong>{displayDate(focusedItem.workDate)} · {focusedItem.ownerName}</strong> · строк: {focusedItem.rowCount} · {focusedItem.hours} ч{focusedItem.report?.reviewComment && <small className="personnel-report-return-comment">Комментарий инженера: {focusedItem.report.reviewComment}</small>}</span><button type="button" onClick={() => changeWorkflow(workflowView)}>Показать все даты</button></div>}
-    <Suspense fallback={<p role="status">Загружаем таблицу…</p>}><ReportGrid rows={displayedRows} sizingRows={rows} preferenceScope={{ userId: currentUser.id, siteId }} selectionScope={activeView} today={today} loading={props.loading || fetching || importing || !autosave.ready} canCreate={permissions.create && !locked} canReview={canReview} units={props.units} shifts={props.shifts} zones={props.zones} mainWorkTypes={props.mainWorkTypes} subworkTypes={props.subworkTypes} dailyTimesheetMarks={data?.availabilityMarks} onChangeDate={changeReportDate} onPatchDraft={patchDraft} onPendingDraftInput={(rowKey, field, value) => setPendingInput(value === null ? null : { rowKey, field, value })} onApplyRange={applyRange} requiredRowKeys={requiredRowKeys} emptyMessage={activeView === "submitted" ? "Нет отчётов на проверке" : activeView === "draft" ? "У вас пока нет черновиков" : "Нет подтверждённых отчётов"} history={{ undo: () => { if (!locked) dispatchEdits({ type: "undo" }); }, redo: () => { if (!locked) dispatchEdits({ type: "redo" }); }, canUndo: !locked && history.past.length > 0, canRedo: !locked && history.future.length > 0 }} onSelectionChange={setSelected} onCopyRows={copyRows} equipmentNavigationTargets={props.equipmentNavigationTargets} onNavigateEquipment={props.onNavigateEquipment} navigationDisabled={locked} onRemoveDraft={permissions.delete ? removeDrafts : undefined} onValidationError={setError} onVisibleRowsChange={setVisible} footerStatus={footerStatus} footerActions={footerActions} /></Suspense>
+    <Suspense fallback={<p role="status">Загружаем таблицу…</p>}><ReportGrid rows={displayedRows} sizingRows={rows} preferenceScope={{ userId: currentUser.id, siteId }} selectionScope={activeView} showSelectionActions={activeView !== "submitted"} today={today} loading={props.loading || fetching || importing || !autosave.ready} canCreate={permissions.create && !locked} canReview={canReview} units={props.units} shifts={props.shifts} zones={props.zones} mainWorkTypes={props.mainWorkTypes} subworkTypes={props.subworkTypes} dailyTimesheetMarks={data?.availabilityMarks} onChangeDate={changeReportDate} onPatchDraft={patchDraft} onPendingDraftInput={(rowKey, field, value) => setPendingInput(value === null ? null : { rowKey, field, value })} onApplyRange={applyRange} requiredRowKeys={requiredRowKeys} emptyMessage={activeView === "submitted" ? "Нет отчётов на проверке" : activeView === "draft" ? "У вас пока нет черновиков" : "Нет подтверждённых отчётов"} history={{ undo: () => { if (!locked) dispatchEdits({ type: "undo" }); }, redo: () => { if (!locked) dispatchEdits({ type: "redo" }); }, canUndo: !locked && history.past.length > 0, canRedo: !locked && history.future.length > 0 }} onSelectionChange={setSelected} onCopyRows={copyRows} equipmentNavigationTargets={props.equipmentNavigationTargets} onNavigateEquipment={props.onNavigateEquipment} navigationDisabled={locked} onRemoveDraft={permissions.delete ? removeDrafts : undefined} onRemoveApproved={canDeleteApproved ? beginApprovedDeletion : undefined} onValidationError={setError} onVisibleRowsChange={setVisible} footerStatus={footerStatus} footerActions={footerActions} /></Suspense>
+    {deletion && <ReportDialog titleId="equipment-delete-title" onClose={() => setDeletion(null)} busy={locked} className="personnel-report-delete-modal">
+      <header className="personnel-report-dialog-heading"><div><h2 id="equipment-delete-title">Удалить записи из отчётов?</h2><p>Выбрано строк: {deletion.items.length} · {deletion.items.reduce((sum, item) => sum + item.hours, 0)} ч</p></div><button type="button" className="personnel-report-dialog-close" aria-label="Закрыть удаление записей" disabled={locked} onClick={() => setDeletion(null)}>×</button></header>
+      <p className="personnel-report-delete-description">Выбранные записи будут удалены из подтверждённых отчётов, а часы отчёта в табеле пересчитаны. Техника останется в реестре. Ручные отметки табеля сохранятся.</p>
+      <ul className="personnel-report-delete-list" aria-label="Записи для удаления">{deletion.items.map(item => <li key={item.rowKey}><div><strong>{item.equipmentName}</strong><span>{displayDate(item.workDate)} · {item.ownerName}</span>{item.workName && <small>{item.workName}</small>}</div><b>{item.hours} ч</b></li>)}</ul>
+      {deletionError && <p className="personnel-report-dialog-error" role="alert">{deletionError}</p>}
+      <footer className="personnel-report-dialog-footer"><p>Перед удалением проверьте технику и даты.</p><div className="toolbar-actions">{deletionError && <button type="button" className="secondary-button" disabled={locked} onClick={() => { setDeletion(null); setSelected([]); void load(); }}>Обновить отчёты</button>}<button type="button" className="secondary-button" disabled={locked} onClick={() => setDeletion(null)}>Отмена</button><button type="button" className="personnel-report-delete-confirm" disabled={locked || fetching || props.loading || !canDeleteApproved} onClick={() => void deleteApprovedRows()}>{busy ? "Удаляем…" : `Удалить записи (${deletion.items.length})`}</button></div></footer>
+    </ReportDialog>}
     {sendOpen && <ReportDialog titleId="personnel-send-title" onClose={() => setSendOpen(false)} busy={locked} className="personnel-report-send-modal">
       <header className="personnel-report-dialog-heading"><div><h2 id="personnel-send-title">Отправить отчёты на проверку</h2><p>Выберите даты. Сначала сохраним изменения, затем отправим выбранные отчёты на проверку.</p></div><button type="button" className="personnel-report-dialog-close" aria-label="Закрыть отправку отчётов" disabled={locked} onClick={() => setSendOpen(false)}>×</button></header>
       <div className="personnel-report-send-select"><label><input type="checkbox" aria-label="Выбрать все отчёты для отправки" checked={submissionItems.length > 0 && selectedSubmissions.length === submissionItems.length} disabled={locked || !submissionItems.length} onChange={event => setSendKeys(event.target.checked ? submissionItems.map(item => item.key) : [])} />Выбрать все даты</label><span>{selectedSubmissions.length} отч. · {selectedSubmissionRows} строк · {selectedSubmissionHours} ч</span></div>

@@ -15,7 +15,8 @@ import { TimesheetFilterableHeading, TimesheetFiltersProvider } from "./Timeshee
 import { useTimesheetFilters, type TimesheetFilterColumn } from "./useTimesheetFilters";
 import { TimesheetCellPopover } from "./TimesheetCellPopover";
 import { TimesheetMonthPicker } from "./TimesheetMonthPicker";
-import { useTimesheetClipboard, type TimesheetClipboardChange, type TimesheetClipboardSaveContext } from "./useTimesheetClipboard";
+import { type TimesheetClipboardChange, type TimesheetClipboardSaveContext } from "./useTimesheetClipboard";
+import { useOrderedTimesheetClipboard as useTimesheetClipboard } from "./useOrderedTimesheetClipboard";
 import { TableStatusToast } from "./useTableCopyToast";
 import { useTimesheetBatchSave } from "./useTimesheetBatchSave";
 import { TimesheetSaveStatus } from "./TimesheetSaveStatus";
@@ -623,12 +624,13 @@ export function TimesheetView({ siteId, initialMonth, today, focusedEmployeeId, 
   const rowMoves = useNativeRowMoves(manualRowOrder, filters.isActive, Boolean(editor || inlineEditor || savingMark || savingBulkMarks || loading), { key: rowOrderScopeKey, ids: displayedRowIds });
   const rowOrderKey = useMemo(() => `${siteId}:${month}:${visibleEmployees.map((employee) => employee.id).join("|")}:days=${visibleDaysKey}`, [siteId, month, visibleEmployees, visibleDaysKey]);
   const clipboardViewScope = useRef(rowOrderKey);
-  useLayoutEffect(() => { clipboardViewScope.current = rowOrderKey; }, [rowOrderKey]);
   const pinnedEmployeeId = inlineEditor?.employeeId ?? editor?.employeeId;
   const viewport = useTableViewport(visibleEmployees.length, rowOrderKey, !loading && !error,
     pinnedEmployeeId === undefined ? undefined : visibleEmployees.findIndex((employee) => employee.id === pinnedEmployeeId));
   const columnResize = useTimesheetColumnResize(viewport.shellRef, { kind: "workers", dayCount: days.length, dayNumbers: visibleDays, enabled: !loading && !error });
   const clipboardColumnIndexes = columnResize.columnIds.map(id => ({ number: -5, employmentType: -4, department: -3, fullName: -2, position: -1, timesheet: visibleDays.length, reports: visibleDays.length + 1, difference: visibleDays.length + 2 }[id] ?? visibleDays.indexOf(Number(id.slice(4)))));
+  const clipboardLayoutScope = `${rowOrderKey}:columns=${clipboardColumnIndexes.join("|")}`;
+  useLayoutEffect(() => { clipboardViewScope.current = clipboardLayoutScope; }, [clipboardLayoutScope]);
   const {
     shellRef: clipboardShellRef,
     status: clipboardStatus,
@@ -641,6 +643,7 @@ export function TimesheetView({ siteId, initialMonth, today, focusedEmployeeId, 
     activeCell: clipboardActiveCell,
     headersSelected: clipboardHeadersSelected,
     focusCell: focusClipboardCell,
+    adjacentColumn: adjacentClipboardColumn,
     contextMenu: clipboardContextMenu,
     forgetUndo: forgetTimesheetUndo,
   } = useTimesheetClipboard({
@@ -723,7 +726,7 @@ export function TimesheetView({ siteId, initialMonth, today, focusedEmployeeId, 
 
   useNativeEmptyColumns(clipboardShellRef, !loading && !error);
   const columnContextMenu = useNativeTimesheetColumnMenu(clipboardShellRef, {
-    month, scope: `workers:${siteId}:${month}`, enabled: !loading && !error, columns: filters.columnActions, widths: columnResize.headerActions,
+    month, scope: `workers:${siteId}:${month}`, enabled: !loading && !error, columns: filters.columnActions, widths: columnResize.headerActions, pinning: columnResize.pinning,
   });
   useEffect(() => {
     if (inlineEditor || !inlineGridFocusPending.current) return;
@@ -930,7 +933,7 @@ export function TimesheetView({ siteId, initialMonth, today, focusedEmployeeId, 
         if (inlineSession.current !== target.session) return false;
         if (returnFocus) inlineGridFocusPending.current = true;
         setInlineEditor((current) => current?.session === target.session ? null : current);
-        if (move && clipboardViewScope.current === editorViewScope) focusClipboardCell(target.rowIndex + move.row, target.columnIndex + move.column);
+        if (move && clipboardViewScope.current === editorViewScope) focusClipboardCell(target.rowIndex + move.row, adjacentClipboardColumn(target.columnIndex, move.column));
         return true;
       } catch (saveError) {
         if (activeScope.current !== editorScope || activeScopeVersion.current !== editorScopeVersion || inlineSession.current !== target.session) return false;
@@ -1209,8 +1212,7 @@ export function TimesheetView({ siteId, initialMonth, today, focusedEmployeeId, 
       </div>}
       {!loading && <table className="timesheet-table personnel-timesheet-table timesheet-resizable" style={columnResize.tableStyle} aria-rowcount={visibleEmployees.length + 3}>
         {columnResize.colGroup}
-        <thead>
-          <tr>
+        <thead>{columnResize.headers(<>
             <th className={`timesheet-sticky timesheet-number-column ${clipboardHeaderClass(-5)}`} rowSpan={2}>{rowMoves.headerCheckbox}{columnResize.handle("number", "№")}</th>
             <th className={`timesheet-sticky timesheet-type-column ${clipboardHeaderClass(-4)}`} rowSpan={2}><TimesheetFilterableHeading columnId="employmentType" label="Тип">Тип</TimesheetFilterableHeading>{columnResize.handle("employmentType", "Тип")}</th>
             <th className={`timesheet-sticky timesheet-department-column ${clipboardHeaderClass(-3)}`} rowSpan={2}><TimesheetFilterableHeading columnId="department" label="Отдел">Отдел</TimesheetFilterableHeading>{columnResize.handle("department", "Отдел")}</th>
@@ -1220,23 +1222,21 @@ export function TimesheetView({ siteId, initialMonth, today, focusedEmployeeId, 
             <th className={`timesheet-total-column timesheet-tabell-total ${clipboardHeaderClass(visibleDays.length)}`} rowSpan={2}><TimesheetFilterableHeading columnId="timesheet" label="Табель">Табель</TimesheetFilterableHeading>{columnResize.handle("timesheet", "Табель")}</th>
             <th className={`timesheet-total-column timesheet-report-total ${clipboardHeaderClass(visibleDays.length + 1)}`} rowSpan={2}><TimesheetFilterableHeading columnId="reports" label="Отчёты">Отчёты</TimesheetFilterableHeading>{columnResize.handle("reports", "Отчёты")}</th>
             <th className={`timesheet-total-column timesheet-difference-total ${clipboardHeaderClass(visibleDays.length + 2)}`} rowSpan={2}><TimesheetFilterableHeading columnId="difference" label="Разница">Разница</TimesheetFilterableHeading>{columnResize.handle("difference", "Разница")}</th>
-          </tr>
-          <tr>
+          </>, <>
             {visibleDays.map((day, columnIndex) => {
               const workDate = dateForDay(month, day);
               const weekDay = WEEKDAY_FORMATTER.format(new Date(`${workDate}T00:00:00Z`)).replace(".", "");
               const dayOfWeek = new Date(`${workDate}T00:00:00Z`).getUTCDay();
               return <th key={workDate} className={[clipboardHeaderClass(columnIndex), dayOfWeek === 0 || dayOfWeek === 6 ? "weekend" : "", workDate === today ? "today" : "", workDate > today ? "future" : ""].filter(Boolean).join(" ")}><TimesheetFilterableHeading compact columnId={workDate} label={`${day} ${weekDay}`}><span>{day}</span><small>{weekDay}</small></TimesheetFilterableHeading>{columnResize.handle(`day-${day}`, `${day} ${weekDay}`)}</th>;
             })}
-          </tr>
-        </thead>
+          </>)}</thead>
         <tbody>
           {viewport.top > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={columnResize.columnCount} style={{ height: viewport.top }} /></tr>}
           {visibleEmployees.slice(viewport.start, viewport.end).map((employee, offset) => {
             const employeeIndex = viewport.start + offset;
             const totals = reconciliationRows.get(employee.id) ?? { timesheet: 0, reports: 0, difference: 0 };
             const difference = totals.difference;
-            return <tr key={employee.id} {...rowMoves.rowProps(employee.id)} data-virtual-row={employeeIndex} aria-rowindex={employeeIndex + 3}>
+            return <tr key={employee.id} {...rowMoves.rowProps(employee.id)} data-virtual-row={employeeIndex} aria-rowindex={employeeIndex + 3}>{columnResize.cells(<>
               <td className={`timesheet-sticky timesheet-number-column ${clipboardCellClass(employeeIndex, -5)}`} {...clipboardCellHandlers(employeeIndex, -5)}>{rowMoves.handle(employee.id, employee.fullName, employeeIndex + 1)}</td>
               <td className={`timesheet-sticky timesheet-type-column ${clipboardCellClass(employeeIndex, -4)}`} {...clipboardCellHandlers(employeeIndex, -4)} title={employee.employmentType || "Тип не указан"}>{employee.employmentType || "—"}</td>
               <td className={`timesheet-sticky timesheet-department-column ${clipboardCellClass(employeeIndex, -3)}`} {...clipboardCellHandlers(employeeIndex, -3)} title={employee.department || "Отдел не указан"}>{employee.department || "—"}</td>
@@ -1347,14 +1347,14 @@ export function TimesheetView({ siteId, initialMonth, today, focusedEmployeeId, 
               <td className={`timesheet-total-column timesheet-tabell-total ${clipboardCellClass(employeeIndex, visibleDays.length)}`} {...clipboardCellHandlers(employeeIndex, visibleDays.length)}>{totals.timesheet ? formatTimesheetHours(totals.timesheet) : "—"}</td>
               <td className={`timesheet-total-column timesheet-report-total ${clipboardCellClass(employeeIndex, visibleDays.length + 1)}`} {...clipboardCellHandlers(employeeIndex, visibleDays.length + 1)}>{totals.reports ? formatTimesheetHours(totals.reports) : "—"}</td>
               <td className={`timesheet-total-column timesheet-difference-total ${difference ? "has-difference" : ""} ${clipboardCellClass(employeeIndex, visibleDays.length + 2)}`} {...clipboardCellHandlers(employeeIndex, visibleDays.length + 2)}>{difference > 0 ? "+" : ""}{difference ? formatTimesheetHours(difference) : "—"}</td>
-            </tr>;
+            </>)}</tr>;
           })}
           {viewport.bottom > 0 && <tr className="timesheet-virtual-spacer" aria-hidden="true"><td colSpan={columnResize.columnCount} style={{ height: viewport.bottom }} /></tr>}
           <tr className="timesheet-fill-row" aria-hidden="true"><td colSpan={columnResize.columnCount} /></tr>
         </tbody>
         <tfoot>
-          <tr>
-            <th className="timesheet-sticky timesheet-summary-label" colSpan={columnResize.stickyCount}>Итого по дням</th>
+          <tr>{columnResize.footer(<>
+            <th className="timesheet-sticky timesheet-summary-label" colSpan={columnResize.metadataCount}>Итого по дням</th>
             {visibleDays.map((day) => {
               const workDate = dateForDay(month, day);
               const totals = dayTotals.get(workDate);
@@ -1363,7 +1363,7 @@ export function TimesheetView({ siteId, initialMonth, today, focusedEmployeeId, 
             <th className="timesheet-total-column timesheet-tabell-total">{formatTimesheetHours(reconciliationTimesheet)}</th>
             <th className="timesheet-total-column timesheet-report-total">{formatTimesheetHours(reconciliationReports)}</th>
             <th className={`timesheet-total-column timesheet-difference-total ${reconciliationDifference ? "has-difference" : ""}`}>{reconciliationDifference > 0 ? "+" : ""}{formatTimesheetHours(reconciliationDifference)}</th>
-          </tr>
+          </>)}</tr>
         </tfoot>
       </table>}
     </div></NativeTimesheetPageScroll>}

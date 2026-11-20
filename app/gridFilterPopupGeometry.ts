@@ -5,15 +5,17 @@ type PopupGeometry = {
   preferredHeight: number;
   viewportWidth: number;
   viewportHeight: number;
+  fitContent?: boolean;
 };
 
 /** Constrain the list on one side of its button, keeping the button clickable. */
-export function gridFilterPopupGeometry({ anchor, width, height, preferredHeight, viewportWidth, viewportHeight }: PopupGeometry) {
+export function gridFilterPopupGeometry({ anchor, width, height, preferredHeight, viewportWidth, viewportHeight, fitContent = false }: PopupGeometry) {
   const margin = 12, gap = 6;
   const below = Math.max(0, viewportHeight - anchor.bottom - margin - gap);
   const above = Math.max(0, anchor.top - margin - gap);
   const preferred = Math.max(0, Math.min(preferredHeight, viewportHeight - margin * 2));
-  const placeBelow = below >= preferred || below >= above;
+  const requiredHeight = fitContent ? Math.min(height, preferred) : preferred;
+  const placeBelow = below >= requiredHeight || below >= above;
   const maxHeight = Math.floor(Math.min(preferred, placeBelow ? below : above));
   const visibleHeight = Math.min(height, maxHeight);
   return {

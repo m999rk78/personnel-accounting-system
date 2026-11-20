@@ -1,0 +1,8 @@
+/* Native tables share the report's left/centre/right column arrangement. */
+.timesheet-grid-shell .timesheet-resizable :is(th,td)[data-timesheet-column-id] { left:auto!important; right:auto!important; }
+.timesheet-grid-shell .timesheet-resizable :is(th,td)[data-timesheet-pin="left"] { position:sticky; left:var(--timesheet-cell-left)!important; }
+.timesheet-grid-shell .timesheet-resizable :is(th,td)[data-timesheet-pin="right"] { position:sticky; right:var(--timesheet-cell-right)!important; }
+.timesheet-grid-shell .timesheet-resizable .timesheet-summary-label[data-timesheet-column-id] { width:auto!important; min-width:0!important; max-width:none!important; }
+.timesheet-grid-shell .timesheet-resizable thead .timesheet-month-column-group { background:#f7f7f8; }
+.timesheet-resizable tbody [data-timesheet-pin="left"],.timesheet-resizable tbody [data-timesheet-pin="right"] { z-index:3; }
+.timesheet-resizable tfoot [data-timesheet-pin="left"],.timesheet-resizable tfoot [data-timesheet-pin="right"] { z-index:8!important; }

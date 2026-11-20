@@ -10,11 +10,17 @@ type ColumnActions = {
   openFilter: (id: string, trigger: HTMLElement) => void;
 };
 type WidthActions = { autoSize: (id?: string) => void; resetWidths: () => void };
+export type TimesheetColumnPinningActions = {
+  getPin: (id: string) => "left" | "right" | null;
+  setPin: (id: string, side: "left" | "right" | null) => void;
+  canPin: (id: string, side: "left" | "right" | null) => boolean;
+  resetPins: () => void;
+};
 type MenuState = { scope: string; id: string; label: string; anchor: HTMLTableCellElement; x: number; y: number };
 
 /** Header actions operate on the visible native table, never its hidden AG engine. */
-export function useNativeTimesheetColumnMenu(rootRef: RefObject<HTMLElement | null>, { month, scope, enabled = true, columns, widths }: {
-  month: string; scope: string; enabled?: boolean; columns: ColumnActions; widths: WidthActions;
+export function useNativeTimesheetColumnMenu(rootRef: RefObject<HTMLElement | null>, { month, scope, enabled = true, columns, widths, pinning }: {
+  month: string; scope: string; enabled?: boolean; columns: ColumnActions; widths: WidthActions; pinning?: TimesheetColumnPinningActions;
 }) {
   const [state, setState] = useState<MenuState | null>(null);
   const close = useCallback(() => setState(null), []);
@@ -47,6 +53,7 @@ export function useNativeTimesheetColumnMenu(rootRef: RefObject<HTMLElement | nu
   const filterId = menu.id.startsWith("day-") ? `${month}-${menu.id.slice(4).padStart(2, "0")}` : menu.id;
   const sortable = columns.canSort(filterId);
   const sort = columns.getSort(filterId);
+  const pin = pinning?.getPin(menu.id) ?? null;
   const run = (action: () => void) => () => { close(); action(); };
   const actions: TableContextMenuAction[] = [
     ...(sortable ? [
@@ -55,9 +62,15 @@ export function useNativeTimesheetColumnMenu(rootRef: RefObject<HTMLElement | nu
       { label: "Сбросить сортировку", disabled: !sort, onSelect: run(() => columns.sort(filterId, null)) },
       { label: "Фильтр…", separatorBefore: true, onSelect: run(() => columns.openFilter(filterId, menu.anchor.querySelector<HTMLElement>(".timesheet-header-filter") ?? menu.anchor)) },
     ] satisfies TableContextMenuAction[] : []),
-    { label: "Ширина по содержимому", separatorBefore: sortable, onSelect: run(() => widths.autoSize(menu.id)) },
+    ...(pinning ? [{ label: "Закрепить столбец", separatorBefore: sortable, onSelect: () => {}, children: [
+      { label: "Закрепить слева", disabled: pin === "left" || !pinning.canPin(menu.id, "left"), onSelect: run(() => pinning.setPin(menu.id, "left")) },
+      { label: "Закрепить справа", disabled: pin === "right" || !pinning.canPin(menu.id, "right"), onSelect: run(() => pinning.setPin(menu.id, "right")) },
+      { label: "Открепить", disabled: !pin || !pinning.canPin(menu.id, null), onSelect: run(() => pinning.setPin(menu.id, null)) },
+    ] }] satisfies TableContextMenuAction[] : []),
+    { label: "Ширина по содержимому", separatorBefore: sortable || Boolean(pinning), onSelect: run(() => widths.autoSize(menu.id)) },
     { label: "Подобрать ширину всех", onSelect: run(() => widths.autoSize()) },
     { label: "Сбросить ширину столбцов", separatorBefore: true, onSelect: run(widths.resetWidths) },
+    ...(pinning ? [{ label: "Сбросить закрепление", onSelect: run(pinning.resetPins) }] : []),
   ];
   return <TableContextMenu x={menu.x} y={menu.y} caption="Столбец" value={menu.label} ariaLabel="Действия со столбцом" actions={actions} onClose={close}/>;
 }

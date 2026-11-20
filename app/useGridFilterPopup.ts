@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from "react";
 import type { Column, GridApi } from "ag-grid-community";
 import { columnFilterVisibility } from "./columnFilterToggle";
 import { gridFilterPopupGeometry } from "./gridFilterPopupGeometry";
+import { constrainResizedFilterPopup } from "./filterPopupResize";
 
 /** Keep Apply/Cancel reachable as an AG filter grows or its conditions expand. */
 export function useGridFilterPopup<T extends HTMLElement>(context?: { api: GridApi; column: Column }) {
@@ -18,14 +19,16 @@ export function useGridFilterPopup<T extends HTMLElement>(context?: { api: GridA
     const anchor = api && columnId ? columnFilterVisibility(api).getAnchor(columnId) : null;
     const computedHeight = Number.parseFloat(getComputedStyle(popup).maxHeight);
     const preferredHeight = Number.isFinite(computedHeight) ? computedHeight : 700;
+    const fitContent = Boolean(popup.querySelector?.(".grid-checklist-filter-heading-compact"));
     let frame = 0;
     const constrain = () => {
       frame = 0;
       if (!popup.isConnected) return;
+      if (constrainResizedFilterPopup(popup)) return;
       let rect = popup.getBoundingClientRect();
       let top: number, left: number;
       if (anchor?.isConnected) {
-        const geometry = () => gridFilterPopupGeometry({ anchor: anchor.getBoundingClientRect(), width: rect.width, height: rect.height, preferredHeight, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight });
+        const geometry = () => gridFilterPopupGeometry({ anchor: anchor.getBoundingClientRect(), width: rect.width, height: rect.height, preferredHeight, viewportWidth: window.innerWidth, viewportHeight: window.innerHeight, fitContent });
         const maxHeight = `${geometry().maxHeight}px`;
         if (popup.style.position !== "fixed") popup.style.position = "fixed";
         if (popup.style.maxHeight !== maxHeight) popup.style.maxHeight = maxHeight;

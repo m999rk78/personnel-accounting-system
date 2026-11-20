@@ -78,6 +78,7 @@ try {
   }, text);
 
   await open();
+  await draftTab().click();
   await page.getByRole("button", { name: "Добавить строку", exact: true }).click();
   await cells("employeeName").first().click();
   await paste(names.join("\n"));

@@ -5,6 +5,7 @@ import { useGridFilterDisplay, type CustomFilterDisplayProps } from "ag-grid-rea
 import type { ColumnFilter, GridApi, IFilterParams, ISetFilterParams, IMultiFilterDef, IMultiFilterParams } from "ag-grid-community";
 import { CustomSelect } from "./CustomSelect";
 import { useGridFilterPopup } from "./useGridFilterPopup";
+import { FILTER_POPUP_MIN_WIDTH } from "./filterPopupResize";
 import { compareGridValues, filterDateKey, normalizeFilterText, type PersonnelFilterModel } from "./gridFilterModel";
 import { IMPORT_ORDER_COLUMN, importOrderSortOption } from "./importOrderSorting";
 import { dateTreeSetFilterParams } from "./DateTreeSetFilter";
@@ -126,7 +127,9 @@ function setCellHeight(api: GridApi, columnId: string, compact = false) {
   // Slightly larger than our 13–14px grid font, with space for the checkbox,
   // padding and scrollbar. Account for word breaks and unbroken identifiers.
   context.font = `${compact ? 13 : 15}px Inter, Arial, sans-serif`;
-  const width = Math.max(120, Math.min(compact ? 286 : 400, window.innerWidth - 24) - (compact ? 80 : 108));
+  // Native Set Filter rows have a fixed virtual height. Measure at the smallest
+  // supported popup width so narrowing a window cannot clip wrapped labels.
+  const width = Math.max(120, Math.min(FILTER_POPUP_MIN_WIDTH, window.innerWidth - 24) - (compact ? 80 : 108));
   const space = context.measureText(" ").width;
   const labels = new Set<string>();
   api.forEachNode(node => labels.add(String(api.getCellValue({ rowNode: node, colKey: columnId, useFormatter: true }) ?? "")));

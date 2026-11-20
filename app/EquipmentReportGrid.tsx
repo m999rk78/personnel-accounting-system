@@ -47,6 +47,7 @@ export type EquipmentReportGridProps = {
   sizingRows?: EquipmentReportGridRow[];
   preferenceScope?: { userId: number; siteId: number };
   selectionScope?: string;
+  showSelectionActions?: boolean;
   today: string;
   loading: boolean;
   canCreate: boolean;
@@ -72,6 +73,7 @@ export type EquipmentReportGridProps = {
   onNavigateEquipment?: (view: "equipmentTimesheet" | "equipmentRegistry" | "projectEquipment", equipmentId: number, date: string) => void;
   navigationDisabled?: boolean;
   onRemoveDraft?: (keys: string[]) => void;
+  onRemoveApproved?: (rows: EquipmentReportGridRow[]) => void;
   onValidationError: (message: string) => void;
   footerActions?: ReactNode;
   footerStatus?: ReactNode;
@@ -346,7 +348,8 @@ export function EquipmentReportGrid(props: EquipmentReportGridProps) {
 
   const selectedRows = selectedKeys.flatMap((key) => rowsByKey.get(key) ?? []);
   const removableKeys = selectedRows.filter((row) => row.removable !== false && row.editable && row.draft && (row.status === "draft" || row.status === "rejected")).map((row) => row.rowKey);
-  const footerPanel = <div className="personnel-history-footer"><div className="personnel-history-summary" role="status"><strong>Строк: {summary.rows} · Единиц техники: {summary.units} · Часы: {formatHours(summary.hours)}</strong><span>Работа: {formatHours(summary.productive)} ч. · Простой: {formatHours(summary.downtime)} ч.</span>{summary.approved > 0 && summary.unapprovedRows > 0 && <span className="personnel-history-approved">Подтверждено: {formatHours(summary.approved)} ч.</span>}{summary.submitted > 0 && <span>На проверке: {formatHours(summary.submitted)} ч.</span>}{summary.draft + summary.rejected > 0 && <span>Черновики: {formatHours(summary.draft + summary.rejected)} ч.</span>}{props.footerStatus && <div className="personnel-history-save-status">{props.footerStatus}</div>}</div><div className="personnel-history-footer-actions">{props.footerActions}{selectedRows.length > 0 && <>{props.canCreate && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onCopyRows(selectedRows)}>Скопировать на сегодня ({selectedRows.length})</button>}{props.onRemoveDraft && removableKeys.length > 0 && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onRemoveDraft?.(removableKeys)}>Убрать из черновика ({removableKeys.length})</button>}</>}</div></div>;
+  const removableApprovedRows = selectedRows.filter(row => row.status === "approved" && (row.removable ?? row.editable) && row.entry);
+  const footerPanel = <div className="personnel-history-footer"><div className="personnel-history-summary" role="status"><strong>Строк: {summary.rows} · Единиц техники: {summary.units} · Часы: {formatHours(summary.hours)}</strong><span>Работа: {formatHours(summary.productive)} ч. · Простой: {formatHours(summary.downtime)} ч.</span>{summary.approved > 0 && summary.unapprovedRows > 0 && <span className="personnel-history-approved">Подтверждено: {formatHours(summary.approved)} ч.</span>}{summary.submitted > 0 && <span>На проверке: {formatHours(summary.submitted)} ч.</span>}{summary.draft + summary.rejected > 0 && <span>Черновики: {formatHours(summary.draft + summary.rejected)} ч.</span>}{props.footerStatus && <div className="personnel-history-save-status">{props.footerStatus}</div>}</div><div className="personnel-history-footer-actions">{props.footerActions}{props.showSelectionActions !== false && selectedRows.length > 0 && <>{props.canCreate && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onCopyRows(selectedRows)}>Скопировать на сегодня ({selectedRows.length})</button>}{props.onRemoveApproved && removableApprovedRows.length > 0 && <button type="button" className="secondary-button personnel-report-delete-button" disabled={props.loading} aria-haspopup="dialog" onClick={() => props.onRemoveApproved?.(removableApprovedRows)}>Удалить из отчёта ({removableApprovedRows.length})</button>}{props.onRemoveDraft && removableKeys.length > 0 && <button type="button" className="secondary-button" disabled={props.loading} onClick={() => props.onRemoveDraft?.(removableKeys)}>Убрать из черновика ({removableKeys.length})</button>}</>}</div></div>;
   return <section className="personnel-history-table personnel-page-scroll-table equipment-report-table" aria-label="Отчёт техники за все дни">
     <AgTablePageScroll gridRoot={sizingHost} api={scrollApi} footer={footerPanel} className="personnel-report-page-scroll-stage" frameClassName="personnel-report-page-scroll-frame" label="Горизонтальная прокрутка отчёта техники"><div ref={sizingHost} id={gridId} data-approved-tone={approvedReportRowTone} className="ag-grid-shell ag-placement-grid personnel-history-grid ag-equipment-grid"><LocalizedGrid<TableRow>
       theme={gridTheme} rowData={rowData} columnDefs={columns} defaultColDef={defaultColDef} postSortRows={keepDatesTogether}

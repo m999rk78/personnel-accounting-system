@@ -1,0 +1,78 @@
+/* The same affordance is installed for every AG filter, including the hidden
+   filter engine used by native tables. Reserve room below the last option. */
+.ag-popup-child.resizable-filter-popup {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-width: 0 !important;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
+  padding-bottom: 16px;
+  overflow: hidden;
+  resize: both;
+}
+.ag-popup-child.resizable-filter-popup > .ag-filter-body-wrapper { position: static; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; }
+.ag-popup-child.resizable-filter-popup > .ag-filter {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.ag-popup-child.filter-popup-manually-sized {
+  min-width: min(var(--filter-popup-min-width), calc(100vw - 24px)) !important;
+  min-height: min(var(--filter-popup-min-height), calc(100dvh - 24px));
+}
+
+/* Let the lists use the space chosen by the user. The heading and Apply/Cancel
+   stay outside the scrolling body; only the list/body gives up height. */
+.ag-popup-child.filter-popup-manually-sized > .ag-filter > .ag-filter-wrapper,
+.ag-popup-child.filter-popup-manually-sized .ag-filter-wrapper:has(> .personnel-filter),
+.ag-popup-child.filter-popup-manually-sized .ag-filter-wrapper:has(> .ag-react-container > .personnel-filter),
+.ag-popup-child.filter-popup-manually-sized .ag-react-container:has(> .personnel-filter) {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.ag-popup-child.filter-popup-manually-sized .personnel-filter {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  max-height: none;
+}
+.ag-popup-child.filter-popup-manually-sized .grid-filter-choices { display: flex; flex-direction: column; flex: 1 0 280px; min-height: 280px; }
+.ag-popup-child.filter-popup-manually-sized .personnel-filter .grid-filter-body { display: flex; flex-direction: column; }
+.ag-popup-child.filter-popup-manually-sized .personnel-filter .grid-filter-body > :is(.grid-filter-sort,.grid-filter-conditions) { flex: 0 0 auto; }
+.ag-popup-child.filter-popup-manually-sized .personnel-filter .grid-filter-values { flex: 1 1 160px; min-height: 100px; max-height: none; }
+.ag-popup-child.filter-popup-manually-sized .personnel-filter .grid-filter-choices > .date-filter-tree { display: flex; flex: 1 1 160px; flex-direction: column; min-height: 100px; }
+.ag-popup-child.filter-popup-manually-sized .ag-multi-filter { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; }
+.ag-popup-child.filter-popup-manually-sized .ag-multi-filter > .ag-filter-wrapper:has(.ag-set-filter),
+.ag-popup-child.filter-popup-manually-sized .ag-set-filter,
+.ag-popup-child.filter-popup-manually-sized .ag-set-filter-body-wrapper {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.ag-popup-child.filter-popup-manually-sized .ag-multi-filter > .ag-set-filter-body-wrapper { flex: 1 0 250px; }
+.ag-popup-child.filter-popup-manually-sized .ag-set-filter-list {
+  display: flex;
+  flex: 1 1 180px !important;
+  height: 180px;
+  min-height: 180px;
+  max-height: none !important;
+  overflow: hidden;
+}
+.ag-popup-child.filter-popup-manually-sized .ag-filter-virtual-list-viewport {
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+  max-height: none !important;
+}
+.ag-popup-child.filter-popup-manually-sized .ag-filter-virtual-list-container { width: 100%; }

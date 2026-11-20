@@ -23,6 +23,17 @@ test("lower triggers use the space above; horizontal clamping and growth retain 
   assert.deepEqual(geometry({ height: 620 }), { left: 451, top: 337, maxHeight: 371 });
 });
 
+test("a compact filter fits below by its actual content and can grow after clearing a search", () => {
+  const options = { anchor: { top: 460, bottom: 484, left: 100 }, preferredHeight: 380, fitContent: true };
+  const compact = geometry({ ...options, height: 166 });
+  assert.equal(compact.top, 490);
+  assert.equal(compact.maxHeight, 218, "available space stays available to newly matching values");
+  const expanded = geometry({ ...options, height: 350 });
+  assert.equal(expanded.top, 104);
+  assert.equal(expanded.maxHeight, 380);
+  assert.ok(expanded.top + 350 < options.anchor.top);
+});
+
 const source = ts.createSourceFile("useGridFilterPopup.ts", await readFile(new URL("../app/useGridFilterPopup.ts", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const hook = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "useGridFilterPopup");
 assert.ok(hook);
@@ -30,6 +41,7 @@ const implementation = ts.transpileModule(hook.getText(source).replace(/^export\
 
 test("the actual popup hook restores anchored placement after AG positioning, resize and page scroll, with cleanup", () => {
   const frames = new Map(), events = new Map(), observers = [], effects = [];
+  let manuallyResized = false;
   let nextFrame = 0;
   class FakeNode {}
   const anchor = new FakeNode();
@@ -55,7 +67,7 @@ test("the actual popup hook restores anchored placement after AG positioning, re
   columnFilterVisibility(api).setAnchor("fullName", anchor);
   const environment = {
     useRef: initial => ({ current: initial }), useCallback: callback => callback, useEffect: effect => { effects.push(effect); },
-    columnFilterVisibility, gridFilterPopupGeometry, window, Node: FakeNode,
+    columnFilterVisibility, gridFilterPopupGeometry, constrainResizedFilterPopup: () => manuallyResized, window, Node: FakeNode,
     getComputedStyle: () => ({ maxHeight: "540px" }), ResizeObserver: Observer, MutationObserver: Observer,
     requestAnimationFrame(callback) { const id = ++nextFrame; frames.set(id, callback); return id; }, cancelAnimationFrame(id) { frames.delete(id); },
   };
@@ -76,6 +88,14 @@ test("the actual popup hook restores anchored placement after AG positioning, re
   window.innerHeight = 1000; events.get("scroll")({ target: anchor }); flush();
   assert.equal(popup.style.top, "337px"); assert.equal(popup.style.maxHeight, "540px", "a larger viewport restores list space");
   events.get("scroll")({ target: popup }); assert.equal(frames.size, 0, "list scrolling does not schedule page positioning");
+  manuallyResized = true;
+  Object.assign(popup.style, { top: "90px", left: "70px", width: "600px", height: "480px", maxHeight: "976px" });
+  observers[0].callback(); flush();
+  assert.equal(popup.style.top, "90px", "manual resize must not jump back above or below the header");
+  assert.equal(popup.style.left, "70px");
+  assert.equal(popup.style.width, "600px");
+  assert.equal(popup.style.height, "480px");
+  assert.equal(popup.style.maxHeight, "976px", "anchored height limits must not overwrite manual limits");
   dispose.forEach(cleanup => cleanup?.());
   assert.ok(observers.every(observer => observer.disconnected)); assert.equal(events.size, 0); assert.equal(frames.size, 0);
 });

@@ -102,7 +102,7 @@ try {
   const noteInput = row(9900).locator('[col-id="note"] textarea, [col-id="note"] input').first();
   await noteInput.fill("Несохранённое исправление");
   await noteInput.press("Enter");
-  await page.getByRole("button", { name: "Отменить изменения", exact: true }).waitFor();
+  await page.getByRole("button", { name: /^Сохранить изменения/ }).waitFor();
   await deleteButton().click();
   assert.equal(mutations.length, 0);
   if (await dialog().isVisible()) {
@@ -113,7 +113,9 @@ try {
     await page.getByRole("alert").filter({ hasText: /сохран|отмен/i }).waitFor();
   }
   assert.match(await row(9900).locator('[col-id="note"]').innerText(), /Несохранённое исправление/);
-  await page.getByRole("button", { name: "Отменить изменения", exact: true }).click();
+  await row(9900).locator('[col-id="note"]').click();
+  await page.keyboard.press("ControlOrMeta+z");
+  await page.waitForFunction(() => document.querySelector('.ag-row[row-id="report-701-801"] [col-id="note"]')?.textContent.includes("Сохранённая строка 801"));
 
   // Only the selected occurrence is removed: the same employee on another day remains.
   await select([9900]);

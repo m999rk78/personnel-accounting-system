@@ -44,6 +44,13 @@
 .grid-checklist-values > .grid-filter-values,
 .grid-checklist-values > .date-filter-tree > .grid-filter-values { flex: 1 1 280px; height: 280px; min-height: 64px; max-height: none; margin: 0; padding: 0; overflow: auto; border: 0; border-radius: 0; overscroll-behavior: contain; scrollbar-width: thin; }
 .grid-checklist-values > .date-filter-tree { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; overflow: hidden; }
+.ag-filter-menu:not(.filter-popup-manually-sized):has(.grid-checklist-filter-heading-compact) { max-height:min(380px,calc(100dvh - 24px)); }
+.grid-checklist-values-compact > .grid-filter-values,
+.grid-checklist-values-compact > .date-filter-tree > .grid-filter-values { flex:0 1 auto; height:var(--choice-list-content-height,54px); min-height:34px; max-height:240px; }
+.grid-checklist-values-compact > .date-filter-tree { flex:0 1 auto; }
+.ag-popup-child.filter-popup-manually-sized .grid-checklist-values-compact > .date-filter-tree { flex:1 1 auto; }
+.ag-popup-child.filter-popup-manually-sized .grid-checklist-values-compact > .grid-filter-values,
+.ag-popup-child.filter-popup-manually-sized .grid-checklist-values-compact > .date-filter-tree > .grid-filter-values { flex:1 1 auto; height:auto; max-height:none; }
 .grid-checklist-values .date-filter-tree-row { min-height: 35px; }
 .grid-checklist-values .date-filter-tree-label { color: #52525b; }
 .grid-checklist-values .date-filter-tree-count { background: #f1f2f4; color: #88848c; font-size: 10px; line-height: 15px; }

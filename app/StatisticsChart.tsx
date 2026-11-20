@@ -23,7 +23,7 @@ function rowCategory(row: StatisticsBreakdownRow) {
   return "workDate" in row ? row.workDate : String(row.zoneId ?? "unassigned");
 }
 
-function chartTooltip(category: string, seriesId: string, label: string, values: readonly { label: string; value: string }[]) {
+function chartTooltip(category: string, seriesId: string, label: string, values: readonly { label: string; value: string; people?: number; color?: string; total?: boolean }[]) {
   const content = document.createElement("div");
   content.className = "statistics-chart-tooltip";
   content.dataset.statisticsChartTooltip = category;
@@ -31,15 +31,45 @@ function chartTooltip(category: string, seriesId: string, label: string, values:
   const heading = document.createElement("strong");
   heading.textContent = label;
   content.append(heading);
+  const hasPeople = values.some(value => value.people !== undefined);
+  const table = document.createElement("table");
+  if (hasPeople) {
+    const head = document.createElement("thead");
+    const row = document.createElement("tr");
+    for (const title of ["", "Часы", "Сотрудники"]) {
+      const cell = document.createElement("th");
+      cell.scope = "col";
+      cell.textContent = title;
+      row.append(cell);
+    }
+    head.append(row);
+    table.append(head);
+  }
+  const body = document.createElement("tbody");
   for (const value of values) {
-    const line = document.createElement("div");
-    const name = document.createElement("span");
-    const amount = document.createElement("span");
+    const line = document.createElement("tr");
+    if (value.total) line.className = "statistics-chart-tooltip-total";
+    const name = document.createElement("th");
+    name.scope = "row";
     name.textContent = value.label;
+    if (value.color) {
+      const marker = document.createElement("i");
+      marker.style.backgroundColor = value.color;
+      marker.setAttribute("aria-hidden", "true");
+      name.prepend(marker);
+    }
+    const amount = document.createElement("td");
     amount.textContent = value.value;
     line.append(name, amount);
-    content.append(line);
+    if (hasPeople) {
+      const people = document.createElement("td");
+      people.textContent = value.people === undefined ? "—" : String(value.people);
+      line.append(people);
+    }
+    body.append(line);
   }
+  table.append(body);
+  content.append(table);
   return content.outerHTML;
 }
 
@@ -112,7 +142,7 @@ export function StatisticsChart({ groupBy, rows, series, maxHours, onOpenReports
       dataIdKey: "category",
       minWidth: 1,
       background: { fill: "#ffffff" },
-      highlight: { range: "node", mode: "shared" },
+      highlight: { range: "tooltip", mode: "single" },
       tooltip: { range: "exact", delay: 0, mode: "single" },
       listeners: {
         activeChange: ({ activeItem, datum }) => {
@@ -147,9 +177,12 @@ export function StatisticsChart({ groupBy, rows, series, maxHours, onOpenReports
         id: key, type: "bar", direction: "vertical", stacked: true, nodeClickRange: "exact",
         xKey: "category", xName: byDay ? "Дата" : "Зона", yKey: key, yName: name,
         fill: color, strokeWidth: 0, width: barWidth,
-        tooltip: { renderer: ({ datum }) => chartTooltip(datum.category, key, datum.label, [
-          ...series.map(item => ({ label: item.name, value: `${formatTimesheetHours(datum[item.key])} ч` })),
-          { label: byDay ? "Всего за день" : "Всего по зоне", value: `${formatTimesheetHours(datum.total)} ч` },
+        tooltip: { range: "exact", renderer: ({ datum }) => chartTooltip(datum.category, key, datum.label, [
+          ...series.map(item => ({
+            label: item.name, color: item.color, value: `${formatTimesheetHours(datum[item.key])} ч`,
+            people: item.key === "welders" || item.key === "installers" || item.key === "other" ? datum.source.personnelCounts?.[item.key] : undefined,
+          })),
+          { label: byDay ? "Всего за день" : "Всего по зоне", value: `${formatTimesheetHours(datum.total)} ч`, people: datum.source.personnelCounts?.total, total: true },
         ]) },
       })),
     };

@@ -11,6 +11,9 @@ import type { UserRole } from "../../app/roles";
 import "../../app/globals.css";
 
 type Scenario = "default" | "workflow" | "conflicts";
+// Optional browser-test source context; normal fixture runs remain unfiltered.
+const sourceZone = Number(new URLSearchParams(window.location.search).get("sourceZone"));
+const reportSource = Number.isSafeInteger(sourceZone) && sourceZone > 0 ? { zoneId: sourceZone } : undefined;
 type FixtureCatalog = {
   today: string; site: { id: number; name: string }; units: GridEquipmentUnit[];
   shifts: GridOption[]; zones: GridOption[]; mainWorkTypes: GridOption[]; subworkTypes: GridOption[]; scenario: Scenario;
@@ -27,6 +30,11 @@ const actors = {
   superadmin: fixtureActor(30, "Администратор Проверки", "superadmin"),
   viewer: fixtureActor(40, "Виктор Наблюдатель", "viewer"),
   viewer_pending: fixtureActor(41, "Вера Расширенный Просмотр", "viewer", true),
+  delete_only: { ...fixtureActor(42, "Удаление без редактирования", "viewer"), permissions: {
+    equipment_report: { view: true, create: false, update: false, delete: true },
+    equipment_timesheet: { view: true, create: false, update: false, delete: false },
+    equipment_report_approved: { view: true, create: false, update: false, delete: true },
+  } },
 };
 type FixtureStatus = {
   materializedHours: number; approvedEntryCount: number;
@@ -93,7 +101,7 @@ function EquipmentReportSmoke() {
       <strong>Изолированный стенд техники — рабочая база не подключена</strong>
       <label>Роль в проверке{" "}<select aria-label="Роль в проверке" value={role} onChange={event => {
         const next = event.target.value as keyof typeof actors; document.cookie = `equipment_smoke_role=${next}; path=/; SameSite=Lax`; setDirty(false); setRole(next);
-      }}><option value="foreman">Прораб — Алексей Тестовый</option><option value="foreman2">Прораб — Борис Другая Бригада</option><option value="engineer">Инженер — Ирина Проверяющая</option><option value="superadmin">Супер-админ — Администратор Проверки</option><option value="viewer">Просмотр — только подтверждённые</option><option value="viewer_pending">Просмотр — включая отчёты на проверке</option></select></label>
+      }}><option value="foreman">Прораб — Алексей Тестовый</option><option value="foreman2">Прораб — Борис Другая Бригада</option><option value="engineer">Инженер — Ирина Проверяющая</option><option value="superadmin">Супер-админ — Администратор Проверки</option><option value="viewer">Просмотр — только подтверждённые</option><option value="viewer_pending">Просмотр — включая отчёты на проверке</option><option value="delete_only">Удаление подтверждённых без редактирования</option></select></label>
       <label>Сценарий{" "}<select aria-label="Сценарий" value={catalog?.scenario ?? "workflow"} disabled={!catalog} onChange={event => void reset(event.target.value as Scenario)}>
         <option value="workflow">Несколько дат и бригад</option><option value="default">История и перенос техники</option><option value="conflicts">Лимит 20 ч и недоступная техника</option>
       </select></label>
@@ -108,7 +116,7 @@ function EquipmentReportSmoke() {
     <div className="timesheet-workspace-page" style={{ flex: 1, minHeight: 0 }}>
       {catalog ? <TableOrderProvider key={`${role}-${session}`} scope={equipmentReportOrderScope} siteId={catalog.site.id}>
         <EquipmentReportWorkspace siteId={catalog.site.id} siteName={catalog.site.name} today={catalog.today} currentUser={actors[role]} permissions={actors[role].permissions.equipment_report}
-          units={catalog.units} shifts={catalog.shifts} zones={catalog.zones} mainWorkTypes={catalog.mainWorkTypes} subworkTypes={catalog.subworkTypes} loading={false} onDirtyChange={setDirty} />
+          units={catalog.units} shifts={catalog.shifts} zones={catalog.zones} mainWorkTypes={catalog.mainWorkTypes} subworkTypes={catalog.subworkTypes} reportSource={reportSource} loading={false} onDirtyChange={setDirty} />
       </TableOrderProvider> : !error && <p>Загрузка учебного каталога…</p>}
     </div>
   </main>;

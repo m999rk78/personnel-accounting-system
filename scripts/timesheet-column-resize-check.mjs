@@ -86,16 +86,36 @@ try {
     await frames();
   }
 
-  async function drag(handle, delta, { finish = true } = {}) {
+  async function columnBorderPoint(handle) {
     await handle.scrollIntoViewIfNeeded();
-    const box = await handle.boundingBox();
-    assert.ok(box && box.width > 0 && box.height > 0, "A visible resize hit target is required");
-    const x = box.x + box.width / 2, y = box.y + Math.min(18, box.height / 2);
-    await page.mouse.move(x, y);
+    return handle.evaluate(element => {
+      const cell = element.closest("th"), box = cell.getBoundingClientRect();
+      return { x: box.right, y: box.top + Math.min(18, box.height / 2) };
+    });
+  }
+
+  async function hoverBorder(handle, point) {
+    await page.mouse.move(point.x, point.y); await frames();
+    const hovered = table().locator("thead [data-resize-hover]");
+    assert.equal(await hovered.count(), 1, "Only one divider is highlighted at the physical column boundary");
+    assert.equal(await hovered.getAttribute("data-column-id"), await handle.getAttribute("data-column-id"), "The physical border resolves to its preceding column");
+  }
+
+  async function drag(handle, delta, { finish = true } = {}) {
+    const point = await columnBorderPoint(handle);
+    // The semantic separator is keyboard-operable but ignores pointer events.
+    // Exercise the root's physical-boundary hit test through real mouse input.
+    await hoverBorder(handle, point);
     await page.mouse.down();
-    await page.mouse.move(x + delta, y, { steps: 12 });
+    await page.mouse.move(point.x + delta, point.y, { steps: 12 });
     if (finish) await page.mouse.up();
     await frames();
+  }
+
+  async function doubleClickBorder(handle) {
+    const point = await columnBorderPoint(handle);
+    await hoverBorder(handle, point);
+    await page.mouse.dblclick(point.x, point.y); await frames();
   }
 
   async function geometry(label, { checkTail = false } = {}) {
@@ -250,15 +270,83 @@ try {
       return event.defaultPrevented;
     }, keyboard);
   }
+
+  async function rightPinnedHeaderAndTail(kind) {
+    const id = kind === "workers" ? "timesheet" : "productive";
+    const header = () => table().locator(`thead th[data-timesheet-column-id="${id}"]`);
+    const keys = [`resource-report.timesheet-column-pins.${kind}.v1`, `resource-report.timesheet-column-widths.${kind}.v1`];
+    const saved = await page.evaluate(keys => keys.map(key => [key, localStorage.getItem(key)]), keys);
+    try {
+      await openColumnMenu(kind, header());
+      await columnMenu().getByRole("menuitem", { name: "Сбросить закрепление", exact: true }).click();
+      await page.waitForFunction(id => document.querySelector(`table.timesheet-resizable thead th[data-timesheet-column-id="${id}"]`)?.dataset.timesheetPin === "none", id);
+      // Set up pinning through the visible native menu, not the filter engine or
+      // a storage shortcut: this exercises the same operation as the user.
+      await openColumnMenu(kind, header());
+      await columnMenu().getByRole("menuitem", { name: "Закрепить столбец", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Закрепить справа", exact: true }).click();
+      await page.waitForFunction(id => document.querySelector(`table.timesheet-resizable thead th[data-timesheet-column-id="${id}"]`)?.dataset.timesheetPin === "right", id);
+      const rail = page.getByRole("scrollbar", { name: kind === "workers" ? "Горизонтальная прокрутка табеля рабочих" : "Горизонтальная прокрутка табеля техники", exact: true });
+      for (const position of ["Home", "middle", "End"]) {
+        if (position === "middle") await shell().evaluate(element => { element.scrollLeft = (element.scrollWidth - element.clientWidth) / 2; });
+        else await rail.press(position);
+        await settleLayout();
+        const result = await header().evaluate(header => {
+          const table = header.closest("table"), viewport = table.closest(".timesheet-grid-shell");
+          const box = header.getBoundingClientRect(), frame = viewport.getBoundingClientRect();
+          const contentRight = frame.left + viewport.clientLeft + viewport.clientWidth;
+          const x = box.left + Math.min(40, box.width / 2);
+          const points = [box.top + 18, box.bottom - 18].map(y => ({ y,
+            owned: document.elementsFromPoint(x, y).find(element => element.closest("th"))?.closest("th") === header,
+          }));
+          const centerLayers = [...table.querySelectorAll('thead th[data-timesheet-pin="none"]')]
+            .map(cell => Number(getComputedStyle(cell).zIndex)).filter(Number.isFinite);
+          const lastBodyCell = table.querySelector("tbody tr[data-virtual-row]")?.lastElementChild;
+          const lastFooterCell = table.tFoot?.rows[0]?.lastElementChild;
+          return { points, label: header.querySelector(".timesheet-filterable-heading-label")?.textContent?.trim(),
+            layer: Number(getComputedStyle(header).zIndex), centerLayer: Math.max(...centerLayers),
+            tableWidth: table.getBoundingClientRect().width, scrollWidth: viewport.scrollWidth,
+            scrollLeft: viewport.scrollLeft, maximum: viewport.scrollWidth - viewport.clientWidth,
+            headerRight: box.right, bodyRight: lastBodyCell?.getBoundingClientRect().right,
+            footerRight: lastFooterCell?.getBoundingClientRect().right, contentRight,
+          };
+        });
+        const label = `${kind}: right-pinned total at ${position}`;
+        assert.ok(result.label, `${label}: heading retains its caption`);
+        assert.ok(result.points.every(point => point.owned), `${label}: header owns both the month and date bands`);
+        assert.ok(result.layer > result.centerLayer, `${label}: pinned heading paints above every central heading`);
+        assert.ok(result.scrollWidth - result.tableWidth <= 1, `${label}: invisible resize controls add no trailing scroll space`);
+        near(result.headerRight, result.contentRight, `${label}: pinned header touches the viewport edge`, 1);
+        if (position === "End") {
+          near(result.scrollLeft, result.maximum, `${label}: scrollbar reaches its real maximum`, 1);
+          if (result.bodyRight !== undefined) near(result.bodyRight, result.contentRight, `${label}: final body cell has no blank tail`, 1);
+          if (result.footerRight !== undefined) near(result.footerRight, result.contentRight, `${label}: final footer cell has no blank tail`, 1);
+        }
+      }
+      await openColumnMenu(kind, header());
+      await columnMenu().getByRole("menuitem", { name: "Сбросить закрепление", exact: true }).click();
+      await page.waitForFunction(() => !document.querySelector('table.timesheet-resizable thead th[data-timesheet-pin="right"]'));
+      console.log(`PASS: ${kind}: native right pin, header hit/layer at Home/middle/End, no extra tail and aligned final cells`);
+    } finally {
+      // The fixture may be invoked with saved preferences from another check.
+      // Restore the exact original pin and width values even after a failure.
+      await page.evaluate(saved => {
+        for (const [key, value] of saved) {
+          if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value);
+        }
+      }, saved);
+      await open(kind);
+    }
+  }
   for (const kind of ["equipment", "workers"]) {
     for (const viewport of [939, 1440]) {
       await page.setViewportSize({ width: viewport, height: 954 });
       await open(kind);
       for (const state of ["default", "minimum", "resized"]) {
         const widths = state === "default" ? {} : kind === "workers"
-          ? state === "minimum" ? { employmentType: 50, department: 60, fullName: 140, position: 100, "day-1": 40, timesheet: 64, reports: 64, difference: 64 }
+          ? state === "minimum" ? { employmentType: 50, department: 60, fullName: 140, position: 100, "day-1": 40, timesheet: 96, reports: 96, difference: 96 }
             : { employmentType: 78, department: 104, fullName: 340, position: 220, "day-1": 88, timesheet: 110, reports: 110, difference: 110 }
-          : state === "minimum" ? { equipment: 160, organization: 100, "day-1": 40, productive: 64, downtime: 64, total: 64 }
+          : state === "minimum" ? { equipment: 160, organization: 100, "day-1": 40, productive: 96, downtime: 96, total: 96 }
             : { equipment: 420, organization: 240, "day-1": 88, productive: 110, downtime: 110, total: 110 };
         await page.evaluate(({ kind, widths }) => localStorage.setItem(`resource-report.timesheet-column-widths.${kind}.v1`, JSON.stringify(widths)), { kind, widths });
         await open(kind);
@@ -276,6 +364,11 @@ try {
       await page.evaluate(kind => localStorage.removeItem(`resource-report.timesheet-column-widths.${kind}.v1`), kind);
       console.log(`PASS: ${kind} ${viewport}px: default/minimum/resized filter buttons, clipping, click targets and sorted badge`);
     }
+  }
+  for (const kind of ["workers", "equipment"]) {
+    await page.setViewportSize({ width: 1440, height: 953 });
+    await open(kind);
+    await rightPinnedHeaderAndTail(kind);
   }
   if (!headersOnly) {
   for (const kind of ["workers", "equipment"]) {
@@ -297,7 +390,8 @@ try {
     const numberHeader = table().locator('thead [data-resize-owner="number"][data-resize-edge="right"]').locator("..");
     await openColumnMenu(kind, numberHeader);
     assert.equal(await columnMenu().getByRole("menuitem", { name: "По возрастанию", exact: true }).count(), 0, `${kind}: number column does not pretend to support sorting`);
-    for (const label of ["Закрепить столбец", "Скрыть столбец", "Выбрать столбцы"]) {
+    assert.equal(await columnMenu().getByRole("menuitem", { name: "Закрепить столбец", exact: true }).count(), 1, `${kind}: native columns offer their pin submenu`);
+    for (const label of ["Скрыть столбец", "Выбрать столбцы"]) {
       assert.equal(await columnMenu().getByRole("menuitem", { name: label, exact: true }).count(), 0, `${kind}: unsupported structural actions are not offered`);
     }
     await page.keyboard.press("Escape");
@@ -336,7 +430,7 @@ try {
     near(await width(mainGrip(kind)), initialMain, `${kind}: menu resets metadata widths`);
     near(await width(dayGrip(1)), initialDay, `${kind}: menu resets day widths`);
 
-    const dayCell = table().locator('tbody tr[data-virtual-row] [data-timesheet-column="0"]').first();
+    const dayCell = table().locator('tbody tr[data-virtual-row] [data-timesheet-column-id="day-1"]').first();
     assert.equal(await nativeContextEvent(dayCell), true, `${kind}: day cells retain their own clipboard context menu`);
     await cellMenu().waitFor();
     assert.equal(await columnMenu().count(), 0);
@@ -375,48 +469,53 @@ try {
       await page.setViewportSize({ width: 831, height: 954 });
       await page.evaluate(kind => localStorage.removeItem(`resource-report.timesheet-column-widths.${kind}.v1`), kind);
       await open(kind, month);
-      await maxScroll(`${kind} ${month}: left total divider`);
+      await maxScroll(`${kind} ${month}: single column dividers`);
       const totalId = kind === "workers" ? "timesheet" : "productive";
-      const leftGrip = table().locator(`[data-resize-owner="${totalId}"][data-resize-edge="left"]`);
+      const totalHandle = grip(kind === "workers" ? ".timesheet-tabell-total" : ".equipment-work-total");
       const lastDay = await table().locator("thead tr:nth-child(2) th").count();
-      assert.equal(await leftGrip.getAttribute("data-column-id"), `day-${lastDay}`);
-      assert.equal(await leftGrip.getAttribute("tabindex"), "-1", "Proxy dividers must not duplicate keyboard tab stops");
-      const covered = await leftGrip.evaluate(element => {
-        const cell = element.closest("th"), table = cell.closest("table"), left = cell.getBoundingClientRect().left + 3;
-        return left < Math.max(...[...table.querySelectorAll("thead th.timesheet-sticky")].map(header => header.getBoundingClientRect().right));
-      });
-      if (covered) {
-        // At a narrow viewport the first total can scroll behind pinned metadata.
-        // Its hidden divider must not steal pointer events from that header.
-        for (const lowerHalf of [false, true]) {
-          const hit = await leftGrip.evaluate((element, lowerHalf) => {
-            const box = element.closest("th").getBoundingClientRect();
-            const target = document.elementFromPoint(box.left + 3, box.top + (lowerHalf ? box.height - 13 : 13));
-            return { pinned: Boolean(target?.closest("th.timesheet-sticky")), resizeOwner: target?.closest("[data-resize-edge]")?.getAttribute("data-resize-owner") };
-          }, lowerHalf);
-          assert.equal(hit.pinned, true, `${kind}: covered total divider stays behind the pinned header`);
-          assert.notEqual(hit.resizeOwner, totalId, `${kind}: a hidden divider cannot intercept pinned-header clicks`);
-        }
-        await page.setViewportSize({ width: 1440, height: 954 });
-        await maxScroll(`${kind}: reveal total divider without pinned-header overlap`);
+      const handles = await table().locator("thead .timesheet-column-resize-handle").evaluateAll(elements => elements.map(element => ({
+        id: element.dataset.columnId, owner: element.dataset.resizeOwner, edge: element.dataset.resizeEdge, tabindex: element.tabIndex,
+      })));
+      assert.equal(handles.length, await table().locator("colgroup col").count(), `${kind}: exactly one grip per leaf column`);
+      assert.equal(new Set(handles.map(handle => handle.id)).size, handles.length, `${kind}: adjacent headers do not duplicate a divider`);
+      for (const handle of handles) {
+        assert.equal(handle.edge, "right");
+        assert.equal(handle.owner, handle.id);
+        assert.equal(handle.tabindex, 0);
       }
+      const lastDayCovered = await dayGrip(lastDay).evaluate(element => {
+        const box = element.getBoundingClientRect(), table = element.closest("table");
+        return (box.left + box.right) / 2 < Math.max(...[...table.querySelectorAll("thead th.timesheet-sticky")].map(header => header.getBoundingClientRect().right));
+      });
+      if (lastDayCovered) {
+        await page.setViewportSize({ width: 1440, height: 954 });
+        await maxScroll(`${kind}: reveal the last-day separator beside pinned metadata`);
+      }
+      // The day divider belongs only to the day header; the rowspan total has
+      // its own independent right divider, available throughout its height.
+      const beforeTotal = await width(totalHandle), beforeDay = await width(dayGrip(lastDay));
+      await drag(dayGrip(lastDay), 16);
+      near(await width(dayGrip(lastDay)), beforeDay + 16, `${kind}: day right edge changes that day only`);
+      near(await width(totalHandle), beforeTotal, `${kind}: neighboring total stays unchanged`);
       for (const lowerHalf of [false, true]) {
-        await maxScroll(`${kind}: before left-edge drag`);
-        const cell = await leftGrip.evaluate(element => { const box = element.closest("th").getBoundingClientRect(); return { left: box.left, top: box.top, height: box.height }; });
-        const point = { x: cell.left + 3, y: cell.top + (lowerHalf ? cell.height - 13 : 13) };
-        const hit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest("[data-resize-edge]")?.getAttribute("data-resize-owner"), point);
-        assert.equal(hit, totalId, `${kind}: the physical left edge works in both halves of the rowspan header`);
-        const beforeDay = await width(dayGrip(lastDay));
-        const beforeTotal = await width(grip(kind === "workers" ? ".timesheet-tabell-total" : ".equipment-work-total"));
+        await maxScroll(`${kind}: before total right-edge drag`);
+        const point = await totalHandle.evaluate((element, lowerHalf) => {
+          const box = element.closest("th").getBoundingClientRect();
+          return { x: box.right, y: box.top + (lowerHalf ? box.height - 13 : 13) };
+        }, lowerHalf);
+        await page.mouse.move(point.x, point.y); await frames();
+        const hit = await table().locator("thead [data-resize-hover]").getAttribute("data-column-id");
+        assert.equal(hit, totalId, `${kind}: one physical right divider works in both halves of the rowspan header`);
+        const previousTotal = await width(totalHandle), previousDay = await width(dayGrip(lastDay));
         await page.mouse.move(point.x, point.y); await page.mouse.down();
         await page.mouse.move(point.x + 16, point.y, { steps: 6 }); await page.mouse.up(); await frames();
-        near(await width(dayGrip(lastDay)), beforeDay + 16, `${kind}: left edge resizes the preceding day`);
-        near(await width(grip(kind === "workers" ? ".timesheet-tabell-total" : ".equipment-work-total")), beforeTotal, `${kind}: either side of a divider addresses the same preceding column`);
-        await geometry(`${kind}: left edge keeps the entire grid aligned`);
+        near(await width(totalHandle), previousTotal + 16, `${kind}: total divider changes its own column`);
+        near(await width(dayGrip(lastDay)), previousDay, `${kind}: total divider does not affect the previous day`);
+        await geometry(`${kind}: single right edge keeps the entire grid aligned`);
       }
       await headerFilters(`${kind}: readable captions and filter controls`);
       await maxScroll(`${kind}: centered headers at right edge`);
-      if (month === "2026-10") await page.screenshot({ path: `/tmp/timesheet-left-divider-${kind}.png` });
+      if (month === "2026-10") await page.screenshot({ path: `/tmp/timesheet-single-divider-${kind}.png` });
     }
     await page.evaluate(kind => localStorage.removeItem(`resource-report.timesheet-column-widths.${kind}.v1`), kind);
   }
@@ -450,7 +549,7 @@ try {
     near(await width(mainGrip(kind)), shrunk, `${kind}: pointercancel restores the original width`);
     await noDragCursor(`${kind}: pointercancel`);
 
-    await mainGrip(kind).dblclick(); await frames();
+    await doubleClickBorder(mainGrip(kind));
     near(await width(mainGrip(kind)), initialMain, `${kind}: double-click restores default metadata width`);
     await mainGrip(kind).focus(); await page.keyboard.press("ArrowRight"); await frames();
     assert.ok(await width(mainGrip(kind)) > initialMain, `${kind}: keyboard resizes without navigating spreadsheet cells`);
@@ -474,7 +573,7 @@ try {
     assert.ok(await width(dayGrip(1)) >= min - 1, `${kind}: minimum width is enforced`);
     await drag(dayGrip(1), 2000);
     assert.ok(await width(dayGrip(1)) <= max + 1, `${kind}: maximum width is enforced`);
-    await dayGrip(1).dblclick(); await frames();
+    await doubleClickBorder(dayGrip(1));
     await drag(dayGrip(1), 40); savedDay[kind] = await width(dayGrip(1));
 
     await open(kind);
@@ -531,9 +630,9 @@ try {
   }
   assert.deepEqual(writes, [], "Column resizing is a browser preference, never a business-data write");
   assert.deepEqual(errors, [], "No browser runtime errors");
-  console.log(JSON.stringify({ checks: headersOnly ? "workers + equipment: filter header layout at default/minimum/resized widths, clipped icons, hit targets and sorted badges" : menusOnly
-    ? "workers + equipment: scoped header menus, sorting, filter, autosize/reset, clipboard menu isolation, month invalidation"
-    : "workers + equipment: header menus, widths, sticky offsets, footer, empty grid, no blank tail, keyboard/pointer, persistence, responsive/virtualised rows", writes: writes.length }));
+  console.log(JSON.stringify({ checks: headersOnly ? "workers + equipment: filter header layout, right-pinned header layers/hit targets, no blank tail at Home/middle/End" : menusOnly
+    ? "workers + equipment: scoped header menus, right-pinned headers/no blank tail, sorting, filter, autosize/reset, clipboard menu isolation, month invalidation"
+    : "workers + equipment: header menus, right-pinned headers, widths, sticky offsets, footer, empty grid, no blank tail, keyboard/pointer, persistence, responsive/virtualised rows", writes: writes.length }));
 } finally {
   await browser?.close();
   await new Promise(resolve => server.httpServer.close(resolve));

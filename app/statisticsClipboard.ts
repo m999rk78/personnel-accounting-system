@@ -1,6 +1,6 @@
 import type { GridApi } from "ag-grid-community";
 import { spreadsheetDataColumns, spreadsheetHeaderValues } from "./gridSpreadsheetRows.ts";
-import { serializeSpreadsheetText } from "./spreadsheetClipboard.ts";
+import { serializeSpreadsheetText, spreadsheetClipboardHtml } from "./spreadsheetClipboard.ts";
 
 export type StatisticsCopyTarget = { kind: "table" } | { kind: "row"; rowId: string } | { kind: "column"; columnId: string };
 type ClipboardGrid<T> = Pick<GridApi<T>, "getAllDisplayedColumns" | "getDisplayNameForColumn" | "getDisplayedRowCount" | "getDisplayedRowAtIndex" | "getRowNode" | "getCellValue">;
@@ -8,6 +8,11 @@ type ClipboardGrid<T> = Pick<GridApi<T>, "getAllDisplayedColumns" | "getDisplayN
 const numberFormatter = new Intl.NumberFormat("ru-RU", { useGrouping: false, maximumFractionDigits: 20 });
 export function statisticsClipboardNumber(value: unknown): string {
   return typeof value === "number" && Number.isFinite(value) ? numberFormatter.format(value) : "";
+}
+
+export function statisticsClipboardHtml<T>(grid: ClipboardGrid<T>, target: StatisticsCopyTarget, text: string) {
+  const columns = spreadsheetDataColumns(grid).filter(column => target.kind !== "column" || column.getColId() === target.columnId);
+  return spreadsheetClipboardHtml(text, columns.map(column => !["zone", "workDate"].includes(column.getColId())));
 }
 
 /** Copy the displayed model, including rows outside the viewport, in its current order. */

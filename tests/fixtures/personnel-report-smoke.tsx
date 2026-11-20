@@ -9,6 +9,9 @@ import type { GridEmployee, GridOption } from "../../app/AgDataGrids";
 import "../../app/globals.css";
 
 const today = "2026-10-28";
+// Optional browser-test source context; normal fixture runs remain unfiltered.
+const sourceZone = Number(new URLSearchParams(window.location.search).get("sourceZone"));
+const reportSource = Number.isSafeInteger(sourceZone) && sourceZone > 0 ? { zoneId: sourceZone } : undefined;
 type FixtureCatalog = {
   site: { id: number; name: string };
   employees: GridEmployee[];
@@ -27,6 +30,10 @@ const actors = {
   superadmin: { id: 30, fullName: "Администратор Проверки", role: "superadmin" as const },
   engineer: { id: 20, fullName: "Ирина Проверяющая", role: "engineer" as const },
   viewer: { id: 40, fullName: "Наблюдатель Проверки", role: "viewer" as const },
+  delete_only: { id: 42, fullName: "Удаление без редактирования", role: "viewer" as const, permissions: {
+    workers_report: { view: true, create: false, update: false, delete: true },
+    workers_report_approved: { view: true, create: false, update: false, delete: true },
+  } },
 };
 
 type FixtureStatus = {
@@ -107,6 +114,7 @@ function PersonnelReportSmoke() {
         <option value="superadmin">Супер-админ — Администратор Проверки</option>
         <option value="engineer">Инженер — Ирина Проверяющая</option>
         <option value="viewer">Наблюдатель — Наблюдатель Проверки</option>
+        <option value="delete_only">Удаление подтверждённых без редактирования</option>
       </select></label>
       <span aria-live="polite">{dirty ? "Есть несохранённые изменения" : "Изменения сохранены"}</span>
       <label>Сценарий{" "}<select aria-label="Сценарий" value={catalog?.scenario ?? "default"} disabled={!catalog || catalog.runtimeCatalog} onChange={async (event) => {
@@ -132,7 +140,7 @@ function PersonnelReportSmoke() {
       {catalog ? <TableOrderProvider key={`${role}-${projectId}-${session}`} scope="personnel-report-rows" siteId={catalog.scenario === "preferences" ? projectId : catalog.site.id}><PersonnelReportWorkspace siteId={catalog.scenario === "preferences" ? projectId : catalog.site.id} siteName={catalog.site.name} today={today}
         currentUser={actors[role]} permissions={permissions} employees={catalog.employees}
         shifts={catalog.shifts} zones={catalog.zones} mainWorkTypes={catalog.mainWorkTypes} subworkTypes={catalog.subworkTypes} masters={catalog.masters}
-        loading={false} onDirtyChange={setDirty} /></TableOrderProvider> : !catalogError && <p>Загрузка тестового каталога…</p>}
+        reportSource={reportSource} loading={false} onDirtyChange={setDirty} /></TableOrderProvider> : !catalogError && <p>Загрузка тестового каталога…</p>}
     </div>
   </main>;
 }

@@ -1,14 +1,15 @@
 "use client";
 
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 const estimatedRowHeight = 34;
 
 /** Virtualize measured rows: wrapped labels must never use a fixed row height. */
-export function VirtualChoiceList({ items, renderItem, emptyText }: {
+export function VirtualChoiceList({ items, renderItem, emptyText, fitContent = false }: {
   items: readonly string[];
   renderItem: (value: string) => ReactNode;
   emptyText: string;
+  fitContent?: boolean;
 }) {
   const root = useRef<HTMLDivElement>(null);
   const rows = useRef<HTMLDivElement>(null);
@@ -89,7 +90,7 @@ export function VirtualChoiceList({ items, renderItem, emptyText }: {
   };
   // A scrollable region needs a tab stop and Home/End handling to reach every value.
   // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex, jsx-a11y/no-noninteractive-element-interactions
-  return <div className="grid-filter-values" ref={root} role="region" aria-label="Значения фильтра" tabIndex={0} onPointerDown={stopFollowingEnd} onWheel={stopFollowingEnd} onKeyDown={(event) => {
+  return <div className="grid-filter-values" style={fitContent ? { "--choice-list-content-height": `${items.length ? offsets[items.length] : 54}px` } as CSSProperties : undefined} ref={root} role="region" aria-label="Значения фильтра" tabIndex={0} onPointerDown={stopFollowingEnd} onWheel={stopFollowingEnd} onKeyDown={(event) => {
     stopFollowingEnd();
     stickToEnd.current = event.target === event.currentTarget && event.key === "End";
     if (event.target !== event.currentTarget || !["Home", "End"].includes(event.key)) return;

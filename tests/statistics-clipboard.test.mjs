@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
-import { statisticsClipboardNumber, statisticsClipboardText } from "../app/statisticsClipboard.ts";
+import { statisticsClipboardHtml, statisticsClipboardNumber, statisticsClipboardText } from "../app/statisticsClipboard.ts";
 import { formatStatisticsDate } from "../app/statisticsPeriod.ts";
-import { parseSpreadsheetText } from "../app/spreadsheetClipboard.ts";
+import { parseSpreadsheetText, serializeSpreadsheetText, spreadsheetClipboardHtml } from "../app/spreadsheetClipboard.ts";
 import { formatTimesheetHours } from "../app/timesheetFormatting.ts";
 
 async function source(path) {
@@ -159,4 +159,38 @@ test("empty models and structural rows do not create copied data", () => {
   assert.deepEqual(parseSpreadsheetText(statisticsClipboardText(structural.grid, { kind: "table" })), [
     ["Зона", "Работа", "Простой", "Всего"], [second.zone, "4,5", "3,75", "8,25"],
   ]);
+});
+
+test("Excel rich clipboard preserves cells, numeric values and literal labels without treating them as HTML or formulas", () => {
+  const rows = [
+    ["Зона", "Часы", "Всего"],
+    ['Зона <А>&"Б"\tУчасток\nЭтаж 2', "12345,5", "0"],
+    ["001", "0,125", "-8,25"],
+    ["=1+1", "2", "0"],
+  ];
+  const text = serializeSpreadsheetText(rows);
+  const html = spreadsheetClipboardHtml(text);
+  assert.deepEqual(parseSpreadsheetText(text), rows);
+  assert.equal((html.match(/<tr>/g) ?? []).length, 4);
+  assert.equal((html.match(/<td[ >]/g) ?? []).length, 12);
+  assert.match(html, /x:num="12345.5">12345,5<\/td>/);
+  assert.match(html, /x:num="0.125">0,125<\/td>/);
+  assert.match(html, /x:num="-8.25">-8,25<\/td>/);
+  assert.match(html, /Зона &lt;А&gt;&amp;&quot;Б&quot;\tУчасток<br style="mso-data-placement:same-cell">Этаж 2/);
+  assert.match(html, /mso-number-format:[^>]+>001<\/td>/);
+  assert.match(html, /mso-number-format:[^>]+>=1\+1<\/td>/);
+  assert.doesNotMatch(html, /<А>/);
+});
+
+test("statistics rich clipboard keeps numeric zone identifiers as text for table, row and column copy", () => {
+  const { grid } = fixture("personnel", [zone(8, "12345678901234567890", { welders: 12.5, total: 12.5 })]);
+  for (const target of [{ kind: "table" }, { kind: "row", rowId: "8" }, { kind: "column", columnId: "zone" }]) {
+    const text = statisticsClipboardText(grid, target);
+    const html = statisticsClipboardHtml(grid, target, text);
+    assert.match(html, /mso-number-format:[^>]+>12345678901234567890<\/td>/);
+    assert.doesNotMatch(html, /x:num="12345678901234567890"/);
+    if (target.kind !== "column") assert.match(html, /x:num="12.5">12,5<\/td>/);
+  }
+  const target = { kind: "column", columnId: "welders" };
+  assert.match(statisticsClipboardHtml(grid, target, statisticsClipboardText(grid, target)), /x:num="12.5">12,5<\/td>/);
 });

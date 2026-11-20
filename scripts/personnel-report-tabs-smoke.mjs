@@ -95,8 +95,8 @@ try {
   await page.waitForFunction(() => document.querySelector('.personnel-history-table .ag-row [col-id="employeeName"]')?.textContent.includes("Пётр Примеров"));
   assert.equal(await page.getByRole("button", { name: "Подтвердить отчёт", exact: true }).isEnabled(), true);
 
-  // A reviewer has a private personal draft too; Add and Copy land in that tab.
-  await selectTab("Подтверждённые");
+  // A reviewer has a private personal draft too; adding stays there and copying opens it.
+  await selectTab(/^Черновик/);
   await page.getByRole("button", { name: "Добавить строку", exact: true }).click();
   assert.equal(await tabs.getByRole("button", { name: /^Черновик/ }).getAttribute("aria-pressed"), "true");
   await page.waitForFunction(() => document.querySelectorAll('.personnel-history-table .ag-row [col-id="employeeName"]').length === 2);

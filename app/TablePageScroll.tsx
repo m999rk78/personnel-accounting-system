@@ -73,6 +73,10 @@ export function TablePageScroll({ gridRoot, source, children, footer, enabled = 
         return;
       }
       if (Math.abs(external.scrollLeft - viewport.scrollLeft) > .5) external.scrollLeft = viewport.scrollLeft;
+      // Column resizing may extend the real table before the separate rail's
+      // spacer is repainted. A clamped rail write is stale geometry, not input;
+      // keep the previous synchronized offset until both ranges can match.
+      if (Math.abs(external.scrollLeft - viewport.scrollLeft) > .5) { schedule(); return; }
       synchronizedLeft = viewport.scrollLeft;
       external.setAttribute("aria-valuenow", String(Math.round(synchronizedLeft)));
     };

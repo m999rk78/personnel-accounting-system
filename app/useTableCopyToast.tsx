@@ -23,11 +23,7 @@ export function useTableCopyToast(anchorRef?: RefObject<HTMLElement | null>) {
   return { showCopyToast, copyToast: toast ? <TableStatusToast {...toast} /> : null };
 }
 
-/** Native grid menus supply the clipboard payload and expect the app to write it. */
-export async function writeTableClipboardText(text: string) {
-  if (navigator.clipboard?.writeText) {
-    try { await navigator.clipboard.writeText(text); return; } catch { /* Try the browser's legacy clipboard path. */ }
-  }
+function copyTableThroughDocument(text: string, html?: string) {
   const focused = document.activeElement;
   const input = document.createElement("textarea");
   input.value = text;
@@ -35,12 +31,31 @@ export async function writeTableClipboardText(text: string) {
   input.tabIndex = -1;
   input.className = "table-clipboard-fallback";
   (focused?.closest("dialog[open]") ?? document.body).appendChild(input);
+  const copy = (event: ClipboardEvent) => {
+    if (!html || !event.clipboardData) return;
+    event.preventDefault();
+    event.clipboardData.setData("text/plain", text);
+    event.clipboardData.setData("text/html", html);
+  };
+  document.addEventListener("copy", copy);
   try {
     input.focus({ preventScroll: true });
     input.select();
-    if (!document.execCommand("copy")) throw new Error("Не удалось скопировать.");
+    return document.execCommand("copy");
+  } catch {
+    return false;
   } finally {
+    document.removeEventListener("copy", copy);
     input.remove();
     if (focused instanceof HTMLElement && focused.isConnected) focused.focus({ preventScroll: true });
   }
+}
+
+/** Write spreadsheet cells synchronously during the menu/button gesture. */
+export async function writeTableClipboardText(text: string, html?: string) {
+  if (html && copyTableThroughDocument(text, html)) return;
+  if (navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(text); return; } catch { /* Try the browser's legacy clipboard path. */ }
+  }
+  if (!copyTableThroughDocument(text)) throw new Error("Не удалось скопировать.");
 }

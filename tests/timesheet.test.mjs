@@ -307,7 +307,7 @@ test("builds the monthly timesheet from saved daily reports with document scroll
   assert.match(pageStyles, /\[data-table-page-viewport\][^}]*overflow-y:hidden/);
   assert.match(view, /Итого по дням/);
   assert.match(view, /timesheet-fill-row[\s\S]*colSpan=\{columnResize\.columnCount\}/);
-  assert.match(view, /timesheet-summary-label[\s\S]*colSpan=\{columnResize\.stickyCount\}/);
+  assert.match(view, /timesheet-summary-label[\s\S]*colSpan=\{columnResize\.metadataCount\}/);
   assert.match(styles, /timesheet-grid-shell-reconciled \.timesheet-table[^{]*\{ height:100%/);
   assert.match(styles, /timesheet-table tbody \.timesheet-fill-row \{ height:100%/);
   assert.match(view, /Вернуть значение из отчёта/);

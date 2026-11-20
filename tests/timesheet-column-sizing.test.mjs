@@ -10,6 +10,21 @@ import {
 
 const sum = values => values.reduce((total, value) => total + value, 0);
 
+test("both timesheets start with wider readable totals and clamp old narrow saved widths", () => {
+  for (const kind of ["workers", "equipment"]) {
+    const columns = timesheetSizingColumns(kind, 30);
+    const totals = columns.slice(-3);
+    assert.ok(totals.every(column => column.width === 112 && column.min === 96));
+    const defaults = timesheetColumnLayout(columns, {}, 1200);
+    for (const column of totals) assert.equal(defaults.widths[column.id], 112);
+    const old = Object.fromEntries(totals.map(column => [column.id, 72]));
+    const migrated = readTimesheetColumnWidths(JSON.stringify({ ...old, "day-6": 80, [kind === "workers" ? "fullName" : "equipment"]: 400 }), kind);
+    for (const column of totals) assert.equal(migrated[column.id], 96, "Stored narrow widths cannot clip the longer shared header style");
+    assert.equal(migrated["day-6"], 80, "The new minimum must not reset independent day preferences");
+    assert.equal(migrated[kind === "workers" ? "fullName" : "equipment"], 400);
+  }
+});
+
 test("dragging an auto-filled day uses a delta on the preference, not the expanded visual width", () => {
   for (const kind of ["workers", "equipment"]) {
     const columns = timesheetSizingColumns(kind, 31);

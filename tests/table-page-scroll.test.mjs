@@ -237,6 +237,35 @@ test("native tables retain DOM width fallback and observe a table mounted after 
   assert.equal(ui.metrics.modelWidth, 0);
 });
 
+test("a widening table keeps its newer right-edge scroll while the external rail still has the old range", () => {
+  for (const native of [true, false]) {
+    const ui = harness({ native });
+    const previousMaximum = Number(ui.track.getAttribute("aria-valuemax"));
+    ui.external(previousMaximum);
+    const nextMaximum = previousMaximum + 80;
+    ui.setWidth(Number.parseFloat(ui.spacer.style.width) + 80);
+    ui.viewport.scrollWidth += 80;
+
+    // A column-resize paint can scroll the real table before ResizeObserver
+    // updates the separate page rail. Its browser-like setter clamps to the
+    // OLD maximum, so this write must not be mistaken for newer rail input.
+    ui.internal(nextMaximum);
+    assert.equal(ui.track.scrollLeft, previousMaximum);
+    assert.equal(ui.viewport.scrollLeft, nextMaximum);
+    ui.track.dispatch("scroll");
+    ui.viewport.dispatch("scroll");
+    ui.flush();
+    assert.equal(ui.track.getAttribute("aria-valuemax"), String(nextMaximum));
+    assert.equal(ui.viewport.scrollLeft, nextMaximum, `native=${native}: the new table offset survives stale rail events`);
+    assert.equal(ui.track.scrollLeft, nextMaximum);
+    assert.equal(ui.track.getAttribute("aria-valuenow"), String(nextMaximum));
+
+    ui.external(nextMaximum - 30);
+    assert.equal(ui.viewport.scrollLeft, nextMaximum - 30, "A later deliberate rail movement still wins");
+    ui.cleanup();
+  }
+});
+
 test("the actual AG source measures displayed column models and subscribes only to real geometry events", () => {
   const ui = harness({ ag: true });
   assert.equal(ui.sourceProps.getHorizontalContentWidth(), 1165, "Pinned and off-screen displayed columns plus the native rail determine the total width");

@@ -9,6 +9,7 @@
 .personnel-history-save-status .personnel-report-dirty-caption { white-space:normal; line-height:inherit; }
 .personnel-history-save-status .personnel-report-dirty-caption i { flex-shrink:0; }
 .personnel-history-footer-actions { flex:0 1 auto; min-width:0; display:flex; align-items:center; justify-content:flex-start; flex-wrap:wrap; gap:6px; }
+.personnel-history-footer-actions:empty { display:none; }
 .personnel-history-footer-actions > .toolbar-actions { display:contents; }
 .personnel-history-footer-actions button { min-height:32px; padding:6px 10px; font-size:11px; white-space:nowrap; }
 .personnel-history-approved { color:#166534; }

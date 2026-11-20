@@ -5,6 +5,7 @@ import ts from "typescript";
 import { compareGridValues, filterDateKey, matchesPersonnelFilter, normalizeFilterText } from "../app/gridFilterModel.ts";
 import { pastePersonnelCells, personnelCellErrors, personnelOptionFields } from "../app/personnelSpreadsheet.ts";
 import { personnelActivityTime } from "../app/personnelReportSorting.ts";
+import { FILTER_POPUP_MIN_WIDTH } from "../app/filterPopupResize.ts";
 import { compileModuleGraph } from "./fixtures/compile-module-graph.mjs";
 
 const { dateTreeSetFilterParams } = await import(await compileModuleGraph(new URL("../app/DateTreeSetFilter.tsx", import.meta.url), {
@@ -148,7 +149,7 @@ test("filter summary rerenders preserve native filter definitions while spreadsh
 function nativeParams(kind, options = {}) {
   const source = ["setCellHeight", "dateComparator", "enterpriseFilterParams"].map(name => declaration(enterpriseFilters, name)).join("\n");
   const configure = bind(source, "enterpriseFilterParams", {
-    sortingChild: {}, compareGridValues, filterDateKey, normalizeFilterText, dateTreeSetFilterParams,
+    sortingChild: {}, compareGridValues, filterDateKey, normalizeFilterText, dateTreeSetFilterParams, FILTER_POPUP_MIN_WIDTH,
     document: { createElement: () => ({ getContext: () => ({ font: "", measureText: value => ({ width: String(value).length * 8 }) }) }) },
     window: { innerWidth: 907 },
   });

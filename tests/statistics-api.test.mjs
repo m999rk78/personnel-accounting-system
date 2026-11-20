@@ -47,20 +47,23 @@ function configure(user, { activeSite = true, results = [] } = {}) {
 
 test("personnel statistics combine saved position groups for the selected project's approved hours", async () => {
   const calls = configure(actor(), { results: [
-    { zoneId: 21, zone: "Площадка А", title: "ЭЛЕКТРОГАЗОСВАРЩИК", hours: 10 },
-    { zoneId: 21, zone: "Площадка А", title: "Сварщик-монтажник", hours: 4 },
-    { zoneId: 21, zone: "Площадка А", title: "Монтажник стальных конструкций", hours: 7 },
-    { zoneId: 21, zone: "Площадка А", title: "Слесарь", hours: 3 },
-    { zoneId: 22, zone: "Архивная площадка", title: "Монтажник", hours: 5 },
-    { zoneId: null, zone: null, title: "", hours: 2 },
+    { zoneId: 21, zone: "Площадка А", title: "ЭЛЕКТРОГАЗОСВАРЩИК", hours: 10, employeeIds: [1, 2] },
+    { zoneId: 21, zone: "Площадка А", title: "Сварщик-монтажник", hours: 4, employeeIds: [2] },
+    { zoneId: 21, zone: "Площадка А", title: "Монтажник стальных конструкций", hours: 7, employeeIds: [3] },
+    { zoneId: 21, zone: "Площадка А", title: "Слесарь", hours: 3, employeeIds: [4] },
+    { zoneId: 22, zone: "Архивная площадка", title: "Монтажник", hours: 5, employeeIds: [3] },
+    { zoneId: null, zone: null, title: "", hours: 2, employeeIds: [4] },
   ] });
   const response = await GET(request());
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("cache-control"), "private, no-store");
   assert.deepEqual((await response.json()).rows, [
-    { zoneId: 21, zone: "Площадка А", welders: 14, installers: 7, other: 3, productive: 0, downtime: 0, total: 24 },
-    { zoneId: 22, zone: "Архивная площадка", welders: 0, installers: 5, other: 0, productive: 0, downtime: 0, total: 5 },
-    { zoneId: null, zone: "Без зоны", welders: 0, installers: 0, other: 2, productive: 0, downtime: 0, total: 2 },
+    { zoneId: 21, zone: "Площадка А", welders: 14, installers: 7, other: 3, productive: 0, downtime: 0, total: 24,
+      personnelCounts: { total: 4, welders: 2, installers: 1, other: 1 } },
+    { zoneId: 22, zone: "Архивная площадка", welders: 0, installers: 5, other: 0, productive: 0, downtime: 0, total: 5,
+      personnelCounts: { total: 1, welders: 0, installers: 1, other: 0 } },
+    { zoneId: null, zone: "Без зоны", welders: 0, installers: 0, other: 2, productive: 0, downtime: 0, total: 2,
+      personnelCounts: { total: 1, welders: 0, installers: 0, other: 1 } },
   ]);
   assert.deepEqual(calls.map(call => call.values), [[7], [7, "2026-11-01", "2026-11-11"]]);
   assert.match(calls[1].sql, /FROM placement_entries entry[\s\S]*entry\.site_id = \? AND entry\.work_date BETWEEN \? AND \? AND entry\.deleted_at IS NULL/);
